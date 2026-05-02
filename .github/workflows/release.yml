@@ -1,0 +1,33 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - name: Version
+        id: version
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+      - name: Build
+        run: |
+          mkdir -p dist
+          GOOS=darwin GOARCH=arm64 go build -o dist/mav-darwin-arm64 ./cmd/mav
+          GOOS=darwin GOARCH=amd64 go build -o dist/mav-darwin-amd64 ./cmd/mav
+          cd dist
+          shasum -a 256 * > checksums.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: MAV ${{ steps.version.outputs.tag }}
+          files: dist/*
+          generate_release_notes: true

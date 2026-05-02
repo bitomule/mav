@@ -1,0 +1,19 @@
+name: Homebrew
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag-name:
+        description: Git tag to publish in the Homebrew tap
+        required: true
+        type: string
+
+jobs:
+  instructions:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "After release ${{ github.event.inputs.tag-name }} is published:"
+          echo "1. Read checksums from release assets/checksums.txt"
+          echo "2. Copy packaging/homebrew/mav.rb to bitomule/homebrew-tap/Formula/mav.rb"
+          echo "3. Replace version and SHA placeholders"
