@@ -193,6 +193,30 @@ func TestLogsFiltersMAVKey(t *testing.T) {
 	}
 }
 
+func TestStopTerminatesRunProcesses(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, MavDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run := RunState{ID: "stop-test", Dir: filepath.Join(os.TempDir(), "mav", "stop-test"), LogsPath: filepath.Join(os.TempDir(), "mav", "stop-test", "logs.txt"), Commands: filepath.Join(os.TempDir(), "mav", "stop-test", "commands.jsonl"), Processes: filepath.Join(os.TempDir(), "mav", "stop-test", "processes.jsonl")}
+	if err := os.MkdirAll(run.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	appendProcess(run, "logs", 999999, "fake")
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"stop"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "ok cmd=stop") || !strings.Contains(got, "stopped=1") {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestPreviewRequiresConfig(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)

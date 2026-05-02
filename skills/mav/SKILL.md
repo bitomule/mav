@@ -33,6 +33,8 @@ does not explore or repair routes by itself. The agent decides the next action.
 9. Use `mav preview init` to create a Bazel preview host, wire the view under
    test into the generated host, then use `mav preview <view-id>` and `mav capture`.
 10. If `.mav/app-map.yaml` changes, review the git diff before continuing.
+11. For ad-hoc sessions started with `mav open`, run `mav stop` when validation
+    is done. `mav run` stops run-owned streams automatically.
 
 ## Internal Execution Validation
 

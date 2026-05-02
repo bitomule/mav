@@ -10,11 +10,12 @@ import (
 )
 
 type RunState struct {
-	ID       string
-	Dir      string
-	LogsPath string
-	Commands string
-	Started  time.Time
+	ID        string
+	Dir       string
+	LogsPath  string
+	Commands  string
+	Processes string
+	Started   time.Time
 }
 
 func NewRunState() (RunState, error) {
@@ -28,11 +29,12 @@ func NewRunState() (RunState, error) {
 		return RunState{}, err
 	}
 	return RunState{
-		ID:       id,
-		Dir:      dir,
-		LogsPath: filepath.Join(dir, "logs.txt"),
-		Commands: filepath.Join(dir, "commands.jsonl"),
-		Started:  time.Now(),
+		ID:        id,
+		Dir:       dir,
+		LogsPath:  filepath.Join(dir, "logs.txt"),
+		Commands:  filepath.Join(dir, "commands.jsonl"),
+		Processes: filepath.Join(dir, "processes.jsonl"),
+		Started:   time.Now(),
 	}, nil
 }
 
@@ -57,10 +59,11 @@ func LoadRun(root, id string) (RunState, error) {
 	}
 	dir := filepath.Join(os.TempDir(), "mav", id)
 	return RunState{
-		ID:       id,
-		Dir:      dir,
-		LogsPath: filepath.Join(dir, "logs.txt"),
-		Commands: filepath.Join(dir, "commands.jsonl"),
+		ID:        id,
+		Dir:       dir,
+		LogsPath:  filepath.Join(dir, "logs.txt"),
+		Commands:  filepath.Join(dir, "commands.jsonl"),
+		Processes: filepath.Join(dir, "processes.jsonl"),
 	}, nil
 }
 

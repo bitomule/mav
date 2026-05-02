@@ -65,6 +65,8 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 		return c.goScreen(ctx, opts, rest[1:])
 	case "logs":
 		return c.logs(opts, rest[1:])
+	case "stop":
+		return c.stop(ctx, opts, rest[1:])
 	case "crashes":
 		return c.crashes(ctx, opts, rest[1:])
 	case "evidence":
@@ -93,7 +95,7 @@ func parseGlobal(args []string) (GlobalOptions, []string) {
 }
 
 func (c CLI) help(opts GlobalOptions) error {
-	_, err := fmt.Fprintln(c.Stdout, "mav commands: doctor setup discover sim open ui capture preview run go logs crashes evidence")
+	_, err := fmt.Fprintln(c.Stdout, "mav commands: doctor setup discover sim open ui capture preview run go logs stop crashes evidence")
 	return err
 }
 
@@ -297,6 +299,7 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 			if err != nil {
 				return Fail("launch_failed", map[string]string{"run": run.ID, "logs": run.LogsPath, "stderr": err.Error()}).Write(c.Stdout, opts.JSON)
 			}
+			appendProcess(run, "app-console", pid, "idb "+strings.Join(launchArgs, " "))
 			logPID = pid
 		} else if cfg.LogStrategy == "simctl-launch-console" {
 			launchArgs := []string{"simctl", "launch", "--console", target, cfg.BundleID}
@@ -306,6 +309,7 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 			if err != nil {
 				return Fail("launch_failed", map[string]string{"run": run.ID, "logs": run.LogsPath, "stderr": err.Error()}).Write(c.Stdout, opts.JSON)
 			}
+			appendProcess(run, "app-console", pid, "xcrun "+strings.Join(launchArgs, " "))
 			logPID = pid
 		} else {
 			launchArgs := []string{"simctl", "launch", target, cfg.BundleID}
@@ -394,7 +398,11 @@ func (c CLI) startLogs(ctx context.Context, cfg Config, run RunState) (int, erro
 		if cfg.ProcessName != "" {
 			args = append(args, "--predicate", `process == "`+cfg.ProcessName+`"`)
 		}
-		return c.Runner.Start(ctx, run.LogsPath, "idb", args...)
+		pid, err := c.Runner.Start(ctx, run.LogsPath, "idb", args...)
+		if err == nil {
+			appendProcess(run, "logs", pid, "idb "+strings.Join(args, " "))
+		}
+		return pid, err
 	}
 	if !hasTool(cfg, "xcrun") {
 		return 0, fmt.Errorf("xcrun_missing")
@@ -407,7 +415,11 @@ func (c CLI) startLogs(ctx context.Context, cfg Config, run RunState) (int, erro
 	if cfg.ProcessName != "" {
 		args = append(args, "--predicate", `process == "`+cfg.ProcessName+`"`)
 	}
-	return c.Runner.Start(ctx, run.LogsPath, "xcrun", args...)
+	pid, err := c.Runner.Start(ctx, run.LogsPath, "xcrun", args...)
+	if err == nil {
+		appendProcess(run, "logs", pid, "xcrun "+strings.Join(args, " "))
+	}
+	return pid, err
 }
 
 func (c CLI) startProbeLogs(ctx context.Context, cfg Config, run RunState) (int, error) {
@@ -416,7 +428,11 @@ func (c CLI) startProbeLogs(ctx context.Context, cfg Config, run RunState) (int,
 	predicate := fmt.Sprintf(`subsystem == "%s" AND category == "%s"`, subsystem, category)
 	if hasTool(cfg, "xcrun") && cfg.SimulatorUDID != "" {
 		args := []string{"simctl", "spawn", cfg.SimulatorUDID, "log", "stream", "--style", "compact", "--level", "debug", "--predicate", predicate}
-		return c.Runner.Start(ctx, run.LogsPath, "xcrun", args...)
+		pid, err := c.Runner.Start(ctx, run.LogsPath, "xcrun", args...)
+		if err == nil {
+			appendProcess(run, "probe-logs", pid, "xcrun "+strings.Join(args, " "))
+		}
+		return pid, err
 	}
 	if hasTool(cfg, "idb") {
 		args := []string{"log"}
@@ -424,13 +440,21 @@ func (c CLI) startProbeLogs(ctx context.Context, cfg Config, run RunState) (int,
 			args = append(args, "--udid", cfg.SimulatorUDID)
 		}
 		args = append(args, "--", "--style", "compact", "--level", "debug", "--predicate", predicate)
-		return c.Runner.Start(ctx, run.LogsPath, "idb", args...)
+		pid, err := c.Runner.Start(ctx, run.LogsPath, "idb", args...)
+		if err == nil {
+			appendProcess(run, "probe-logs", pid, "idb "+strings.Join(args, " "))
+		}
+		return pid, err
 	}
 	if !hasTool(cfg, "xcrun") {
 		return 0, fmt.Errorf("log_tool_missing")
 	}
 	args := []string{"simctl", "spawn", "booted", "log", "stream", "--style", "compact", "--level", "debug", "--predicate", predicate}
-	return c.Runner.Start(ctx, run.LogsPath, "xcrun", args...)
+	pid, err := c.Runner.Start(ctx, run.LogsPath, "xcrun", args...)
+	if err == nil {
+		appendProcess(run, "probe-logs", pid, "xcrun "+strings.Join(args, " "))
+	}
+	return pid, err
 }
 
 func (c CLI) ui(ctx context.Context, opts GlobalOptions, args []string) error {
@@ -825,6 +849,7 @@ func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) err
 		}
 		appendFlowStep(run, index+1, step.Action, elapsed, "ok", fields)
 	}
+	_ = c.withStdout(io.Discard).stop(ctx, GlobalOptions{}, []string{"--run", run.ID})
 	return OK("run", map[string]string{"name": flow.Name, "run": run.ID, "steps": strconv.Itoa(len(flow.Steps)), "elapsed": time.Since(start).String()}).Write(c.Stdout, opts.JSON)
 }
 
@@ -1042,6 +1067,7 @@ func appendFlowStep(run RunState, index int, action string, elapsed time.Duratio
 }
 
 func (c CLI) cleanupFailedFlow(ctx context.Context, run RunState, fields map[string]string) {
+	_ = c.withStdout(io.Discard).stop(ctx, GlobalOptions{}, []string{"--run", run.ID})
 	if pid, err := readPID(filepath.Join(run.Dir, "video.pid")); err == nil {
 		_ = stopProcess(pid)
 		_ = os.Remove(filepath.Join(run.Dir, "video.pid"))
@@ -1301,6 +1327,37 @@ func (c CLI) logs(opts GlobalOptions, args []string) error {
 	return OK("logs", fields).Write(c.Stdout, false)
 }
 
+func (c CLI) stop(ctx context.Context, opts GlobalOptions, args []string) error {
+	_ = ctx
+	run, err := LoadRun(c.Root, flagValue(args, "--run"))
+	if err != nil {
+		return Fail("run_not_found", nil).Write(c.Stdout, opts.JSON)
+	}
+	records := loadProcessRecords(run)
+	stopped := 0
+	failed := 0
+	for _, record := range records {
+		if record.PID <= 0 {
+			continue
+		}
+		if record.Kind == "video" && fileExists(filepath.Join(run.Dir, "video.pid")) {
+			continue
+		}
+		if err := stopProcess(record.PID); err != nil {
+			failed++
+			appendCommand(run, "mav stop "+strconv.Itoa(record.PID), CommandResult{Stderr: err.Error(), Code: 1, Err: err})
+			continue
+		}
+		stopped++
+		appendCommand(run, "mav stop "+strconv.Itoa(record.PID), CommandResult{})
+	}
+	fields := map[string]string{"run": run.ID, "stopped": strconv.Itoa(stopped), "failed": strconv.Itoa(failed)}
+	if failed > 0 {
+		return Fail("stop_failed", fields).Write(c.Stdout, opts.JSON)
+	}
+	return OK("stop", fields).Write(c.Stdout, opts.JSON)
+}
+
 func filterLogKey(lines []string, key string) []string {
 	if key == "" {
 		return lines
@@ -1313,6 +1370,58 @@ func filterLogKey(lines []string, key string) []string {
 		}
 	}
 	return filtered
+}
+
+type processRecord struct {
+	Kind    string `json:"kind"`
+	PID     int    `json:"pid"`
+	Command string `json:"command"`
+}
+
+func appendProcess(run RunState, kind string, pid int, command string) {
+	if pid <= 0 {
+		return
+	}
+	data, err := json.Marshal(processRecord{Kind: kind, PID: pid, Command: command})
+	if err != nil {
+		return
+	}
+	appendFile(run.Processes, string(data)+"\n")
+}
+
+func loadProcessRecords(run RunState) []processRecord {
+	data, err := os.ReadFile(run.Processes)
+	if err != nil {
+		return nil
+	}
+	records := []processRecord{}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var record processRecord
+		if err := json.Unmarshal([]byte(line), &record); err == nil && record.PID > 0 {
+			records = append(records, record)
+		}
+	}
+	return records
+}
+
+func removeProcess(run RunState, pid int) {
+	records := loadProcessRecords(run)
+	var b strings.Builder
+	for _, record := range records {
+		if record.PID == pid {
+			continue
+		}
+		data, err := json.Marshal(record)
+		if err == nil {
+			b.Write(data)
+			b.WriteByte('\n')
+		}
+	}
+	_ = os.WriteFile(run.Processes, []byte(b.String()), 0o644)
 }
 
 func (c CLI) crashes(ctx context.Context, opts GlobalOptions, args []string) error {
@@ -1438,6 +1547,7 @@ func (c CLI) evidenceStop(ctx context.Context, opts GlobalOptions, args []string
 	}
 	_ = stopProcess(pid)
 	_ = os.Remove(filepath.Join(run.Dir, "video.pid"))
+	removeProcess(run, pid)
 	fields := map[string]string{"run": run.ID, "file": filepath.Join(run.Dir, "video.mov")}
 	if !waitForFile(fields["file"], 6*time.Second) {
 		return Fail("video_not_written", map[string]string{"run": run.ID, "file": fields["file"], "log": filepath.Join(run.Dir, "video.log")}).Write(c.Stdout, opts.JSON)
@@ -1554,6 +1664,9 @@ func (c CLI) startVideoRecording(ctx context.Context, cfg Config, run RunState) 
 	videoPath := filepath.Join(run.Dir, "video.mov")
 	args := []string{"simctl", "io", target, "recordVideo", "--codec=h264", videoPath}
 	pid, err := c.Runner.Start(ctx, filepath.Join(run.Dir, "video.log"), "xcrun", args...)
+	if err == nil {
+		appendProcess(run, "video", pid, "xcrun "+strings.Join(args, " "))
+	}
 	return videoPath, pid, err
 }
 
@@ -1588,6 +1701,11 @@ func waitForFile(path string, timeout time.Duration) bool {
 		time.Sleep(250 * time.Millisecond)
 	}
 	return false
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 func safeFileName(value string) string {

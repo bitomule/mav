@@ -31,6 +31,7 @@ mav preview init
 mav preview settings
 mav run /tmp/verify_daily_reminder.mav.yaml
 mav logs --key SettingsReached
+mav stop
 mav evidence report
 ```
 
@@ -47,6 +48,9 @@ Run artifacts live in `/tmp/mav/<run-id>/`.
   Validation probes should use `OSLog.Logger` with the configured
   `log_subsystem` and `log_category`, and messages should start with
   `MAV_LOG key=<StableKey>`.
+- `mav open` can keep log stream processes running for the current run. Use
+  `mav stop` when an ad-hoc verification is done. `mav run` stops run-owned
+  log streams automatically on success or failure.
 - Accessibility tree inspection is preferred before screenshots.
 - AXe is the primary driver for tree and semantic taps. Prefer accessibility ids
   first, coordinates only when the visual target is unambiguous, and text as the
