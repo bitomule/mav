@@ -34,6 +34,8 @@ type Config struct {
 	Locale            string
 	Language          string
 	LogStrategy       string
+	LogSubsystem      string
+	LogCategory       string
 	PreferredUIDriver string
 	AllowShell        bool
 	Tools             map[string]bool
@@ -43,6 +45,7 @@ func DefaultConfig(root string) Config {
 	return Config{
 		Root:              root,
 		LogStrategy:       "idb-launch-wait",
+		LogCategory:       "probe",
 		PreferredUIDriver: "axe",
 		Tools:             map[string]bool{},
 	}
@@ -110,6 +113,10 @@ func LoadConfig(root string) (Config, error) {
 			cfg.Language = value
 		case "log_strategy":
 			cfg.LogStrategy = value
+		case "log_subsystem":
+			cfg.LogSubsystem = value
+		case "log_category":
+			cfg.LogCategory = value
 		case "preferred_ui_driver":
 			cfg.PreferredUIDriver = value
 		case "allow_shell":
@@ -146,6 +153,8 @@ func SaveConfig(root string, cfg Config) error {
 	writeKV("locale", cfg.Locale)
 	writeKV("language", cfg.Language)
 	writeKV("log_strategy", cfg.LogStrategy)
+	writeKV("log_subsystem", probeLogSubsystem(cfg))
+	writeKV("log_category", probeLogCategory(cfg))
 	writeKV("preferred_ui_driver", cfg.PreferredUIDriver)
 	if cfg.AllowShell {
 		b.WriteString("allow_shell: true\n")
@@ -196,6 +205,8 @@ func DiscoverConfig(root string, runner Runner) (Config, error) {
 	cfg.AppTarget = discoverAppTarget(root, cfg.ProjectName)
 	cfg.DeviceTarget = cfg.AppTarget
 	cfg.BundleID = discoverBundleID(root)
+	cfg.LogSubsystem = probeLogSubsystem(cfg)
+	cfg.LogCategory = probeLogCategory(cfg)
 	cfg.ProcessName = discoverScalar(root, "executable_name")
 	if cfg.ProcessName == "" {
 		cfg.ProcessName = processNameFromBundle(cfg.BundleID, cfg.ProjectName)
@@ -219,6 +230,26 @@ func DiscoverConfig(root string, runner Runner) (Config, error) {
 		return cfg, fmt.Errorf("app_target_not_found")
 	}
 	return cfg, nil
+}
+
+func probeLogSubsystem(cfg Config) string {
+	if cfg.LogSubsystem != "" {
+		return cfg.LogSubsystem
+	}
+	if cfg.BundleID != "" {
+		return "mav." + cfg.BundleID
+	}
+	if cfg.ProjectName != "" {
+		return "mav." + strings.ToLower(regexp.MustCompile(`[^a-zA-Z0-9_.-]+`).ReplaceAllString(cfg.ProjectName, "-"))
+	}
+	return "mav.probe"
+}
+
+func probeLogCategory(cfg Config) string {
+	if cfg.LogCategory != "" {
+		return cfg.LogCategory
+	}
+	return "probe"
 }
 
 func discoverBootedSimulator(runner Runner) (string, string, string) {

@@ -162,6 +162,37 @@ func TestLogsReadsCurrentRunFile(t *testing.T) {
 	}
 }
 
+func TestLogsFiltersMAVKey(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, MavDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run := RunState{ID: "abc-key", Dir: filepath.Join(os.TempDir(), "mav", "abc-key"), LogsPath: filepath.Join(os.TempDir(), "mav", "abc-key", "logs.txt")}
+	if err := os.MkdirAll(run.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	logs := strings.Join([]string{
+		`MAV_LOG key=SettingsReached value=true`,
+		`MAV_LOG key=Other value=true`,
+		`SettingsReached without marker`,
+	}, "\n")
+	if err := os.WriteFile(run.LogsPath, []byte(logs), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"logs", "--key", "SettingsReached"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "matches=1") || !strings.Contains(got, "key=SettingsReached") {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestPreviewRequiresConfig(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)

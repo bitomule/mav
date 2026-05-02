@@ -17,9 +17,8 @@ does not explore or repair routes by itself. The agent decides the next action.
    `mav sim list`, then `mav sim select --device ... --ios ... --locale ... --language ...`.
    You can also pass the same target flags to `mav open`.
 4. Start the app with `mav open`. This creates `/tmp/mav/<run-id>/` and starts
-   `logs.txt`. MAV's default app-console strategy launches through
-   `idb launch --wait-for`, so stdout/stderr from the launched app are captured
-   for both idb-backed simulator and device targets.
+   `logs.txt`. MAV captures app console output plus a filtered unified log
+   stream for MAV probes.
 5. Prefer `mav ui tree` to understand the current screen. It is cheaper and more
    structured than screenshots.
 6. Use `mav capture` only when the tree is insufficient or visual evidence is
@@ -39,24 +38,35 @@ does not explore or repair routes by itself. The agent decides the next action.
 
 To prove code reached a point:
 
-1. Add a temporary marker with a unique string. Prefer stderr or file-log for
-   deterministic probes. Swift `print` is acceptable when you also flush stdout
-   (`fflush(stdout)`) before asserting; unflushed stdout may not appear promptly.
-   Use `os_log` when the assertion is about unified/system logs rather than app
-   console output.
+1. Add a temporary `OSLog.Logger` marker with a stable key. Use the
+   `log_subsystem` and `log_category` from `.mav/config.yaml`, and make the
+   message start with `MAV_LOG key=<StableKey>`.
 2. Trigger the behavior with MAV.
-3. Run `mav logs --contains UniqueMarker`.
-4. Remove the temporary marker unless it is intentionally becoming product
-   logging.
+3. Run `mav logs --key <StableKey>`.
+4. Remove the temporary logger code before finishing unless it is intentionally
+   becoming product logging.
+
+Example Swift marker:
+
+```swift
+import OSLog
+
+private let mavLog = Logger(
+    subsystem: "mav.com.example.app",
+    category: "probe"
+)
+
+mavLog.notice("MAV_LOG key=SettingsReached")
+```
 
 `mav logs` reads the run log captured from `mav open`; it does not start new log
-streams.
+streams. Do not use Swift `print` for MAV validation probes.
 
 Native MAV flows may include project-local shell assertions when the repo has
 `allow_shell: true` in `.mav/config.yaml`:
 
 ```yaml
-- exec: { cmd: "grep -F UniqueMarker $MAV_LOGS", contains: UniqueMarker, timeout: 5s }
+- exec: { cmd: "grep -F 'MAV_LOG key=SettingsReached' $MAV_LOGS", contains: SettingsReached, timeout: 5s }
 ```
 
 Use this for narrow checks against logs, generated files, or local test API

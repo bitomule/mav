@@ -21,7 +21,7 @@ steps:
       timeout: 5s
   - evidence.step: { name: before-toggle, note: Daily Reminder before tap }
   - delay: { duration: 2s }
-  - exec: { cmd: "rg UniqueMarker $MAV_LOGS", contains: UniqueMarker, timeout: 5s }
+  - logs: { key: SettingsReached }
   - scrollUntil: { text: Privacy Policy, direction: up, maxSwipes: 3 }
 `))
 	if err != nil {
@@ -39,8 +39,8 @@ steps:
 	if flow.Steps[5].Action != "delay" || flow.Steps[5].Params["duration"] != "2s" {
 		t.Fatalf("delay=%+v", flow.Steps[5])
 	}
-	if flow.Steps[6].Action != "exec" || flow.Steps[6].Params["cmd"] == "" || flow.Steps[6].Params["contains"] != "UniqueMarker" {
-		t.Fatalf("exec=%+v", flow.Steps[6])
+	if flow.Steps[6].Action != "logs" || flow.Steps[6].Params["key"] != "SettingsReached" {
+		t.Fatalf("logs=%+v", flow.Steps[6])
 	}
 	if flow.Steps[7].Action != "scrollUntil" || flow.Steps[7].Params["maxSwipes"] != "3" {
 		t.Fatalf("scrollUntil=%+v", flow.Steps[7])

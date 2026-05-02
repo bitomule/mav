@@ -30,7 +30,7 @@ mav capture
 mav preview init
 mav preview settings
 mav run /tmp/verify_daily_reminder.mav.yaml
-mav logs --contains CheckoutView
+mav logs --key SettingsReached
 mav evidence report
 ```
 
@@ -42,11 +42,11 @@ Run artifacts live in `/tmp/mav/<run-id>/`.
 - `mav go` only follows known routes in `.mav/app-map.yaml`.
 - `mav sim` selects and boots explicit simulator devices, runtimes and locales.
 - `mav capture` never navigates.
-- `mav logs` only reads logs captured when MAV launched the app. The default
-  strategy is `idb-launch-wait`, which launches through idb and streams app
-  stdout/stderr into `logs.txt` on simulator/device targets. For temporary Swift
-  `print` probes, flush stdout (`fflush(stdout)`) or write to stderr/file-log
-  when the assertion must be deterministic.
+- `mav logs` only reads logs captured when MAV launched the app. MAV captures
+  app console output and a filtered unified log stream for temporary MAV probes.
+  Validation probes should use `OSLog.Logger` with the configured
+  `log_subsystem` and `log_category`, and messages should start with
+  `MAV_LOG key=<StableKey>`.
 - Accessibility tree inspection is preferred before screenshots.
 - AXe is the primary driver for tree and semantic taps. Prefer accessibility ids
   first, coordinates only when the visual target is unambiguous, and text as the
@@ -83,7 +83,7 @@ steps:
         - changedFrom: before-toggle
       timeout: 5s
   - evidence.step: { name: after-toggle, note: Result after tapping reminder }
-  - exec: { cmd: "grep -F MAV_DEBUG $MAV_LOGS", contains: MAV_DEBUG, timeout: 5s }
+  - logs: { key: SettingsReached }
   - evidence.stop: {}
   - crashes: {}
   - report: {}

@@ -254,6 +254,10 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 			appendFile(run.LogsPath, "mav log capture failed: "+logErr.Error()+"\n")
 		}
 	}
+	probeLogPID, probeLogErr := c.startProbeLogs(ctx, cfg, run)
+	if probeLogErr != nil {
+		appendFile(run.LogsPath, "mav probe log capture failed: "+probeLogErr.Error()+"\n")
+	}
 	if cfg.AppTarget != "" && hasTool(cfg, "bazelisk") {
 		build := c.Runner.Run(ctx, "bazelisk", "build", cfg.AppTarget)
 		appendCommand(run, "bazelisk build "+cfg.AppTarget, build)
@@ -319,6 +323,11 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	}
 	if logPID > 0 {
 		fields["log_pid"] = strconv.Itoa(logPID)
+	}
+	if probeLogPID > 0 {
+		fields["probe_log_pid"] = strconv.Itoa(probeLogPID)
+		fields["log_subsystem"] = probeLogSubsystem(cfg)
+		fields["log_category"] = probeLogCategory(cfg)
 	}
 	fields["target"] = cfg.SimulatorName
 	if fields["target"] == "" {
@@ -398,6 +407,29 @@ func (c CLI) startLogs(ctx context.Context, cfg Config, run RunState) (int, erro
 	if cfg.ProcessName != "" {
 		args = append(args, "--predicate", `process == "`+cfg.ProcessName+`"`)
 	}
+	return c.Runner.Start(ctx, run.LogsPath, "xcrun", args...)
+}
+
+func (c CLI) startProbeLogs(ctx context.Context, cfg Config, run RunState) (int, error) {
+	subsystem := probeLogSubsystem(cfg)
+	category := probeLogCategory(cfg)
+	predicate := fmt.Sprintf(`subsystem == "%s" AND category == "%s"`, subsystem, category)
+	if hasTool(cfg, "xcrun") && cfg.SimulatorUDID != "" {
+		args := []string{"simctl", "spawn", cfg.SimulatorUDID, "log", "stream", "--style", "compact", "--level", "debug", "--predicate", predicate}
+		return c.Runner.Start(ctx, run.LogsPath, "xcrun", args...)
+	}
+	if hasTool(cfg, "idb") {
+		args := []string{"log"}
+		if cfg.SimulatorUDID != "" {
+			args = append(args, "--udid", cfg.SimulatorUDID)
+		}
+		args = append(args, "--", "--style", "compact", "--level", "debug", "--predicate", predicate)
+		return c.Runner.Start(ctx, run.LogsPath, "idb", args...)
+	}
+	if !hasTool(cfg, "xcrun") {
+		return 0, fmt.Errorf("log_tool_missing")
+	}
+	args := []string{"simctl", "spawn", "booted", "log", "stream", "--style", "compact", "--level", "debug", "--predicate", predicate}
 	return c.Runner.Start(ctx, run.LogsPath, "xcrun", args...)
 }
 
@@ -862,7 +894,7 @@ func (c CLI) executeFlowStep(ctx context.Context, run RunState, index int, step 
 		err := c.withStdout(io.Discard).evidenceStop(ctx, GlobalOptions{}, args)
 		return map[string]string{"run": run.ID}, outputErr(err, "evidence_stop_failed")
 	case "logs":
-		args := flowArgs(step.Params, "--contains", "contains", "--level", "level")
+		args := flowArgs(step.Params, "--contains", "contains", "--key", "key", "--level", "level")
 		args = append(args, "--run", run.ID)
 		err := c.withStdout(io.Discard).logs(GlobalOptions{}, args)
 		return copyParams(step.Params), outputErr(err, "logs_failed")
@@ -1243,10 +1275,17 @@ func (c CLI) logs(opts GlobalOptions, args []string) error {
 		return Fail("logs_not_found", map[string]string{"run": run.ID, "file": run.LogsPath}).Write(c.Stdout, opts.JSON)
 	}
 	contains := flagValue(args, "--contains")
+	key := flagValue(args, "--key")
 	level := flagValue(args, "--level")
 	lines := filterLines(strings.Split(string(data), "\n"), contains, level)
+	if key != "" {
+		lines = filterLogKey(lines, key)
+	}
 	if opts.JSON {
 		payload := map[string]any{"ok": true, "cmd": "logs", "run": run.ID, "file": run.LogsPath, "lines": lines, "matches": len(lines)}
+		if key != "" {
+			payload["key"] = key
+		}
 		return json.NewEncoder(c.Stdout).Encode(payload)
 	}
 	if opts.Raw {
@@ -1255,7 +1294,25 @@ func (c CLI) logs(opts GlobalOptions, args []string) error {
 		}
 		return nil
 	}
-	return OK("logs", map[string]string{"run": run.ID, "file": run.LogsPath, "matches": strconv.Itoa(len(lines))}).Write(c.Stdout, false)
+	fields := map[string]string{"run": run.ID, "file": run.LogsPath, "matches": strconv.Itoa(len(lines))}
+	if key != "" {
+		fields["key"] = key
+	}
+	return OK("logs", fields).Write(c.Stdout, false)
+}
+
+func filterLogKey(lines []string, key string) []string {
+	if key == "" {
+		return lines
+	}
+	needle := "key=" + key
+	filtered := []string{}
+	for _, line := range lines {
+		if strings.Contains(line, "MAV_LOG") && strings.Contains(line, needle) {
+			filtered = append(filtered, line)
+		}
+	}
+	return filtered
 }
 
 func (c CLI) crashes(ctx context.Context, opts GlobalOptions, args []string) error {
