@@ -25,6 +25,8 @@ type Edge struct {
 	To   string
 	ID   string
 	Text string
+	X    string
+	Y    string
 	Wait string
 }
 
@@ -98,6 +100,10 @@ func LoadAppMap(root string) (AppMap, error) {
 				currentEdge.ID = value
 			case "text":
 				currentEdge.Text = value
+			case "x":
+				currentEdge.X = value
+			case "y":
+				currentEdge.Y = value
 			case "wait":
 				currentEdge.Wait = value
 			}
@@ -164,6 +170,16 @@ func SaveAppMap(root string, m AppMap) error {
 					b.WriteString(yamlQuote(edge.Text))
 					b.WriteString("\n")
 				}
+				if edge.X != "" {
+					b.WriteString("        x: ")
+					b.WriteString(yamlQuote(edge.X))
+					b.WriteString("\n")
+				}
+				if edge.Y != "" {
+					b.WriteString("        y: ")
+					b.WriteString(yamlQuote(edge.Y))
+					b.WriteString("\n")
+				}
 				if edge.Wait != "" {
 					b.WriteString("        wait: ")
 					b.WriteString(yamlQuote(edge.Wait))
@@ -205,7 +221,7 @@ func ValidateAppMap(m AppMap) error {
 			if _, ok := m.Screens[edge.To]; !ok {
 				return fmt.Errorf("app_map_edge_target_not_found screen=%s target=%s", id, edge.To)
 			}
-			if edge.ID == "" && edge.Text == "" {
+			if edge.ID == "" && edge.Text == "" && (edge.X == "" || edge.Y == "") {
 				return fmt.Errorf("app_map_edge_action_missing screen=%s target=%s", id, edge.To)
 			}
 		}
@@ -242,70 +258,4 @@ func Route(m AppMap, target string) ([]Edge, error) {
 		}
 	}
 	return nil, fmt.Errorf("route_not_found")
-}
-
-type MaestroFlowOptions struct {
-	CaptureSteps bool
-}
-
-func MaestroFlow(m AppMap, route []Edge, target string, options ...MaestroFlowOptions) string {
-	opts := MaestroFlowOptions{}
-	if len(options) > 0 {
-		opts = options[0]
-	}
-	var b strings.Builder
-	if m.AppID != "" {
-		b.WriteString("appId: ")
-		b.WriteString(m.AppID)
-		b.WriteString("\n---\n")
-	}
-	b.WriteString("- launchApp\n")
-	if opts.CaptureSteps {
-		b.WriteString("- takeScreenshot: mav_step_00_launch\n")
-	}
-	for index, edge := range route {
-		if edge.ID != "" {
-			b.WriteString("- tapOn:\n")
-			b.WriteString("    id: ")
-			b.WriteString(edge.ID)
-			b.WriteString("\n")
-		} else if edge.Text != "" {
-			b.WriteString("- tapOn:\n")
-			b.WriteString("    text: ")
-			b.WriteString(edge.Text)
-			b.WriteString("\n")
-		}
-		if edge.Wait != "" {
-			b.WriteString("- waitForAnimationToEnd:\n")
-			b.WriteString("    timeout: ")
-			b.WriteString(edge.Wait)
-			b.WriteString("\n")
-		}
-		if opts.CaptureSteps {
-			b.WriteString("- takeScreenshot: mav_step_")
-			b.WriteString(fmt.Sprintf("%02d", index+1))
-			b.WriteString("_")
-			b.WriteString(edge.To)
-			b.WriteString("\n")
-		}
-	}
-	screen := m.Screens[target]
-	if screen.AssertID != "" {
-		b.WriteString("- assertVisible:\n")
-		b.WriteString("    id: ")
-		b.WriteString(screen.AssertID)
-		b.WriteString("\n")
-	}
-	if screen.AssertText != "" {
-		b.WriteString("- assertVisible:\n")
-		b.WriteString("    text: ")
-		b.WriteString(screen.AssertText)
-		b.WriteString("\n")
-	}
-	if opts.CaptureSteps {
-		b.WriteString("- takeScreenshot: mav_final_")
-		b.WriteString(target)
-		b.WriteString("\n")
-	}
-	return b.String()
 }

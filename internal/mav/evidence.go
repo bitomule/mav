@@ -43,16 +43,6 @@ func GenerateReport(run RunState) (string, error) {
 	if exists(screen) {
 		data.Screenshot = screen
 	}
-	if matches, err := filepath.Glob(filepath.Join(run.Dir, "maestro", "mav_*.png")); err == nil {
-		for _, match := range matches {
-			data.Steps = append(data.Steps, EvidenceStep{
-				Name:      strings.TrimSuffix(filepath.Base(match), filepath.Ext(match)),
-				File:      match,
-				Kind:      "maestro",
-				CreatedAt: time.Now().Format(time.RFC3339),
-			})
-		}
-	}
 	for _, name := range []string{"video.mov", "video.mp4"} {
 		path := filepath.Join(run.Dir, name)
 		if exists(path) {

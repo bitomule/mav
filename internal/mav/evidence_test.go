@@ -26,6 +26,13 @@ func TestGenerateReport(t *testing.T) {
 	if err := AppendEvidenceStep(run, EvidenceStep{Name: "notifications-before", Note: "before toggling notifications", File: stepFile}); err != nil {
 		t.Fatal(err)
 	}
+	maestroDir := filepath.Join(dir, "maestro")
+	if err := os.MkdirAll(maestroDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(maestroDir, "mav_step_00_launch.png"), []byte("png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	path, err := GenerateReport(run)
 	if err != nil {
 		t.Fatal(err)
@@ -39,6 +46,9 @@ func TestGenerateReport(t *testing.T) {
 		if !strings.Contains(html, want) {
 			t.Fatalf("report missing %q:\n%s", want, html)
 		}
+	}
+	if strings.Contains(html, "maestro") || strings.Contains(html, "mav_step_00_launch") {
+		t.Fatalf("report should ignore maestro artifacts:\n%s", html)
 	}
 }
 

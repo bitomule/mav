@@ -35,13 +35,14 @@ type Config struct {
 	Language          string
 	LogStrategy       string
 	PreferredUIDriver string
+	AllowShell        bool
 	Tools             map[string]bool
 }
 
 func DefaultConfig(root string) Config {
 	return Config{
 		Root:              root,
-		LogStrategy:       "simctl-log-stream",
+		LogStrategy:       "idb-launch-wait",
 		PreferredUIDriver: "axe",
 		Tools:             map[string]bool{},
 	}
@@ -111,6 +112,8 @@ func LoadConfig(root string) (Config, error) {
 			cfg.LogStrategy = value
 		case "preferred_ui_driver":
 			cfg.PreferredUIDriver = value
+		case "allow_shell":
+			cfg.AllowShell = value == "true"
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -144,6 +147,9 @@ func SaveConfig(root string, cfg Config) error {
 	writeKV("language", cfg.Language)
 	writeKV("log_strategy", cfg.LogStrategy)
 	writeKV("preferred_ui_driver", cfg.PreferredUIDriver)
+	if cfg.AllowShell {
+		b.WriteString("allow_shell: true\n")
+	}
 	b.WriteString("tools:\n")
 	keys := make([]string, 0, len(cfg.Tools))
 	for key := range cfg.Tools {
@@ -194,7 +200,7 @@ func DiscoverConfig(root string, runner Runner) (Config, error) {
 	if cfg.ProcessName == "" {
 		cfg.ProcessName = processNameFromBundle(cfg.BundleID, cfg.ProjectName)
 	}
-	for _, tool := range []string{"bazelisk", "xcrun", "axe", "idb", "maestro"} {
+	for _, tool := range []string{"bazelisk", "xcrun", "axe", "idb"} {
 		_, err := runner.LookPath(tool)
 		cfg.Tools[tool] = err == nil
 	}

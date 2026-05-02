@@ -17,15 +17,17 @@ does not explore or repair routes by itself. The agent decides the next action.
    `mav sim list`, then `mav sim select --device ... --ios ... --locale ... --language ...`.
    You can also pass the same target flags to `mav open`.
 4. Start the app with `mav open`. This creates `/tmp/mav/<run-id>/` and starts
-   `logs.txt`.
+   `logs.txt`. MAV's default app-console strategy launches through
+   `idb launch --wait-for`, so stdout/stderr from the launched app are captured
+   for both idb-backed simulator and device targets.
 5. Prefer `mav ui tree` to understand the current screen. It is cheaper and more
    structured than screenshots.
 6. Use `mav capture` only when the tree is insufficient or visual evidence is
    needed.
-7. Use `mav ui tap/type/swipe/wait` for manual exploration. Prefer semantic
-   AXe taps (`--id` or `--text`). If AXe cannot target the element and the
-   screenshot makes the target unambiguous, use idb-backed coordinates with
-   `mav ui tap --x ... --y ...`.
+7. Use `mav ui tap/type/swipe/wait/scrollUntil` for manual exploration. Prefer
+   accessibility identifiers first (`--id`). Use coordinates only when the tree
+   is insufficient and the screenshot makes the target unambiguous. Use text as
+   the last option because labels change with localization and copy edits.
 8. Use `mav go <screen-id>` only after `.mav/app-map.yaml` contains that screen
    and route. If MAV returns `screen_not_found` or `route_not_found`, explore
    manually and update the map yourself.
@@ -37,7 +39,11 @@ does not explore or repair routes by itself. The agent decides the next action.
 
 To prove code reached a point:
 
-1. Add a temporary `print`, `os_log`, or file-log marker with a unique string.
+1. Add a temporary marker with a unique string. Prefer stderr or file-log for
+   deterministic probes. Swift `print` is acceptable when you also flush stdout
+   (`fflush(stdout)`) before asserting; unflushed stdout may not appear promptly.
+   Use `os_log` when the assertion is about unified/system logs rather than app
+   console output.
 2. Trigger the behavior with MAV.
 3. Run `mav logs --contains UniqueMarker`.
 4. Remove the temporary marker unless it is intentionally becoming product
@@ -46,29 +52,56 @@ To prove code reached a point:
 `mav logs` reads the run log captured from `mav open`; it does not start new log
 streams.
 
+Native MAV flows may include project-local shell assertions when the repo has
+`allow_shell: true` in `.mav/config.yaml`:
+
+```yaml
+- exec: { cmd: "grep -F UniqueMarker $MAV_LOGS", contains: UniqueMarker, timeout: 5s }
+```
+
+Use this for narrow checks against logs, generated files, or local test API
+calls. MAV runs the command in the project root with `MAV_ROOT`, `MAV_RUN_ID`,
+`MAV_RUN_DIR`, and `MAV_LOGS` set, writes stdout/stderr into the run directory,
+and applies the requested timeout. Treat this as a trusted-project opt-in, not
+as a hard sandbox for arbitrary untrusted commands.
+
 ## Evidence
 
 Use evidence when the user needs proof of verification:
 
-1. Start recording before the user-visible flow with `mav evidence start`.
-2. Navigate with `mav go <screen-id>` when the route is mapped, or use
-   `mav ui ...` manually when it is not.
-3. Capture named proof points with `mav evidence step --name ... --note ...`.
-   Names should describe the assertion, for example `settings-before-toggle`
+1. Prefer writing a temporary MAV YAML flow and running it with `mav run`.
+2. The flow should start recording before navigation, use `delay` only for
+   fixed launch/animation waits when tree-based waits are not possible, navigate
+   with `go`, wait for the expected UI, capture named proof points, perform the
+   tested action, capture the result, stop recording, check crashes, and
+   generate a report.
+3. Names should describe the assertion, for example `settings-before-toggle`
    and `settings-after-toggle`.
-4. Stop recording after the tested behavior with `mav evidence stop`.
-5. Confirm logs/crashes with `mav logs` and `mav crashes`.
-6. Run `mav evidence report`.
-7. Share the generated `/tmp/mav/<run-id>/report.html`.
+4. Share the generated `/tmp/mav/<run-id>/report.html`.
 
 The video must cover the complete verification path from launch/navigation
 through the tested behavior. The screenshots must prove the behavior itself, not
 just that the app opened. For a notification toggle, record the navigation to
 Settings, capture before toggling, toggle it, capture after toggling, then stop.
 
-`mav go --record` is acceptable only as a shortcut for a mapped navigation route.
-It is not enough for feature verification unless the route itself is the feature
-being tested.
+Use `mav go <screen-id>` for ad-hoc navigation. Use `mav run` for feature
+verification evidence.
+
+For off-screen elements, use `scrollUntil` in a MAV flow or `mav ui scrollUntil`
+manually before tapping:
+
+```yaml
+- scrollUntil: { id: privacy_policy_button, direction: up, maxSwipes: 4 }
+- tap: { id: privacy_policy_button }
+```
+
+```bash
+mav ui scrollUntil --id privacy_policy_button --direction up --max-swipes 4
+mav ui tap --id privacy_policy_button
+```
+
+If there is no stable id, use coordinates only after capturing/inspecting a
+screenshot. Use `text` only when neither id nor coordinates are appropriate.
 
 ## Previews
 

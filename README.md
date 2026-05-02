@@ -25,15 +25,11 @@ mav open --device "iPhone 16 Pro" --ios 26
 mav ui tree
 mav ui tap --id settings_button
 mav ui tap --x 350 --y 480
+mav ui scrollUntil --id privacy_policy_button --direction up --max-swipes 4
 mav capture
 mav preview init
 mav preview settings
-mav evidence start
-mav go settings
-mav evidence step --name settings-before-toggle --note "Notifications toggle is off"
-mav ui tap --id notifications_toggle
-mav evidence step --name settings-after-toggle --note "Notifications toggle is on"
-mav evidence stop
+mav run /tmp/verify_daily_reminder.mav.yaml
 mav logs --contains CheckoutView
 mav evidence report
 ```
@@ -46,13 +42,49 @@ Run artifacts live in `/tmp/mav/<run-id>/`.
 - `mav go` only follows known routes in `.mav/app-map.yaml`.
 - `mav sim` selects and boots explicit simulator devices, runtimes and locales.
 - `mav capture` never navigates.
-- `mav logs` only reads logs captured when MAV launched the app.
+- `mav logs` only reads logs captured when MAV launched the app. The default
+  strategy is `idb-launch-wait`, which launches through idb and streams app
+  stdout/stderr into `logs.txt` on simulator/device targets. For temporary Swift
+  `print` probes, flush stdout (`fflush(stdout)`) or write to stderr/file-log
+  when the assertion must be deterministic.
 - Accessibility tree inspection is preferred before screenshots.
-- AXe is the primary driver for tree and semantic taps by id/text. idb remains
+- AXe is the primary driver for tree and semantic taps. Prefer accessibility ids
+  first, coordinates only when the visual target is unambiguous, and text as the
+  final fallback because labels change with localization and copy. idb remains
   available for screenshots, crashes, and coordinate taps when AXe cannot target
   an element.
+- Project-local shell assertions can be enabled with `allow_shell: true` in
+  `.mav/config.yaml` and used from native flows with `exec`. MAV constrains the
+  command to the project cwd, fixed MAV env vars and a timeout; this is an
+  opt-in guard, not a security sandbox.
 - Evidence reports are generated explicitly. For user-facing verification,
   use named evidence steps for the checked behavior and video for the full flow.
-- `mav go --record` is only a shortcut for recording a mapped navigation route.
-  Rich feature evidence should use `mav evidence start/step/stop` around the
-  exact interactions being tested.
+- `mav run` executes native MAV YAML flows. Use it for repeatable validation
+  that combines navigation, AXe/idb UI actions, waits, evidence, logs, crashes,
+  and reports.
+
+Example flow:
+
+```yaml
+version: 1
+name: verify_daily_reminder
+steps:
+  - evidence.start: {}
+  - delay: { duration: 2s }
+  - go: { screen: settings }
+  - wait: { text: Daily Reminder, timeout: 5s }
+  - evidence.step: { name: before-toggle, note: Daily Reminder before tap }
+  - tap: { text: Daily Reminder }
+  - scrollUntil: { text: Privacy Policy, direction: up, maxSwipes: 4 }
+  - waitUntil:
+      any:
+        - text: "Don’t Allow"
+        - text: "Allow"
+        - changedFrom: before-toggle
+      timeout: 5s
+  - evidence.step: { name: after-toggle, note: Result after tapping reminder }
+  - exec: { cmd: "grep -F MAV_DEBUG $MAV_LOGS", contains: MAV_DEBUG, timeout: 5s }
+  - evidence.stop: {}
+  - crashes: {}
+  - report: {}
+```
