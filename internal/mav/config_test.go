@@ -10,6 +10,7 @@ import (
 type fakeRunner struct {
 	tools map[string]bool
 	runs  []string
+	out   map[string]string
 }
 
 func (f fakeRunner) LookPath(file string) (string, error) {
@@ -20,7 +21,11 @@ func (f fakeRunner) LookPath(file string) (string, error) {
 }
 
 func (f fakeRunner) Run(ctx context.Context, name string, args ...string) CommandResult {
-	return CommandResult{}
+	key := name
+	for _, arg := range args {
+		key += " " + arg
+	}
+	return CommandResult{Stdout: f.out[key]}
 }
 
 func (f fakeRunner) Start(ctx context.Context, logPath string, name string, args ...string) (int, error) {
@@ -48,6 +53,42 @@ ios_application(
 	}
 	if cfg.PreferredUIDriver != "axe" {
 		t.Fatalf("driver=%q", cfg.PreferredUIDriver)
+	}
+}
+
+func TestDiscoverConfigSkipsHiddenWorktrees(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, ".claude", "worktrees", "bad", "Undolly", "BUILD.bazel"), `ios_application(name = "Clean similar photos with Undolly", bundle_id = "bad")`)
+	mustWrite(t, filepath.Join(root, "Undolly", "BUILD.bazel"), `ios_application(name = "UndollyApp", bundle_id = "com.example.release")`)
+	mustWrite(t, filepath.Join(root, "tools", "shared.bzl"), `app_info = struct(bundle_id_debug = "com.example.debug", bundle_id = "com.example.release", executable_name = "Undolly")`)
+	cfg, err := DiscoverConfig(root, fakeRunner{tools: map[string]bool{"bazelisk": true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AppTarget != "//Undolly:UndollyApp" {
+		t.Fatalf("target=%q", cfg.AppTarget)
+	}
+	if cfg.BundleID != "com.example.debug" {
+		t.Fatalf("bundle=%q", cfg.BundleID)
+	}
+	if cfg.ProcessName != "Undolly" {
+		t.Fatalf("process=%q", cfg.ProcessName)
+	}
+}
+
+func TestDiscoverConfigStoresBootedSimulator(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "Demo", "BUILD.bazel"), `ios_application(name = "DemoApp", bundle_id = "com.example.demo")`)
+	out := `{"devices":{"runtime":[{"udid":"SIM-1","name":"iPhone 17 Pro Max","state":"Booted"}]}}`
+	cfg, err := DiscoverConfig(root, fakeRunner{
+		tools: map[string]bool{"xcrun": true},
+		out:   map[string]string{"xcrun simctl list devices booted -j": out},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SimulatorUDID != "SIM-1" || cfg.SimulatorName != "iPhone 17 Pro Max" {
+		t.Fatalf("sim=%q %q", cfg.SimulatorUDID, cfg.SimulatorName)
 	}
 }
 

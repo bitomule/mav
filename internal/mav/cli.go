@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -52,6 +53,8 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 		return c.ui(ctx, opts, rest[1:])
 	case "capture":
 		return c.capture(ctx, opts, rest[1:])
+	case "preview":
+		return c.preview(ctx, opts, rest[1:])
 	case "go":
 		return c.goScreen(ctx, opts, rest[1:])
 	case "logs":
@@ -273,11 +276,17 @@ func (c CLI) ui(ctx context.Context, opts GlobalOptions, args []string) error {
 }
 
 func (c CLI) uiTree(ctx context.Context, opts GlobalOptions, cfg Config) error {
-	if !hasTool(cfg, "axe") {
-		return Fail("tool_missing", map[string]string{"tool": "axe", "next": "mav setup --install axe"}).Write(c.Stdout, opts.JSON)
+	var result CommandResult
+	driver := ""
+	if hasTool(cfg, "axe") {
+		driver = "axe"
+		result = c.Runner.Run(ctx, "axe", axeTargetArgs(cfg, "describe-ui")...)
+	} else if hasTool(cfg, "idb") {
+		driver = "idb"
+		result = c.Runner.Run(ctx, "idb", idbTargetArgs(cfg, "ui", "describe-all", "--json", "--nested")...)
+	} else {
+		return Fail("tool_missing", map[string]string{"tool": "axe|idb", "next": "mav setup --install axe idb"}).Write(c.Stdout, opts.JSON)
 	}
-	args := axeTargetArgs(cfg, "describe-ui")
-	result := c.Runner.Run(ctx, "axe", args...)
 	if opts.Raw {
 		fmt.Fprint(c.Stdout, result.Stdout)
 		return nil
@@ -285,8 +294,11 @@ func (c CLI) uiTree(ctx context.Context, opts GlobalOptions, cfg Config) error {
 	if result.Err != nil {
 		return Fail("ui_tree_failed", map[string]string{"stderr": firstLine(result.Stderr)}).Write(c.Stdout, opts.JSON)
 	}
-	nodes := strings.Count(result.Stdout, "\n")
-	return OK("ui.tree", map[string]string{"nodes": strconv.Itoa(nodes), "screen": "unknown"}).Write(c.Stdout, opts.JSON)
+	nodes := countTreeNodes(result.Stdout)
+	if nodes == 0 {
+		nodes = strings.Count(result.Stdout, "\n")
+	}
+	return OK("ui.tree", map[string]string{"driver": driver, "nodes": strconv.Itoa(nodes), "screen": "unknown"}).Write(c.Stdout, opts.JSON)
 }
 
 func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
@@ -388,6 +400,8 @@ func (c CLI) capture(ctx context.Context, opts GlobalOptions, args []string) err
 	if hasTool(cfg, "axe") {
 		axeArgs := axeTargetArgs(cfg, "screenshot", "--output", path)
 		result = c.Runner.Run(ctx, "axe", axeArgs...)
+	} else if hasTool(cfg, "idb") {
+		result = c.Runner.Run(ctx, "idb", idbTargetArgs(cfg, "screenshot", path)...)
 	} else if hasTool(cfg, "xcrun") {
 		target := cfg.SimulatorUDID
 		if target == "" {
@@ -401,6 +415,64 @@ func (c CLI) capture(ctx context.Context, opts GlobalOptions, args []string) err
 		return Fail("capture_failed", map[string]string{"stderr": firstLine(result.Stderr)}).Write(c.Stdout, opts.JSON)
 	}
 	return OK("capture", map[string]string{"file": path, "run": run.ID}).Write(c.Stdout, opts.JSON)
+}
+
+func (c CLI) preview(ctx context.Context, opts GlobalOptions, args []string) error {
+	cfg, err := LoadConfig(c.Root)
+	if err != nil {
+		return Fail("config_not_found", map[string]string{"next": "mav discover"}).Write(c.Stdout, opts.JSON)
+	}
+	if cfg.PreviewTarget == "" || cfg.PreviewBundleID == "" {
+		return Fail("preview_not_configured", map[string]string{"next": "set preview_target and preview_bundle_id in .mav/config.yaml"}).Write(c.Stdout, opts.JSON)
+	}
+	run, err := NewRunState()
+	if err != nil {
+		return err
+	}
+	if err := SaveCurrentRun(c.Root, run); err != nil {
+		return err
+	}
+	logPID, logErr := c.startLogs(ctx, cfg, run)
+	if logErr != nil {
+		appendFile(run.LogsPath, "mav log capture failed: "+logErr.Error()+"\n")
+	}
+	build := c.Runner.Run(ctx, "bazelisk", "build", cfg.PreviewTarget)
+	appendCommand(run, "bazelisk build "+cfg.PreviewTarget, build)
+	if build.Err != nil {
+		return Fail("preview_build_failed", map[string]string{"run": run.ID, "logs": run.LogsPath, "stderr": firstLine(build.Stderr)}).Write(c.Stdout, opts.JSON)
+	}
+	cquery := c.Runner.Run(ctx, "bazelisk", "cquery", "--output=files", cfg.PreviewTarget)
+	appendCommand(run, "bazelisk cquery --output=files "+cfg.PreviewTarget, cquery)
+	appPath := firstNonEmptyLine(cquery.Stdout)
+	if cquery.Err != nil || appPath == "" {
+		return Fail("preview_app_not_found", map[string]string{"run": run.ID, "logs": run.LogsPath}).Write(c.Stdout, opts.JSON)
+	}
+	target := cfg.SimulatorUDID
+	if target == "" {
+		target = "booted"
+	}
+	install := c.Runner.Run(ctx, "xcrun", "simctl", "install", target, appPath)
+	appendCommand(run, "xcrun simctl install "+target+" "+appPath, install)
+	if install.Err != nil {
+		return Fail("preview_install_failed", map[string]string{"run": run.ID, "logs": run.LogsPath, "stderr": firstLine(install.Stderr)}).Write(c.Stdout, opts.JSON)
+	}
+	launchArgs := []string{"simctl", "launch", target, cfg.PreviewBundleID}
+	if len(args) > 0 {
+		launchArgs = append(launchArgs, "--args", "--mav-preview", args[0])
+	}
+	launch := c.Runner.Run(ctx, "xcrun", launchArgs...)
+	appendCommand(run, "xcrun "+strings.Join(launchArgs, " "), launch)
+	if launch.Err != nil {
+		return Fail("preview_launch_failed", map[string]string{"run": run.ID, "logs": run.LogsPath, "stderr": firstLine(launch.Stderr)}).Write(c.Stdout, opts.JSON)
+	}
+	fields := map[string]string{"run": run.ID, "logs": run.LogsPath, "app": appPath}
+	if logPID > 0 {
+		fields["log_pid"] = strconv.Itoa(logPID)
+	}
+	if len(args) > 0 {
+		fields["view"] = args[0]
+	}
+	return OK("preview", fields).Write(c.Stdout, opts.JSON)
 }
 
 func (c CLI) goScreen(ctx context.Context, opts GlobalOptions, args []string) error {
@@ -440,8 +512,9 @@ func (c CLI) goScreen(ctx context.Context, opts GlobalOptions, args []string) er
 	}
 	defer os.Remove(tmp)
 	result := c.Runner.Run(ctx, "maestro", "test", tmp)
+	appendCommand(run, "maestro test "+tmp, result)
 	if result.Err != nil {
-		return Fail("go_failed", map[string]string{"screen": screenID, "stderr": firstLine(result.Stderr)}).Write(c.Stdout, opts.JSON)
+		return Fail("go_failed", map[string]string{"screen": screenID, "logs": run.LogsPath, "error": lastNonEmptyLine(result.Stderr + "\n" + result.Stdout)}).Write(c.Stdout, opts.JSON)
 	}
 	return OK("go", map[string]string{"screen": screenID, "steps": strconv.Itoa(len(route))}).Write(c.Stdout, opts.JSON)
 }
@@ -479,11 +552,7 @@ func (c CLI) crashes(ctx context.Context, opts GlobalOptions, args []string) err
 	if !hasTool(cfg, "idb") {
 		return Fail("tool_missing", map[string]string{"tool": "idb"}).Write(c.Stdout, opts.JSON)
 	}
-	idbArgs := []string{}
-	if cfg.SimulatorUDID != "" {
-		idbArgs = append(idbArgs, "--udid", cfg.SimulatorUDID)
-	}
-	idbArgs = append(idbArgs, "crash", "list")
+	idbArgs := idbTargetArgs(cfg, "crash", "list")
 	if cfg.BundleID != "" {
 		idbArgs = append(idbArgs, "--bundle-id", cfg.BundleID)
 	}
@@ -505,10 +574,21 @@ func (c CLI) crashes(ctx context.Context, opts GlobalOptions, args []string) err
 }
 
 func (c CLI) evidence(opts GlobalOptions, args []string) error {
-	if len(args) == 0 || args[0] != "report" {
-		return Fail("evidence_command_missing", map[string]string{"usage": "mav evidence report [--run RUN]"}).Write(c.Stdout, opts.JSON)
+	if len(args) == 0 {
+		return Fail("evidence_command_missing", map[string]string{"usage": "mav evidence report|video"}).Write(c.Stdout, opts.JSON)
 	}
-	run, err := LoadRun(c.Root, flagValue(args[1:], "--run"))
+	switch args[0] {
+	case "report":
+		return c.evidenceReport(opts, args[1:])
+	case "video":
+		return c.evidenceVideo(opts, args[1:])
+	default:
+		return Fail("evidence_unknown_command", map[string]string{"command": args[0]}).Write(c.Stdout, opts.JSON)
+	}
+}
+
+func (c CLI) evidenceReport(opts GlobalOptions, args []string) error {
+	run, err := LoadRun(c.Root, flagValue(args, "--run"))
 	if err != nil {
 		return Fail("run_not_found", nil).Write(c.Stdout, opts.JSON)
 	}
@@ -519,7 +599,91 @@ func (c CLI) evidence(opts GlobalOptions, args []string) error {
 	return OK("evidence.report", map[string]string{"run": run.ID, "file": path}).Write(c.Stdout, opts.JSON)
 }
 
+func (c CLI) evidenceVideo(opts GlobalOptions, args []string) error {
+	if len(args) == 0 {
+		return Fail("video_command_missing", map[string]string{"usage": "mav evidence video start|stop"}).Write(c.Stdout, opts.JSON)
+	}
+	run, err := LoadRun(c.Root, flagValue(args[1:], "--run"))
+	if err != nil {
+		return Fail("run_not_found", nil).Write(c.Stdout, opts.JSON)
+	}
+	switch args[0] {
+	case "record":
+		cfg, err := LoadConfig(c.Root)
+		if err != nil {
+			return Fail("config_not_found", map[string]string{"next": "mav discover"}).Write(c.Stdout, opts.JSON)
+		}
+		if !hasTool(cfg, "idb") {
+			return Fail("tool_missing", map[string]string{"tool": "idb"}).Write(c.Stdout, opts.JSON)
+		}
+		seconds := flagValue(args[1:], "--seconds")
+		if seconds == "" {
+			seconds = "3"
+		}
+		videoPath := filepath.Join(run.Dir, "video.mp4")
+		idbArgs := []string{"record-video"}
+		if cfg.SimulatorUDID != "" {
+			idbArgs = append(idbArgs, "--udid", cfg.SimulatorUDID)
+		}
+		idbArgs = append(idbArgs, videoPath)
+		cmd := append([]string{seconds, "idb"}, idbArgs...)
+		result := c.Runner.Run(context.Background(), "timeout", cmd...)
+		appendCommand(run, "timeout "+strings.Join(cmd, " "), result)
+		if result.Err != nil && !exists(videoPath) {
+			return Fail("video_record_failed", map[string]string{"run": run.ID, "logs": run.LogsPath, "stderr": firstLine(result.Stderr)}).Write(c.Stdout, opts.JSON)
+		}
+		return OK("evidence.video.record", map[string]string{"run": run.ID, "file": videoPath, "seconds": seconds}).Write(c.Stdout, opts.JSON)
+	case "start":
+		cfg, err := LoadConfig(c.Root)
+		if err != nil {
+			return Fail("config_not_found", map[string]string{"next": "mav discover"}).Write(c.Stdout, opts.JSON)
+		}
+		if !hasTool(cfg, "idb") {
+			return Fail("tool_missing", map[string]string{"tool": "idb"}).Write(c.Stdout, opts.JSON)
+		}
+		videoPath := filepath.Join(run.Dir, "video.mp4")
+		videoArgs := []string{"record-video"}
+		if cfg.SimulatorUDID != "" {
+			videoArgs = append(videoArgs, "--udid", cfg.SimulatorUDID)
+		}
+		videoArgs = append(videoArgs, videoPath)
+		pid, err := c.Runner.Start(context.Background(), filepath.Join(run.Dir, "video.log"), "idb", videoArgs...)
+		if err != nil {
+			return Fail("video_start_failed", map[string]string{"error": err.Error()}).Write(c.Stdout, opts.JSON)
+		}
+		_ = os.WriteFile(filepath.Join(run.Dir, "video.pid"), []byte(strconv.Itoa(pid)+"\n"), 0o644)
+		return OK("evidence.video.start", map[string]string{"run": run.ID, "file": videoPath, "pid": strconv.Itoa(pid)}).Write(c.Stdout, opts.JSON)
+	case "stop":
+		pidData, err := os.ReadFile(filepath.Join(run.Dir, "video.pid"))
+		if err != nil {
+			return Fail("video_not_running", map[string]string{"run": run.ID}).Write(c.Stdout, opts.JSON)
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(pidData)))
+		if err != nil {
+			return Fail("video_pid_invalid", map[string]string{"run": run.ID}).Write(c.Stdout, opts.JSON)
+		}
+		proc, err := os.FindProcess(pid)
+		if err != nil {
+			return Fail("video_process_not_found", map[string]string{"pid": strconv.Itoa(pid)}).Write(c.Stdout, opts.JSON)
+		}
+		_ = proc.Signal(syscall.SIGTERM)
+		time.Sleep(500 * time.Millisecond)
+		_ = os.Remove(filepath.Join(run.Dir, "video.pid"))
+		return OK("evidence.video.stop", map[string]string{"run": run.ID, "file": filepath.Join(run.Dir, "video.mp4")}).Write(c.Stdout, opts.JSON)
+	default:
+		return Fail("video_unknown_command", map[string]string{"command": args[0]}).Write(c.Stdout, opts.JSON)
+	}
+}
+
 func axeTargetArgs(cfg Config, args ...string) []string {
+	out := append([]string{}, args...)
+	if cfg.SimulatorUDID != "" {
+		out = append(out, "--udid", cfg.SimulatorUDID)
+	}
+	return out
+}
+
+func idbTargetArgs(cfg Config, args ...string) []string {
 	out := append([]string{}, args...)
 	if cfg.SimulatorUDID != "" {
 		out = append(out, "--udid", cfg.SimulatorUDID)
@@ -570,6 +734,17 @@ func firstNonEmptyLine(s string) string {
 	return ""
 }
 
+func lastNonEmptyLine(s string) string {
+	lines := strings.Split(s, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line != "" {
+			return line
+		}
+	}
+	return ""
+}
+
 func appendFile(path, text string) {
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
@@ -610,4 +785,31 @@ func filterLines(lines []string, contains, level string) []string {
 		out = append(out, line)
 	}
 	return out
+}
+
+func countTreeNodes(raw string) int {
+	var parsed any
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return 0
+	}
+	var walk func(any) int
+	walk = func(v any) int {
+		switch t := v.(type) {
+		case []any:
+			total := 0
+			for _, item := range t {
+				total += walk(item)
+			}
+			return total
+		case map[string]any:
+			total := 1
+			if children, ok := t["children"]; ok {
+				total += walk(children)
+			}
+			return total
+		default:
+			return 0
+		}
+	}
+	return walk(parsed)
 }

@@ -23,7 +23,10 @@ does not explore or repair routes by itself. The agent decides the next action.
 7. Use `mav go <screen-id>` only after `.mav/app-map.yaml` contains that screen
    and route. If MAV returns `screen_not_found` or `route_not_found`, explore
    manually and update the map yourself.
-8. If `.mav/app-map.yaml` changes, review the git diff before continuing.
+8. Use `mav preview <view-id>` only when `.mav/config.yaml` has a preview host
+   configured. If MAV returns `preview_not_configured`, create or configure a
+   Bazel preview host first.
+9. If `.mav/app-map.yaml` changes, review the git diff before continuing.
 
 ## Internal Execution Validation
 
@@ -43,7 +46,7 @@ streams.
 Use evidence when the user needs proof of verification:
 
 1. Capture relevant state with `mav capture`; record video only if sequence or
-   animation matters.
+   animation matters with `mav evidence video record --seconds N`.
 2. Confirm logs/crashes with `mav logs` and `mav crashes`.
 3. Run `mav evidence report`.
 4. Share the generated `/tmp/mav/<run-id>/report.html`.

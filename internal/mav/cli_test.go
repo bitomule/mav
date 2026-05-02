@@ -51,3 +51,28 @@ func TestLogsReadsCurrentRunFile(t *testing.T) {
 		t.Fatalf("got %q", out.String())
 	}
 }
+
+func TestPreviewRequiresConfig(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.AppTarget = "//App:App"
+	cfg.BundleID = "com.example.app"
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"preview", "settings"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "fail code=preview_not_configured") {
+		t.Fatalf("got %q", out.String())
+	}
+}
+
+func TestCountTreeNodes(t *testing.T) {
+	raw := `[{"children":[{"children":[]},{"children":[{"children":[]}]}]}]`
+	if got := countTreeNodes(raw); got != 4 {
+		t.Fatalf("got %d", got)
+	}
+}

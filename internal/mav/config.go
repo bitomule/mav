@@ -2,6 +2,8 @@ package mav
 
 import (
 	"bufio"
+	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -22,6 +24,8 @@ type Config struct {
 	Root              string
 	AppTarget         string
 	DeviceTarget      string
+	PreviewTarget     string
+	PreviewBundleID   string
 	BundleID          string
 	ProcessName       string
 	SimulatorUDID     string
@@ -82,6 +86,10 @@ func LoadConfig(root string) (Config, error) {
 			cfg.AppTarget = value
 		case "device_target":
 			cfg.DeviceTarget = value
+		case "preview_target":
+			cfg.PreviewTarget = value
+		case "preview_bundle_id":
+			cfg.PreviewBundleID = value
 		case "bundle_id":
 			cfg.BundleID = value
 		case "process_name":
@@ -116,6 +124,8 @@ func SaveConfig(root string, cfg Config) error {
 	writeKV("project_name", cfg.ProjectName)
 	writeKV("app_target", cfg.AppTarget)
 	writeKV("device_target", cfg.DeviceTarget)
+	writeKV("preview_target", cfg.PreviewTarget)
+	writeKV("preview_bundle_id", cfg.PreviewBundleID)
 	writeKV("bundle_id", cfg.BundleID)
 	writeKV("process_name", cfg.ProcessName)
 	writeKV("simulator_udid", cfg.SimulatorUDID)
@@ -165,13 +175,21 @@ func yamlQuote(value string) string {
 func DiscoverConfig(root string, runner Runner) (Config, error) {
 	cfg := DefaultConfig(root)
 	cfg.ProjectName = filepath.Base(root)
-	cfg.AppTarget = discoverAppTarget(root)
+	cfg.AppTarget = discoverAppTarget(root, cfg.ProjectName)
 	cfg.DeviceTarget = cfg.AppTarget
 	cfg.BundleID = discoverBundleID(root)
-	cfg.ProcessName = processNameFromBundle(cfg.BundleID, cfg.ProjectName)
+	cfg.ProcessName = discoverScalar(root, "executable_name")
+	if cfg.ProcessName == "" {
+		cfg.ProcessName = processNameFromBundle(cfg.BundleID, cfg.ProjectName)
+	}
 	for _, tool := range []string{"bazelisk", "xcrun", "axe", "idb", "maestro"} {
 		_, err := runner.LookPath(tool)
 		cfg.Tools[tool] = err == nil
+	}
+	if cfg.Tools["xcrun"] {
+		udid, name := discoverBootedSimulator(runner)
+		cfg.SimulatorUDID = udid
+		cfg.SimulatorName = name
 	}
 	if cfg.Tools["axe"] {
 		cfg.PreferredUIDriver = "axe"
@@ -184,10 +202,44 @@ func DiscoverConfig(root string, runner Runner) (Config, error) {
 	return cfg, nil
 }
 
-func discoverAppTarget(root string) string {
+func discoverBootedSimulator(runner Runner) (string, string) {
+	result := runner.Run(context.Background(), "xcrun", "simctl", "list", "devices", "booted", "-j")
+	if result.Err != nil {
+		return "", ""
+	}
+	var parsed struct {
+		Devices map[string][]struct {
+			UDID  string `json:"udid"`
+			Name  string `json:"name"`
+			State string `json:"state"`
+		} `json:"devices"`
+	}
+	if err := json.Unmarshal([]byte(result.Stdout), &parsed); err != nil {
+		return "", ""
+	}
+	for _, devices := range parsed.Devices {
+		for _, device := range devices {
+			if device.State == "Booted" && device.UDID != "" {
+				return device.UDID, device.Name
+			}
+		}
+	}
+	return "", ""
+}
+
+func discoverAppTarget(root, projectName string) string {
 	var candidates []string
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || filepath.Base(path) != "BUILD.bazel" {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if shouldSkipDir(root, path) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if filepath.Base(path) != "BUILD.bazel" {
 			return nil
 		}
 		if strings.Contains(path, "bazel-") || strings.Contains(path, "/.git/") {
@@ -206,6 +258,9 @@ func discoverAppTarget(root string) string {
 			if strings.Contains(strings.ToLower(name), "release") {
 				continue
 			}
+			if strings.Contains(strings.ToLower(name), "extension") {
+				continue
+			}
 			if pkg == "" {
 				candidates = append(candidates, "//:"+name)
 			} else {
@@ -218,14 +273,32 @@ func discoverAppTarget(root string) string {
 	if len(candidates) == 0 {
 		return ""
 	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return targetScore(candidates[i], projectName) > targetScore(candidates[j], projectName)
+	})
 	return candidates[0]
 }
 
 func discoverBundleID(root string) string {
+	if value := discoverBundleFromBzl(root, "bundle_id_debug"); value != "" {
+		return value
+	}
+	if value := discoverBundleFromBzl(root, "bundle_id"); value != "" {
+		return value
+	}
 	re := regexp.MustCompile(`bundle_id\s*=\s*"([^"]+)"`)
 	var found string
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || filepath.Base(path) != "BUILD.bazel" || found != "" {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if shouldSkipDir(root, path) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if filepath.Base(path) != "BUILD.bazel" || found != "" {
 			return nil
 		}
 		data, readErr := os.ReadFile(path)
@@ -239,6 +312,69 @@ func discoverBundleID(root string) string {
 		return nil
 	})
 	return found
+}
+
+func discoverBundleFromBzl(root, key string) string {
+	return discoverScalar(root, key)
+}
+
+func discoverScalar(root, key string) string {
+	re := regexp.MustCompile(key + `\s*=\s*"([^"]+)"`)
+	var found string
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if shouldSkipDir(root, path) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if (filepath.Ext(path) != ".bzl" && filepath.Base(path) != "BUILD.bazel") || found != "" {
+			return nil
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil
+		}
+		if match := re.FindStringSubmatch(string(data)); len(match) == 2 {
+			found = match[1]
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found
+}
+
+func shouldSkipDir(root, path string) bool {
+	if path == root {
+		return false
+	}
+	base := filepath.Base(path)
+	if strings.HasPrefix(base, ".") {
+		return true
+	}
+	if strings.HasPrefix(base, "bazel-") || base == "bazel-bin" || base == "bazel-out" || base == "bazel-testlogs" {
+		return true
+	}
+	return false
+}
+
+func targetScore(target, projectName string) int {
+	score := 0
+	lower := strings.ToLower(target)
+	project := strings.ToLower(projectName)
+	if strings.Contains(lower, "//"+project+"/") || strings.Contains(lower, "//"+project+":") {
+		score += 100
+	}
+	if strings.HasSuffix(lower, project+"app") || strings.HasSuffix(lower, ":app") {
+		score += 50
+	}
+	if strings.Contains(lower, "test") {
+		score -= 25
+	}
+	return score
 }
 
 func processNameFromBundle(bundleID, fallback string) string {

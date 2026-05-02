@@ -23,8 +23,10 @@ mav open
 mav ui tree
 mav ui tap --id settings_button
 mav capture
+mav preview settings
 mav go settings
 mav logs --contains CheckoutView
+mav evidence video record --seconds 3
 mav evidence report
 ```
 
