@@ -17,8 +17,8 @@ does not explore or repair routes by itself. The agent decides the next action.
    `mav sim list`, then `mav sim select --device ... --ios ... --locale ... --language ...`.
    You can also pass the same target flags to `mav open`.
 4. Start the app with `mav open`. This creates `/tmp/mav/<run-id>/` and starts
-   `logs.txt`. MAV captures app console output plus a filtered unified log
-   stream for MAV probes.
+   `logs.txt`. MAV captures a filtered unified log stream for MAV probes.
+   Use `mav open --console` only when debugging non-MAV stdout/stderr issues.
 5. Prefer `mav ui tree` to understand the current screen. It is cheaper and more
    structured than screenshots.
 6. Use `mav capture` only when the tree is insufficient or visual evidence is

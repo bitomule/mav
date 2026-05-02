@@ -248,10 +248,11 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	if err := SaveCurrentRun(c.Root, run); err != nil {
 		return err
 	}
-	logPID := 0
-	if cfg.LogStrategy != "simctl-launch-console" && cfg.LogStrategy != "idb-launch-wait" {
+	consoleRequested := hasFlag(args, "--console") || cfg.LogStrategy == "app-console"
+	extraLogPID := 0
+	if cfg.LogStrategy == "idb-log" || cfg.LogStrategy == "simctl-log-stream" {
 		var logErr error
-		logPID, logErr = c.startLogs(ctx, cfg, run)
+		extraLogPID, logErr = c.startLogs(ctx, cfg, run)
 		if logErr != nil {
 			appendFile(run.LogsPath, "mav log capture failed: "+logErr.Error()+"\n")
 		}
@@ -287,7 +288,7 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 		if install.Err != nil {
 			return Fail("install_failed", map[string]string{"run": run.ID, "logs": run.LogsPath, "stderr": firstLine(install.Stderr)}).Write(c.Stdout, opts.JSON)
 		}
-		if cfg.LogStrategy == "idb-launch-wait" && hasTool(cfg, "idb") {
+		if consoleRequested && hasTool(cfg, "idb") {
 			launchArgs := []string{"launch"}
 			if cfg.SimulatorUDID != "" {
 				launchArgs = append(launchArgs, "--udid", cfg.SimulatorUDID)
@@ -300,8 +301,8 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 				return Fail("launch_failed", map[string]string{"run": run.ID, "logs": run.LogsPath, "stderr": err.Error()}).Write(c.Stdout, opts.JSON)
 			}
 			appendProcess(run, "app-console", pid, "idb "+strings.Join(launchArgs, " "))
-			logPID = pid
-		} else if cfg.LogStrategy == "simctl-launch-console" {
+			extraLogPID = pid
+		} else if consoleRequested && cfg.LogStrategy == "simctl-launch-console" {
 			launchArgs := []string{"simctl", "launch", "--console", target, cfg.BundleID}
 			launchArgs = append(launchArgs, simctlLaunchLanguageArgs(cfg)...)
 			pid, err := c.Runner.Start(ctx, run.LogsPath, "xcrun", launchArgs...)
@@ -310,7 +311,7 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 				return Fail("launch_failed", map[string]string{"run": run.ID, "logs": run.LogsPath, "stderr": err.Error()}).Write(c.Stdout, opts.JSON)
 			}
 			appendProcess(run, "app-console", pid, "xcrun "+strings.Join(launchArgs, " "))
-			logPID = pid
+			extraLogPID = pid
 		} else {
 			launchArgs := []string{"simctl", "launch", target, cfg.BundleID}
 			launchArgs = append(launchArgs, simctlLaunchLanguageArgs(cfg)...)
@@ -325,8 +326,8 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	if appPath != "" {
 		fields["app"] = appPath
 	}
-	if logPID > 0 {
-		fields["log_pid"] = strconv.Itoa(logPID)
+	if extraLogPID > 0 {
+		fields["log_pid"] = strconv.Itoa(extraLogPID)
 	}
 	if probeLogPID > 0 {
 		fields["probe_log_pid"] = strconv.Itoa(probeLogPID)

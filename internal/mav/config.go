@@ -44,7 +44,7 @@ type Config struct {
 func DefaultConfig(root string) Config {
 	return Config{
 		Root:              root,
-		LogStrategy:       "idb-launch-wait",
+		LogStrategy:       "probe",
 		LogCategory:       "probe",
 		PreferredUIDriver: "axe",
 		Tools:             map[string]bool{},

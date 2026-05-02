@@ -198,7 +198,10 @@ func TestStopTerminatesRunProcesses(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, MavDir), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	run := RunState{ID: "stop-test", Dir: filepath.Join(os.TempDir(), "mav", "stop-test"), LogsPath: filepath.Join(os.TempDir(), "mav", "stop-test", "logs.txt"), Commands: filepath.Join(os.TempDir(), "mav", "stop-test", "commands.jsonl"), Processes: filepath.Join(os.TempDir(), "mav", "stop-test", "processes.jsonl")}
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(run.Dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -214,6 +217,70 @@ func TestStopTerminatesRunProcesses(t *testing.T) {
 	got := out.String()
 	if !strings.Contains(got, "ok cmd=stop") || !strings.Contains(got, "stopped=1") {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestOpenStartsOnlyProbeLogsByDefault(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.AppTarget = "//App:App"
+	cfg.BundleID = "com.example.app"
+	cfg.SimulatorUDID = "SIM"
+	cfg.SimulatorName = "iPhone"
+	cfg.Tools = map[string]bool{"xcrun": true, "bazelisk": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runner := fakeRunner{tools: cfg.Tools, out: map[string]string{"bazelisk cquery --output=files //App:App": "/tmp/App.app\n"}}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"open"}); err != nil {
+		t.Fatal(err)
+	}
+	run, err := LoadRun(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	records := loadProcessRecords(run)
+	if len(records) != 1 || records[0].Kind != "probe-logs" {
+		t.Fatalf("records=%+v output=%s", records, out.String())
+	}
+	if strings.Contains(out.String(), " log_pid=") {
+		t.Fatalf("open should not start app-console by default: %s", out.String())
+	}
+}
+
+func TestOpenConsoleStartsAppConsole(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.AppTarget = "//App:App"
+	cfg.BundleID = "com.example.app"
+	cfg.SimulatorUDID = "SIM"
+	cfg.SimulatorName = "iPhone"
+	cfg.Tools = map[string]bool{"xcrun": true, "bazelisk": true, "idb": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runner := fakeRunner{tools: cfg.Tools, out: map[string]string{"bazelisk cquery --output=files //App:App": "/tmp/App.app\n"}}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"open", "--console"}); err != nil {
+		t.Fatal(err)
+	}
+	run, err := LoadRun(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	records := loadProcessRecords(run)
+	kinds := map[string]bool{}
+	for _, record := range records {
+		kinds[record.Kind] = true
+	}
+	if !kinds["probe-logs"] || !kinds["app-console"] {
+		t.Fatalf("records=%+v output=%s", records, out.String())
+	}
+	if !strings.Contains(out.String(), " log_pid=") {
+		t.Fatalf("open --console should report log_pid: %s", out.String())
 	}
 }
 
