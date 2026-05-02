@@ -13,20 +13,22 @@ does not explore or repair routes by itself. The agent decides the next action.
 1. Run `mav doctor`.
 2. If the project lacks `.mav/config.yaml`, run `mav discover` and review the
    generated config.
-3. Start the app with `mav open`. This creates `/tmp/mav/<run-id>/` and starts
+3. If the validation needs a specific simulator, runtime, or locale, use
+   `mav sim list`, then `mav sim select --device ... --ios ... --locale ... --language ...`.
+   You can also pass the same target flags to `mav open`.
+4. Start the app with `mav open`. This creates `/tmp/mav/<run-id>/` and starts
    `logs.txt`.
-4. Prefer `mav ui tree` to understand the current screen. It is cheaper and more
+5. Prefer `mav ui tree` to understand the current screen. It is cheaper and more
    structured than screenshots.
-5. Use `mav capture` only when the tree is insufficient or visual evidence is
+6. Use `mav capture` only when the tree is insufficient or visual evidence is
    needed.
-6. Use `mav ui tap/type/swipe/wait` for manual exploration.
-7. Use `mav go <screen-id>` only after `.mav/app-map.yaml` contains that screen
+7. Use `mav ui tap/type/swipe/wait` for manual exploration.
+8. Use `mav go <screen-id>` only after `.mav/app-map.yaml` contains that screen
    and route. If MAV returns `screen_not_found` or `route_not_found`, explore
    manually and update the map yourself.
-8. Use `mav preview <view-id>` only when `.mav/config.yaml` has a preview host
-   configured. If MAV returns `preview_not_configured`, create or configure a
-   Bazel preview host first.
-9. If `.mav/app-map.yaml` changes, review the git diff before continuing.
+9. Use `mav preview init` to create a Bazel preview host, wire the view under
+   test into the generated host, then use `mav preview <view-id>` and `mav capture`.
+10. If `.mav/app-map.yaml` changes, review the git diff before continuing.
 
 ## Internal Execution Validation
 
@@ -45,14 +47,33 @@ streams.
 
 Use evidence when the user needs proof of verification:
 
-1. Capture relevant state with `mav capture`; record video only if sequence or
-   animation matters with `mav evidence video record --seconds N`.
-2. Confirm logs/crashes with `mav logs` and `mav crashes`.
-3. Run `mav evidence report`.
-4. Share the generated `/tmp/mav/<run-id>/report.html`.
+1. Evidence must show the relevant checked steps or feature state. Prefer
+   `mav go <screen-id> --evidence` for mapped flows so Maestro step screenshots
+   are collected automatically.
+2. Record video when validating a user-visible flow. The video should cover the
+   full sequence from launch/open through reaching and testing the feature. Use
+   `mav go <screen-id> --video-seconds N` for mapped flows, or
+   `mav evidence video record --seconds N` when manually driving the app.
+3. Confirm logs/crashes with `mav logs` and `mav crashes`.
+4. Run `mav evidence report`.
+5. Share the generated `/tmp/mav/<run-id>/report.html`.
 
-Do not generate reports for every tiny check; use them when the result is worth
-showing.
+The skill decides how long to record and which screenshots are useful, but
+user-facing verification should include enough visual evidence to reconstruct
+what was tested.
+
+## Previews
+
+Use previews for isolated SwiftUI screens when launching the full app is too
+slow or deep:
+
+1. Run `mav preview init` if the repo does not have a preview host.
+2. Add the real view and any lightweight mocks to `MAVPreview/PreviewHostApp.swift`
+   or the generated host target.
+3. Build and launch it with `mav preview <view-id>`.
+4. Inspect with `mav ui tree`, then `mav capture` for visual proof.
+5. Include preview screenshots in `mav evidence report` when they support the
+   validation.
 
 ## Command Output
 

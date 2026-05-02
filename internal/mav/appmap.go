@@ -244,7 +244,15 @@ func Route(m AppMap, target string) ([]Edge, error) {
 	return nil, fmt.Errorf("route_not_found")
 }
 
-func MaestroFlow(m AppMap, route []Edge, target string) string {
+type MaestroFlowOptions struct {
+	CaptureSteps bool
+}
+
+func MaestroFlow(m AppMap, route []Edge, target string, options ...MaestroFlowOptions) string {
+	opts := MaestroFlowOptions{}
+	if len(options) > 0 {
+		opts = options[0]
+	}
 	var b strings.Builder
 	if m.AppID != "" {
 		b.WriteString("appId: ")
@@ -252,7 +260,10 @@ func MaestroFlow(m AppMap, route []Edge, target string) string {
 		b.WriteString("\n---\n")
 	}
 	b.WriteString("- launchApp\n")
-	for _, edge := range route {
+	if opts.CaptureSteps {
+		b.WriteString("- takeScreenshot: mav_step_00_launch\n")
+	}
+	for index, edge := range route {
 		if edge.ID != "" {
 			b.WriteString("- tapOn:\n")
 			b.WriteString("    id: ")
@@ -270,6 +281,13 @@ func MaestroFlow(m AppMap, route []Edge, target string) string {
 			b.WriteString(edge.Wait)
 			b.WriteString("\n")
 		}
+		if opts.CaptureSteps {
+			b.WriteString("- takeScreenshot: mav_step_")
+			b.WriteString(fmt.Sprintf("%02d", index+1))
+			b.WriteString("_")
+			b.WriteString(edge.To)
+			b.WriteString("\n")
+		}
 	}
 	screen := m.Screens[target]
 	if screen.AssertID != "" {
@@ -282,6 +300,11 @@ func MaestroFlow(m AppMap, route []Edge, target string) string {
 		b.WriteString("- assertVisible:\n")
 		b.WriteString("    text: ")
 		b.WriteString(screen.AssertText)
+		b.WriteString("\n")
+	}
+	if opts.CaptureSteps {
+		b.WriteString("- takeScreenshot: mav_final_")
+		b.WriteString(target)
 		b.WriteString("\n")
 	}
 	return b.String()

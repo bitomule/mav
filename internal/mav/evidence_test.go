@@ -16,6 +16,13 @@ func TestGenerateReport(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "screen.png"), []byte("png"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	stepsDir := filepath.Join(dir, "maestro")
+	if err := os.MkdirAll(stepsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stepsDir, "mav_step_00_launch.png"), []byte("png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	path, err := GenerateReport(run)
 	if err != nil {
 		t.Fatal(err)
@@ -25,7 +32,7 @@ func TestGenerateReport(t *testing.T) {
 		t.Fatal(err)
 	}
 	html := string(data)
-	if !strings.Contains(html, "MAV Evidence") || !strings.Contains(html, "hello log") || !strings.Contains(html, "screen.png") {
+	if !strings.Contains(html, "MAV Evidence") || !strings.Contains(html, "hello log") || !strings.Contains(html, "screen.png") || !strings.Contains(html, "mav_step_00_launch.png") {
 		t.Fatalf("report missing content:\n%s", html)
 	}
 }

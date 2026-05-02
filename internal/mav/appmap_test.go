@@ -32,6 +32,27 @@ func TestRouteAndMaestroFlow(t *testing.T) {
 	}
 }
 
+func TestMaestroFlowCanCaptureEachStep(t *testing.T) {
+	m := AppMap{
+		AppID: "com.example.demo",
+		Start: "home",
+		Screens: map[string]Screen{
+			"home":     {ID: "home", Edges: []Edge{{To: "settings", Text: "Settings", Wait: "1000"}}},
+			"settings": {ID: "settings", AssertText: "Settings"},
+		},
+	}
+	route, err := Route(m, "settings")
+	if err != nil {
+		t.Fatal(err)
+	}
+	flow := MaestroFlow(m, route, "settings", MaestroFlowOptions{CaptureSteps: true})
+	for _, want := range []string{"takeScreenshot: mav_step_00_launch", "takeScreenshot: mav_step_01_settings", "takeScreenshot: mav_final_settings"} {
+		if !strings.Contains(flow, want) {
+			t.Fatalf("flow missing %q:\n%s", want, flow)
+		}
+	}
+}
+
 func TestRouteUnknownScreen(t *testing.T) {
 	m := DefaultAppMap("com.example.demo")
 	_, err := Route(m, "settings")

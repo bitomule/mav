@@ -47,6 +47,8 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 		return c.setup(ctx, opts, rest[1:])
 	case "discover":
 		return c.discover(opts)
+	case "sim":
+		return c.sim(ctx, opts, rest[1:])
 	case "open":
 		return c.open(ctx, opts, rest[1:])
 	case "ui":
@@ -87,7 +89,7 @@ func parseGlobal(args []string) (GlobalOptions, []string) {
 }
 
 func (c CLI) help(opts GlobalOptions) error {
-	_, err := fmt.Fprintln(c.Stdout, "mav commands: doctor setup discover open ui capture go logs crashes evidence")
+	_, err := fmt.Fprintln(c.Stdout, "mav commands: doctor setup discover sim open ui capture preview go logs crashes evidence")
 	return err
 }
 
@@ -161,10 +163,78 @@ func (c CLI) discover(opts GlobalOptions) error {
 	return OK("discover", fields).Write(c.Stdout, opts.JSON)
 }
 
+func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
+	if len(args) == 0 {
+		return Fail("sim_command_missing", map[string]string{"usage": "mav sim list|select|boot"}).Write(c.Stdout, opts.JSON)
+	}
+	switch args[0] {
+	case "list":
+		sims, err := ListSimulators(c.Runner)
+		if err != nil {
+			return Fail("sim_list_failed", map[string]string{"error": err.Error()}).Write(c.Stdout, opts.JSON)
+		}
+		if opts.JSON {
+			return json.NewEncoder(c.Stdout).Encode(map[string]any{"ok": true, "cmd": "sim.list", "simulators": sims})
+		}
+		for _, sim := range sims {
+			fmt.Fprintf(c.Stdout, "sim udid=%s name=%q runtime=%s state=%s\n", sim.UDID, sim.Name, sim.Runtime, sim.State)
+		}
+		return nil
+	case "select":
+		cfg, err := LoadConfig(c.Root)
+		if err != nil {
+			return Fail("config_not_found", map[string]string{"next": "mav discover"}).Write(c.Stdout, opts.JSON)
+		}
+		sims, err := ListSimulators(c.Runner)
+		if err != nil {
+			return Fail("sim_list_failed", map[string]string{"error": err.Error()}).Write(c.Stdout, opts.JSON)
+		}
+		sim, ok := SelectSimulator(sims, flagValue(args[1:], "--device"), flagValue(args[1:], "--ios"), flagValue(args[1:], "--udid"))
+		if !ok {
+			return Fail("sim_not_found", map[string]string{"device": flagValue(args[1:], "--device"), "ios": flagValue(args[1:], "--ios"), "udid": flagValue(args[1:], "--udid")}).Write(c.Stdout, opts.JSON)
+		}
+		cfg.SimulatorUDID = sim.UDID
+		cfg.SimulatorName = sim.Name
+		cfg.SimulatorRuntime = sim.Runtime
+		if locale := flagValue(args[1:], "--locale"); locale != "" {
+			cfg.Locale = locale
+		}
+		if language := flagValue(args[1:], "--language"); language != "" {
+			cfg.Language = language
+		}
+		if err := SaveConfig(c.Root, cfg); err != nil {
+			return err
+		}
+		return OK("sim.select", map[string]string{"udid": sim.UDID, "name": sim.Name, "runtime": sim.Runtime}).Write(c.Stdout, opts.JSON)
+	case "boot":
+		cfg, err := LoadConfig(c.Root)
+		if err != nil {
+			return Fail("config_not_found", map[string]string{"next": "mav discover"}).Write(c.Stdout, opts.JSON)
+		}
+		if cfg.SimulatorUDID == "" {
+			return Fail("sim_not_selected", map[string]string{"next": "mav sim select --device 'iPhone' --ios 26"}).Write(c.Stdout, opts.JSON)
+		}
+		boot := c.Runner.Run(ctx, "xcrun", "simctl", "boot", cfg.SimulatorUDID)
+		if boot.Err != nil && !strings.Contains(boot.Stderr, "Unable to boot device in current state") {
+			return Fail("sim_boot_failed", map[string]string{"stderr": firstLine(boot.Stderr)}).Write(c.Stdout, opts.JSON)
+		}
+		status := c.Runner.Run(ctx, "xcrun", "simctl", "bootstatus", cfg.SimulatorUDID, "-b")
+		if status.Err != nil {
+			return Fail("sim_bootstatus_failed", map[string]string{"stderr": firstLine(status.Stderr)}).Write(c.Stdout, opts.JSON)
+		}
+		return OK("sim.boot", map[string]string{"udid": cfg.SimulatorUDID, "name": cfg.SimulatorName}).Write(c.Stdout, opts.JSON)
+	default:
+		return Fail("sim_unknown_command", map[string]string{"command": args[0]}).Write(c.Stdout, opts.JSON)
+	}
+}
+
 func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error {
 	cfg, err := LoadConfig(c.Root)
 	if err != nil {
 		return Fail("config_not_found", map[string]string{"next": "mav discover"}).Write(c.Stdout, opts.JSON)
+	}
+	if err := c.applyOpenTargetOverrides(ctx, &cfg, args); err != nil {
+		return Fail("sim_select_failed", map[string]string{"error": err.Error()}).Write(c.Stdout, opts.JSON)
 	}
 	run, err := NewRunState()
 	if err != nil {
@@ -202,8 +272,10 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 		if install.Err != nil {
 			return Fail("install_failed", map[string]string{"run": run.ID, "logs": run.LogsPath, "stderr": firstLine(install.Stderr)}).Write(c.Stdout, opts.JSON)
 		}
-		launch := c.Runner.Run(ctx, "xcrun", "simctl", "launch", target, cfg.BundleID)
-		appendCommand(run, "xcrun simctl launch "+target+" "+cfg.BundleID, launch)
+		launchArgs := []string{"simctl", "launch", target, cfg.BundleID}
+		launchArgs = append(launchArgs, simctlLaunchLanguageArgs(cfg)...)
+		launch := c.Runner.Run(ctx, "xcrun", launchArgs...)
+		appendCommand(run, "xcrun "+strings.Join(launchArgs, " "), launch)
 		if launch.Err != nil {
 			return Fail("launch_failed", map[string]string{"run": run.ID, "logs": run.LogsPath, "stderr": firstLine(launch.Stderr)}).Write(c.Stdout, opts.JSON)
 		}
@@ -223,6 +295,51 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 		fields["target"] = "booted"
 	}
 	return OK("open", fields).Write(c.Stdout, opts.JSON)
+}
+
+func (c CLI) applyOpenTargetOverrides(ctx context.Context, cfg *Config, args []string) error {
+	device := flagValue(args, "--device")
+	ios := flagValue(args, "--ios")
+	udid := flagValue(args, "--udid")
+	if locale := flagValue(args, "--locale"); locale != "" {
+		cfg.Locale = locale
+	}
+	if language := flagValue(args, "--language"); language != "" {
+		cfg.Language = language
+	}
+	if device == "" && ios == "" && udid == "" {
+		return nil
+	}
+	sims, err := ListSimulators(c.Runner)
+	if err != nil {
+		return err
+	}
+	sim, ok := SelectSimulator(sims, device, ios, udid)
+	if !ok {
+		return fmt.Errorf("sim_not_found")
+	}
+	cfg.SimulatorUDID = sim.UDID
+	cfg.SimulatorName = sim.Name
+	cfg.SimulatorRuntime = sim.Runtime
+	boot := c.Runner.Run(ctx, "xcrun", "simctl", "boot", sim.UDID)
+	if boot.Err != nil && !strings.Contains(boot.Stderr, "Unable to boot device in current state") {
+		return fmt.Errorf("%s", firstLine(boot.Stderr))
+	}
+	_ = c.Runner.Run(ctx, "xcrun", "simctl", "bootstatus", sim.UDID, "-b")
+	return SaveConfig(c.Root, *cfg)
+}
+
+func simctlLaunchLanguageArgs(cfg Config) []string {
+	args := []string{}
+	if cfg.Language != "" {
+		args = append(args, "-AppleLanguages", "("+cfg.Language+")")
+		if cfg.Locale != "" {
+			args = append(args, "-AppleLocale", cfg.Locale)
+		}
+	} else if cfg.Locale != "" {
+		args = append(args, "-AppleLocale", cfg.Locale)
+	}
+	return args
 }
 
 func (c CLI) startLogs(ctx context.Context, cfg Config, run RunState) (int, error) {
@@ -418,6 +535,9 @@ func (c CLI) capture(ctx context.Context, opts GlobalOptions, args []string) err
 }
 
 func (c CLI) preview(ctx context.Context, opts GlobalOptions, args []string) error {
+	if len(args) > 0 && args[0] == "init" {
+		return c.previewInit(opts, args[1:])
+	}
 	cfg, err := LoadConfig(c.Root)
 	if err != nil {
 		return Fail("config_not_found", map[string]string{"next": "mav discover"}).Write(c.Stdout, opts.JSON)
@@ -475,6 +595,50 @@ func (c CLI) preview(ctx context.Context, opts GlobalOptions, args []string) err
 	return OK("preview", fields).Write(c.Stdout, opts.JSON)
 }
 
+func (c CLI) previewInit(opts GlobalOptions, args []string) error {
+	cfg, err := LoadConfig(c.Root)
+	if err != nil {
+		cfg = DefaultConfig(c.Root)
+	}
+	dir := flagValue(args, "--dir")
+	if dir == "" {
+		dir = "MAVPreview"
+	}
+	bundleID := flagValue(args, "--bundle-id")
+	if bundleID == "" {
+		if cfg.BundleID != "" {
+			bundleID = cfg.BundleID + ".mavpreview"
+		} else {
+			bundleID = "dev.mav.preview"
+		}
+	}
+	target := "//" + filepath.ToSlash(dir) + ":MAVPreviewApp"
+	buildPath := filepath.Join(c.Root, dir, "BUILD.bazel")
+	swiftPath := filepath.Join(c.Root, dir, "PreviewHostApp.swift")
+	plistPath := filepath.Join(c.Root, dir, "Info.plist")
+	if !hasFlag(args, "--force") && (exists(buildPath) || exists(swiftPath) || exists(plistPath)) {
+		return Fail("preview_host_exists", map[string]string{"dir": dir, "next": "rerun with --force"}).Write(c.Stdout, opts.JSON)
+	}
+	if err := os.MkdirAll(filepath.Join(c.Root, dir), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(buildPath, []byte(previewBuildTemplate(bundleID)), 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(swiftPath, []byte(previewSwiftTemplate()), 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(plistPath, []byte(previewInfoPlistTemplate()), 0o644); err != nil {
+		return err
+	}
+	cfg.PreviewTarget = target
+	cfg.PreviewBundleID = bundleID
+	if err := SaveConfig(c.Root, cfg); err != nil {
+		return err
+	}
+	return OK("preview.init", map[string]string{"target": target, "bundle": bundleID, "dir": filepath.Join(c.Root, dir)}).Write(c.Stdout, opts.JSON)
+}
+
 func (c CLI) goScreen(ctx context.Context, opts GlobalOptions, args []string) error {
 	if len(args) == 0 {
 		return Fail("screen_missing", map[string]string{"usage": "mav go SCREEN_ID"}).Write(c.Stdout, opts.JSON)
@@ -505,18 +669,54 @@ func (c CLI) goScreen(ctx context.Context, opts GlobalOptions, args []string) er
 		run, _ = NewRunState()
 		_ = SaveCurrentRun(c.Root, run)
 	}
-	flow := MaestroFlow(m, route, screenID)
+	evidence := hasFlag(args[1:], "--evidence")
+	flow := MaestroFlow(m, route, screenID, MaestroFlowOptions{CaptureSteps: evidence})
 	tmp := filepath.Join(os.TempDir(), "mav-"+run.ID+"-"+screenID+".yaml")
 	if err := os.WriteFile(tmp, []byte(flow), 0o644); err != nil {
 		return err
 	}
 	defer os.Remove(tmp)
-	result := c.Runner.Run(ctx, "maestro", "test", tmp)
-	appendCommand(run, "maestro test "+tmp, result)
+	maestroArgs := []string{"test", tmp}
+	if evidence {
+		maestroDir := filepath.Join(run.Dir, "maestro")
+		_ = os.MkdirAll(maestroDir, 0o755)
+		maestroArgs = append([]string{"test", "--debug-output", maestroDir, "--flatten-debug-output"}, tmp)
+	}
+	var videoPID int
+	videoSeconds := flagValue(args[1:], "--video-seconds")
+	if videoSeconds != "" {
+		videoPath := filepath.Join(run.Dir, "video.mp4")
+		cfgForVideo, _ := LoadConfig(c.Root)
+		videoArgs := []string{videoSeconds, "idb", "record-video"}
+		if cfgForVideo.SimulatorUDID != "" {
+			videoArgs = append(videoArgs, "--udid", cfgForVideo.SimulatorUDID)
+		}
+		videoArgs = append(videoArgs, videoPath)
+		if pid, err := c.Runner.Start(ctx, filepath.Join(run.Dir, "video.log"), "timeout", videoArgs...); err == nil {
+			videoPID = pid
+		}
+	}
+	result := c.Runner.Run(ctx, "maestro", maestroArgs...)
+	if videoPID > 0 {
+		if proc, err := os.FindProcess(videoPID); err == nil {
+			_ = proc.Signal(syscall.SIGTERM)
+		}
+	}
+	if evidence {
+		collectMaestroScreenshots(c.Root, filepath.Join(run.Dir, "maestro"))
+	}
+	appendCommand(run, "maestro "+strings.Join(maestroArgs, " "), result)
 	if result.Err != nil {
 		return Fail("go_failed", map[string]string{"screen": screenID, "logs": run.LogsPath, "error": lastNonEmptyLine(result.Stderr + "\n" + result.Stdout)}).Write(c.Stdout, opts.JSON)
 	}
-	return OK("go", map[string]string{"screen": screenID, "steps": strconv.Itoa(len(route))}).Write(c.Stdout, opts.JSON)
+	fields := map[string]string{"screen": screenID, "steps": strconv.Itoa(len(route))}
+	if evidence {
+		fields["evidence"] = filepath.Join(run.Dir, "maestro")
+	}
+	if videoSeconds != "" {
+		fields["video"] = filepath.Join(run.Dir, "video.mp4")
+	}
+	return OK("go", fields).Write(c.Stdout, opts.JSON)
 }
 
 func (c CLI) logs(opts GlobalOptions, args []string) error {
@@ -706,11 +906,31 @@ func flagValue(args []string, name string) string {
 	return ""
 }
 
+func hasFlag(args []string, name string) bool {
+	for _, arg := range args {
+		if arg == name {
+			return true
+		}
+	}
+	return false
+}
+
 func hasTool(cfg Config, tool string) bool {
 	if cfg.Tools == nil {
 		return false
 	}
 	return cfg.Tools[tool]
+}
+
+func collectMaestroScreenshots(root, targetDir string) {
+	_ = os.MkdirAll(targetDir, 0o755)
+	for _, pattern := range []string{"mav_step_*.png", "mav_final_*.png"} {
+		matches, _ := filepath.Glob(filepath.Join(root, pattern))
+		for _, src := range matches {
+			dst := filepath.Join(targetDir, filepath.Base(src))
+			_ = os.Rename(src, dst)
+		}
+	}
 }
 
 func firstLine(s string) string {

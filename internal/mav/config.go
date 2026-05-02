@@ -30,6 +30,9 @@ type Config struct {
 	ProcessName       string
 	SimulatorUDID     string
 	SimulatorName     string
+	SimulatorRuntime  string
+	Locale            string
+	Language          string
 	LogStrategy       string
 	PreferredUIDriver string
 	Tools             map[string]bool
@@ -98,6 +101,12 @@ func LoadConfig(root string) (Config, error) {
 			cfg.SimulatorUDID = value
 		case "simulator_name":
 			cfg.SimulatorName = value
+		case "simulator_runtime":
+			cfg.SimulatorRuntime = value
+		case "locale":
+			cfg.Locale = value
+		case "language":
+			cfg.Language = value
 		case "log_strategy":
 			cfg.LogStrategy = value
 		case "preferred_ui_driver":
@@ -130,6 +139,9 @@ func SaveConfig(root string, cfg Config) error {
 	writeKV("process_name", cfg.ProcessName)
 	writeKV("simulator_udid", cfg.SimulatorUDID)
 	writeKV("simulator_name", cfg.SimulatorName)
+	writeKV("simulator_runtime", cfg.SimulatorRuntime)
+	writeKV("locale", cfg.Locale)
+	writeKV("language", cfg.Language)
 	writeKV("log_strategy", cfg.LogStrategy)
 	writeKV("preferred_ui_driver", cfg.PreferredUIDriver)
 	b.WriteString("tools:\n")
@@ -187,9 +199,10 @@ func DiscoverConfig(root string, runner Runner) (Config, error) {
 		cfg.Tools[tool] = err == nil
 	}
 	if cfg.Tools["xcrun"] {
-		udid, name := discoverBootedSimulator(runner)
+		udid, name, runtime := discoverBootedSimulator(runner)
 		cfg.SimulatorUDID = udid
 		cfg.SimulatorName = name
+		cfg.SimulatorRuntime = runtime
 	}
 	if cfg.Tools["axe"] {
 		cfg.PreferredUIDriver = "axe"
@@ -202,10 +215,10 @@ func DiscoverConfig(root string, runner Runner) (Config, error) {
 	return cfg, nil
 }
 
-func discoverBootedSimulator(runner Runner) (string, string) {
+func discoverBootedSimulator(runner Runner) (string, string, string) {
 	result := runner.Run(context.Background(), "xcrun", "simctl", "list", "devices", "booted", "-j")
 	if result.Err != nil {
-		return "", ""
+		return "", "", ""
 	}
 	var parsed struct {
 		Devices map[string][]struct {
@@ -215,16 +228,16 @@ func discoverBootedSimulator(runner Runner) (string, string) {
 		} `json:"devices"`
 	}
 	if err := json.Unmarshal([]byte(result.Stdout), &parsed); err != nil {
-		return "", ""
+		return "", "", ""
 	}
-	for _, devices := range parsed.Devices {
+	for runtime, devices := range parsed.Devices {
 		for _, device := range devices {
 			if device.State == "Booted" && device.UDID != "" {
-				return device.UDID, device.Name
+				return device.UDID, device.Name, runtime
 			}
 		}
 	}
-	return "", ""
+	return "", "", ""
 }
 
 func discoverAppTarget(root, projectName string) string {

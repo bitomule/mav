@@ -9,13 +9,14 @@ import (
 )
 
 type ReportData struct {
-	RunID      string
-	CreatedAt  string
-	Dir        string
-	Screenshot string
-	Video      string
-	Logs       string
-	Crashes    []string
+	RunID           string
+	CreatedAt       string
+	Dir             string
+	Screenshot      string
+	StepScreenshots []string
+	Video           string
+	Logs            string
+	Crashes         []string
 }
 
 func GenerateReport(run RunState) (string, error) {
@@ -27,6 +28,9 @@ func GenerateReport(run RunState) (string, error) {
 	screen := filepath.Join(run.Dir, "screen.png")
 	if exists(screen) {
 		data.Screenshot = screen
+	}
+	if matches, err := filepath.Glob(filepath.Join(run.Dir, "maestro", "mav_*.png")); err == nil {
+		data.StepScreenshots = matches
 	}
 	for _, name := range []string{"video.mp4", "video.mov"} {
 		path := filepath.Join(run.Dir, name)
@@ -89,6 +93,8 @@ var reportTemplate = template.Must(template.New("report").Parse(`<!doctype html>
   <div class="meta">run={{.RunID}} created={{.CreatedAt}} dir={{.Dir}}</div>
   <h2>Screenshot</h2>
   {{if .Screenshot}}<img src="{{.Screenshot}}" alt="MAV screenshot">{{else}}<p class="empty">No screenshot captured.</p>{{end}}
+  <h2>Step Screenshots</h2>
+  {{if .StepScreenshots}}{{range .StepScreenshots}}<p><img src="{{.}}" alt="MAV step screenshot"></p>{{end}}{{else}}<p class="empty">No step screenshots captured.</p>{{end}}
   <h2>Video</h2>
   {{if .Video}}<video src="{{.Video}}" controls></video>{{else}}<p class="empty">No video captured.</p>{{end}}
   <h2>Logs</h2>

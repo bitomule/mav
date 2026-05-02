@@ -87,8 +87,8 @@ func TestDiscoverConfigStoresBootedSimulator(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.SimulatorUDID != "SIM-1" || cfg.SimulatorName != "iPhone 17 Pro Max" {
-		t.Fatalf("sim=%q %q", cfg.SimulatorUDID, cfg.SimulatorName)
+	if cfg.SimulatorUDID != "SIM-1" || cfg.SimulatorName != "iPhone 17 Pro Max" || cfg.SimulatorRuntime != "runtime" {
+		t.Fatalf("sim=%q %q %q", cfg.SimulatorUDID, cfg.SimulatorName, cfg.SimulatorRuntime)
 	}
 }
 

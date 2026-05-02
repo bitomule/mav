@@ -70,6 +70,40 @@ func TestPreviewRequiresConfig(t *testing.T) {
 	}
 }
 
+func TestPreviewInitCreatesHostAndConfig(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.app"
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"preview", "init"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "ok cmd=preview.init") {
+		t.Fatalf("got %q", out.String())
+	}
+	if !exists(filepath.Join(root, "MAVPreview", "BUILD.bazel")) || !exists(filepath.Join(root, "MAVPreview", "PreviewHostApp.swift")) || !exists(filepath.Join(root, "MAVPreview", "Info.plist")) {
+		t.Fatalf("preview host was not created")
+	}
+	loaded, err := LoadConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.PreviewTarget != "//MAVPreview:MAVPreviewApp" || loaded.PreviewBundleID != "com.example.app.mavpreview" {
+		t.Fatalf("loaded=%+v", loaded)
+	}
+}
+
+func TestLaunchLanguageArgs(t *testing.T) {
+	got := strings.Join(simctlLaunchLanguageArgs(Config{Language: "es", Locale: "es_ES"}), " ")
+	if got != "-AppleLanguages (es) -AppleLocale es_ES" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestCountTreeNodes(t *testing.T) {
 	raw := `[{"children":[{"children":[]},{"children":[{"children":[]}]}]}]`
 	if got := countTreeNodes(raw); got != 4 {
