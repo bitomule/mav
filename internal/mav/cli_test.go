@@ -39,6 +39,29 @@ func TestDoctorDoesNotRequireMaestro(t *testing.T) {
 	}
 }
 
+func TestHelpListsCommands(t *testing.T) {
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{}, Root: t.TempDir(), Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"help"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "Usage:") || !strings.Contains(got, "ui          Inspect") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestSubcommandHelp(t *testing.T) {
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{}, Root: t.TempDir(), Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "--help"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "mav ui tap --id ID") {
+		t.Fatalf("got %q", out.String())
+	}
+}
+
 func TestGoUsesNativeMAVActions(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)

@@ -26,6 +26,7 @@ type GlobalOptions struct {
 	JSON    bool
 	Verbose bool
 	Raw     bool
+	Help    bool
 }
 
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
@@ -40,7 +41,17 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 func (c CLI) Run(ctx context.Context, args []string) error {
 	opts, rest := parseGlobal(args)
 	if len(rest) == 0 {
-		return c.help(opts)
+		return c.help(opts, "")
+	}
+	if rest[0] == "help" {
+		topic := ""
+		if len(rest) > 1 {
+			topic = rest[1]
+		}
+		return c.help(opts, topic)
+	}
+	if opts.Help {
+		return c.help(opts, rest[0])
 	}
 	switch rest[0] {
 	case "doctor":
@@ -87,6 +98,8 @@ func parseGlobal(args []string) (GlobalOptions, []string) {
 			opts.Verbose = true
 		case "--raw":
 			opts.Raw = true
+		case "--help", "-h":
+			opts.Help = true
 		default:
 			rest = append(rest, arg)
 		}
@@ -94,9 +107,99 @@ func parseGlobal(args []string) (GlobalOptions, []string) {
 	return opts, rest
 }
 
-func (c CLI) help(opts GlobalOptions) error {
-	_, err := fmt.Fprintln(c.Stdout, "mav commands: doctor setup discover sim open ui capture preview run go logs stop crashes evidence")
+func (c CLI) help(opts GlobalOptions, topic string) error {
+	help := helpText(topic)
+	if opts.JSON {
+		return json.NewEncoder(c.Stdout).Encode(map[string]any{"ok": true, "cmd": "help", "topic": topic, "text": help})
+	}
+	_, err := fmt.Fprint(c.Stdout, help)
 	return err
+}
+
+func helpText(topic string) string {
+	switch topic {
+	case "", "mav":
+		return `mav - Mobile Agent Verifier for iOS Bazel apps
+
+Usage:
+  mav <command> [flags]
+  mav help [command]
+
+Commands:
+  doctor      Check required tools.
+  setup       Install supported helper tools.
+  discover    Generate .mav/config.yaml and initial app map.
+  sim         List, select, or boot simulators.
+  open        Build, install, launch, and start run logs.
+  ui          Inspect and control the current UI.
+  capture     Capture the current screen.
+  preview     Create or launch an isolated preview host.
+  run         Execute a native MAV YAML flow.
+  go          Navigate from app launch to a mapped screen with evidence.
+  logs        Read captured run logs.
+  stop        Stop run-owned background processes.
+  crashes     List crashes for the configured app.
+  evidence    Start/step/stop/report evidence.
+
+Global flags:
+  --json      Emit structured JSON.
+  --raw       Emit raw underlying tool output where supported.
+  --verbose   Print extra debug details where supported.
+  --help,-h   Show help.
+`
+	case "setup":
+		return "Usage: mav setup --install axe idb\n"
+	case "discover":
+		return "Usage: mav discover\n"
+	case "sim":
+		return `Usage:
+  mav sim list
+  mav sim select --device "iPhone 17 Pro Max" --ios 26 [--locale es_ES] [--language es]
+  mav sim select --udid <simulator-udid>
+  mav sim boot
+`
+	case "open":
+		return `Usage:
+  mav open [--device NAME] [--ios VERSION] [--udid UDID] [--locale LOCALE] [--language LANG]
+`
+	case "ui":
+		return `Usage:
+  mav ui tree
+  mav ui tap --id ID
+  mav ui tap --x X --y Y
+  mav ui tap --text TEXT
+  mav ui type TEXT
+  mav ui swipe [--direction up|down|left|right]
+  mav ui wait --id ID [--timeout 5s]
+  mav ui scrollUntil --id ID [--direction up] [--max-swipes 5]
+`
+	case "capture":
+		return "Usage: mav capture [--run RUN_ID]\n"
+	case "preview":
+		return `Usage:
+  mav preview init [--dir MAVPreview] [--bundle-id BUNDLE_ID] [--force]
+  mav preview <view-id>
+`
+	case "run":
+		return "Usage: mav run flow.yaml\n"
+	case "go":
+		return "Usage: mav go <screen-id>\n"
+	case "logs":
+		return "Usage: mav logs [--run RUN_ID] [--key KEY] [--contains TEXT] [--level LEVEL] [--raw]\n"
+	case "stop":
+		return "Usage: mav stop [--run RUN_ID]\n"
+	case "crashes":
+		return "Usage: mav crashes [--raw]\n"
+	case "evidence":
+		return `Usage:
+  mav evidence start [--run RUN_ID]
+  mav evidence step --name NAME [--note NOTE] [--run RUN_ID]
+  mav evidence stop [--note NOTE] [--no-capture] [--run RUN_ID]
+  mav evidence report [--run RUN_ID]
+`
+	default:
+		return "Unknown help topic. Run: mav help\n"
+	}
 }
 
 func (c CLI) doctor(ctx context.Context, opts GlobalOptions) error {
@@ -653,8 +756,8 @@ func (c CLI) uiWait(ctx context.Context, opts GlobalOptions, cfg Config, args []
 	}
 	timeout := 5 * time.Second
 	if raw := flagValue(args, "--timeout"); raw != "" {
-		if seconds, err := strconv.Atoi(raw); err == nil && seconds > 0 {
-			timeout = time.Duration(seconds) * time.Second
+		if parsed := parseFlowDuration(raw, timeout); parsed > 0 {
+			timeout = parsed
 		}
 	}
 	deadline := time.Now().Add(timeout)

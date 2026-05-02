@@ -1,52 +1,92 @@
 # MAV
 
-Mobile Agent Verifier (`mav`) is a deterministic CLI for helping coding agents
-validate iOS Bazel apps on simulators and devices.
+Mobile Agent Verifier (`mav`) is a deterministic CLI for validating iOS Bazel
+apps from coding agents.
 
-MAV does not explore or decide what to test. It gives agents a compact,
-scriptable API for building, launching, observing, navigating, collecting logs,
-capturing screenshots/video, checking crashes, and producing evidence reports.
+MAV gives agents a compact API to build, launch, observe, navigate, interact,
+capture evidence, read logs, and check crashes. It is intentionally not an
+autonomous testing agent: it runs concrete commands and returns small,
+parseable results that another agent can act on.
+
+## What MAV Is For
+
+- Verifying iOS app changes from an agent without opening Xcode.
+- Driving simulator UI through accessibility trees before screenshots.
+- Building repeatable flows that combine UI actions, waits, screenshots, video,
+  logs, crash checks, and HTML evidence.
+- Maintaining an app map that lets `mav go <screen>` navigate from app launch to
+  known screens.
+- Testing SwiftUI previews or isolated screens through a Bazel preview host.
+
+MAV currently targets iOS Bazel projects. Simulator support is the main path.
+Real-device support is expected to use idb-backed capabilities where available,
+but the simulator path is the one exercised most heavily today.
 
 ## Status
 
-MAV is early. The current focus is iOS apps built with Bazel, simulator
-validation, native MAV flows, accessibility-tree driven UI automation, and
-evidence reports.
+MAV is early and evolving. The current stable pieces are:
+
+- Bazel discovery for iOS app targets.
+- Simulator selection, boot, install, launch, screenshot, and video.
+- AXe-first accessibility tree inspection and semantic interactions.
+- idb coordinate taps and fallback capabilities.
+- Native MAV YAML flows through `mav run`.
+- JSON app map storage in `.mav/map/**`.
+- HTML evidence reports in `/tmp/mav/<run-id>/report.html`.
+- Filtered unified log capture for explicit MAV probes.
 
 ## Requirements
 
-- macOS with Xcode command line tools.
-- Bazel/Bazelisk project containing an iOS app target.
-- `go` for local development builds.
-- `xcrun` for simulator boot, install, launch, screenshots, video, and crashes.
-- `axe` for accessibility tree inspection and semantic interactions.
-- `idb` for coordinate taps and fallback simulator/device capabilities.
+- macOS.
+- Xcode command line tools.
+- Go, for development builds.
+- Bazelisk, for Bazel app builds.
+- AXe, for accessibility tree and semantic UI actions.
+- idb, for coordinate taps and device/simulator fallback operations.
 
-Check your environment:
+Check the local environment:
 
 ```bash
 mav doctor
 ```
 
-Install missing tools that MAV knows how to install:
+Install supported helper tools:
 
 ```bash
 mav setup --install axe idb
 ```
 
+`mav setup` currently uses Homebrew for supported tools.
+
 ## Install
 
-Development build from this repo:
+Build from source:
 
 ```bash
-go build -o .build/mav ./cmd/mav
+git clone https://github.com/bitomule/mav.git
+cd mav
+make build
 ```
 
-Then either run `.build/mav` directly or put it on your `PATH`.
+Run the development binary:
+
+```bash
+.build/mav help
+```
+
+Or put it on your `PATH`:
+
+```bash
+ln -sf "$PWD/.build/mav" /usr/local/bin/mav
+```
+
+Release binaries are built by the GitHub release workflow for tagged releases.
+Homebrew packaging lives in `packaging/homebrew/mav.rb`; checksums must be
+filled from a published release before publishing a tap formula.
 
 ## Quick Start
 
-Run these commands from the root of an iOS Bazel app repo:
+Run from the root of an iOS Bazel app repo:
 
 ```bash
 mav discover
@@ -56,55 +96,119 @@ mav open
 mav ui tree
 ```
 
-`mav discover` writes `.mav/config.yaml`. It caches the Bazel app target,
-bundle id, simulator defaults, and available tools.
+`mav discover` creates `.mav/config.yaml` and an initial app map. It caches the
+Bazel app target, bundle id, selected simulator, locale/language, and available
+tools.
 
-`mav open` builds, installs, and launches the app. It creates a run directory:
+`mav open` builds, installs, and launches the app. It creates a run directory
+under `/tmp/mav/<run-id>/` and starts `logs.txt` for MAV probes.
 
-```text
-/tmp/mav/<run-id>/
-```
-
-Every run may contain:
+Example compact output:
 
 ```text
-logs.txt
-commands.jsonl
-evidence.jsonl
-steps/*.png
-trees/*.json
-video.mov
-crashes/
-report.html
-```
-
-Default output is intentionally compact:
-
-```text
-ok cmd=open run=7fd logs=/tmp/mav/7fd/logs.txt
+ok cmd=discover bundle=com.example.app config=/repo/.mav/config.yaml target=//App:App
+ok cmd=open run=7fd logs=/tmp/mav/7fd/logs.txt target="iPhone 17 Pro Max"
 ok cmd=ui.tree driver=axe nodes=42 screen=start
-fail code=screen_not_found screen=settings
 ```
 
-Use `--json` for parsing and `--raw` when you need the underlying tool output.
+Use `--json` when a caller needs structured output:
+
+```bash
+mav --json ui tree
+```
+
+Use `--raw` only when the underlying tool output is needed:
+
+```bash
+mav --raw ui tree
+```
+
+## Help
+
+```bash
+mav help
+mav help ui
+mav ui --help
+```
+
+The top-level commands are:
+
+```text
+doctor
+setup
+discover
+sim
+open
+ui
+capture
+preview
+run
+go
+logs
+stop
+crashes
+evidence
+```
+
+## Output Contract
+
+Default output is one compact line:
+
+```text
+ok cmd=<command> key=value key=value
+fail code=<error_code> key=value key=value
+```
+
+Examples:
+
+```text
+ok cmd=capture file=/tmp/mav/7fd/screen.png run=7fd
+ok cmd=logs file=/tmp/mav/7fd/logs.txt matches=1 run=7fd
+fail code=screen_not_found next="explore with mav ui tree/tap; map updates when the next screen is observed" screen=settings
+fail code=ui_tree_empty driver=axe reason=simulator_accessibility_unavailable recovered=false
+```
+
+The goal is to give agents the minimum useful fields: what happened, where the
+artifact is, and what to do next when the command failed.
+
+## Project And Run State
+
+Project state:
+
+```text
+.mav/config.yaml
+.mav/map/index.json
+.mav/map/screens/*.json
+.mav/map/current.json
+.mav/map/pending.json
+```
+
+Run state:
+
+```text
+/tmp/mav/<run-id>/logs.txt
+/tmp/mav/<run-id>/commands.jsonl
+/tmp/mav/<run-id>/evidence.jsonl
+/tmp/mav/<run-id>/steps/*.png
+/tmp/mav/<run-id>/trees/*.json
+/tmp/mav/<run-id>/video.mov
+/tmp/mav/<run-id>/crashes/
+/tmp/mav/<run-id>/report.html
+```
+
+`/tmp` may resolve to a macOS per-user temporary directory such as
+`/var/folders/.../T`.
 
 ## App Map
 
-MAV stores the app map in:
-
-```text
-.mav/map/index.json
-.mav/map/screens/*.json
-```
-
-The map is updated by normal MAV usage:
+The app map is JSON. It is updated by normal MAV commands:
 
 1. `mav open` resets the current screen to the configured start screen.
 2. `mav ui tree` records the current accessibility tree and screen elements.
 3. `mav ui tap ...` records a pending action from the current screen.
-4. The next `mav ui tree` observes the new screen and writes the route edge.
+4. The next `mav ui tree` observes the next screen and writes the route edge.
 
-This means the basic mapping loop is:
+Basic mapping loop:
 
 ```bash
 mav open
@@ -119,41 +223,45 @@ Prefer target selectors in this order:
 2. Coordinates: `mav ui tap --x 398 --y 84`
 3. Text: `mav ui tap --text Settings`
 
-Text is the last fallback because copy and localization change. Coordinates are
-acceptable only when the tree is insufficient and a screenshot makes the target
-unambiguous.
+Coordinates should be used only when the accessibility tree is insufficient and
+a screenshot makes the target unambiguous. Text is the last fallback because
+labels change with localization and copy edits.
 
-Review `.mav/map/**` changes before relying on a route.
+Review `.mav/map/**` diffs before relying on a route. The map is source-level
+project state, not temporary run output.
 
 ## Navigation
 
-`mav go <screen-id>` is deterministic. It only works when the target screen and
-a route from app launch already exist in `.mav/map/**`.
+`mav go <screen-id>` starts from app launch and follows a known route in the app
+map.
 
 ```bash
 mav go settings
 ```
 
-`mav go` will:
+It will:
 
 1. Build, install, and launch the app.
 2. Wait for a usable accessibility tree.
-3. Start video evidence.
+3. Start video recording.
 4. Capture the start screen.
-5. Follow the known route.
-6. Validate that the screen changed and target assertions pass.
-7. Capture the target screen.
-8. Stop video, generate a report, and stop run-owned streams.
+5. Execute each mapped route edge with MAV UI primitives.
+6. Validate that each edge changes the tree.
+7. Validate target screen assertions when the map has them.
+8. Capture the target screen.
+9. Stop video.
+10. Generate `report.html`.
+11. Stop run-owned streams.
 
-If the route does not exist, MAV fails clearly:
+If the screen or route is unknown, MAV fails and does not explore:
 
 ```text
 fail code=screen_not_found screen=settings
 fail code=route_not_found screen=settings
 ```
 
-The agent should then explore manually with `mav ui tree`, `mav ui tap`,
-`mav ui scrollUntil`, and `mav capture`. MAV itself does not invent routes.
+The caller should then explore manually with `mav ui tree`, `mav ui tap`,
+`mav ui scrollUntil`, and `mav capture`.
 
 ## UI Commands
 
@@ -168,31 +276,30 @@ mav ui wait --id element_id --timeout 5s
 mav ui scrollUntil --id privacy_policy_button --direction up --max-swipes 4
 ```
 
-AXe is preferred for accessibility tree, semantic taps, typing, swipes, waits,
-and assertions. idb is used when it provides a concrete better capability, such
-as coordinate taps or fallback device/simulator operations.
+AXe is the default driver for accessibility tree inspection, semantic taps,
+typing, swipes, waits, and assertions. idb is used when it provides a concrete
+better capability, such as coordinate taps or fallback simulator/device
+operations.
 
-Tree first, screenshot second:
+Observation priority:
 
-```bash
-mav ui tree
-mav capture
-```
+1. `mav ui tree`
+2. `mav capture`
+3. Video through `mav evidence start/stop` or flows
 
 Screenshots are for visual layout, custom rendering, media/canvas UI, or
-user-facing evidence. The tree is cheaper and better for agents.
+user-facing proof. The accessibility tree is cheaper and more useful for most
+agent decisions.
 
-If AXe/idb return a single empty `AXApplication` tree, MAV treats the simulator
-accessibility service as unavailable. It attempts to reboot the simulator,
-relaunch the app, and retry before failing.
+If AXe/idb return a single empty `AXApplication` tree, MAV treats simulator
+accessibility as unavailable. It attempts a simulator reboot, app relaunch, and
+tree retry before returning `ui_tree_empty`.
 
-## Native Flows
+## Native MAV Flows
 
-`mav run <flow.yaml>` executes a native MAV YAML flow. Use flows for repeatable
-feature validation that needs navigation, waits, screenshots, logs, crashes, or
-reports.
+`mav run <flow.yaml>` executes a native MAV YAML flow.
 
-Example:
+Use flows for repeatable feature validation:
 
 ```yaml
 version: 1
@@ -217,7 +324,7 @@ steps:
   - report: {}
 ```
 
-Supported step types include:
+Supported step types:
 
 ```text
 open
@@ -241,12 +348,12 @@ evidence.stop
 report
 ```
 
-On failure, MAV captures failure evidence when possible, stops recording, writes
-report data, and returns a compact failure line.
+On failure, MAV stops run-owned processes, tries to capture failure evidence,
+writes report data, and returns a compact failure line.
 
 ## Evidence
 
-Evidence is explicit. Use it when the user needs proof of verification.
+Evidence is explicit. Use it when a user needs proof of verification.
 
 For ad-hoc navigation to a mapped screen:
 
@@ -254,9 +361,10 @@ For ad-hoc navigation to a mapped screen:
 mav go settings
 ```
 
-For a feature behavior, write a flow with named evidence steps:
+For feature behavior, use a flow with named evidence points:
 
 ```yaml
+- open: {}
 - evidence.start: {}
 - go: { screen: settings }
 - evidence.step: { name: before-toggle, note: Before tapping Daily Reminder }
@@ -267,11 +375,10 @@ For a feature behavior, write a flow with named evidence steps:
 ```
 
 The video should cover the path from launch/navigation through the tested
-behavior. Screenshots should prove the specific behavior, not just that the app
+behavior. Screenshots should prove the behavior itself, not only that the app
 opened.
 
-MAV does not open the HTML report automatically. Open the reported file when you
-want to inspect or share evidence:
+MAV does not open HTML automatically. Inspect the reported file:
 
 ```text
 /tmp/mav/<run-id>/report.html
@@ -280,9 +387,9 @@ want to inspect or share evidence:
 ## Logs
 
 `mav open`, `mav go`, and `mav run` capture a filtered unified log stream for
-MAV probes into the run's `logs.txt`.
+MAV probes into `logs.txt`.
 
-Use `OSLog.Logger` probes in app code when validating that code executed:
+Use `OSLog.Logger` probes to prove code execution:
 
 ```swift
 import OSLog
@@ -295,24 +402,24 @@ private let mavLog = Logger(
 mavLog.notice("MAV_LOG key=SettingsReached")
 ```
 
-Then read the captured logs:
+Then read logs from the current run:
 
 ```bash
 mav logs --key SettingsReached
 mav logs --contains SettingsReached
-mav logs --raw --key SettingsReached
+mav --raw logs --key SettingsReached
 ```
 
-Do not use Swift `print` for MAV validation probes. MAV is built around
-filtered unified logs so the same pattern applies to simulator and device.
+Do not use Swift `print` for MAV validation probes. MAV is designed around
+filtered unified logs so the same probe pattern applies to simulator and device.
 
-For flow-level shell checks, enable trusted project-local exec:
+For trusted project-local shell assertions, opt in through `.mav/config.yaml`:
 
 ```yaml
 allow_shell: true
 ```
 
-Then use:
+Then use an `exec` step:
 
 ```yaml
 - exec: { cmd: "grep -F 'MAV_LOG key=SettingsReached' $MAV_LOGS", contains: SettingsReached, timeout: 5s }
@@ -324,11 +431,11 @@ security sandbox for untrusted commands.
 
 ## Simulators
 
-List and select simulators:
-
 ```bash
 mav sim list
 mav sim select --device "iPhone 17 Pro Max" --ios 26 --locale es_ES --language es
+mav sim select --udid <simulator-udid>
+mav sim boot
 ```
 
 You can also pass simulator selection flags to `mav open`:
@@ -340,7 +447,7 @@ mav open --device "iPhone 17 Pro Max" --ios 26 --locale es_ES --language es
 ## Previews
 
 Use previews for isolated SwiftUI screens when launching the full app is too
-slow or the screen is deep in a flow:
+slow or the target screen is deep in a flow:
 
 ```bash
 mav preview init
@@ -350,18 +457,51 @@ mav capture
 ```
 
 `mav preview init` creates a Bazel preview host. Wire the real view and any
-lightweight mocks into the generated host, then launch the preview by id.
+lightweight mocks into the generated host, then launch a preview by id.
 
 ## Cleanup
 
-Ad-hoc `mav open` sessions keep log capture running for the current run. Stop
-them when done:
+Ad-hoc `mav open` and `mav preview` sessions keep log capture running for the
+current run. Stop them when done:
 
 ```bash
 mav stop
 ```
 
 `mav go` and `mav run` stop run-owned streams automatically.
+
+## Command Reference
+
+```text
+mav doctor
+mav setup --install axe idb
+mav discover
+mav sim list
+mav sim select --device NAME --ios VERSION [--locale LOCALE] [--language LANG]
+mav sim select --udid UDID
+mav sim boot
+mav open [--device NAME] [--ios VERSION] [--udid UDID] [--locale LOCALE] [--language LANG]
+mav ui tree
+mav ui tap --id ID
+mav ui tap --x X --y Y
+mav ui tap --text TEXT
+mav ui type TEXT
+mav ui swipe [--direction up|down|left|right]
+mav ui wait --id ID [--timeout 5s]
+mav ui scrollUntil --id ID [--direction up] [--max-swipes 5]
+mav capture [--run RUN_ID]
+mav preview init [--dir MAVPreview] [--bundle-id BUNDLE_ID] [--force]
+mav preview <view-id>
+mav run flow.yaml
+mav go <screen-id>
+mav logs [--run RUN_ID] [--key KEY] [--contains TEXT] [--level LEVEL]
+mav stop [--run RUN_ID]
+mav crashes [--raw]
+mav evidence start [--run RUN_ID]
+mav evidence step --name NAME [--note NOTE] [--run RUN_ID]
+mav evidence stop [--note NOTE] [--no-capture] [--run RUN_ID]
+mav evidence report [--run RUN_ID]
+```
 
 ## Troubleshooting
 
@@ -389,9 +529,31 @@ Then inspect `.mav/map/**`.
 `fail code=ui_tree_empty`
 
 The simulator accessibility service did not recover after MAV retried. Re-run
-`mav open` or select/boot another simulator with `mav sim select`.
+`mav open` or select another simulator with `mav sim select`.
 
 `mav logs --key ...` returns no matches
 
-Make sure the app uses `OSLog.Logger` with the configured MAV subsystem/category
-and that the behavior was triggered after `mav open` started the run.
+Make sure the app logs with `OSLog.Logger` using the configured MAV subsystem
+and category, and make sure the behavior happened after MAV started the run.
+
+## Development
+
+```bash
+make test
+make build
+make check
+```
+
+`make check` runs `gofmt`, tests, and a local build.
+
+## Contributing
+
+Issues and pull requests are welcome. Keep changes deterministic and preserve
+compact output: commands should report the minimum information an agent needs to
+continue, parse, or present evidence.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+MIT. See [LICENSE](LICENSE).
