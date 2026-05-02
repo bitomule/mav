@@ -1386,7 +1386,7 @@ func (c CLI) crashes(ctx context.Context, opts GlobalOptions, args []string) err
 
 func (c CLI) evidence(opts GlobalOptions, args []string) error {
 	if len(args) == 0 {
-		return Fail("evidence_command_missing", map[string]string{"usage": "mav evidence start|step|stop|report|video"}).Write(c.Stdout, opts.JSON)
+		return Fail("evidence_command_missing", map[string]string{"usage": "mav evidence start|step|stop|report"}).Write(c.Stdout, opts.JSON)
 	}
 	switch args[0] {
 	case "start":
@@ -1397,8 +1397,6 @@ func (c CLI) evidence(opts GlobalOptions, args []string) error {
 		return c.evidenceStop(context.Background(), opts, args[1:])
 	case "report":
 		return c.evidenceReport(opts, args[1:])
-	case "video":
-		return c.evidenceVideo(opts, args[1:])
 	default:
 		return Fail("evidence_unknown_command", map[string]string{"command": args[0]}).Write(c.Stdout, opts.JSON)
 	}
@@ -1495,64 +1493,6 @@ func (c CLI) evidenceStop(ctx context.Context, opts GlobalOptions, args []string
 	}
 	appendCommand(run, "mav evidence stop", CommandResult{})
 	return OK("evidence.stop", fields).Write(c.Stdout, opts.JSON)
-}
-
-func (c CLI) evidenceVideo(opts GlobalOptions, args []string) error {
-	if len(args) == 0 {
-		return Fail("video_command_missing", map[string]string{"usage": "mav evidence video start|stop"}).Write(c.Stdout, opts.JSON)
-	}
-	run, err := LoadRun(c.Root, flagValue(args[1:], "--run"))
-	if err != nil {
-		return Fail("run_not_found", nil).Write(c.Stdout, opts.JSON)
-	}
-	switch args[0] {
-	case "record":
-		cfg, err := LoadConfig(c.Root)
-		if err != nil {
-			return Fail("config_not_found", map[string]string{"next": "mav discover"}).Write(c.Stdout, opts.JSON)
-		}
-		seconds := flagValue(args[1:], "--seconds")
-		if seconds == "" {
-			seconds = "3"
-		}
-		videoPath := filepath.Join(run.Dir, "video.mov")
-		target := cfg.SimulatorUDID
-		if target == "" {
-			target = "booted"
-		}
-		cmd := []string{"-s", "INT", seconds, "xcrun", "simctl", "io", target, "recordVideo", "--codec=h264", videoPath}
-		result := c.Runner.Run(context.Background(), "timeout", cmd...)
-		appendCommand(run, "timeout "+strings.Join(cmd, " "), result)
-		if result.Err != nil && !exists(videoPath) {
-			return Fail("video_record_failed", map[string]string{"run": run.ID, "logs": run.LogsPath, "stderr": firstLine(result.Stderr)}).Write(c.Stdout, opts.JSON)
-		}
-		return OK("evidence.video.record", map[string]string{"run": run.ID, "file": videoPath, "seconds": seconds}).Write(c.Stdout, opts.JSON)
-	case "start":
-		cfg, err := LoadConfig(c.Root)
-		if err != nil {
-			return Fail("config_not_found", map[string]string{"next": "mav discover"}).Write(c.Stdout, opts.JSON)
-		}
-		videoPath, pid, err := c.startVideoRecording(context.Background(), cfg, run)
-		if err != nil {
-			return Fail("video_start_failed", map[string]string{"error": err.Error()}).Write(c.Stdout, opts.JSON)
-		}
-		_ = os.WriteFile(filepath.Join(run.Dir, "video.pid"), []byte(strconv.Itoa(pid)+"\n"), 0o644)
-		return OK("evidence.video.start", map[string]string{"run": run.ID, "file": videoPath, "pid": strconv.Itoa(pid)}).Write(c.Stdout, opts.JSON)
-	case "stop":
-		pid, err := readPID(filepath.Join(run.Dir, "video.pid"))
-		if err != nil {
-			return Fail("video_not_running", map[string]string{"run": run.ID}).Write(c.Stdout, opts.JSON)
-		}
-		_ = stopProcess(pid)
-		_ = os.Remove(filepath.Join(run.Dir, "video.pid"))
-		videoPath := filepath.Join(run.Dir, "video.mov")
-		if !waitForFile(videoPath, 6*time.Second) {
-			return Fail("video_not_written", map[string]string{"run": run.ID, "file": videoPath, "log": filepath.Join(run.Dir, "video.log")}).Write(c.Stdout, opts.JSON)
-		}
-		return OK("evidence.video.stop", map[string]string{"run": run.ID, "file": videoPath}).Write(c.Stdout, opts.JSON)
-	default:
-		return Fail("video_unknown_command", map[string]string{"command": args[0]}).Write(c.Stdout, opts.JSON)
-	}
 }
 
 func axeTargetArgs(cfg Config, args ...string) []string {
