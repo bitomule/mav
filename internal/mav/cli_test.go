@@ -246,41 +246,7 @@ func TestOpenStartsOnlyProbeLogsByDefault(t *testing.T) {
 		t.Fatalf("records=%+v output=%s", records, out.String())
 	}
 	if strings.Contains(out.String(), " log_pid=") {
-		t.Fatalf("open should not start app-console by default: %s", out.String())
-	}
-}
-
-func TestOpenConsoleStartsAppConsole(t *testing.T) {
-	root := t.TempDir()
-	cfg := DefaultConfig(root)
-	cfg.AppTarget = "//App:App"
-	cfg.BundleID = "com.example.app"
-	cfg.SimulatorUDID = "SIM"
-	cfg.SimulatorName = "iPhone"
-	cfg.Tools = map[string]bool{"xcrun": true, "bazelisk": true, "idb": true}
-	if err := SaveConfig(root, cfg); err != nil {
-		t.Fatal(err)
-	}
-	runner := fakeRunner{tools: cfg.Tools, out: map[string]string{"bazelisk cquery --output=files //App:App": "/tmp/App.app\n"}}
-	var out bytes.Buffer
-	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
-	if err := cli.Run(context.Background(), []string{"open", "--console"}); err != nil {
-		t.Fatal(err)
-	}
-	run, err := LoadRun(root, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	records := loadProcessRecords(run)
-	kinds := map[string]bool{}
-	for _, record := range records {
-		kinds[record.Kind] = true
-	}
-	if !kinds["probe-logs"] || !kinds["app-console"] {
-		t.Fatalf("records=%+v output=%s", records, out.String())
-	}
-	if !strings.Contains(out.String(), " log_pid=") {
-		t.Fatalf("open --console should report log_pid: %s", out.String())
+		t.Fatalf("open should only report probe_log_pid: %s", out.String())
 	}
 }
 

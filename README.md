@@ -22,7 +22,6 @@ mav discover
 mav sim list
 mav sim select --device "iPhone 16 Pro" --ios 26 --locale es_ES --language es
 mav open --device "iPhone 16 Pro" --ios 26
-mav open --console
 mav ui tree
 mav ui tap --id settings_button
 mav ui tap --x 350 --y 480
@@ -49,9 +48,7 @@ Run artifacts live in `/tmp/mav/<run-id>/`.
   Validation probes should use `OSLog.Logger` with the configured
   `log_subsystem` and `log_category`, and messages should start with
   `MAV_LOG key=<StableKey>`.
-- `mav open` starts the filtered probe log stream by default. App console
-  capture is opt-in with `mav open --console` for debugging non-MAV stdout/stderr
-  issues.
+- `mav open` starts only the filtered MAV probe log stream.
 - `mav open` can keep log stream processes running for the current run. Use
   `mav stop` when an ad-hoc verification is done. `mav run` stops run-owned
   log streams automatically on success or failure.

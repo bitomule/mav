@@ -33,7 +33,6 @@ type Config struct {
 	SimulatorRuntime  string
 	Locale            string
 	Language          string
-	LogStrategy       string
 	LogSubsystem      string
 	LogCategory       string
 	PreferredUIDriver string
@@ -44,7 +43,6 @@ type Config struct {
 func DefaultConfig(root string) Config {
 	return Config{
 		Root:              root,
-		LogStrategy:       "probe",
 		LogCategory:       "probe",
 		PreferredUIDriver: "axe",
 		Tools:             map[string]bool{},
@@ -111,8 +109,6 @@ func LoadConfig(root string) (Config, error) {
 			cfg.Locale = value
 		case "language":
 			cfg.Language = value
-		case "log_strategy":
-			cfg.LogStrategy = value
 		case "log_subsystem":
 			cfg.LogSubsystem = value
 		case "log_category":
@@ -152,7 +148,6 @@ func SaveConfig(root string, cfg Config) error {
 	writeKV("simulator_runtime", cfg.SimulatorRuntime)
 	writeKV("locale", cfg.Locale)
 	writeKV("language", cfg.Language)
-	writeKV("log_strategy", cfg.LogStrategy)
 	writeKV("log_subsystem", probeLogSubsystem(cfg))
 	writeKV("log_category", probeLogCategory(cfg))
 	writeKV("preferred_ui_driver", cfg.PreferredUIDriver)

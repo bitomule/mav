@@ -248,15 +248,6 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	if err := SaveCurrentRun(c.Root, run); err != nil {
 		return err
 	}
-	consoleRequested := hasFlag(args, "--console") || cfg.LogStrategy == "app-console"
-	extraLogPID := 0
-	if cfg.LogStrategy == "idb-log" || cfg.LogStrategy == "simctl-log-stream" {
-		var logErr error
-		extraLogPID, logErr = c.startLogs(ctx, cfg, run)
-		if logErr != nil {
-			appendFile(run.LogsPath, "mav log capture failed: "+logErr.Error()+"\n")
-		}
-	}
 	probeLogPID, probeLogErr := c.startProbeLogs(ctx, cfg, run)
 	if probeLogErr != nil {
 		appendFile(run.LogsPath, "mav probe log capture failed: "+probeLogErr.Error()+"\n")
@@ -288,46 +279,17 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 		if install.Err != nil {
 			return Fail("install_failed", map[string]string{"run": run.ID, "logs": run.LogsPath, "stderr": firstLine(install.Stderr)}).Write(c.Stdout, opts.JSON)
 		}
-		if consoleRequested && hasTool(cfg, "idb") {
-			launchArgs := []string{"launch"}
-			if cfg.SimulatorUDID != "" {
-				launchArgs = append(launchArgs, "--udid", cfg.SimulatorUDID)
-			}
-			launchArgs = append(launchArgs, "--wait-for", "--foreground-if-running", cfg.BundleID)
-			launchArgs = append(launchArgs, simctlLaunchLanguageArgs(cfg)...)
-			pid, err := c.Runner.Start(ctx, run.LogsPath, "idb", launchArgs...)
-			appendCommand(run, "idb "+strings.Join(launchArgs, " "), CommandResult{})
-			if err != nil {
-				return Fail("launch_failed", map[string]string{"run": run.ID, "logs": run.LogsPath, "stderr": err.Error()}).Write(c.Stdout, opts.JSON)
-			}
-			appendProcess(run, "app-console", pid, "idb "+strings.Join(launchArgs, " "))
-			extraLogPID = pid
-		} else if consoleRequested && cfg.LogStrategy == "simctl-launch-console" {
-			launchArgs := []string{"simctl", "launch", "--console", target, cfg.BundleID}
-			launchArgs = append(launchArgs, simctlLaunchLanguageArgs(cfg)...)
-			pid, err := c.Runner.Start(ctx, run.LogsPath, "xcrun", launchArgs...)
-			appendCommand(run, "xcrun "+strings.Join(launchArgs, " "), CommandResult{})
-			if err != nil {
-				return Fail("launch_failed", map[string]string{"run": run.ID, "logs": run.LogsPath, "stderr": err.Error()}).Write(c.Stdout, opts.JSON)
-			}
-			appendProcess(run, "app-console", pid, "xcrun "+strings.Join(launchArgs, " "))
-			extraLogPID = pid
-		} else {
-			launchArgs := []string{"simctl", "launch", target, cfg.BundleID}
-			launchArgs = append(launchArgs, simctlLaunchLanguageArgs(cfg)...)
-			launch := c.Runner.Run(ctx, "xcrun", launchArgs...)
-			appendCommand(run, "xcrun "+strings.Join(launchArgs, " "), launch)
-			if launch.Err != nil {
-				return Fail("launch_failed", map[string]string{"run": run.ID, "logs": run.LogsPath, "stderr": firstLine(launch.Stderr)}).Write(c.Stdout, opts.JSON)
-			}
+		launchArgs := []string{"simctl", "launch", target, cfg.BundleID}
+		launchArgs = append(launchArgs, simctlLaunchLanguageArgs(cfg)...)
+		launch := c.Runner.Run(ctx, "xcrun", launchArgs...)
+		appendCommand(run, "xcrun "+strings.Join(launchArgs, " "), launch)
+		if launch.Err != nil {
+			return Fail("launch_failed", map[string]string{"run": run.ID, "logs": run.LogsPath, "stderr": firstLine(launch.Stderr)}).Write(c.Stdout, opts.JSON)
 		}
 	}
 	fields := map[string]string{"run": run.ID, "logs": run.LogsPath, "dir": run.Dir}
 	if appPath != "" {
 		fields["app"] = appPath
-	}
-	if extraLogPID > 0 {
-		fields["log_pid"] = strconv.Itoa(extraLogPID)
 	}
 	if probeLogPID > 0 {
 		fields["probe_log_pid"] = strconv.Itoa(probeLogPID)
@@ -387,40 +349,6 @@ func simctlLaunchLanguageArgs(cfg Config) []string {
 		args = append(args, "-AppleLocale", cfg.Locale)
 	}
 	return args
-}
-
-func (c CLI) startLogs(ctx context.Context, cfg Config, run RunState) (int, error) {
-	if cfg.LogStrategy == "idb-log" && hasTool(cfg, "idb") {
-		args := []string{}
-		if cfg.SimulatorUDID != "" {
-			args = append(args, "--udid", cfg.SimulatorUDID)
-		}
-		args = append(args, "log", "--level", "debug")
-		if cfg.ProcessName != "" {
-			args = append(args, "--predicate", `process == "`+cfg.ProcessName+`"`)
-		}
-		pid, err := c.Runner.Start(ctx, run.LogsPath, "idb", args...)
-		if err == nil {
-			appendProcess(run, "logs", pid, "idb "+strings.Join(args, " "))
-		}
-		return pid, err
-	}
-	if !hasTool(cfg, "xcrun") {
-		return 0, fmt.Errorf("xcrun_missing")
-	}
-	target := cfg.SimulatorUDID
-	if target == "" {
-		target = "booted"
-	}
-	args := []string{"simctl", "spawn", target, "log", "stream", "--level", "debug", "--style", "compact"}
-	if cfg.ProcessName != "" {
-		args = append(args, "--predicate", `process == "`+cfg.ProcessName+`"`)
-	}
-	pid, err := c.Runner.Start(ctx, run.LogsPath, "xcrun", args...)
-	if err == nil {
-		appendProcess(run, "logs", pid, "xcrun "+strings.Join(args, " "))
-	}
-	return pid, err
 }
 
 func (c CLI) startProbeLogs(ctx context.Context, cfg Config, run RunState) (int, error) {
@@ -724,9 +652,9 @@ func (c CLI) preview(ctx context.Context, opts GlobalOptions, args []string) err
 	if err := SaveCurrentRun(c.Root, run); err != nil {
 		return err
 	}
-	logPID, logErr := c.startLogs(ctx, cfg, run)
-	if logErr != nil {
-		appendFile(run.LogsPath, "mav log capture failed: "+logErr.Error()+"\n")
+	probeLogPID, probeLogErr := c.startProbeLogs(ctx, cfg, run)
+	if probeLogErr != nil {
+		appendFile(run.LogsPath, "mav probe log capture failed: "+probeLogErr.Error()+"\n")
 	}
 	build := c.Runner.Run(ctx, "bazelisk", "build", cfg.PreviewTarget)
 	appendCommand(run, "bazelisk build "+cfg.PreviewTarget, build)
@@ -758,8 +686,10 @@ func (c CLI) preview(ctx context.Context, opts GlobalOptions, args []string) err
 		return Fail("preview_launch_failed", map[string]string{"run": run.ID, "logs": run.LogsPath, "stderr": firstLine(launch.Stderr)}).Write(c.Stdout, opts.JSON)
 	}
 	fields := map[string]string{"run": run.ID, "logs": run.LogsPath, "app": appPath}
-	if logPID > 0 {
-		fields["log_pid"] = strconv.Itoa(logPID)
+	if probeLogPID > 0 {
+		fields["probe_log_pid"] = strconv.Itoa(probeLogPID)
+		fields["log_subsystem"] = probeLogSubsystem(cfg)
+		fields["log_category"] = probeLogCategory(cfg)
 	}
 	if len(args) > 0 {
 		fields["view"] = args[0]
