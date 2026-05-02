@@ -419,31 +419,55 @@ func (c CLI) uiTree(ctx context.Context, opts GlobalOptions, cfg Config) error {
 }
 
 func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
-	if !hasTool(cfg, "axe") {
-		return Fail("tool_missing", map[string]string{"tool": "axe"}).Write(c.Stdout, opts.JSON)
-	}
 	id := flagValue(args, "--id")
 	text := flagValue(args, "--text")
+	x := flagValue(args, "--x")
+	y := flagValue(args, "--y")
+	if x != "" && y != "" {
+		if !hasTool(cfg, "idb") {
+			return Fail("tool_missing", map[string]string{"tool": "idb"}).Write(c.Stdout, opts.JSON)
+		}
+		result := c.Runner.Run(ctx, "idb", idbTargetArgs(cfg, "ui", "tap", x, y)...)
+		if result.Err != nil {
+			return Fail("ui_tap_failed", map[string]string{"stderr": firstLine(result.Stderr)}).Write(c.Stdout, opts.JSON)
+		}
+		c.appendCurrentCommand("mav ui tap --x "+x+" --y "+y, result)
+		return OK("ui.tap", map[string]string{"x": x, "y": y}).Write(c.Stdout, opts.JSON)
+	}
+	if !hasTool(cfg, "axe") {
+		return Fail("tool_missing", map[string]string{"tool": "axe", "next": "use mav ui tap --x X --y Y when AXe is unavailable"}).Write(c.Stdout, opts.JSON)
+	}
 	axeArgs := axeTargetArgs(cfg, "tap")
 	if id != "" {
 		axeArgs = append(axeArgs, "--id", id)
 	} else if text != "" {
 		axeArgs = append(axeArgs, "--label", text)
 	} else {
-		return Fail("tap_target_missing", map[string]string{"usage": "mav ui tap --id ID | --text TEXT"}).Write(c.Stdout, opts.JSON)
+		return Fail("tap_target_missing", map[string]string{"usage": "mav ui tap --id ID | --text TEXT | --x X --y Y"}).Write(c.Stdout, opts.JSON)
 	}
 	result := c.Runner.Run(ctx, "axe", axeArgs...)
 	if result.Err != nil {
 		return Fail("ui_tap_failed", map[string]string{"stderr": firstLine(result.Stderr)}).Write(c.Stdout, opts.JSON)
 	}
+	command := "mav ui tap"
 	fields := map[string]string{}
 	if id != "" {
 		fields["id"] = id
+		command += " --id " + id
 	}
 	if text != "" {
 		fields["text"] = text
+		command += " --text " + text
 	}
+	c.appendCurrentCommand(command, result)
 	return OK("ui.tap", fields).Write(c.Stdout, opts.JSON)
+}
+
+func (c CLI) appendCurrentCommand(command string, result CommandResult) {
+	run, err := LoadRun(c.Root, "")
+	if err == nil && run.ID != "" {
+		appendCommand(run, command, result)
+	}
 }
 
 func (c CLI) uiType(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
@@ -513,25 +537,34 @@ func (c CLI) capture(ctx context.Context, opts GlobalOptions, args []string) err
 		_ = SaveCurrentRun(c.Root, run)
 	}
 	path := filepath.Join(run.Dir, "screen.png")
-	var result CommandResult
-	if hasTool(cfg, "axe") {
-		axeArgs := axeTargetArgs(cfg, "screenshot", "--output", path)
-		result = c.Runner.Run(ctx, "axe", axeArgs...)
-	} else if hasTool(cfg, "idb") {
-		result = c.Runner.Run(ctx, "idb", idbTargetArgs(cfg, "screenshot", path)...)
-	} else if hasTool(cfg, "xcrun") {
-		target := cfg.SimulatorUDID
-		if target == "" {
-			target = "booted"
-		}
-		result = c.Runner.Run(ctx, "xcrun", "simctl", "io", target, "screenshot", path)
-	} else {
+	result, err := c.captureScreenshot(ctx, cfg, path)
+	if err != nil {
 		return Fail("tool_missing", map[string]string{"tool": "axe|xcrun"}).Write(c.Stdout, opts.JSON)
 	}
 	if result.Err != nil {
 		return Fail("capture_failed", map[string]string{"stderr": firstLine(result.Stderr)}).Write(c.Stdout, opts.JSON)
 	}
 	return OK("capture", map[string]string{"file": path, "run": run.ID}).Write(c.Stdout, opts.JSON)
+}
+
+func (c CLI) captureScreenshot(ctx context.Context, cfg Config, path string) (CommandResult, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return CommandResult{}, err
+	}
+	if hasTool(cfg, "axe") {
+		return c.Runner.Run(ctx, "axe", axeTargetArgs(cfg, "screenshot", "--output", path)...), nil
+	}
+	if hasTool(cfg, "idb") {
+		return c.Runner.Run(ctx, "idb", idbTargetArgs(cfg, "screenshot", path)...), nil
+	}
+	if hasTool(cfg, "xcrun") {
+		target := cfg.SimulatorUDID
+		if target == "" {
+			target = "booted"
+		}
+		return c.Runner.Run(ctx, "xcrun", "simctl", "io", target, "screenshot", path), nil
+	}
+	return CommandResult{}, fmt.Errorf("capture_tool_missing")
 }
 
 func (c CLI) preview(ctx context.Context, opts GlobalOptions, args []string) error {
@@ -669,7 +702,7 @@ func (c CLI) goScreen(ctx context.Context, opts GlobalOptions, args []string) er
 		run, _ = NewRunState()
 		_ = SaveCurrentRun(c.Root, run)
 	}
-	evidence := hasFlag(args[1:], "--evidence")
+	evidence := hasFlag(args[1:], "--evidence") || hasFlag(args[1:], "--record")
 	flow := MaestroFlow(m, route, screenID, MaestroFlowOptions{CaptureSteps: evidence})
 	tmp := filepath.Join(os.TempDir(), "mav-"+run.ID+"-"+screenID+".yaml")
 	if err := os.WriteFile(tmp, []byte(flow), 0o644); err != nil {
@@ -682,25 +715,20 @@ func (c CLI) goScreen(ctx context.Context, opts GlobalOptions, args []string) er
 		_ = os.MkdirAll(maestroDir, 0o755)
 		maestroArgs = append([]string{"test", "--debug-output", maestroDir, "--flatten-debug-output"}, tmp)
 	}
-	var videoPID int
-	videoSeconds := flagValue(args[1:], "--video-seconds")
-	if videoSeconds != "" {
-		videoPath := filepath.Join(run.Dir, "video.mp4")
-		cfgForVideo, _ := LoadConfig(c.Root)
-		videoArgs := []string{videoSeconds, "idb", "record-video"}
-		if cfgForVideo.SimulatorUDID != "" {
-			videoArgs = append(videoArgs, "--udid", cfgForVideo.SimulatorUDID)
-		}
-		videoArgs = append(videoArgs, videoPath)
-		if pid, err := c.Runner.Start(ctx, filepath.Join(run.Dir, "video.log"), "timeout", videoArgs...); err == nil {
+	record := hasFlag(args[1:], "--record") || flagValue(args[1:], "--video-seconds") != ""
+	videoPID := 0
+	videoPath := filepath.Join(run.Dir, "video.mov")
+	if record && cfgErr == nil {
+		if path, pid, err := c.startVideoRecording(ctx, cfg, run); err == nil {
+			videoPath = path
 			videoPID = pid
+			time.Sleep(750 * time.Millisecond)
 		}
 	}
 	result := c.Runner.Run(ctx, "maestro", maestroArgs...)
 	if videoPID > 0 {
-		if proc, err := os.FindProcess(videoPID); err == nil {
-			_ = proc.Signal(syscall.SIGTERM)
-		}
+		_ = stopProcess(videoPID)
+		_ = waitForFile(videoPath, 6*time.Second)
 	}
 	if evidence {
 		collectMaestroScreenshots(c.Root, filepath.Join(run.Dir, "maestro"))
@@ -713,8 +741,8 @@ func (c CLI) goScreen(ctx context.Context, opts GlobalOptions, args []string) er
 	if evidence {
 		fields["evidence"] = filepath.Join(run.Dir, "maestro")
 	}
-	if videoSeconds != "" {
-		fields["video"] = filepath.Join(run.Dir, "video.mp4")
+	if record {
+		fields["video"] = videoPath
 	}
 	return OK("go", fields).Write(c.Stdout, opts.JSON)
 }
@@ -775,9 +803,15 @@ func (c CLI) crashes(ctx context.Context, opts GlobalOptions, args []string) err
 
 func (c CLI) evidence(opts GlobalOptions, args []string) error {
 	if len(args) == 0 {
-		return Fail("evidence_command_missing", map[string]string{"usage": "mav evidence report|video"}).Write(c.Stdout, opts.JSON)
+		return Fail("evidence_command_missing", map[string]string{"usage": "mav evidence start|step|stop|report|video"}).Write(c.Stdout, opts.JSON)
 	}
 	switch args[0] {
+	case "start":
+		return c.evidenceStart(context.Background(), opts, args[1:])
+	case "step":
+		return c.evidenceStep(context.Background(), opts, args[1:])
+	case "stop":
+		return c.evidenceStop(context.Background(), opts, args[1:])
 	case "report":
 		return c.evidenceReport(opts, args[1:])
 	case "video":
@@ -799,6 +833,86 @@ func (c CLI) evidenceReport(opts GlobalOptions, args []string) error {
 	return OK("evidence.report", map[string]string{"run": run.ID, "file": path}).Write(c.Stdout, opts.JSON)
 }
 
+func (c CLI) evidenceStart(ctx context.Context, opts GlobalOptions, args []string) error {
+	cfg, err := LoadConfig(c.Root)
+	if err != nil {
+		return Fail("config_not_found", map[string]string{"next": "mav discover"}).Write(c.Stdout, opts.JSON)
+	}
+	run, err := LoadRun(c.Root, flagValue(args, "--run"))
+	if err != nil {
+		return Fail("run_not_found", nil).Write(c.Stdout, opts.JSON)
+	}
+	path, pid, err := c.startVideoRecording(ctx, cfg, run)
+	if err != nil {
+		return Fail("evidence_start_failed", map[string]string{"run": run.ID, "error": err.Error()}).Write(c.Stdout, opts.JSON)
+	}
+	if err := os.WriteFile(filepath.Join(run.Dir, "video.pid"), []byte(strconv.Itoa(pid)+"\n"), 0o644); err != nil {
+		return err
+	}
+	appendCommand(run, "mav evidence start", CommandResult{})
+	return OK("evidence.start", map[string]string{"run": run.ID, "file": path, "pid": strconv.Itoa(pid)}).Write(c.Stdout, opts.JSON)
+}
+
+func (c CLI) evidenceStep(ctx context.Context, opts GlobalOptions, args []string) error {
+	cfg, err := LoadConfig(c.Root)
+	if err != nil {
+		return Fail("config_not_found", map[string]string{"next": "mav discover"}).Write(c.Stdout, opts.JSON)
+	}
+	run, err := LoadRun(c.Root, flagValue(args, "--run"))
+	if err != nil {
+		return Fail("run_not_found", nil).Write(c.Stdout, opts.JSON)
+	}
+	name := flagValue(args, "--name")
+	if name == "" {
+		name = "step"
+	}
+	name = safeFileName(name)
+	steps := LoadEvidenceSteps(run)
+	file := filepath.Join(run.Dir, "steps", fmt.Sprintf("%02d_%s.png", len(steps)+1, name))
+	result, err := c.captureScreenshot(ctx, cfg, file)
+	if err != nil {
+		return Fail("tool_missing", map[string]string{"tool": "axe|idb|xcrun"}).Write(c.Stdout, opts.JSON)
+	}
+	if result.Err != nil {
+		return Fail("evidence_step_failed", map[string]string{"stderr": firstLine(result.Stderr)}).Write(c.Stdout, opts.JSON)
+	}
+	step := EvidenceStep{Name: name, Note: flagValue(args, "--note"), File: file, Kind: "screenshot"}
+	if err := AppendEvidenceStep(run, step); err != nil {
+		return err
+	}
+	appendCommand(run, "mav evidence step --name "+name, result)
+	return OK("evidence.step", map[string]string{"run": run.ID, "name": name, "file": file}).Write(c.Stdout, opts.JSON)
+}
+
+func (c CLI) evidenceStop(ctx context.Context, opts GlobalOptions, args []string) error {
+	run, err := LoadRun(c.Root, flagValue(args, "--run"))
+	if err != nil {
+		return Fail("run_not_found", nil).Write(c.Stdout, opts.JSON)
+	}
+	pid, err := readPID(filepath.Join(run.Dir, "video.pid"))
+	if err != nil {
+		return Fail("video_not_running", map[string]string{"run": run.ID}).Write(c.Stdout, opts.JSON)
+	}
+	_ = stopProcess(pid)
+	_ = os.Remove(filepath.Join(run.Dir, "video.pid"))
+	fields := map[string]string{"run": run.ID, "file": filepath.Join(run.Dir, "video.mov")}
+	if !waitForFile(fields["file"], 6*time.Second) {
+		return Fail("video_not_written", map[string]string{"run": run.ID, "file": fields["file"], "log": filepath.Join(run.Dir, "video.log")}).Write(c.Stdout, opts.JSON)
+	}
+	if !hasFlag(args, "--no-capture") {
+		cfg, cfgErr := LoadConfig(c.Root)
+		if cfgErr == nil {
+			file := filepath.Join(run.Dir, "steps", fmt.Sprintf("%02d_final.png", len(LoadEvidenceSteps(run))+1))
+			if result, err := c.captureScreenshot(ctx, cfg, file); err == nil && result.Err == nil {
+				_ = AppendEvidenceStep(run, EvidenceStep{Name: "final", Note: flagValue(args, "--note"), File: file, Kind: "screenshot"})
+				fields["screenshot"] = file
+			}
+		}
+	}
+	appendCommand(run, "mav evidence stop", CommandResult{})
+	return OK("evidence.stop", fields).Write(c.Stdout, opts.JSON)
+}
+
 func (c CLI) evidenceVideo(opts GlobalOptions, args []string) error {
 	if len(args) == 0 {
 		return Fail("video_command_missing", map[string]string{"usage": "mav evidence video start|stop"}).Write(c.Stdout, opts.JSON)
@@ -813,20 +927,16 @@ func (c CLI) evidenceVideo(opts GlobalOptions, args []string) error {
 		if err != nil {
 			return Fail("config_not_found", map[string]string{"next": "mav discover"}).Write(c.Stdout, opts.JSON)
 		}
-		if !hasTool(cfg, "idb") {
-			return Fail("tool_missing", map[string]string{"tool": "idb"}).Write(c.Stdout, opts.JSON)
-		}
 		seconds := flagValue(args[1:], "--seconds")
 		if seconds == "" {
 			seconds = "3"
 		}
-		videoPath := filepath.Join(run.Dir, "video.mp4")
-		idbArgs := []string{"record-video"}
-		if cfg.SimulatorUDID != "" {
-			idbArgs = append(idbArgs, "--udid", cfg.SimulatorUDID)
+		videoPath := filepath.Join(run.Dir, "video.mov")
+		target := cfg.SimulatorUDID
+		if target == "" {
+			target = "booted"
 		}
-		idbArgs = append(idbArgs, videoPath)
-		cmd := append([]string{seconds, "idb"}, idbArgs...)
+		cmd := []string{"-s", "INT", seconds, "xcrun", "simctl", "io", target, "recordVideo", "--codec=h264", videoPath}
 		result := c.Runner.Run(context.Background(), "timeout", cmd...)
 		appendCommand(run, "timeout "+strings.Join(cmd, " "), result)
 		if result.Err != nil && !exists(videoPath) {
@@ -838,38 +948,24 @@ func (c CLI) evidenceVideo(opts GlobalOptions, args []string) error {
 		if err != nil {
 			return Fail("config_not_found", map[string]string{"next": "mav discover"}).Write(c.Stdout, opts.JSON)
 		}
-		if !hasTool(cfg, "idb") {
-			return Fail("tool_missing", map[string]string{"tool": "idb"}).Write(c.Stdout, opts.JSON)
-		}
-		videoPath := filepath.Join(run.Dir, "video.mp4")
-		videoArgs := []string{"record-video"}
-		if cfg.SimulatorUDID != "" {
-			videoArgs = append(videoArgs, "--udid", cfg.SimulatorUDID)
-		}
-		videoArgs = append(videoArgs, videoPath)
-		pid, err := c.Runner.Start(context.Background(), filepath.Join(run.Dir, "video.log"), "idb", videoArgs...)
+		videoPath, pid, err := c.startVideoRecording(context.Background(), cfg, run)
 		if err != nil {
 			return Fail("video_start_failed", map[string]string{"error": err.Error()}).Write(c.Stdout, opts.JSON)
 		}
 		_ = os.WriteFile(filepath.Join(run.Dir, "video.pid"), []byte(strconv.Itoa(pid)+"\n"), 0o644)
 		return OK("evidence.video.start", map[string]string{"run": run.ID, "file": videoPath, "pid": strconv.Itoa(pid)}).Write(c.Stdout, opts.JSON)
 	case "stop":
-		pidData, err := os.ReadFile(filepath.Join(run.Dir, "video.pid"))
+		pid, err := readPID(filepath.Join(run.Dir, "video.pid"))
 		if err != nil {
 			return Fail("video_not_running", map[string]string{"run": run.ID}).Write(c.Stdout, opts.JSON)
 		}
-		pid, err := strconv.Atoi(strings.TrimSpace(string(pidData)))
-		if err != nil {
-			return Fail("video_pid_invalid", map[string]string{"run": run.ID}).Write(c.Stdout, opts.JSON)
-		}
-		proc, err := os.FindProcess(pid)
-		if err != nil {
-			return Fail("video_process_not_found", map[string]string{"pid": strconv.Itoa(pid)}).Write(c.Stdout, opts.JSON)
-		}
-		_ = proc.Signal(syscall.SIGTERM)
-		time.Sleep(500 * time.Millisecond)
+		_ = stopProcess(pid)
 		_ = os.Remove(filepath.Join(run.Dir, "video.pid"))
-		return OK("evidence.video.stop", map[string]string{"run": run.ID, "file": filepath.Join(run.Dir, "video.mp4")}).Write(c.Stdout, opts.JSON)
+		videoPath := filepath.Join(run.Dir, "video.mov")
+		if !waitForFile(videoPath, 6*time.Second) {
+			return Fail("video_not_written", map[string]string{"run": run.ID, "file": videoPath, "log": filepath.Join(run.Dir, "video.log")}).Write(c.Stdout, opts.JSON)
+		}
+		return OK("evidence.video.stop", map[string]string{"run": run.ID, "file": videoPath}).Write(c.Stdout, opts.JSON)
 	default:
 		return Fail("video_unknown_command", map[string]string{"command": args[0]}).Write(c.Stdout, opts.JSON)
 	}
@@ -887,6 +983,78 @@ func idbTargetArgs(cfg Config, args ...string) []string {
 	out := append([]string{}, args...)
 	if cfg.SimulatorUDID != "" {
 		out = append(out, "--udid", cfg.SimulatorUDID)
+	}
+	return out
+}
+
+func (c CLI) startVideoRecording(ctx context.Context, cfg Config, run RunState) (string, int, error) {
+	if !hasTool(cfg, "xcrun") {
+		return "", 0, fmt.Errorf("xcrun_missing")
+	}
+	target := cfg.SimulatorUDID
+	if target == "" {
+		target = "booted"
+	}
+	videoPath := filepath.Join(run.Dir, "video.mov")
+	args := []string{"simctl", "io", target, "recordVideo", "--codec=h264", videoPath}
+	pid, err := c.Runner.Start(ctx, filepath.Join(run.Dir, "video.log"), "xcrun", args...)
+	return videoPath, pid, err
+}
+
+func readPID(path string) (int, error) {
+	pidData, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	return strconv.Atoi(strings.TrimSpace(string(pidData)))
+}
+
+func stopProcess(pid int) error {
+	if err := syscall.Kill(-pid, syscall.SIGINT); err == nil {
+		time.Sleep(1500 * time.Millisecond)
+		return nil
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+	_ = proc.Signal(syscall.SIGINT)
+	time.Sleep(1500 * time.Millisecond)
+	return nil
+}
+
+func waitForFile(path string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if info, err := os.Stat(path); err == nil && info.Size() > 0 {
+			return true
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	return false
+}
+
+func safeFileName(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" {
+		return "step"
+	}
+	var b strings.Builder
+	lastDash := false
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return "step"
 	}
 	return out
 }

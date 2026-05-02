@@ -22,7 +22,10 @@ does not explore or repair routes by itself. The agent decides the next action.
    structured than screenshots.
 6. Use `mav capture` only when the tree is insufficient or visual evidence is
    needed.
-7. Use `mav ui tap/type/swipe/wait` for manual exploration.
+7. Use `mav ui tap/type/swipe/wait` for manual exploration. Prefer semantic
+   AXe taps (`--id` or `--text`). If AXe cannot target the element and the
+   screenshot makes the target unambiguous, use idb-backed coordinates with
+   `mav ui tap --x ... --y ...`.
 8. Use `mav go <screen-id>` only after `.mav/app-map.yaml` contains that screen
    and route. If MAV returns `screen_not_found` or `route_not_found`, explore
    manually and update the map yourself.
@@ -47,20 +50,25 @@ streams.
 
 Use evidence when the user needs proof of verification:
 
-1. Evidence must show the relevant checked steps or feature state. Prefer
-   `mav go <screen-id> --evidence` for mapped flows so Maestro step screenshots
-   are collected automatically.
-2. Record video when validating a user-visible flow. The video should cover the
-   full sequence from launch/open through reaching and testing the feature. Use
-   `mav go <screen-id> --video-seconds N` for mapped flows, or
-   `mav evidence video record --seconds N` when manually driving the app.
-3. Confirm logs/crashes with `mav logs` and `mav crashes`.
-4. Run `mav evidence report`.
-5. Share the generated `/tmp/mav/<run-id>/report.html`.
+1. Start recording before the user-visible flow with `mav evidence start`.
+2. Navigate with `mav go <screen-id>` when the route is mapped, or use
+   `mav ui ...` manually when it is not.
+3. Capture named proof points with `mav evidence step --name ... --note ...`.
+   Names should describe the assertion, for example `settings-before-toggle`
+   and `settings-after-toggle`.
+4. Stop recording after the tested behavior with `mav evidence stop`.
+5. Confirm logs/crashes with `mav logs` and `mav crashes`.
+6. Run `mav evidence report`.
+7. Share the generated `/tmp/mav/<run-id>/report.html`.
 
-The skill decides how long to record and which screenshots are useful, but
-user-facing verification should include enough visual evidence to reconstruct
-what was tested.
+The video must cover the complete verification path from launch/navigation
+through the tested behavior. The screenshots must prove the behavior itself, not
+just that the app opened. For a notification toggle, record the navigation to
+Settings, capture before toggling, toggle it, capture after toggling, then stop.
+
+`mav go --record` is acceptable only as a shortcut for a mapped navigation route.
+It is not enough for feature verification unless the route itself is the feature
+being tested.
 
 ## Previews
 
