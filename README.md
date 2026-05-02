@@ -40,7 +40,14 @@ Run artifacts live in `/tmp/mav/<run-id>/`.
 
 ## Design Rules
 
-- `mav go` only follows known routes in `.mav/app-map.yaml`.
+- `mav go` only follows known routes in `.mav/map/index.json` and
+  `.mav/map/screens/*.json`. It opens the app from launch, records evidence,
+  navigates, validates screen change/assertions, writes a report, and stops
+  run-owned streams.
+- The app map is updated by normal MAV observations. `mav open` resets the
+  current screen to the configured start screen, `mav ui tree` records the
+  current screen tree/elements, and a successful `mav ui tap` followed by
+  `mav ui tree` records the edge between screens.
 - `mav sim` selects and boots explicit simulator devices, runtimes and locales.
 - `mav capture` never navigates.
 - `mav logs` only reads logs captured when MAV launched the app. MAV captures
@@ -48,11 +55,14 @@ Run artifacts live in `/tmp/mav/<run-id>/`.
   Validation probes should use `OSLog.Logger` with the configured
   `log_subsystem` and `log_category`, and messages should start with
   `MAV_LOG key=<StableKey>`.
-- `mav open` starts only the filtered MAV probe log stream.
-- `mav open` can keep log stream processes running for the current run. Use
-  `mav stop` when an ad-hoc verification is done. `mav run` stops run-owned
-  log streams automatically on success or failure.
+- `mav open` starts only the filtered MAV probe log stream and stops the
+  previous current run before creating a new one.
+- Use `mav stop` when an ad-hoc verification is done. `mav run` and `mav go`
+  stop run-owned log streams automatically on success or failure.
 - Accessibility tree inspection is preferred before screenshots.
+- If AXe/idb return a single empty `AXApplication` tree, MAV treats the
+  simulator accessibility service as unavailable and attempts a simulator reboot
+  and app relaunch before failing.
 - AXe is the primary driver for tree and semantic taps. Prefer accessibility ids
   first, coordinates only when the visual target is unambiguous, and text as the
   final fallback because labels change with localization and copy. idb remains

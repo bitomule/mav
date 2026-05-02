@@ -19,19 +19,25 @@ does not explore or repair routes by itself. The agent decides the next action.
 4. Start the app with `mav open`. This creates `/tmp/mav/<run-id>/` and starts
    `logs.txt`. MAV captures a filtered unified log stream for MAV probes.
 5. Prefer `mav ui tree` to understand the current screen. It is cheaper and more
-   structured than screenshots.
+   structured than screenshots. If the simulator accessibility service returns
+   an empty `AXApplication` tree, MAV attempts recovery internally; do not work
+   around it with screenshots unless `mav ui tree` fails after recovery.
 6. Use `mav capture` only when the tree is insufficient or visual evidence is
    needed.
 7. Use `mav ui tap/type/swipe/wait/scrollUntil` for manual exploration. Prefer
    accessibility identifiers first (`--id`). Use coordinates only when the tree
    is insufficient and the screenshot makes the target unambiguous. Use text as
    the last option because labels change with localization and copy edits.
-8. Use `mav go <screen-id>` only after `.mav/app-map.yaml` contains that screen
-   and route. If MAV returns `screen_not_found` or `route_not_found`, explore
-   manually and update the map yourself.
+8. Use `mav go <screen-id>` only after `.mav/map/index.json` and
+   `.mav/map/screens/*.json` contain that screen and a route from app launch.
+   `mav go` opens the app, records evidence from the start screen to the target,
+   validates screen change/assertions, writes a report, and stops run-owned
+   streams. If MAV returns `screen_not_found` or `route_not_found`, explore
+   manually with `mav ui tree/tap`; the map updates when the next screen is
+   observed with `mav ui tree`.
 9. Use `mav preview init` to create a Bazel preview host, wire the view under
    test into the generated host, then use `mav preview <view-id>` and `mav capture`.
-10. If `.mav/app-map.yaml` changes, review the git diff before continuing.
+10. If `.mav/map/**` changes, review the git diff before continuing.
 11. For ad-hoc sessions started with `mav open`, run `mav stop` when validation
     is done. `mav run` stops run-owned streams automatically.
 
@@ -95,8 +101,9 @@ through the tested behavior. The screenshots must prove the behavior itself, not
 just that the app opened. For a notification toggle, record the navigation to
 Settings, capture before toggling, toggle it, capture after toggling, then stop.
 
-Use `mav go <screen-id>` for ad-hoc navigation. Use `mav run` for feature
-verification evidence.
+Use `mav go <screen-id>` for ad-hoc navigation evidence to a mapped screen. Use
+`mav run` for feature verification evidence where the tested behavior needs
+extra taps, waits, logs, crash checks, or assertions after navigation.
 
 For off-screen elements, use `scrollUntil` in a MAV flow or `mav ui scrollUntil`
 manually before tapping:

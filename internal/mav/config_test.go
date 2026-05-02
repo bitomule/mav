@@ -11,6 +11,8 @@ type fakeRunner struct {
 	tools map[string]bool
 	runs  []string
 	out   map[string]string
+	seq   map[string][]string
+	calls map[string]int
 }
 
 func (f fakeRunner) LookPath(file string) (string, error) {
@@ -25,10 +27,28 @@ func (f fakeRunner) Run(ctx context.Context, name string, args ...string) Comman
 	for _, arg := range args {
 		key += " " + arg
 	}
+	if values := f.seq[key]; len(values) > 0 {
+		index := 0
+		if f.calls != nil {
+			index = f.calls[key]
+			if index >= len(values) {
+				index = len(values) - 1
+			}
+			f.calls[key]++
+		}
+		return CommandResult{Stdout: values[index]}
+	}
 	return CommandResult{Stdout: f.out[key]}
 }
 
 func (f fakeRunner) Start(ctx context.Context, logPath string, name string, args ...string) (int, error) {
+	for i, arg := range args {
+		if arg == "recordVideo" && i+1 < len(args) {
+			path := args[len(args)-1]
+			_ = os.MkdirAll(filepath.Dir(path), 0o755)
+			_ = os.WriteFile(path, []byte("fake-video"), 0o644)
+		}
+	}
 	return 123, nil
 }
 

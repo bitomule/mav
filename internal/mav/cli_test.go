@@ -43,7 +43,7 @@ func TestGoUsesNativeMAVActions(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
 	cfg.BundleID = "com.example.demo"
-	cfg.Tools = map[string]bool{"axe": true}
+	cfg.Tools = map[string]bool{"axe": true, "xcrun": true}
 	if err := SaveConfig(root, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,16 @@ func TestGoUsesNativeMAVActions(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	runner := fakeRunner{tools: map[string]bool{"axe": true}, out: map[string]string{"axe describe-ui": `{"AXLabel":"Settings"}`}}
+	runner := fakeRunner{
+		tools: map[string]bool{"axe": true, "xcrun": true},
+		seq: map[string][]string{"axe describe-ui": {
+			`{"AXLabel":"Home","children":[{"AXLabel":"Settings"}]}`,
+			`{"AXLabel":"Home","children":[{"AXLabel":"Settings"}]}`,
+			`{"AXLabel":"Settings","children":[{"AXLabel":"Daily Reminder"}]}`,
+			`{"AXLabel":"Settings","children":[{"AXLabel":"Daily Reminder"}]}`,
+		}},
+		calls: map[string]int{},
+	}
 	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
 	if err := cli.Run(context.Background(), []string{"go", "settings"}); err != nil {
 		t.Fatal(err)

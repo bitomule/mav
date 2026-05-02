@@ -154,7 +154,7 @@ func (c CLI) discover(opts GlobalOptions) error {
 	if saveErr := SaveConfig(c.Root, cfg); saveErr != nil {
 		return saveErr
 	}
-	if !exists(filepath.Join(c.Root, AppMapFile)) {
+	if !exists(filepath.Join(c.Root, MapIndexFile)) && !exists(filepath.Join(c.Root, AppMapFile)) {
 		_ = SaveAppMap(c.Root, DefaultAppMap(cfg.BundleID))
 	}
 	fields := map[string]string{
@@ -241,6 +241,9 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	if err := c.applyOpenTargetOverrides(ctx, &cfg, args); err != nil {
 		return Fail("sim_select_failed", map[string]string{"error": err.Error()}).Write(c.Stdout, opts.JSON)
 	}
+	if existing, err := LoadRun(c.Root, ""); err == nil && existing.ID != "" {
+		_ = c.withStdout(io.Discard).stop(ctx, GlobalOptions{}, []string{"--run", existing.ID})
+	}
 	run, err := NewRunState()
 	if err != nil {
 		return err
@@ -302,6 +305,10 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	}
 	if fields["target"] == "" {
 		fields["target"] = "booted"
+	}
+	if m, err := EnsureAppMap(c.Root, cfg); err == nil {
+		SetCurrentScreen(c.Root, m.Start, run.ID)
+		ClearPendingMapAction(c.Root)
 	}
 	return OK("open", fields).Write(c.Stdout, opts.JSON)
 }
@@ -413,16 +420,19 @@ func (c CLI) ui(ctx context.Context, opts GlobalOptions, args []string) error {
 }
 
 func (c CLI) uiTree(ctx context.Context, opts GlobalOptions, cfg Config) error {
-	var result CommandResult
-	driver := ""
-	if hasTool(cfg, "axe") {
-		driver = "axe"
-		result = c.Runner.Run(ctx, "axe", axeTargetArgs(cfg, "describe-ui")...)
-	} else if hasTool(cfg, "idb") {
-		driver = "idb"
-		result = c.Runner.Run(ctx, "idb", idbTargetArgs(cfg, "ui", "describe-all", "--json", "--nested")...)
-	} else {
+	driver, result, err := c.describeUITree(ctx, cfg)
+	if err != nil {
 		return Fail("tool_missing", map[string]string{"tool": "axe|idb", "next": "mav setup --install axe idb"}).Write(c.Stdout, opts.JSON)
+	}
+	recovered := false
+	if result.Err == nil && isEmptyAXTree(result.Stdout) {
+		if err := c.recoverEmptyAXTree(ctx, cfg); err == nil {
+			if retryDriver, retryResult, retryErr := c.describeUITree(ctx, cfg); retryErr == nil {
+				driver = retryDriver
+				result = retryResult
+				recovered = true
+			}
+		}
 	}
 	if opts.Raw {
 		fmt.Fprint(c.Stdout, result.Stdout)
@@ -431,11 +441,99 @@ func (c CLI) uiTree(ctx context.Context, opts GlobalOptions, cfg Config) error {
 	if result.Err != nil {
 		return Fail("ui_tree_failed", map[string]string{"stderr": firstLine(result.Stderr)}).Write(c.Stdout, opts.JSON)
 	}
+	if isEmptyAXTree(result.Stdout) {
+		return Fail("ui_tree_empty", map[string]string{"driver": driver, "reason": "simulator_accessibility_unavailable", "recovered": strconv.FormatBool(recovered)}).Write(c.Stdout, opts.JSON)
+	}
+	screen := "unknown"
+	if run, err := LoadRun(c.Root, ""); err == nil {
+		if observed, err := ObserveScreen(c.Root, cfg, run, result.Stdout); err == nil && observed != "" {
+			screen = observed
+		}
+	}
 	nodes := countTreeNodes(result.Stdout)
 	if nodes == 0 {
 		nodes = strings.Count(result.Stdout, "\n")
 	}
-	return OK("ui.tree", map[string]string{"driver": driver, "nodes": strconv.Itoa(nodes), "screen": "unknown"}).Write(c.Stdout, opts.JSON)
+	fields := map[string]string{"driver": driver, "nodes": strconv.Itoa(nodes), "screen": screen}
+	if recovered {
+		fields["recovered"] = "true"
+	}
+	return OK("ui.tree", fields).Write(c.Stdout, opts.JSON)
+}
+
+func (c CLI) describeUITree(ctx context.Context, cfg Config) (string, CommandResult, error) {
+	if hasTool(cfg, "axe") {
+		return "axe", c.Runner.Run(ctx, "axe", axeTargetArgs(cfg, "describe-ui")...), nil
+	}
+	if hasTool(cfg, "idb") {
+		return "idb", c.Runner.Run(ctx, "idb", idbTargetArgs(cfg, "ui", "describe-all", "--json", "--nested")...), nil
+	}
+	return "", CommandResult{}, fmt.Errorf("tree_tool_missing")
+}
+
+func (c CLI) recoverEmptyAXTree(ctx context.Context, cfg Config) error {
+	if !hasTool(cfg, "xcrun") || cfg.SimulatorUDID == "" {
+		return fmt.Errorf("simulator_recovery_unavailable")
+	}
+	run, _ := LoadRun(c.Root, "")
+	shutdown := c.Runner.Run(ctx, "xcrun", "simctl", "shutdown", cfg.SimulatorUDID)
+	if run.ID != "" {
+		appendCommand(run, "xcrun simctl shutdown "+cfg.SimulatorUDID, shutdown)
+	}
+	boot := c.Runner.Run(ctx, "xcrun", "simctl", "boot", cfg.SimulatorUDID)
+	if run.ID != "" {
+		appendCommand(run, "xcrun simctl boot "+cfg.SimulatorUDID, boot)
+	}
+	if boot.Err != nil && !strings.Contains(boot.Stderr, "Unable to boot device in current state") {
+		return fmt.Errorf("sim_boot_failed")
+	}
+	status := c.Runner.Run(ctx, "xcrun", "simctl", "bootstatus", cfg.SimulatorUDID, "-b")
+	if run.ID != "" {
+		appendCommand(run, "xcrun simctl bootstatus "+cfg.SimulatorUDID+" -b", status)
+	}
+	if status.Err != nil {
+		return fmt.Errorf("sim_bootstatus_failed")
+	}
+	if run.ID != "" {
+		if pid, err := c.startProbeLogs(ctx, cfg, run); err == nil && pid > 0 {
+			appendFile(run.LogsPath, fmt.Sprintf("mav restarted probe log capture pid=%d after accessibility recovery\n", pid))
+		}
+	}
+	if cfg.BundleID != "" {
+		args := []string{"simctl", "launch", cfg.SimulatorUDID, cfg.BundleID}
+		args = append(args, simctlLaunchLanguageArgs(cfg)...)
+		launch := c.Runner.Run(ctx, "xcrun", args...)
+		if run.ID != "" {
+			appendCommand(run, "xcrun "+strings.Join(args, " "), launch)
+		}
+		if launch.Err != nil {
+			return fmt.Errorf("launch_failed")
+		}
+		time.Sleep(1200 * time.Millisecond)
+	}
+	return nil
+}
+
+func (c CLI) waitForTreeReady(ctx context.Context, cfg Config, timeout time.Duration) (string, error) {
+	deadline := time.Now().Add(timeout)
+	recovered := false
+	for time.Now().Before(deadline) {
+		_, result, err := c.describeUITree(ctx, cfg)
+		if err != nil {
+			return "", err
+		}
+		if result.Err == nil && isEmptyAXTree(result.Stdout) && !recovered {
+			_ = c.recoverEmptyAXTree(ctx, cfg)
+			recovered = true
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		if result.Err == nil && !isEmptyAXTree(result.Stdout) && countTreeNodes(result.Stdout) > 1 && len(ExtractElements(result.Stdout)) > 0 {
+			return result.Stdout, nil
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	return "", fmt.Errorf("tree_not_ready")
 }
 
 func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
@@ -464,6 +562,7 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			return Fail("ui_tap_failed", map[string]string{"stderr": firstLine(result.Stderr)}).Write(c.Stdout, opts.JSON)
 		}
 		c.appendCurrentCommand(command, result)
+		c.recordPendingTap(id, text, "", "")
 		return OK("ui.tap", fields).Write(c.Stdout, opts.JSON)
 	}
 	if x != "" && y != "" {
@@ -475,9 +574,18 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			return Fail("ui_tap_failed", map[string]string{"stderr": firstLine(result.Stderr)}).Write(c.Stdout, opts.JSON)
 		}
 		c.appendCurrentCommand("mav ui tap --x "+x+" --y "+y, result)
+		c.recordPendingTap("", "", x, y)
 		return OK("ui.tap", map[string]string{"x": x, "y": y}).Write(c.Stdout, opts.JSON)
 	}
 	return Fail("tap_target_missing", map[string]string{"usage": "mav ui tap --id ID | --x X --y Y | --text TEXT"}).Write(c.Stdout, opts.JSON)
+}
+
+func (c CLI) recordPendingTap(id, text, x, y string) {
+	from := CurrentScreen(c.Root)
+	if from == "" {
+		return
+	}
+	SetPendingMapAction(c.Root, pendingMapAction{From: from, ID: id, Text: text, X: x, Y: y})
 }
 
 func (c CLI) appendCurrentCommand(command string, result CommandResult) {
@@ -871,18 +979,83 @@ func (c CLI) goScreen(ctx context.Context, opts GlobalOptions, args []string) er
 	if len(args) == 0 {
 		return Fail("screen_missing", map[string]string{"usage": "mav go SCREEN_ID"}).Write(c.Stdout, opts.JSON)
 	}
-	fields, err := c.navigateToScreen(ctx, args[0])
-	if err != nil {
-		code := err.Error()
+	screenID := args[0]
+	m, mapErr := LoadAppMap(c.Root)
+	if mapErr != nil {
+		cfg, cfgErr := LoadConfig(c.Root)
+		if cfgErr != nil {
+			return Fail("config_not_found", map[string]string{"next": "mav discover"}).Write(c.Stdout, opts.JSON)
+		}
+		m, mapErr = EnsureAppMap(c.Root, cfg)
+		if mapErr != nil {
+			return Fail("app_map_not_found", map[string]string{"next": "mav discover"}).Write(c.Stdout, opts.JSON)
+		}
+	}
+	if err := ValidateAppMap(m); err != nil {
+		return Fail("app_map_invalid", map[string]string{"error": err.Error()}).Write(c.Stdout, opts.JSON)
+	}
+	route, routeErr := Route(m, screenID)
+	if routeErr != nil {
+		fields := map[string]string{"screen": screenID}
+		code := routeErr.Error()
 		if code == "screen_not_found" || code == "route_not_found" {
-			fields["next"] = "use mav ui tree and update .mav/app-map.yaml"
+			fields["next"] = "explore with mav ui tree/tap; map updates when the next screen is observed"
 		}
 		return Fail(code, fields).Write(c.Stdout, opts.JSON)
 	}
+	if _, cfgErr := LoadConfig(c.Root); cfgErr != nil {
+		return Fail("config_not_found", map[string]string{"next": "mav discover"}).Write(c.Stdout, opts.JSON)
+	}
+	if err := c.withStdout(io.Discard).open(ctx, GlobalOptions{}, nil); err != nil {
+		return Fail("open_failed", map[string]string{"screen": screenID}).Write(c.Stdout, opts.JSON)
+	}
+	run, runErr := LoadRun(c.Root, "")
+	if runErr != nil {
+		return Fail("run_not_found", nil).Write(c.Stdout, opts.JSON)
+	}
+	evidenceStarted := time.Now()
+	if err := c.withStdout(io.Discard).evidenceStart(ctx, GlobalOptions{}, []string{"--run", run.ID}); err != nil {
+		return Fail("evidence_start_failed", map[string]string{"run": run.ID, "screen": screenID}).Write(c.Stdout, opts.JSON)
+	}
+	cfg, _ := LoadConfig(c.Root)
+	if raw, err := c.waitForTreeReady(ctx, cfg, 8*time.Second); err == nil {
+		_ = ObserveExpectedScreen(c.Root, cfg, run, raw, m.Start)
+	} else {
+		_, _ = c.captureEvidenceStep(ctx, run, "launch-not-ready", "App did not expose a ready accessibility tree after launch")
+		_ = c.withStdout(io.Discard).evidenceStop(ctx, GlobalOptions{}, []string{"--run", run.ID, "--note", "Launch tree was not ready"})
+		_ = c.withStdout(io.Discard).evidenceReport(GlobalOptions{}, []string{"--run", run.ID})
+		_ = c.withStdout(io.Discard).stop(ctx, GlobalOptions{}, []string{"--run", run.ID})
+		return Fail("launch_tree_not_ready", map[string]string{"run": run.ID, "screen": screenID, "report": filepath.Join(run.Dir, "report.html")}).Write(c.Stdout, opts.JSON)
+	}
+	_, _ = c.captureEvidenceStep(ctx, run, "start", "Start screen before navigation")
+	fields, err := c.navigateToScreen(ctx, screenID, route)
+	if err != nil {
+		_, _ = c.captureEvidenceStep(ctx, run, "failure", "Failure while navigating to "+screenID)
+		_ = c.withStdout(io.Discard).evidenceStop(ctx, GlobalOptions{}, []string{"--run", run.ID, "--note", "Failure while navigating to " + screenID})
+		_ = c.withStdout(io.Discard).evidenceReport(GlobalOptions{}, []string{"--run", run.ID})
+		_ = c.withStdout(io.Discard).stop(ctx, GlobalOptions{}, []string{"--run", run.ID})
+		fields["run"] = run.ID
+		fields["report"] = filepath.Join(run.Dir, "report.html")
+		return Fail(err.Error(), fields).Write(c.Stdout, opts.JSON)
+	}
+	if time.Since(evidenceStarted) < 1200*time.Millisecond {
+		time.Sleep(1200*time.Millisecond - time.Since(evidenceStarted))
+	}
+	_, _ = c.captureEvidenceStep(ctx, run, screenID, "Arrived at "+screenID)
+	if err := c.withStdout(io.Discard).evidenceStop(ctx, GlobalOptions{}, []string{"--run", run.ID, "--note", "Arrived at " + screenID}); err != nil {
+		return Fail("evidence_stop_failed", map[string]string{"run": run.ID, "screen": screenID}).Write(c.Stdout, opts.JSON)
+	}
+	if err := c.withStdout(io.Discard).evidenceReport(GlobalOptions{}, []string{"--run", run.ID}); err != nil {
+		return Fail("report_failed", map[string]string{"run": run.ID, "screen": screenID}).Write(c.Stdout, opts.JSON)
+	}
+	_ = c.withStdout(io.Discard).stop(ctx, GlobalOptions{}, []string{"--run", run.ID})
+	fields["run"] = run.ID
+	fields["report"] = filepath.Join(run.Dir, "report.html")
+	fields["video"] = filepath.Join(run.Dir, "video.mov")
 	return OK("go", fields).Write(c.Stdout, opts.JSON)
 }
 
-func (c CLI) navigateToScreen(ctx context.Context, screenID string) (map[string]string, error) {
+func (c CLI) navigateToScreen(ctx context.Context, screenID string, routeOverride ...[]Edge) (map[string]string, error) {
 	m, err := LoadAppMap(c.Root)
 	if err != nil {
 		return map[string]string{"next": "mav discover"}, fmt.Errorf("app_map_not_found")
@@ -890,15 +1063,27 @@ func (c CLI) navigateToScreen(ctx context.Context, screenID string) (map[string]
 	if err := ValidateAppMap(m); err != nil {
 		return map[string]string{"error": err.Error()}, fmt.Errorf("app_map_invalid")
 	}
-	route, err := Route(m, screenID)
-	if err != nil {
-		return map[string]string{"screen": screenID}, err
+	route := []Edge{}
+	if len(routeOverride) > 0 {
+		route = routeOverride[0]
+	} else {
+		route, err = Route(m, screenID)
+		if err != nil {
+			return map[string]string{"screen": screenID}, err
+		}
 	}
 	cfg, err := LoadConfig(c.Root)
 	if err != nil {
 		return map[string]string{"next": "mav discover"}, fmt.Errorf("config_not_found")
 	}
+	run, _ := LoadRun(c.Root, "")
+	SetCurrentScreen(c.Root, m.Start, run.ID)
+	ClearPendingMapAction(c.Root)
 	for _, edge := range route {
+		beforeTree, beforeErr := c.waitForTreeReady(ctx, cfg, 5*time.Second)
+		if beforeErr != nil {
+			return map[string]string{"screen": screenID, "target": edge.To}, fmt.Errorf("tree_not_ready")
+		}
 		args := []string{}
 		if edge.ID != "" {
 			args = append(args, "--id", edge.ID)
@@ -915,6 +1100,16 @@ func (c CLI) navigateToScreen(ctx context.Context, screenID string) (map[string]
 		if edge.Wait != "" {
 			time.Sleep(parseFlowDuration(edge.Wait, 0))
 		}
+		afterTree, afterErr := c.waitForTreeReady(ctx, cfg, 5*time.Second)
+		if afterErr != nil {
+			return map[string]string{"screen": screenID, "target": edge.To}, fmt.Errorf("tree_not_ready")
+		}
+		if sameTreeForRoute(beforeTree, afterTree) {
+			return map[string]string{"screen": screenID, "target": edge.To}, fmt.Errorf("route_no_screen_change")
+		}
+		_ = ObserveExpectedScreen(c.Root, cfg, run, afterTree, edge.To)
+		SetCurrentScreen(c.Root, edge.To, run.ID)
+		ClearPendingMapAction(c.Root)
 	}
 	screen := m.Screens[screenID]
 	params := map[string]string{}
@@ -1728,4 +1923,58 @@ func countTreeNodes(raw string) int {
 		}
 	}
 	return walk(parsed)
+}
+
+func isEmptyAXTree(raw string) bool {
+	var parsed any
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return false
+	}
+	roots := []any{}
+	switch value := parsed.(type) {
+	case []any:
+		roots = value
+	case map[string]any:
+		roots = []any{value}
+	default:
+		return false
+	}
+	if len(roots) != 1 {
+		return false
+	}
+	root, ok := roots[0].(map[string]any)
+	if !ok {
+		return false
+	}
+	role := stringField(root, "role", "type")
+	if role != "AXApplication" && !strings.EqualFold(role, "application") {
+		return false
+	}
+	if children, ok := root["children"].([]any); ok && len(children) > 0 {
+		return false
+	}
+	frame := stringField(root, "AXFrame")
+	if strings.Contains(frame, "{0, 0}, {0, 0}") || strings.Contains(frame, "0,0,0,0") {
+		return true
+	}
+	if frameMap, ok := root["frame"].(map[string]any); ok {
+		width := fmt.Sprint(frameMap["width"])
+		height := fmt.Sprint(frameMap["height"])
+		return (width == "0" || width == "0.0") && (height == "0" || height == "0.0")
+	}
+	return countTreeNodes(raw) <= 1 && len(ExtractElements(raw)) == 0
+}
+
+func sameTreeForRoute(a, b string) bool {
+	left := ExtractElements(a)
+	right := ExtractElements(b)
+	if len(left) == 0 || len(right) == 0 || len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }
