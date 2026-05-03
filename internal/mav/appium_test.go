@@ -169,6 +169,17 @@ func TestCheckAppiumXCUITestDriverDetectsNodeRuntimeFailure(t *testing.T) {
 	}
 }
 
+func TestCheckAppiumXCUITestDriverDetectsHomePermissionFailure(t *testing.T) {
+	runner := errorRunner{
+		tools:  map[string]bool{"appium": true},
+		result: CommandResult{Stderr: "The autodetected Appium home path '/Users/me/.appium' must be writeable", Err: os.ErrPermission},
+	}
+	status := checkAppiumXCUITestDriver(context.Background(), runner)
+	if status.OK || !status.HomePermission || status.Message != "appium_home_not_writable" || !strings.Contains(status.Next, "APPIUM_HOME") {
+		t.Fatalf("status=%+v", status)
+	}
+}
+
 func TestCheckAppiumNodePathDetectsMismatch(t *testing.T) {
 	root := t.TempDir()
 	appiumNode := filepath.Join(root, "nvm", "bin", "node")

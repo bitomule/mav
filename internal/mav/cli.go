@@ -248,7 +248,7 @@ func (c CLI) doctor(ctx context.Context, opts GlobalOptions) error {
 			driverStatus = checkAppiumXCUITestDriver(ctx, c.Runner)
 			if driverStatus.OK {
 				appiumReady = true
-			} else if driverStatus.NodeMismatch {
+			} else if driverStatus.NodeMismatch || driverStatus.HomePermission {
 				fields["multitouch_issue"] = driverStatus.Message
 				fields["multitouch_next"] = driverStatus.Next
 				nextHint = driverStatus.Next
@@ -745,6 +745,11 @@ func (c CLI) uiTree(ctx context.Context, opts GlobalOptions, cfg Config) error {
 	if screenSource != "" {
 		fields["screen_source"] = screenSource
 	}
+	if screenSource == "recognized" || screenSource == "inferred" || screenSource == "start" {
+		fields["recognized_screen"] = screen
+		fields["screen_confidence"] = screenConfidence(screenSource)
+		fields["screen"] = "unknown"
+	}
 	if previousScreen != "" && previousScreen != screen {
 		fields["previous_screen"] = previousScreen
 	}
@@ -755,6 +760,19 @@ func (c CLI) uiTree(ctx context.Context, opts GlobalOptions, cfg Config) error {
 		return err
 	}
 	return writeElementLines(c.Stdout, elements)
+}
+
+func screenConfidence(source string) string {
+	switch source {
+	case "recognized":
+		return "0.80"
+	case "inferred":
+		return "0.55"
+	case "start":
+		return "0.40"
+	default:
+		return "1.00"
+	}
 }
 
 func (c CLI) describeUITree(ctx context.Context, cfg Config) (string, CommandResult, error) {
@@ -954,6 +972,7 @@ func (c CLI) uiPinch(ctx context.Context, opts GlobalOptions, cfg Config, args [
 	}
 	waitForGestureCompletion(fields)
 	fields["driver"] = "appium"
+	c.appendCurrentCommand("mav ui pinch "+strings.Join(args, " "), CommandResult{})
 	return OK("ui.pinch", fields).Write(c.Stdout)
 }
 
@@ -969,6 +988,7 @@ func (c CLI) uiRotate(ctx context.Context, opts GlobalOptions, cfg Config, args 
 	}
 	waitForGestureCompletion(fields)
 	fields["driver"] = "appium"
+	c.appendCurrentCommand("mav ui rotate "+strings.Join(args, " "), CommandResult{})
 	return OK("ui.rotate", fields).Write(c.Stdout)
 }
 
@@ -984,6 +1004,7 @@ func (c CLI) uiTwoFingerPan(ctx context.Context, opts GlobalOptions, cfg Config,
 	}
 	waitForGestureCompletion(fields)
 	fields["driver"] = "appium"
+	c.appendCurrentCommand("mav ui twoFingerPan "+strings.Join(args, " "), CommandResult{})
 	return OK("ui.twoFingerPan", fields).Write(c.Stdout)
 }
 
@@ -999,6 +1020,7 @@ func (c CLI) uiActions(ctx context.Context, opts GlobalOptions, cfg Config, args
 	if err := c.performAppiumActions(ctx, cfg, actions); err != nil {
 		return c.writeAppiumGestureError(err)
 	}
+	c.appendCurrentCommand("mav ui actions --file "+path, CommandResult{})
 	return OK("ui.actions", map[string]string{"driver": "appium", "file": path}).Write(c.Stdout)
 }
 
@@ -2089,6 +2111,9 @@ func (c CLI) evidenceStart(ctx context.Context, opts GlobalOptions, args []strin
 	if err != nil {
 		return Fail("run_not_found", nil).Write(c.Stdout)
 	}
+	if issue := existingEvidenceIssue(run); issue != "" {
+		return Fail("evidence_run_not_clean", map[string]string{"run": run.ID, "issue": issue, "next": "start a new run with mav open, or remove old evidence from the run directory"}).Write(c.Stdout)
+	}
 	path, pid, err := c.startVideoRecording(ctx, cfg, run)
 	if err != nil {
 		return Fail("evidence_start_failed", map[string]string{"run": run.ID, "error": err.Error()}).Write(c.Stdout)
@@ -2144,14 +2169,24 @@ func (c CLI) evidenceStop(ctx context.Context, opts GlobalOptions, args []string
 	_ = os.Remove(filepath.Join(run.Dir, "video.pid"))
 	removeProcess(run, pid)
 	fields := map[string]string{"run": run.ID, "file": filepath.Join(run.Dir, "video.mov")}
+	if issue := videoLogIssue(filepath.Join(run.Dir, "video.log")); issue != "" {
+		return Fail("video_recording_failed", map[string]string{"run": run.ID, "file": fields["file"], "log": filepath.Join(run.Dir, "video.log"), "error": issue}).Write(c.Stdout)
+	}
 	if !waitForFile(fields["file"], 6*time.Second) {
 		return Fail("video_not_written", map[string]string{"run": run.ID, "file": fields["file"], "log": filepath.Join(run.Dir, "video.log")}).Write(c.Stdout)
 	}
-	duration, err := waitForVideoDuration(fields["file"], 6*time.Second)
-	if err != nil || duration <= 0 {
-		return Fail("video_invalid", map[string]string{"run": run.ID, "file": fields["file"], "duration": "0s", "log": filepath.Join(run.Dir, "video.log")}).Write(c.Stdout)
+	validation, err := waitForEvidenceVideo(fields["file"], 6*time.Second)
+	if err != nil || !validation.OK {
+		if validation.Issue == "" {
+			validation.Issue = "video_invalid"
+		}
+		duration := "0s"
+		if validation.Duration > 0 {
+			duration = validation.Duration.String()
+		}
+		return Fail("video_invalid", map[string]string{"run": run.ID, "file": fields["file"], "duration": duration, "issue": validation.Issue, "log": filepath.Join(run.Dir, "video.log")}).Write(c.Stdout)
 	}
-	fields["duration"] = duration.String()
+	fields["duration"] = validation.Duration.String()
 	if !hasFlag(args, "--no-capture") {
 		cfg, cfgErr := LoadConfig(c.Root)
 		if cfgErr == nil {
@@ -2172,6 +2207,54 @@ func videoDuration(path string) (time.Duration, error) {
 		return 0, err
 	}
 	return mp4Duration(data)
+}
+
+type VideoValidation struct {
+	OK       bool
+	Duration time.Duration
+	Frames   int
+	Issue    string
+}
+
+const minEvidenceVideoDuration = 500 * time.Millisecond
+const minEvidenceVideoFrames = 2
+
+func ValidateEvidenceVideo(path string) VideoValidation {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return VideoValidation{Issue: err.Error()}
+	}
+	duration, err := mp4Duration(data)
+	if err != nil || duration <= 0 {
+		return VideoValidation{Issue: "duration_missing"}
+	}
+	frames := mp4VideoFrameCount(data)
+	if duration < minEvidenceVideoDuration {
+		return VideoValidation{Duration: duration, Frames: frames, Issue: "duration_too_short"}
+	}
+	if frames > 0 && frames < minEvidenceVideoFrames {
+		return VideoValidation{Duration: duration, Frames: frames, Issue: "frame_count_too_low"}
+	}
+	return VideoValidation{OK: true, Duration: duration, Frames: frames}
+}
+
+func waitForEvidenceVideo(path string, timeout time.Duration) (VideoValidation, error) {
+	deadline := time.Now().Add(timeout)
+	var last VideoValidation
+	for {
+		validation := ValidateEvidenceVideo(path)
+		if validation.OK {
+			return validation, nil
+		}
+		last = validation
+		if time.Now().After(deadline) {
+			if last.Issue == "" {
+				last.Issue = "video_invalid"
+			}
+			return last, fmt.Errorf("%s", last.Issue)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 func waitForVideoDuration(path string, timeout time.Duration) (time.Duration, error) {
@@ -2234,6 +2317,49 @@ func findMVHDDuration(data []byte) (uint64, uint64, bool) {
 		offset += size
 	}
 	return 0, 0, false
+}
+
+func mp4VideoFrameCount(data []byte) int {
+	frames, _ := findSTSZSampleCount(data)
+	return frames
+}
+
+func findSTSZSampleCount(data []byte) (int, bool) {
+	for offset := 0; offset+8 <= len(data); {
+		size := int(binary.BigEndian.Uint32(data[offset : offset+4]))
+		kind := string(data[offset+4 : offset+8])
+		header := 8
+		if size == 1 {
+			if offset+16 > len(data) {
+				return 0, false
+			}
+			wide := binary.BigEndian.Uint64(data[offset+8 : offset+16])
+			if wide > uint64(len(data)-offset) {
+				return 0, false
+			}
+			size = int(wide)
+			header = 16
+		} else if size == 0 {
+			size = len(data) - offset
+		}
+		if size < header || offset+size > len(data) {
+			return 0, false
+		}
+		payload := data[offset+header : offset+size]
+		if kind == "stsz" {
+			if len(payload) < 12 {
+				return 0, false
+			}
+			return int(binary.BigEndian.Uint32(payload[8:12])), true
+		}
+		if isContainerAtom(kind) {
+			if frames, ok := findSTSZSampleCount(payload); ok {
+				return frames, true
+			}
+		}
+		offset += size
+	}
+	return 0, false
 }
 
 func parseMVHD(payload []byte) (uint64, uint64, bool) {
@@ -2310,6 +2436,39 @@ func (c CLI) startVideoRecording(ctx context.Context, cfg Config, run RunState) 
 		appendProcess(run, "video", pid, "xcrun "+strings.Join(args, " "))
 	}
 	return videoPath, pid, err
+}
+
+func existingEvidenceIssue(run RunState) string {
+	if fileExists(filepath.Join(run.Dir, "video.pid")) {
+		return "video_already_running"
+	}
+	if fileExists(filepath.Join(run.Dir, "video.mov")) || fileExists(filepath.Join(run.Dir, "video.mp4")) {
+		return "video_exists"
+	}
+	if fileExists(filepath.Join(run.Dir, EvidenceStepsFile)) {
+		return "evidence_steps_exist"
+	}
+	stepsDir := filepath.Join(run.Dir, "steps")
+	if entries, err := os.ReadDir(stepsDir); err == nil && len(entries) > 0 {
+		return "steps_exist"
+	}
+	return ""
+}
+
+func videoLogIssue(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	lower := strings.ToLower(string(data))
+	switch {
+	case strings.Contains(lower, "cannot save recorded video output into a file that already exists"):
+		return "video_file_exists"
+	case strings.Contains(lower, "error") || strings.Contains(lower, "failed"):
+		return firstLine(string(data))
+	default:
+		return ""
+	}
 }
 
 func readPID(path string) (int, error) {
