@@ -90,6 +90,10 @@ Release binaries are built by the GitHub release workflow for tagged releases.
 Homebrew packaging lives in `packaging/homebrew/mav.rb` and is published to
 `bitomule/tap`.
 
+The release workflow can also update `bitomule/homebrew-tap` automatically. The
+`bitomule/mav` repo must define a `HOMEBREW_TAP_TOKEN` secret with permission to
+push to `bitomule/homebrew-tap`.
+
 ## Quick Start
 
 Run from the root of an iOS Bazel app repo:
