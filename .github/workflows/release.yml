@@ -31,3 +31,57 @@ jobs:
           name: MAV ${{ steps.version.outputs.tag }}
           files: dist/*
           generate_release_notes: true
+      - name: Publish Homebrew formula
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "HOMEBREW_TAP_TOKEN is required to publish bitomule/homebrew-tap" >&2
+            exit 1
+          fi
+          version="${TAG#v}"
+          arm64_sha="$(awk '$2 == "mav-darwin-arm64" { print $1 }' dist/checksums.txt)"
+          amd64_sha="$(awk '$2 == "mav-darwin-amd64" { print $1 }' dist/checksums.txt)"
+          test -n "$arm64_sha"
+          test -n "$amd64_sha"
+          tmp="$(mktemp -d)"
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/bitomule/homebrew-tap.git" "$tmp/homebrew-tap"
+          cat > "$tmp/homebrew-tap/Formula/mav.rb" <<EOF
+          class Mav < Formula
+            desc "Mobile Agent Verifier for iOS Bazel apps"
+            homepage "https://github.com/bitomule/mav"
+            version "$version"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/bitomule/mav/releases/download/v#{version}/mav-darwin-arm64"
+                sha256 "$arm64_sha"
+              else
+                url "https://github.com/bitomule/mav/releases/download/v#{version}/mav-darwin-amd64"
+                sha256 "$amd64_sha"
+              end
+            end
+
+            def install
+              bin.install cached_download => "mav"
+              chmod 0755, bin/"mav"
+            end
+
+            test do
+              assert_match "Mobile Agent Verifier", shell_output("#{bin}/mav")
+              assert_match "cmd=doctor", shell_output("#{bin}/mav doctor")
+            end
+          end
+          EOF
+          ruby -c "$tmp/homebrew-tap/Formula/mav.rb"
+          cd "$tmp/homebrew-tap"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/mav.rb
+          if git diff --cached --quiet; then
+            echo "Formula already up to date for $TAG"
+            exit 0
+          fi
+          git commit -m "Update mav to $version"
+          git push
