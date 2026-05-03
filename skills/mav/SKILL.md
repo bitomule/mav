@@ -92,23 +92,32 @@ as a hard sandbox for arbitrary untrusted commands.
 Use evidence when the user needs proof of verification:
 
 1. Prefer writing a temporary MAV YAML flow and running it with `mav run`.
-2. The flow should start recording before navigation, use `delay` only for
-   fixed launch/animation waits when tree-based waits are not possible, navigate
-   with `go`, wait for the expected UI, capture named proof points, perform the
-   tested action, capture the result, stop recording, check crashes, and
-   generate a report.
+2. The flow should navigate to the relevant state first when that setup is not
+   the behavior under test. Start recording as late as possible while still
+   covering the verified action, use `delay` only for fixed launch/animation
+   waits when tree-based waits are not possible, capture named proof points,
+   perform the tested action, capture the result, stop recording immediately
+   after the result is visible, check crashes, and generate a report.
 3. Names should describe the assertion, for example `settings-before-toggle`
    and `settings-after-toggle`.
-4. Share the generated `/tmp/mav/<run-id>/report.html`.
+4. Share the generated report and evidence as clickable Markdown links using
+   absolute paths, for example `[MAV evidence report](/tmp/mav/<run-id>/report.html)`.
+   Include the video and key captures when they are relevant, for example
+   `[video](/tmp/mav/<run-id>/video.mov)` and
+   `[after-toggle](/tmp/mav/<run-id>/captures/after-toggle.png)`.
 
-The video must cover the complete verification path from launch/navigation
-through the tested behavior. The screenshots must prove the behavior itself, not
-just that the app opened. For a notification toggle, record the navigation to
-Settings, capture before toggling, toggle it, capture after toggling, then stop.
+The video should be limited to the relevant verification moment. Do not record
+long setup, idle time, or repeated navigation unless the navigation itself is
+being validated. The screenshots must prove the behavior itself, not just that
+the app opened. For a notification toggle, navigate to Settings first if
+Settings is not under test, start recording, capture before toggling, toggle it,
+capture after toggling, then stop.
 
-Use `mav go <screen-id>` for ad-hoc navigation evidence to a mapped screen. Use
-`mav run` for feature verification evidence where the tested behavior needs
-extra taps, waits, logs, crash checks, or assertions after navigation.
+Use `mav go <screen-id>` for ad-hoc navigation evidence to a mapped screen; this
+is appropriate when the route itself is the evidence. Use `mav run` for feature
+verification evidence where the tested behavior needs extra taps, waits, logs,
+crash checks, or assertions after navigation, and keep the recording window
+around the behavior rather than the whole setup path.
 
 For off-screen elements, use `scrollUntil` in a MAV flow or `mav ui scrollUntil`
 manually before tapping:
@@ -185,7 +194,8 @@ same command inside the sandbox.
 
 `mav evidence stop` rejects zero-duration or invalid videos. If it returns
 `video_invalid`, rerun the evidence flow with enough interaction time so the
-recording covers the behavior being verified.
+recording covers the behavior being verified, but avoid padding the video with
+unrelated waiting or setup.
 
 Use `--raw` only when the underlying tool output is needed, and `--verbose`
 only for debugging MAV itself.
