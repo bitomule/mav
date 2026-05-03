@@ -104,8 +104,16 @@ func TestDoctorReportsAppiumReadiness(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := out.String()
-	if !strings.Contains(got, "appium=ok") || !strings.Contains(got, "appium_node=ok") || !strings.Contains(got, "appium_xcuitest=ok") {
+	if !strings.Contains(got, "accessibility=ok") ||
+		!strings.Contains(got, "coordinate_tap=ok") ||
+		!strings.Contains(got, "multitouch=ok") ||
+		!strings.Contains(got, "multitouch_driver=appium") {
 		t.Fatalf("got %q", got)
+	}
+	for _, old := range []string{"appium=ok", "appium_node=", "appium_xcuitest=", "axe=ok", "idb=ok", "node=ok", "npm=ok"} {
+		if strings.Contains(got, old) {
+			t.Fatalf("doctor should not expose old tool field %q: %q", old, got)
+		}
 	}
 }
 
@@ -118,8 +126,33 @@ func TestDoctorRecommendsAppiumSetupWhenDriverMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := out.String()
-	if !strings.Contains(got, "appium_xcuitest=missing") || !strings.Contains(got, "next=\"mav setup --install appium\"") {
+	if !strings.Contains(got, "multitouch=missing") ||
+		!strings.Contains(got, "multitouch_issue=\"xcuitest driver missing\"") ||
+		!strings.Contains(got, "next=\"mav setup --install appium\"") {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestDoctorReportsCapabilityFallbacks(t *testing.T) {
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{
+		tools: map[string]bool{"go": true, "bazelisk": true, "xcrun": true, "idb": true},
+	}, Root: t.TempDir(), Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"doctor"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"accessibility=ok",
+		"accessibility_driver=idb",
+		"coordinate_tap=ok",
+		"coordinate_tap_driver=idb",
+		"semantic_actions=missing",
+		"multitouch=missing",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in %q", want, got)
+		}
 	}
 }
 

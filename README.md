@@ -54,6 +54,10 @@ Check the local environment:
 mav doctor
 ```
 
+`mav doctor` reports capability availability. MAV routes commands by
+capability: accessibility and semantic actions use AXe, coordinate taps and
+device fallback use idb, and multitouch uses Appium.
+
 Install supported helper tools:
 
 ```bash
@@ -64,7 +68,8 @@ mav setup --install axe idb appium
 globally, then installs and verifies the `xcuitest` driver. If Appium was
 installed through a Node version manager, `mav doctor` also checks that the
 active `node` matches the Node path used by the `appium` executable; put that
-Node bin directory first in `PATH` if it reports `appium_node=mismatch`.
+Node bin directory first in `PATH` if it reports a `multitouch_issue` related
+to Node.
 
 ## Install
 
@@ -306,10 +311,9 @@ mav ui wait --id element_id --timeout 5s
 mav ui scrollUntil --id privacy_policy_button --direction up --max-swipes 4
 ```
 
-AXe is the default driver for accessibility tree inspection, semantic taps,
-typing, swipes, waits, and assertions. idb is used when it provides a concrete
-better capability, such as coordinate taps or fallback simulator/device
-operations.
+MAV chooses drivers by capability. AXe is the default for accessibility tree
+inspection, semantic taps, typing, swipes, waits, and assertions. idb is used
+for coordinate taps and device/simulator fallback operations.
 
 Appium is only used for true multitouch. AXe and idb do not expose a real
 pinch or two-finger gesture primitive. MAV sends Appium W3C Actions: multiple

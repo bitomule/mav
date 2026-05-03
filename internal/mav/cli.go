@@ -206,50 +206,47 @@ Global flags:
 }
 
 func (c CLI) doctor(ctx context.Context, opts GlobalOptions) error {
-	tools := []string{"go", "bazelisk", "xcrun", "axe", "idb", "node", "npm", "appium"}
-	fields := map[string]string{}
+	tools := map[string]bool{}
+	for _, tool := range []string{"go", "bazelisk", "xcrun", "axe", "idb", "node", "npm", "appium"} {
+		_, err := c.Runner.LookPath(tool)
+		tools[tool] = err == nil
+	}
+	fields := capabilityDoctorFields(tools)
 	missing := []string{}
 	nextHint := ""
-	for _, tool := range tools {
-		_, err := c.Runner.LookPath(tool)
-		if err == nil {
-			fields[tool] = "ok"
-		} else {
-			fields[tool] = "missing"
-			if tool != "go" && tool != "xcrun" && tool != "node" && tool != "npm" {
-				missing = append(missing, tool)
-			}
+	for _, tool := range []string{"axe", "idb"} {
+		if !tools[tool] {
+			missing = append(missing, tool)
 		}
 	}
-	if fields["appium"] == "ok" {
+	if tools["appium"] {
 		nodeCheck := checkAppiumNodePath(c.Runner)
-		if nodeCheck.OK {
-			fields["appium_node"] = "ok"
-		} else {
-			fields["appium_node"] = "mismatch"
-			fields["appium_node_next"] = nodeCheck.Next
+		appiumReady := false
+		if !nodeCheck.OK {
+			fields["multitouch_issue"] = nodeCheck.Message
+			fields["multitouch_next"] = nodeCheck.Next
 			nextHint = nodeCheck.Next
-		}
-		driverStatus := appiumDriverStatus{}
-		if nodeCheck.OK {
-			driverStatus = checkAppiumXCUITestDriver(ctx, c.Runner)
-		}
-		if nodeCheck.OK && driverStatus.NodeMismatch {
-			fields["appium_node"] = "mismatch"
-			fields["appium_node_next"] = driverStatus.Next
-			nextHint = driverStatus.Next
-		}
-		if nodeCheck.OK && driverStatus.OK {
-			fields["appium_xcuitest"] = "ok"
 		} else {
-			fields["appium_xcuitest"] = "missing"
-			if nodeCheck.OK && !driverStatus.NodeMismatch {
+			driverStatus := appiumDriverStatus{}
+			driverStatus = checkAppiumXCUITestDriver(ctx, c.Runner)
+			if driverStatus.OK {
+				appiumReady = true
+			} else if driverStatus.NodeMismatch {
+				fields["multitouch_issue"] = driverStatus.Message
+				fields["multitouch_next"] = driverStatus.Next
+				nextHint = driverStatus.Next
+			} else {
+				fields["multitouch_issue"] = driverStatus.Message
 				missing = append(missing, "appium")
 			}
 		}
-	} else {
-		fields["appium_node"] = "missing"
-		fields["appium_xcuitest"] = "missing"
+		if appiumReady {
+			fields["multitouch"] = "ok"
+			fields["multitouch_driver"] = "appium"
+			delete(fields, "multitouch_next")
+		}
+	} else if tools["node"] && tools["npm"] {
+		missing = append(missing, "appium")
 	}
 	if nextHint != "" {
 		fields["next"] = nextHint
@@ -258,6 +255,47 @@ func (c CLI) doctor(ctx context.Context, opts GlobalOptions) error {
 		fields["next"] = "mav setup --install " + strings.Join(missing, " ")
 	}
 	return OK("doctor", fields).Write(c.Stdout)
+}
+
+func capabilityDoctorFields(tools map[string]bool) map[string]string {
+	fields := map[string]string{}
+	if tools["go"] && tools["bazelisk"] && tools["xcrun"] {
+		fields["build_launch"] = "ok"
+		fields["build_launch_driver"] = "bazelisk,xcrun"
+	} else {
+		fields["build_launch"] = "missing"
+	}
+	if tools["axe"] {
+		fields["accessibility"] = "ok"
+		fields["accessibility_driver"] = "axe"
+		fields["semantic_actions"] = "ok"
+		fields["semantic_actions_driver"] = "axe"
+	} else if tools["idb"] {
+		fields["accessibility"] = "ok"
+		fields["accessibility_driver"] = "idb"
+		fields["semantic_actions"] = "missing"
+	} else {
+		fields["accessibility"] = "missing"
+		fields["semantic_actions"] = "missing"
+	}
+	if tools["idb"] {
+		fields["coordinate_tap"] = "ok"
+		fields["coordinate_tap_driver"] = "idb"
+		fields["device_fallback"] = "ok"
+		fields["device_fallback_driver"] = "idb"
+	} else {
+		fields["coordinate_tap"] = "missing"
+		fields["device_fallback"] = "missing"
+	}
+	if tools["node"] && tools["npm"] {
+		fields["appium_install"] = "ok"
+		fields["appium_install_driver"] = "npm"
+	} else {
+		fields["appium_install"] = "missing"
+	}
+	fields["multitouch"] = "missing"
+	fields["multitouch_next"] = "mav setup --install appium"
+	return fields
 }
 
 func (c CLI) setup(ctx context.Context, opts GlobalOptions, args []string) error {
