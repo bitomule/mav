@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -253,6 +255,47 @@ func TestUITreePrintsNodeDetailsByDefault(t *testing.T) {
 	}
 }
 
+func TestUITreeReportsRecognizedScreenSeparately(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.demo"
+	cfg.Tools = map[string]bool{"axe": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	m := AppMap{
+		AppID: "com.example.demo",
+		Start: "start",
+		Screens: map[string]Screen{
+			"start":          {ID: "start", AssertText: "Home"},
+			"largest-videos": {ID: "largest-videos", Recognizers: []Recognizer{{Kind: "text", Value: "Largest Videos"}}},
+		},
+	}
+	if err := SaveAppMap(root, m); err != nil {
+		t.Fatal(err)
+	}
+	run := RunState{ID: "run-tree", Dir: filepath.Join(os.TempDir(), "mav", "run-tree")}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := os.MkdirAll(run.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	raw := `[{"AXLabel":"Largest Videos","role":"heading","children":[{"AXLabel":"Delete","role":"button"}]}]`
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{tools: cfg.Tools, out: map[string]string{"axe describe-ui": raw}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "tree"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{"screen=unknown", "recognized_screen=largest-videos", "screen_source=recognized", "screen_confidence=0.80"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in %q", want, got)
+		}
+	}
+}
+
 func TestSandboxHintForUITreeFailure(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
@@ -330,6 +373,23 @@ func TestSetupInstallsAndVerifiesAppium(t *testing.T) {
 	}
 	if !loaded.Tools["appium"] {
 		t.Fatalf("tools=%v", loaded.Tools)
+	}
+}
+
+func TestDoctorReportsAppiumHomePermissionInsteadOfNodeRuntime(t *testing.T) {
+	var out bytes.Buffer
+	cli := CLI{Runner: errorRunner{
+		tools:  map[string]bool{"go": true, "bazelisk": true, "xcrun": true, "axe": true, "idb": true, "node": true, "npm": true, "appium": true},
+		result: CommandResult{Stderr: "The autodetected Appium home path '/Users/me/.appium' must be writeable", Err: os.ErrPermission},
+	}, Root: t.TempDir(), Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"doctor"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "multitouch=missing") ||
+		!strings.Contains(got, "multitouch_issue=appium_home_not_writable") ||
+		strings.Contains(got, "appium_node_runtime_failed") {
+		t.Fatalf("got %q", got)
 	}
 }
 
@@ -531,6 +591,76 @@ func TestStopTerminatesRunProcesses(t *testing.T) {
 	got := out.String()
 	if !strings.Contains(got, "ok cmd=stop") || !strings.Contains(got, "stopped=1") {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestEvidenceStartRejectsRunWithExistingVideo(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.Tools = map[string]bool{"xcrun": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run := RunState{ID: "abc-video", Dir: filepath.Join(os.TempDir(), "mav", "abc-video")}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := os.MkdirAll(run.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(run.Dir, "video.mov"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{tools: cfg.Tools}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"evidence", "start"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "fail code=evidence_run_not_clean") || !strings.Contains(got, "issue=video_exists") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestUIPinchRecordsHighLevelCommand(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.BundleID = "com.example.app"
+	cfg.Tools = map[string]bool{"appium": true, "node": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAppiumSession(run, appiumSessionState{PID: 123, BaseURL: "http://appium.local", SessionID: "s1", UDID: "SIM", BundleID: "com.example.app"}); err != nil {
+		t.Fatal(err)
+	}
+	oldClient := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"value":null}`)), Header: http.Header{}}, nil
+	})}
+	defer func() { http.DefaultClient = oldClient }()
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{
+		tools: cfg.Tools,
+		out:   map[string]string{"appium driver list --installed": "xcuitest@7.0.0\n"},
+	}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "pinch", "--x", "200", "--y", "450", "--scale", "0.5", "--duration", "1ms"}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(run.Commands)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "mav ui pinch --x 200 --y 450 --scale 0.5 --duration 1ms") {
+		t.Fatalf("commands=%s output=%s", data, out.String())
 	}
 }
 
