@@ -11,7 +11,7 @@ func TestCompactOutputSortsAndQuotes(t *testing.T) {
 	err := OK("capture", map[string]string{
 		"file": "/tmp/mav/abc/screen.png",
 		"next": "review screenshot",
-	}).Write(&b, false)
+	}).Write(&b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,7 +24,7 @@ func TestCompactOutputSortsAndQuotes(t *testing.T) {
 
 func TestFailOutput(t *testing.T) {
 	var b bytes.Buffer
-	err := Fail("screen_not_found", map[string]string{"screen": "settings"}).Write(&b, false)
+	err := Fail("screen_not_found", map[string]string{"screen": "settings"}).Write(&b)
 	if err != nil {
 		t.Fatal(err)
 	}

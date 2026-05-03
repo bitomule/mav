@@ -1,12 +1,13 @@
 # MAV
 
-Mobile Agent Verifier (`mav`) is a deterministic CLI for validating iOS Bazel
-apps from coding agents.
+Mobile Agent Verifier (`mav`) is a deterministic agent-native CLI for
+validating iOS Bazel apps from coding agents.
 
 MAV gives agents a compact API to build, launch, observe, navigate, interact,
 capture evidence, read logs, and check crashes. It is intentionally not an
 autonomous testing agent: it runs concrete commands and returns small,
-parseable results that another agent can act on.
+parseable results that another agent can act on. MAV output is agent-friendly by
+default; there is no separate JSON mode to opt into.
 
 ## What MAV Is For
 
@@ -66,6 +67,19 @@ With Homebrew:
 brew install bitomule/tap/mav
 ```
 
+Install the MAV skill globally for all supported agents with Vercel's Skills
+CLI:
+
+```bash
+mav install-skills
+```
+
+This runs:
+
+```bash
+npx skills add bitomule/mav --skill mav --global --agent '*' --yes
+```
+
 Build from source:
 
 ```bash
@@ -121,12 +135,6 @@ ok cmd=open run=7fd logs=/tmp/mav/7fd/logs.txt target="iPhone 17 Pro Max"
 ok cmd=ui.tree driver=axe nodes=42 screen=start
 ```
 
-Use `--json` when a caller needs structured output:
-
-```bash
-mav --json ui tree
-```
-
 Use `--raw` only when the underlying tool output is needed:
 
 ```bash
@@ -146,6 +154,7 @@ The top-level commands are:
 ```text
 doctor
 setup
+install-skills
 discover
 sim
 open
@@ -485,6 +494,7 @@ mav stop
 ```text
 mav doctor
 mav setup --install axe idb
+mav install-skills
 mav discover
 mav sim list
 mav sim select --device NAME --ios VERSION [--locale LOCALE] [--language LANG]

@@ -23,12 +23,7 @@ func Fail(code string, fields map[string]string) Output {
 	return Output{OK: false, Code: code, Fields: fields}
 }
 
-func (o Output) Write(w io.Writer, jsonMode bool) error {
-	if jsonMode {
-		enc := json.NewEncoder(w)
-		enc.SetIndent("", "  ")
-		return enc.Encode(o)
-	}
+func (o Output) Write(w io.Writer) error {
 	status := "ok"
 	if !o.OK {
 		status = "fail"

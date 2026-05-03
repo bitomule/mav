@@ -1,6 +1,7 @@
 ---
 name: mav
 description: Use MAV, the Mobile Agent Verifier CLI, to validate iOS Bazel apps through deterministic simulator/device actions, accessibility tree inspection, screenshots, logs, crashes, and evidence reports.
+metadata: {"clawdbot":{"requires":{"bins":["mav"]},"install":[{"id":"brew","kind":"brew","formula":"bitomule/tap/mav","bins":["mav"],"label":"Install MAV (brew)"}]}}
 ---
 
 # MAV
@@ -136,12 +137,12 @@ slow or deep:
 
 ## Command Output
 
-Default output is intentionally compact:
+Output is intentionally compact and agent-friendly by default:
 
 ```text
 ok cmd=open run=7fd logs=/tmp/mav/7fd/logs.txt
 fail code=screen_not_found screen=settings
 ```
 
-Use `--json` when parsing, `--raw` when the underlying tool output is needed,
-and `--verbose` only for debugging MAV itself.
+Use `--raw` only when the underlying tool output is needed, and `--verbose`
+only for debugging MAV itself.

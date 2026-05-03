@@ -9,6 +9,33 @@ import (
 	"testing"
 )
 
+type recordingRunner struct {
+	tools   map[string]bool
+	command string
+	result  CommandResult
+}
+
+func (r *recordingRunner) LookPath(file string) (string, error) {
+	if r.tools[file] {
+		return "/usr/bin/" + file, nil
+	}
+	return "", os.ErrNotExist
+}
+
+func (r *recordingRunner) Run(ctx context.Context, name string, args ...string) CommandResult {
+	_ = ctx
+	r.command = name + " " + strings.Join(args, " ")
+	return r.result
+}
+
+func (r *recordingRunner) Start(ctx context.Context, logPath string, name string, args ...string) (int, error) {
+	_ = ctx
+	_ = logPath
+	_ = name
+	_ = args
+	return 0, nil
+}
+
 func TestGoUnknownScreenFailsDeterministically(t *testing.T) {
 	root := t.TempDir()
 	if err := SaveAppMap(root, DefaultAppMap("com.example.demo")); err != nil {
@@ -48,6 +75,36 @@ func TestHelpListsCommands(t *testing.T) {
 	got := out.String()
 	if !strings.Contains(got, "Usage:") || !strings.Contains(got, "ui          Inspect") {
 		t.Fatalf("got %q", got)
+	}
+	if strings.Contains(got, "--json") {
+		t.Fatalf("help should not mention --json: %q", got)
+	}
+}
+
+func TestInstallSkillsRunsVercelSkillsCLI(t *testing.T) {
+	var out bytes.Buffer
+	runner := &recordingRunner{tools: map[string]bool{"npx": true}}
+	cli := CLI{Runner: runner, Root: t.TempDir(), Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"install-skills"}); err != nil {
+		t.Fatal(err)
+	}
+	want := "npx skills add bitomule/mav --skill mav --global --agent * --yes"
+	if runner.command != want {
+		t.Fatalf("command=%q want %q", runner.command, want)
+	}
+	if !strings.Contains(out.String(), "ok cmd=install-skills") || !strings.Contains(out.String(), "agents=all") {
+		t.Fatalf("got %q", out.String())
+	}
+}
+
+func TestInstallSkillsRequiresNpx(t *testing.T) {
+	var out bytes.Buffer
+	cli := CLI{Runner: &recordingRunner{}, Root: t.TempDir(), Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"install-skills"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "fail code=install_skills_unavailable") || !strings.Contains(out.String(), "tool=npx") {
+		t.Fatalf("got %q", out.String())
 	}
 }
 
