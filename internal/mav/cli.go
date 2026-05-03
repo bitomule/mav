@@ -258,12 +258,12 @@ func (c CLI) installSkills(ctx context.Context) error {
 			"next": "install Node.js/npm so npx is available, then rerun mav install-skills",
 		}).Write(c.Stdout)
 	}
-	args := []string{"skills", "add", "bitomule/mav", "--skill", "mav", "--global", "--agent", "*", "--yes"}
+	args := []string{"skills", "add", "bitomule/mav", "--skill", "mav", "--global", "--agent", "claude-code", "codex", "pi", "--yes"}
 	result := c.Runner.Run(ctx, "npx", args...)
 	if result.Err != nil {
 		fields := map[string]string{
 			"code": strconv.Itoa(result.Code),
-			"next": "rerun npx skills add bitomule/mav --skill mav --global --agent '*' --yes",
+			"next": "rerun npx skills add bitomule/mav --skill mav --global --agent claude-code codex pi --yes",
 		}
 		if stderr := firstLine(result.Stderr); stderr != "" {
 			fields["stderr"] = stderr

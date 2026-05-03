@@ -88,7 +88,7 @@ func TestInstallSkillsRunsVercelSkillsCLI(t *testing.T) {
 	if err := cli.Run(context.Background(), []string{"install-skills"}); err != nil {
 		t.Fatal(err)
 	}
-	want := "npx skills add bitomule/mav --skill mav --global --agent * --yes"
+	want := "npx skills add bitomule/mav --skill mav --global --agent claude-code codex pi --yes"
 	if runner.command != want {
 		t.Fatalf("command=%q want %q", runner.command, want)
 	}

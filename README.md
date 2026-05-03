@@ -67,7 +67,7 @@ With Homebrew:
 brew install bitomule/tap/mav
 ```
 
-Install the MAV skill globally for all supported agents with Vercel's Skills
+Install the MAV skill globally for supported coding agents with Vercel's Skills
 CLI:
 
 ```bash
@@ -77,7 +77,7 @@ mav install-skills
 This runs:
 
 ```bash
-npx skills add bitomule/mav --skill mav --global --agent '*' --yes
+npx skills add bitomule/mav --skill mav --global --agent claude-code codex pi --yes
 ```
 
 Build from source:
