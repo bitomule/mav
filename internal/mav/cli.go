@@ -3,6 +3,7 @@ package mav
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -47,9 +48,15 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 		if len(rest) > 1 {
 			topic = rest[1]
 		}
+		if len(rest) > 2 {
+			topic = strings.Join(rest[1:], " ")
+		}
 		return c.help(opts, topic)
 	}
 	if opts.Help {
+		if rest[0] == "ui" && len(rest) > 1 {
+			return c.help(opts, "ui "+rest[1])
+		}
 		return c.help(opts, rest[0])
 	}
 	switch rest[0] {
@@ -169,15 +176,25 @@ Global flags:
   mav ui tap --text TEXT
   mav ui type TEXT
   mav ui swipe [--direction up|down|left|right]
-  mav ui pinch --x X --y Y --scale SCALE [--pan-x DX] [--pan-y DY] [--distance D] [--angle DEG] [--rotate DEG] [--duration 800ms]
-  mav ui rotate --x X --y Y --degrees DEG [--distance D] [--duration 800ms]
-  mav ui twoFingerPan --x X --y Y --pan-x DX --pan-y DY [--distance D] [--angle DEG] [--duration 800ms]
+  mav ui pinch --x X --y Y --scale SCALE [--pan-x DX] [--pan-y DY] [--distance D] [--angle DEG] [--rotate DEG] [--duration 800ms] [--hold DURATION]
+  mav ui rotate --x X --y Y --degrees DEG [--distance D] [--duration 800ms] [--hold DURATION]
+  mav ui twoFingerPan --x X --y Y --pan-x DX --pan-y DY [--distance D] [--angle DEG] [--duration 800ms] [--hold DURATION]
   mav ui actions --file actions.json
   mav ui wait --id ID [--timeout 5s]
   mav ui scrollUntil --id ID [--direction up] [--max-swipes 5]
 `
 	case "capture":
-		return "Usage: mav capture [--run RUN_ID]\n"
+		return "Usage: mav capture [--name NAME] [--run RUN_ID]\n"
+	case "ui tree":
+		return "Usage: mav ui tree\n\nPrints compact screen metadata followed by bounded node lines with id, label, role, value, and frame when available.\n"
+	case "ui swipe":
+		return "Usage: mav ui swipe [--direction up|down|left|right] [--start-x X --start-y Y --end-x X --end-y Y]\n"
+	case "ui pinch":
+		return "Usage: mav ui pinch --x X --y Y --scale SCALE [--pan-x DX] [--pan-y DY] [--distance D] [--angle DEG] [--rotate DEG] [--duration 800ms] [--hold DURATION]\n"
+	case "ui rotate":
+		return "Usage: mav ui rotate --x X --y Y --degrees DEG [--distance D] [--duration 800ms] [--hold DURATION]\n"
+	case "ui twoFingerPan":
+		return "Usage: mav ui twoFingerPan --x X --y Y --pan-x DX --pan-y DY [--distance D] [--angle DEG] [--duration 800ms] [--hold DURATION]\n"
 	case "preview":
 		return `Usage:
   mav preview init [--dir MAVPreview] [--bundle-id BUNDLE_ID] [--force]
@@ -428,7 +445,9 @@ func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 	case "list":
 		sims, err := ListSimulators(c.Runner)
 		if err != nil {
-			return Fail("sim_list_failed", map[string]string{"error": err.Error()}).Write(c.Stdout)
+			fields := map[string]string{"error": err.Error()}
+			addSandboxNext(fields, err.Error())
+			return Fail("sim_list_failed", fields).Write(c.Stdout)
 		}
 		if err := OK("sim.list", map[string]string{"count": strconv.Itoa(len(sims))}).Write(c.Stdout); err != nil {
 			return err
@@ -699,15 +718,23 @@ func (c CLI) uiTree(ctx context.Context, opts GlobalOptions, cfg Config) error {
 		return nil
 	}
 	if result.Err != nil {
-		return Fail("ui_tree_failed", map[string]string{"stderr": firstLine(result.Stderr)}).Write(c.Stdout)
+		fields := map[string]string{"stderr": firstLine(result.Stderr)}
+		addSandboxNext(fields, result.Stderr)
+		return Fail("ui_tree_failed", fields).Write(c.Stdout)
 	}
 	if isEmptyAXTree(result.Stdout) {
 		return Fail("ui_tree_empty", map[string]string{"driver": driver, "reason": "simulator_accessibility_unavailable", "recovered": strconv.FormatBool(recovered)}).Write(c.Stdout)
 	}
 	screen := "unknown"
+	screenSource := ""
+	previousScreen := ""
+	elements := ExtractElements(result.Stdout)
 	if run, err := LoadRun(c.Root, ""); err == nil {
-		if observed, err := ObserveScreen(c.Root, cfg, run, result.Stdout); err == nil && observed != "" {
-			screen = observed
+		if observed, err := ObserveScreenDetailed(c.Root, cfg, run, result.Stdout); err == nil && observed.Screen != "" {
+			screen = observed.Screen
+			screenSource = observed.Source
+			previousScreen = observed.PreviousScreen
+			elements = observed.Elements
 		}
 	}
 	nodes := countTreeNodes(result.Stdout)
@@ -715,10 +742,19 @@ func (c CLI) uiTree(ctx context.Context, opts GlobalOptions, cfg Config) error {
 		nodes = strings.Count(result.Stdout, "\n")
 	}
 	fields := map[string]string{"driver": driver, "nodes": strconv.Itoa(nodes), "screen": screen}
+	if screenSource != "" {
+		fields["screen_source"] = screenSource
+	}
+	if previousScreen != "" && previousScreen != screen {
+		fields["previous_screen"] = previousScreen
+	}
 	if recovered {
 		fields["recovered"] = "true"
 	}
-	return OK("ui.tree", fields).Write(c.Stdout)
+	if err := OK("ui.tree", fields).Write(c.Stdout); err != nil {
+		return err
+	}
+	return writeElementLines(c.Stdout, elements)
 }
 
 func (c CLI) describeUITree(ctx context.Context, cfg Config) (string, CommandResult, error) {
@@ -916,6 +952,7 @@ func (c CLI) uiPinch(ctx context.Context, opts GlobalOptions, cfg Config, args [
 	if err := c.performAppiumActions(ctx, cfg, actions); err != nil {
 		return c.writeAppiumGestureError(err)
 	}
+	waitForGestureCompletion(fields)
 	fields["driver"] = "appium"
 	return OK("ui.pinch", fields).Write(c.Stdout)
 }
@@ -930,6 +967,7 @@ func (c CLI) uiRotate(ctx context.Context, opts GlobalOptions, cfg Config, args 
 	if err := c.performAppiumActions(ctx, cfg, actions); err != nil {
 		return c.writeAppiumGestureError(err)
 	}
+	waitForGestureCompletion(fields)
 	fields["driver"] = "appium"
 	return OK("ui.rotate", fields).Write(c.Stdout)
 }
@@ -944,6 +982,7 @@ func (c CLI) uiTwoFingerPan(ctx context.Context, opts GlobalOptions, cfg Config,
 	if err := c.performAppiumActions(ctx, cfg, actions); err != nil {
 		return c.writeAppiumGestureError(err)
 	}
+	waitForGestureCompletion(fields)
 	fields["driver"] = "appium"
 	return OK("ui.twoFingerPan", fields).Write(c.Stdout)
 }
@@ -1042,15 +1081,36 @@ func (c CLI) capture(ctx context.Context, opts GlobalOptions, args []string) err
 		}
 		_ = SaveCurrentRun(c.Root, run)
 	}
-	path := filepath.Join(run.Dir, "screen.png")
+	path := uniqueCapturePath(run, flagValue(args, "--name"))
 	result, err := c.captureScreenshot(ctx, cfg, path)
 	if err != nil {
-		return Fail("tool_missing", map[string]string{"tool": "axe|xcrun"}).Write(c.Stdout)
+		return Fail("tool_missing", map[string]string{"tool": "axe|idb|xcrun"}).Write(c.Stdout)
 	}
 	if result.Err != nil {
-		return Fail("capture_failed", map[string]string{"stderr": firstLine(result.Stderr)}).Write(c.Stdout)
+		fields := map[string]string{"stderr": firstLine(result.Stderr)}
+		addSandboxNext(fields, result.Stderr)
+		return Fail("capture_failed", fields).Write(c.Stdout)
 	}
+	_ = os.WriteFile(filepath.Join(run.Dir, "latest_capture.txt"), []byte(path+"\n"), 0o644)
 	return OK("capture", map[string]string{"file": path, "run": run.ID}).Write(c.Stdout)
+}
+
+func uniqueCapturePath(run RunState, name string) string {
+	dir := filepath.Join(run.Dir, "captures")
+	base := safeFileName(name)
+	if base == "step" && strings.TrimSpace(name) == "" {
+		base = time.Now().UTC().Format("20060102T150405.000")
+	}
+	path := filepath.Join(dir, base+".png")
+	if !exists(path) {
+		return path
+	}
+	for i := 2; ; i++ {
+		path = filepath.Join(dir, fmt.Sprintf("%s-%d.png", base, i))
+		if !exists(path) {
+			return path
+		}
+	}
 }
 
 func (c CLI) captureScreenshot(ctx context.Context, cfg Config, path string) (CommandResult, error) {
@@ -1499,6 +1559,59 @@ func outputErr(err error, code string) error {
 	return nil
 }
 
+func writeElementLines(w io.Writer, elements []Element) error {
+	const maxNodes = 80
+	for i, el := range elements {
+		if i >= maxNodes {
+			_, err := fmt.Fprintf(w, "node_more remaining=%d\n", len(elements)-maxNodes)
+			return err
+		}
+		fields := map[string]string{
+			"index": strconv.Itoa(i + 1),
+			"id":    el.ID,
+			"label": el.Label,
+			"role":  el.Role,
+			"value": el.Value,
+			"frame": el.Frame,
+		}
+		parts := []string{"node"}
+		keys := []string{"index", "id", "label", "role", "value", "frame"}
+		for _, key := range keys {
+			if fields[key] != "" {
+				parts = append(parts, key+"="+quoteIfNeeded(fields[key]))
+			}
+		}
+		if _, err := fmt.Fprintln(w, strings.Join(parts, " ")); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func addSandboxNext(fields map[string]string, stderr string) {
+	if sandboxAccessHint(stderr) != "" {
+		fields["next"] = sandboxAccessHint(stderr)
+	}
+}
+
+func sandboxAccessHint(text string) string {
+	lower := strings.ToLower(text)
+	for _, needle := range []string{
+		"core simulator",
+		"coresimulator",
+		"operation not permitted",
+		"permission denied",
+		"not authorized",
+		"unable to boot device",
+		"idb",
+	} {
+		if strings.Contains(lower, needle) {
+			return "requires simulator/idb access; rerun outside sandbox"
+		}
+	}
+	return ""
+}
+
 func mustLoadConfig(root string) Config {
 	cfg, _ := LoadConfig(root)
 	return cfg
@@ -1528,6 +1641,7 @@ func gestureFlowArgs(params map[string]string) []string {
 		"--rotate", "rotate",
 		"--degrees", "degrees",
 		"--duration", "duration",
+		"--hold", "hold",
 	)
 }
 
@@ -1923,7 +2037,9 @@ func (c CLI) crashes(ctx context.Context, opts GlobalOptions, args []string) err
 		return nil
 	}
 	if result.Err != nil {
-		return Fail("crashes_failed", map[string]string{"stderr": firstLine(result.Stderr)}).Write(c.Stdout)
+		fields := map[string]string{"stderr": firstLine(result.Stderr)}
+		addSandboxNext(fields, result.Stderr)
+		return Fail("crashes_failed", fields).Write(c.Stdout)
 	}
 	count := 0
 	for _, line := range strings.Split(result.Stdout, "\n") {
@@ -2031,6 +2147,11 @@ func (c CLI) evidenceStop(ctx context.Context, opts GlobalOptions, args []string
 	if !waitForFile(fields["file"], 6*time.Second) {
 		return Fail("video_not_written", map[string]string{"run": run.ID, "file": fields["file"], "log": filepath.Join(run.Dir, "video.log")}).Write(c.Stdout)
 	}
+	duration, err := waitForVideoDuration(fields["file"], 6*time.Second)
+	if err != nil || duration <= 0 {
+		return Fail("video_invalid", map[string]string{"run": run.ID, "file": fields["file"], "duration": "0s", "log": filepath.Join(run.Dir, "video.log")}).Write(c.Stdout)
+	}
+	fields["duration"] = duration.String()
 	if !hasFlag(args, "--no-capture") {
 		cfg, cfgErr := LoadConfig(c.Root)
 		if cfgErr == nil {
@@ -2043,6 +2164,106 @@ func (c CLI) evidenceStop(ctx context.Context, opts GlobalOptions, args []string
 	}
 	appendCommand(run, "mav evidence stop", CommandResult{})
 	return OK("evidence.stop", fields).Write(c.Stdout)
+}
+
+func videoDuration(path string) (time.Duration, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	return mp4Duration(data)
+}
+
+func waitForVideoDuration(path string, timeout time.Duration) (time.Duration, error) {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		duration, err := videoDuration(path)
+		if err == nil && duration > 0 {
+			return duration, nil
+		}
+		lastErr = err
+		if time.Now().After(deadline) {
+			if lastErr == nil {
+				lastErr = fmt.Errorf("video_duration_missing")
+			}
+			return 0, lastErr
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func mp4Duration(data []byte) (time.Duration, error) {
+	timescale, duration, ok := findMVHDDuration(data)
+	if !ok || timescale == 0 || duration == 0 {
+		return 0, fmt.Errorf("video_duration_missing")
+	}
+	return time.Duration(duration) * time.Second / time.Duration(timescale), nil
+}
+
+func findMVHDDuration(data []byte) (uint64, uint64, bool) {
+	for offset := 0; offset+8 <= len(data); {
+		size := int(binary.BigEndian.Uint32(data[offset : offset+4]))
+		kind := string(data[offset+4 : offset+8])
+		header := 8
+		if size == 1 {
+			if offset+16 > len(data) {
+				return 0, 0, false
+			}
+			wide := binary.BigEndian.Uint64(data[offset+8 : offset+16])
+			if wide > uint64(len(data)-offset) {
+				return 0, 0, false
+			}
+			size = int(wide)
+			header = 16
+		} else if size == 0 {
+			size = len(data) - offset
+		}
+		if size < header || offset+size > len(data) {
+			return 0, 0, false
+		}
+		payload := data[offset+header : offset+size]
+		if kind == "mvhd" {
+			return parseMVHD(payload)
+		}
+		if isContainerAtom(kind) {
+			if scale, dur, ok := findMVHDDuration(payload); ok {
+				return scale, dur, true
+			}
+		}
+		offset += size
+	}
+	return 0, 0, false
+}
+
+func parseMVHD(payload []byte) (uint64, uint64, bool) {
+	if len(payload) < 20 {
+		return 0, 0, false
+	}
+	version := payload[0]
+	switch version {
+	case 0:
+		if len(payload) < 20 {
+			return 0, 0, false
+		}
+		return uint64(binary.BigEndian.Uint32(payload[12:16])), uint64(binary.BigEndian.Uint32(payload[16:20])), true
+	case 1:
+		if len(payload) < 32 {
+			return 0, 0, false
+		}
+		return uint64(binary.BigEndian.Uint32(payload[20:24])), binary.BigEndian.Uint64(payload[24:32]), true
+	default:
+		return 0, 0, false
+	}
+}
+
+func isContainerAtom(kind string) bool {
+	switch kind {
+	case "moov", "trak", "mdia", "minf", "stbl", "edts", "udta", "meta":
+		return true
+	default:
+		return false
+	}
 }
 
 func axeTargetArgs(cfg Config, args ...string) []string {

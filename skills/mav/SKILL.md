@@ -18,12 +18,17 @@ does not explore or repair routes by itself. The agent decides the next action.
    You can also pass the same target flags to `mav open`.
 4. Start the app with `mav open`. This creates `/tmp/mav/<run-id>/` and starts
    `logs.txt`. MAV captures a filtered unified log stream for MAV probes.
-5. Prefer `mav ui tree` to understand the current screen. It is cheaper and more
-   structured than screenshots. If the simulator accessibility service returns
-   an empty `AXApplication` tree, MAV attempts recovery internally; do not work
-   around it with screenshots unless `mav ui tree` fails after recovery.
-6. Use `mav capture` only when the tree is insufficient or visual evidence is
-   needed.
+5. Prefer `mav ui tree` to understand the current screen. It prints compact
+   screen metadata followed by bounded `node ...` lines with ids, labels, roles,
+   values, and frames when available. Treat this as the primary structured UI
+   source for agents; do not ask for `--json`. If the simulator accessibility
+   service returns an empty `AXApplication` tree, MAV attempts recovery
+   internally; do not work around it with screenshots unless `mav ui tree` fails
+   after recovery.
+6. Use `mav capture --name <descriptive-name>` only when the tree is
+   insufficient or visual evidence is needed. Captures are unique by default
+   under `/tmp/mav/<run-id>/captures/`, and `--name` gives the client and report
+   a stable, readable proof point such as `largest-videos-after-pinch`.
 7. Use `mav ui tap/type/swipe/wait/scrollUntil` for manual exploration. Prefer
    accessibility identifiers first (`--id`). Use coordinates only when the tree
    is insufficient and the screenshot makes the target unambiguous. Use text as
@@ -121,6 +126,30 @@ mav ui tap --id privacy_policy_button
 If there is no stable id, use coordinates only after capturing/inspecting a
 screenshot. Use `text` only when neither id nor coordinates are appropriate.
 
+## Gestures
+
+Use Appium-backed gestures when the app needs multi-touch behavior:
+
+```bash
+mav ui pinch --x 200 --y 450 --scale 0.5 --duration 800ms
+mav ui pinch --x 200 --y 450 --scale 0.5 --pan-x 80 --pan-y -40 --duration 800ms --hold 2s
+mav ui rotate --x 200 --y 450 --degrees 30 --hold 1s
+mav ui twoFingerPan --x 200 --y 450 --pan-x 80 --pan-y -40 --hold 1s
+```
+
+`--hold DURATION` keeps both fingers down at the final positions before
+releasing. This also applies to simultaneous pinch+pan via `mav ui pinch
+--pan-x/--pan-y`. MAV waits for `duration + hold` before returning or advancing
+to the next flow step, so a following `mav capture --name ...` or evidence step
+does not race ahead of the gesture.
+
+In YAML flows, gesture steps accept the same `hold` key:
+
+```yaml
+- pinch: { x: 200, y: 450, scale: 0.5, panX: 80, panY: -40, duration: 800ms, hold: 2s }
+- capture: { name: zoom-held }
+```
+
 ## Previews
 
 Use previews for isolated SwiftUI screens when launching the full app is too
@@ -130,7 +159,7 @@ slow or deep:
 2. Add the real view and any lightweight mocks to `MAVPreview/PreviewHostApp.swift`
    or the generated host target.
 3. Build and launch it with `mav preview <view-id>`.
-4. Inspect with `mav ui tree`, then `mav capture` for visual proof.
+4. Inspect with `mav ui tree`, then `mav capture --name <view-id>` for visual proof.
 5. Include preview screenshots in `mav evidence report` when they support the
    validation.
 
@@ -140,8 +169,23 @@ Output is intentionally compact and agent-friendly by default:
 
 ```text
 ok cmd=open run=7fd logs=/tmp/mav/7fd/logs.txt
+ok cmd=ui.tree driver=axe nodes=42 screen=settings screen_source=recognized
+node index=1 id=settings_button label=Settings role=button frame="{{20, 120}, {180, 44}}"
+ok cmd=capture file=/tmp/mav/7fd/captures/largest-videos-after-pinch.png run=7fd
 fail code=screen_not_found screen=settings
 ```
+
+If `mav ui tree` reports `screen=unknown` with `screen_source=unmatched`, trust
+the live node lines over stale map state and continue exploring with tree/tap or
+capture named evidence before updating routes.
+
+If simulator commands fail with a hint like `requires simulator/idb access;
+rerun outside sandbox`, rerun MAV outside the sandbox instead of retrying the
+same command inside the sandbox.
+
+`mav evidence stop` rejects zero-duration or invalid videos. If it returns
+`video_invalid`, rerun the evidence flow with enough interaction time so the
+recording covers the behavior being verified.
 
 Use `--raw` only when the underlying tool output is needed, and `--verbose`
 only for debugging MAV itself.
