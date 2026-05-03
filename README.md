@@ -91,8 +91,8 @@ Homebrew packaging lives in `packaging/homebrew/mav.rb` and is published to
 `bitomule/tap`.
 
 The release workflow can also update `bitomule/homebrew-tap` automatically. The
-`bitomule/mav` repo must define a `HOMEBREW_TAP_TOKEN` secret with permission to
-push to `bitomule/homebrew-tap`.
+`bitomule/mav` repo must define a `COMMITTER_TOKEN` secret with permission to
+push to `bitomule/homebrew-tap`; this is the same pattern used by Koubou.
 
 ## Quick Start
 

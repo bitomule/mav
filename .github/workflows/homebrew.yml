@@ -78,7 +78,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: bitomule/homebrew-tap
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          token: ${{ secrets.COMMITTER_TOKEN }}
           path: homebrew-tap
 
       - name: Publish formula
