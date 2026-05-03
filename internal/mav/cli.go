@@ -145,7 +145,7 @@ Global flags:
   --help,-h   Show help.
 `
 	case "setup":
-		return "Usage: mav setup --install axe idb\n"
+		return "Usage: mav setup --install axe idb appium\n"
 	case "install-skills":
 		return "Usage: mav install-skills\n"
 	case "discover":
@@ -169,6 +169,10 @@ Global flags:
   mav ui tap --text TEXT
   mav ui type TEXT
   mav ui swipe [--direction up|down|left|right]
+  mav ui pinch --x X --y Y --scale SCALE [--pan-x DX] [--pan-y DY] [--distance D] [--angle DEG] [--rotate DEG] [--duration 800ms]
+  mav ui rotate --x X --y Y --degrees DEG [--distance D] [--duration 800ms]
+  mav ui twoFingerPan --x X --y Y --pan-x DX --pan-y DY [--distance D] [--angle DEG] [--duration 800ms]
+  mav ui actions --file actions.json
   mav ui wait --id ID [--timeout 5s]
   mav ui scrollUntil --id ID [--direction up] [--max-swipes 5]
 `
@@ -202,21 +206,55 @@ Global flags:
 }
 
 func (c CLI) doctor(ctx context.Context, opts GlobalOptions) error {
-	tools := []string{"go", "bazelisk", "xcrun", "axe", "idb"}
+	tools := []string{"go", "bazelisk", "xcrun", "axe", "idb", "node", "npm", "appium"}
 	fields := map[string]string{}
 	missing := []string{}
+	nextHint := ""
 	for _, tool := range tools {
 		_, err := c.Runner.LookPath(tool)
 		if err == nil {
 			fields[tool] = "ok"
 		} else {
 			fields[tool] = "missing"
-			if tool != "go" && tool != "xcrun" {
+			if tool != "go" && tool != "xcrun" && tool != "node" && tool != "npm" {
 				missing = append(missing, tool)
 			}
 		}
 	}
-	if len(missing) > 0 {
+	if fields["appium"] == "ok" {
+		nodeCheck := checkAppiumNodePath(c.Runner)
+		if nodeCheck.OK {
+			fields["appium_node"] = "ok"
+		} else {
+			fields["appium_node"] = "mismatch"
+			fields["appium_node_next"] = nodeCheck.Next
+			nextHint = nodeCheck.Next
+		}
+		driverStatus := appiumDriverStatus{}
+		if nodeCheck.OK {
+			driverStatus = checkAppiumXCUITestDriver(ctx, c.Runner)
+		}
+		if nodeCheck.OK && driverStatus.NodeMismatch {
+			fields["appium_node"] = "mismatch"
+			fields["appium_node_next"] = driverStatus.Next
+			nextHint = driverStatus.Next
+		}
+		if nodeCheck.OK && driverStatus.OK {
+			fields["appium_xcuitest"] = "ok"
+		} else {
+			fields["appium_xcuitest"] = "missing"
+			if nodeCheck.OK && !driverStatus.NodeMismatch {
+				missing = append(missing, "appium")
+			}
+		}
+	} else {
+		fields["appium_node"] = "missing"
+		fields["appium_xcuitest"] = "missing"
+	}
+	if nextHint != "" {
+		fields["next"] = nextHint
+	} else if len(missing) > 0 {
+		missing = uniqueStrings(missing)
 		fields["next"] = "mav setup --install " + strings.Join(missing, " ")
 	}
 	return OK("doctor", fields).Write(c.Stdout)
@@ -225,7 +263,7 @@ func (c CLI) doctor(ctx context.Context, opts GlobalOptions) error {
 func (c CLI) setup(ctx context.Context, opts GlobalOptions, args []string) error {
 	install := flagValue(args, "--install")
 	if install == "" {
-		return Fail("setup_install_missing", map[string]string{"usage": "mav setup --install axe idb"}).Write(c.Stdout)
+		return Fail("setup_install_missing", map[string]string{"usage": "mav setup --install axe idb appium"}).Write(c.Stdout)
 	}
 	tools := strings.Fields(install)
 	if len(tools) == 0 {
@@ -236,6 +274,16 @@ func (c CLI) setup(ctx context.Context, opts GlobalOptions, args []string) error
 		"idb": {"brew", "install", "idb-companion"},
 	}
 	for _, tool := range tools {
+		if tool == "appium" {
+			ok, err := c.setupAppium(ctx, opts)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return nil
+			}
+			continue
+		}
 		cmd, ok := commands[tool]
 		if !ok {
 			return Fail("setup_unknown_tool", map[string]string{"tool": tool}).Write(c.Stdout)
@@ -249,6 +297,45 @@ func (c CLI) setup(ctx context.Context, opts GlobalOptions, args []string) error
 		}
 	}
 	return OK("setup", map[string]string{"installed": strings.Join(tools, ",")}).Write(c.Stdout)
+}
+
+func (c CLI) setupAppium(ctx context.Context, opts GlobalOptions) (bool, error) {
+	if _, err := c.Runner.LookPath("npm"); err != nil {
+		return false, Fail("setup_failed", map[string]string{"tool": "appium", "stderr": "npm missing", "next": "install Node.js/npm, then rerun mav setup --install appium"}).Write(c.Stdout)
+	}
+	commands := [][]string{
+		{"npm", "install", "-g", "appium"},
+		{"appium", "driver", "install", "xcuitest"},
+	}
+	for _, cmd := range commands {
+		if opts.Verbose {
+			fmt.Fprintln(c.Stderr, strings.Join(cmd, " "))
+		}
+		result := c.Runner.Run(ctx, cmd[0], cmd[1:]...)
+		if result.Err != nil {
+			return false, Fail("setup_failed", map[string]string{"tool": "appium", "stderr": firstLine(result.Stderr)}).Write(c.Stdout)
+		}
+	}
+	nodeCheck := checkAppiumNodePath(c.Runner)
+	if !nodeCheck.OK {
+		return false, Fail("setup_failed", map[string]string{"tool": "appium", "stderr": nodeCheck.Message, "next": nodeCheck.Next}).Write(c.Stdout)
+	}
+	driverStatus := checkAppiumXCUITestDriver(ctx, c.Runner)
+	if !driverStatus.OK {
+		fields := map[string]string{"tool": "appium", "stderr": driverStatus.Message}
+		if driverStatus.Next != "" {
+			fields["next"] = driverStatus.Next
+		}
+		return false, Fail("setup_failed", fields).Write(c.Stdout)
+	}
+	if cfg, err := LoadConfig(c.Root); err == nil {
+		if cfg.Tools == nil {
+			cfg.Tools = map[string]bool{}
+		}
+		cfg.Tools["appium"] = true
+		_ = SaveConfig(c.Root, cfg)
+	}
+	return true, nil
 }
 
 func (c CLI) installSkills(ctx context.Context) error {
@@ -522,7 +609,7 @@ func (c CLI) startProbeLogs(ctx context.Context, cfg Config, run RunState) (int,
 
 func (c CLI) ui(ctx context.Context, opts GlobalOptions, args []string) error {
 	if len(args) == 0 {
-		return Fail("ui_command_missing", map[string]string{"usage": "mav ui tree|tap|type|swipe|wait|scrollUntil"}).Write(c.Stdout)
+		return Fail("ui_command_missing", map[string]string{"usage": "mav ui tree|tap|type|swipe|pinch|rotate|twoFingerPan|actions|wait|scrollUntil"}).Write(c.Stdout)
 	}
 	cfg, err := LoadConfig(c.Root)
 	if err != nil {
@@ -537,6 +624,14 @@ func (c CLI) ui(ctx context.Context, opts GlobalOptions, args []string) error {
 		return c.uiType(ctx, opts, cfg, args[1:])
 	case "swipe":
 		return c.uiSwipe(ctx, opts, cfg, args[1:])
+	case "pinch":
+		return c.uiPinch(ctx, opts, cfg, args[1:])
+	case "rotate":
+		return c.uiRotate(ctx, opts, cfg, args[1:])
+	case "twoFingerPan":
+		return c.uiTwoFingerPan(ctx, opts, cfg, args[1:])
+	case "actions":
+		return c.uiActions(ctx, opts, cfg, args[1:])
 	case "wait":
 		return c.uiWait(ctx, opts, cfg, args[1:])
 	case "scrollUntil":
@@ -771,6 +866,77 @@ func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args [
 		return Fail("ui_swipe_failed", map[string]string{"stderr": firstLine(result.Stderr)}).Write(c.Stdout)
 	}
 	return OK("ui.swipe", map[string]string{"direction": direction, "driver": driver}).Write(c.Stdout)
+}
+
+func (c CLI) uiPinch(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
+	params := gestureParamsFromArgs(args)
+	params.Kind = "pinch"
+	actions, fields, err := buildGestureActions(params)
+	if err != nil {
+		return Fail("gesture_invalid", map[string]string{"error": err.Error()}).Write(c.Stdout)
+	}
+	if err := c.performAppiumActions(ctx, cfg, actions); err != nil {
+		return c.writeAppiumGestureError(err)
+	}
+	fields["driver"] = "appium"
+	return OK("ui.pinch", fields).Write(c.Stdout)
+}
+
+func (c CLI) uiRotate(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
+	params := gestureParamsFromArgs(args)
+	params.Kind = "rotate"
+	actions, fields, err := buildGestureActions(params)
+	if err != nil {
+		return Fail("gesture_invalid", map[string]string{"error": err.Error()}).Write(c.Stdout)
+	}
+	if err := c.performAppiumActions(ctx, cfg, actions); err != nil {
+		return c.writeAppiumGestureError(err)
+	}
+	fields["driver"] = "appium"
+	return OK("ui.rotate", fields).Write(c.Stdout)
+}
+
+func (c CLI) uiTwoFingerPan(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
+	params := gestureParamsFromArgs(args)
+	params.Kind = "twoFingerPan"
+	actions, fields, err := buildGestureActions(params)
+	if err != nil {
+		return Fail("gesture_invalid", map[string]string{"error": err.Error()}).Write(c.Stdout)
+	}
+	if err := c.performAppiumActions(ctx, cfg, actions); err != nil {
+		return c.writeAppiumGestureError(err)
+	}
+	fields["driver"] = "appium"
+	return OK("ui.twoFingerPan", fields).Write(c.Stdout)
+}
+
+func (c CLI) uiActions(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
+	path := flagValue(args, "--file")
+	if path == "" {
+		return Fail("gesture_invalid", map[string]string{"error": "actions_file_missing"}).Write(c.Stdout)
+	}
+	actions, err := loadW3CActionsFile(c.Root, path)
+	if err != nil {
+		return Fail("gesture_invalid", map[string]string{"error": err.Error()}).Write(c.Stdout)
+	}
+	if err := c.performAppiumActions(ctx, cfg, actions); err != nil {
+		return c.writeAppiumGestureError(err)
+	}
+	return OK("ui.actions", map[string]string{"driver": "appium", "file": path}).Write(c.Stdout)
+}
+
+func (c CLI) writeAppiumGestureError(err error) error {
+	if appErr, ok := err.(appiumError); ok {
+		fields := map[string]string{"tool": "appium"}
+		if appErr.Message != "" {
+			fields["stderr"] = appErr.Message
+		}
+		if appErr.Next != "" {
+			fields["next"] = appErr.Next
+		}
+		return Fail(appErr.Code, fields).Write(c.Stdout)
+	}
+	return Fail("ui_gesture_failed", map[string]string{"tool": "appium", "stderr": err.Error()}).Write(c.Stdout)
 }
 
 func (c CLI) uiWait(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
@@ -1046,6 +1212,22 @@ func (c CLI) executeFlowStep(ctx context.Context, run RunState, index int, step 
 		args := flowArgs(step.Params, "--direction", "direction")
 		err := c.withStdout(io.Discard).uiSwipe(ctx, GlobalOptions{}, mustLoadConfig(c.Root), args)
 		return copyParams(step.Params), outputErr(err, "swipe_failed")
+	case "pinch":
+		args := gestureFlowArgs(step.Params)
+		err := c.withStdout(io.Discard).uiPinch(ctx, GlobalOptions{}, mustLoadConfig(c.Root), args)
+		return copyParams(step.Params), outputErr(err, "pinch_failed")
+	case "rotate":
+		args := gestureFlowArgs(step.Params)
+		err := c.withStdout(io.Discard).uiRotate(ctx, GlobalOptions{}, mustLoadConfig(c.Root), args)
+		return copyParams(step.Params), outputErr(err, "rotate_failed")
+	case "twoFingerPan":
+		args := gestureFlowArgs(step.Params)
+		err := c.withStdout(io.Discard).uiTwoFingerPan(ctx, GlobalOptions{}, mustLoadConfig(c.Root), args)
+		return copyParams(step.Params), outputErr(err, "two_finger_pan_failed")
+	case "actions":
+		args := flowArgs(step.Params, "--file", "file")
+		err := c.withStdout(io.Discard).uiActions(ctx, GlobalOptions{}, mustLoadConfig(c.Root), args)
+		return copyParams(step.Params), outputErr(err, "actions_failed")
 	case "delay", "sleep":
 		duration := parseFlowDuration(step.Params["duration"], 1*time.Second)
 		if duration <= 0 {
@@ -1294,6 +1476,21 @@ func flowArgs(params map[string]string, pairs ...string) []string {
 		}
 	}
 	return args
+}
+
+func gestureFlowArgs(params map[string]string) []string {
+	return flowArgs(params,
+		"--x", "x",
+		"--y", "y",
+		"--scale", "scale",
+		"--pan-x", "panX",
+		"--pan-y", "panY",
+		"--distance", "distance",
+		"--angle", "angle",
+		"--rotate", "rotate",
+		"--degrees", "degrees",
+		"--duration", "duration",
+	)
 }
 
 func copyParams(params map[string]string) map[string]string {

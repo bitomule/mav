@@ -52,6 +52,14 @@ type flowStepPayload struct {
 	Language    string          `yaml:"language"`
 	ChangedFrom string          `yaml:"changedFrom"`
 	MaxSwipes   string          `yaml:"maxSwipes"`
+	Scale       string          `yaml:"scale"`
+	PanX        string          `yaml:"panX"`
+	PanY        string          `yaml:"panY"`
+	Distance    string          `yaml:"distance"`
+	Angle       string          `yaml:"angle"`
+	Rotate      string          `yaml:"rotate"`
+	Degrees     string          `yaml:"degrees"`
+	File        string          `yaml:"file"`
 	Any         []FlowCondition `yaml:"any"`
 }
 
@@ -129,6 +137,14 @@ func parseFlowStepNode(node yaml.Node) (FlowStep, error) {
 	put("language", payload.Language)
 	put("changedFrom", payload.ChangedFrom)
 	put("maxSwipes", payload.MaxSwipes)
+	put("scale", payload.Scale)
+	put("panX", payload.PanX)
+	put("panY", payload.PanY)
+	put("distance", payload.Distance)
+	put("angle", payload.Angle)
+	put("rotate", payload.Rotate)
+	put("degrees", payload.Degrees)
+	put("file", payload.File)
 	return FlowStep{Action: action, Params: params, Any: payload.Any}, nil
 }
 

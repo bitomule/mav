@@ -31,6 +31,7 @@ MAV is early and evolving. The current stable pieces are:
 - Simulator selection, boot, install, launch, screenshot, and video.
 - AXe-first accessibility tree inspection and semantic interactions.
 - idb coordinate taps and fallback capabilities.
+- Appium-backed W3C Actions for optional multitouch gestures.
 - Native MAV YAML flows through `mav run`.
 - JSON app map storage in `.mav/map/**`.
 - HTML evidence reports in `/tmp/mav/<run-id>/report.html`.
@@ -44,6 +45,8 @@ MAV is early and evolving. The current stable pieces are:
 - Bazelisk, for Bazel app builds.
 - AXe, for accessibility tree and semantic UI actions.
 - idb, for coordinate taps and device/simulator fallback operations.
+- Appium 2 with the XCUITest driver, optional, for true multitouch gestures
+  such as pinch, rotate, and two-finger pan.
 
 Check the local environment:
 
@@ -54,10 +57,14 @@ mav doctor
 Install supported helper tools:
 
 ```bash
-mav setup --install axe idb
+mav setup --install axe idb appium
 ```
 
-`mav setup` currently uses Homebrew for supported tools.
+`mav setup` uses Homebrew for AXe/idb. For Appium it uses npm, installs Appium
+globally, then installs and verifies the `xcuitest` driver. If Appium was
+installed through a Node version manager, `mav doctor` also checks that the
+active `node` matches the Node path used by the `appium` executable; put that
+Node bin directory first in `PATH` if it reports `appium_node=mismatch`.
 
 ## Install
 
@@ -290,6 +297,11 @@ mav ui tap --x 120 --y 400
 mav ui tap --text "Daily Reminder"
 mav ui type "hello"
 mav ui swipe --direction up
+mav ui pinch --x 200 --y 450 --scale 0.5
+mav ui pinch --x 200 --y 450 --scale 0.5 --pan-x 80 --pan-y -40
+mav ui rotate --x 200 --y 450 --degrees 30
+mav ui twoFingerPan --x 200 --y 450 --pan-x 80 --pan-y -40
+mav ui actions --file .mav/actions/map-zoom.json
 mav ui wait --id element_id --timeout 5s
 mav ui scrollUntil --id privacy_policy_button --direction up --max-swipes 4
 ```
@@ -298,6 +310,11 @@ AXe is the default driver for accessibility tree inspection, semantic taps,
 typing, swipes, waits, and assertions. idb is used when it provides a concrete
 better capability, such as coordinate taps or fallback simulator/device
 operations.
+
+Appium is only used for true multitouch. AXe and idb do not expose a real
+pinch or two-finger gesture primitive. MAV sends Appium W3C Actions: multiple
+touch sources execute step-by-step in concurrent ticks, which lets a flow move
+two fingers at the same time for pinch+pan, rotate, and two-finger drag.
 
 Observation priority:
 
@@ -336,6 +353,7 @@ steps:
         - changedFrom: before-toggle
       timeout: 5s
   - evidence.step: { name: after-toggle, note: Result after tapping reminder }
+  - pinch: { x: 200, y: 450, scale: 0.5, panX: 80, panY: -40, duration: 800ms }
   - logs: { key: SettingsReached }
   - crashes: {}
   - evidence.stop: {}
@@ -351,6 +369,10 @@ tree
 tap
 type
 swipe
+pinch
+rotate
+twoFingerPan
+actions
 wait
 waitUntil
 assert
@@ -492,7 +514,7 @@ mav stop
 
 ```text
 mav doctor
-mav setup --install axe idb
+mav setup --install axe idb appium
 mav install-skills
 mav discover
 mav sim list
@@ -506,6 +528,10 @@ mav ui tap --x X --y Y
 mav ui tap --text TEXT
 mav ui type TEXT
 mav ui swipe [--direction up|down|left|right]
+mav ui pinch --x X --y Y --scale SCALE [--pan-x DX] [--pan-y DY] [--distance D] [--angle DEG] [--rotate DEG] [--duration 800ms]
+mav ui rotate --x X --y Y --degrees DEG [--distance D] [--duration 800ms]
+mav ui twoFingerPan --x X --y Y --pan-x DX --pan-y DY [--distance D] [--angle DEG] [--duration 800ms]
+mav ui actions --file actions.json
 mav ui wait --id ID [--timeout 5s]
 mav ui scrollUntil --id ID [--direction up] [--max-swipes 5]
 mav capture [--run RUN_ID]

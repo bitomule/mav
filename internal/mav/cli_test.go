@@ -36,6 +36,34 @@ func (r *recordingRunner) Start(ctx context.Context, logPath string, name string
 	return 0, nil
 }
 
+type sequenceRecordingRunner struct {
+	tools    map[string]bool
+	commands []string
+	out      map[string]string
+}
+
+func (r *sequenceRecordingRunner) LookPath(file string) (string, error) {
+	if r.tools[file] {
+		return "/usr/bin/" + file, nil
+	}
+	return "", os.ErrNotExist
+}
+
+func (r *sequenceRecordingRunner) Run(ctx context.Context, name string, args ...string) CommandResult {
+	_ = ctx
+	command := name + " " + strings.Join(args, " ")
+	r.commands = append(r.commands, command)
+	return CommandResult{Stdout: r.out[command]}
+}
+
+func (r *sequenceRecordingRunner) Start(ctx context.Context, logPath string, name string, args ...string) (int, error) {
+	_ = ctx
+	_ = logPath
+	_ = name
+	_ = args
+	return 0, nil
+}
+
 func TestGoUnknownScreenFailsDeterministically(t *testing.T) {
 	root := t.TempDir()
 	if err := SaveAppMap(root, DefaultAppMap("com.example.demo")); err != nil {
@@ -63,6 +91,35 @@ func TestDoctorDoesNotRequireMaestro(t *testing.T) {
 	got := out.String()
 	if strings.Contains(got, "maestro") {
 		t.Fatalf("doctor should not mention maestro: %q", got)
+	}
+}
+
+func TestDoctorReportsAppiumReadiness(t *testing.T) {
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{
+		tools: map[string]bool{"go": true, "bazelisk": true, "xcrun": true, "axe": true, "idb": true, "node": true, "npm": true, "appium": true},
+		out:   map[string]string{"appium driver list --installed": "xcuitest@7.0.0\n"},
+	}, Root: t.TempDir(), Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"doctor"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "appium=ok") || !strings.Contains(got, "appium_node=ok") || !strings.Contains(got, "appium_xcuitest=ok") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestDoctorRecommendsAppiumSetupWhenDriverMissing(t *testing.T) {
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{
+		tools: map[string]bool{"go": true, "bazelisk": true, "xcrun": true, "axe": true, "idb": true, "node": true, "npm": true, "appium": true},
+	}, Root: t.TempDir(), Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"doctor"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "appium_xcuitest=missing") || !strings.Contains(got, "next=\"mav setup --install appium\"") {
+		t.Fatalf("got %q", got)
 	}
 }
 
@@ -105,6 +162,41 @@ func TestInstallSkillsRequiresNpx(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "fail code=install_skills_unavailable") || !strings.Contains(out.String(), "tool=npx") {
 		t.Fatalf("got %q", out.String())
+	}
+}
+
+func TestSetupInstallsAndVerifiesAppium(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	runner := &sequenceRecordingRunner{
+		tools: map[string]bool{"npm": true, "node": true, "appium": true},
+		out:   map[string]string{"appium driver list --installed": "xcuitest@7.0.0\n"},
+	}
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"setup", "--install", "appium"}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"npm install -g appium",
+		"appium driver install xcuitest",
+		"appium driver list --installed",
+	}
+	if strings.Join(runner.commands, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("commands=%q want=%q", runner.commands, want)
+	}
+	if !strings.Contains(out.String(), "ok cmd=setup") || !strings.Contains(out.String(), "installed=appium") {
+		t.Fatalf("got %q", out.String())
+	}
+	loaded, err := LoadConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.Tools["appium"] {
+		t.Fatalf("tools=%v", loaded.Tools)
 	}
 }
 
