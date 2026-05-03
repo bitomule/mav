@@ -43,6 +43,12 @@ func GenerateReport(run RunState) (string, error) {
 	if exists(screen) {
 		data.Screenshot = screen
 	}
+	if latest, err := os.ReadFile(filepath.Join(run.Dir, "latest_capture.txt")); err == nil {
+		path := strings.TrimSpace(string(latest))
+		if path != "" && exists(path) {
+			data.Screenshot = path
+		}
+	}
 	for _, name := range []string{"video.mov", "video.mp4"} {
 		path := filepath.Join(run.Dir, name)
 		if exists(path) {

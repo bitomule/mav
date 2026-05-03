@@ -114,3 +114,38 @@ func TestScreenTextRecognizerIgnoresButtonsAndGroups(t *testing.T) {
 		t.Fatalf("settings heading should match settings screen")
 	}
 }
+
+func TestObserveScreenDoesNotReuseStaleCurrentForUnmatchedTree(t *testing.T) {
+	root := t.TempDir()
+	m := AppMap{
+		AppID: "com.example.demo",
+		Start: "start",
+		Screens: map[string]Screen{
+			"start":            {ID: "start", AssertText: "Home"},
+			"photos-to-delete": {ID: "photos-to-delete", AssertText: "Photos to Delete"},
+		},
+	}
+	if err := SaveAppMap(root, m); err != nil {
+		t.Fatal(err)
+	}
+	SetCurrentScreen(root, "photos-to-delete", "run1")
+	SetPendingMapAction(root, pendingMapAction{From: "photos-to-delete", ID: "next_button"})
+	raw := `[{"AXLabel":"Delete","role":"button"}]`
+	observed, err := ObserveScreenDetailed(root, Config{BundleID: "com.example.demo"}, RunState{ID: "run1", Dir: t.TempDir()}, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed.Screen != "unknown" || observed.Source != "unmatched" || observed.PreviousScreen != "photos-to-delete" {
+		t.Fatalf("observed=%+v", observed)
+	}
+	loaded, err := LoadAppMap(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Screens["photos-to-delete"].Edges) != 0 {
+		t.Fatalf("unexpected edge=%+v", loaded.Screens["photos-to-delete"].Edges)
+	}
+	if _, ok := consumePendingMapAction(root); !ok {
+		t.Fatalf("pending action should remain for a confident observation")
+	}
+}

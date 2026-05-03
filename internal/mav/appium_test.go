@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -57,6 +58,49 @@ func TestBuildPinchPanActions(t *testing.T) {
 	}
 	if first[2]["x"] != 245 || first[2]["y"] != 410 || second[2]["x"] != 315 || second[2]["y"] != 410 {
 		t.Fatalf("end first=%v second=%v", first[2], second[2])
+	}
+}
+
+func TestBuildPinchPanActionsCanHoldFinalState(t *testing.T) {
+	actions, fields, err := buildGestureActions(gestureParams{
+		Kind:     "pinch",
+		X:        "200",
+		Y:        "450",
+		Scale:    "0.5",
+		PanX:     "80",
+		PanY:     "-40",
+		Duration: "800ms",
+		Hold:     "2s",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fields["hold"] != "2000ms" {
+		t.Fatalf("fields=%v", fields)
+	}
+	first := actions[0]["actions"].([]map[string]any)
+	if len(first) != 5 {
+		t.Fatalf("actions=%v", first)
+	}
+	if first[3]["type"] != "pause" || first[3]["duration"] != 2000 {
+		t.Fatalf("hold action=%v", first[3])
+	}
+	if first[4]["type"] != "pointerUp" {
+		t.Fatalf("last action=%v", first[4])
+	}
+}
+
+func TestBuildGestureRejectsInvalidHold(t *testing.T) {
+	_, _, err := buildGestureActions(gestureParams{Kind: "pinch", X: "200", Y: "450", Scale: "0.5", Hold: "abc"})
+	if err == nil || err.Error() != "hold_invalid" {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestGestureCompletionDelayIncludesDurationAndHold(t *testing.T) {
+	delay := gestureCompletionDelay(map[string]string{"duration": "800ms", "hold": "2s"})
+	if delay != 2800*time.Millisecond {
+		t.Fatalf("delay=%v", delay)
 	}
 }
 

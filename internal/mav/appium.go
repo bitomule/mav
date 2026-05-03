@@ -53,6 +53,7 @@ type gestureParams struct {
 	Rotate   string
 	Degrees  string
 	Duration string
+	Hold     string
 }
 
 type appiumDriverStatus struct {
@@ -149,6 +150,7 @@ func gestureParamsFromArgs(args []string) gestureParams {
 		Rotate:   flagValue(args, "--rotate"),
 		Degrees:  flagValue(args, "--degrees"),
 		Duration: flagValue(args, "--duration"),
+		Hold:     flagValue(args, "--hold"),
 	}
 }
 
@@ -227,12 +229,20 @@ func buildGestureActions(params gestureParams) ([]map[string]any, map[string]str
 	if durationMS <= 0 {
 		durationMS = 1
 	}
+	hold := parseFlowDuration(params.Hold, 0)
+	if hold < 0 {
+		return nil, nil, fmt.Errorf("hold_invalid")
+	}
+	holdMS := int(hold / time.Millisecond)
+	if params.Hold != "" && holdMS <= 0 {
+		return nil, nil, fmt.Errorf("hold_invalid")
+	}
 
 	startA, startB := twoFingerPoints(x, y, distance, angle)
 	endA, endB := twoFingerPoints(x+panX, y+panY, distance*scale, angle+degreesToRadians(rotate))
 	actions := []map[string]any{
-		touchPointerActions("finger1", startA, endA, durationMS),
-		touchPointerActions("finger2", startB, endB, durationMS),
+		touchPointerActions("finger1", startA, endA, durationMS, holdMS),
+		touchPointerActions("finger2", startB, endB, durationMS, holdMS),
 	}
 	fields := map[string]string{
 		"x":        formatNumber(x),
@@ -252,6 +262,9 @@ func buildGestureActions(params gestureParams) ([]map[string]any, map[string]str
 	if params.Kind == "rotate" {
 		fields["degrees"] = formatNumber(rotate)
 	}
+	if holdMS > 0 {
+		fields["hold"] = strconv.Itoa(holdMS) + "ms"
+	}
 	return actions, fields, nil
 }
 
@@ -267,17 +280,39 @@ func twoFingerPoints(centerX, centerY, distance, angle float64) (point, point) {
 	return point{X: centerX - dx, Y: centerY - dy}, point{X: centerX + dx, Y: centerY + dy}
 }
 
-func touchPointerActions(id string, start, end point, durationMS int) map[string]any {
+func touchPointerActions(id string, start, end point, durationMS, holdMS int) map[string]any {
+	steps := []map[string]any{
+		{"type": "pointerMove", "duration": 0, "origin": "viewport", "x": rounded(start.X), "y": rounded(start.Y)},
+		{"type": "pointerDown", "button": 0},
+		{"type": "pointerMove", "duration": durationMS, "origin": "viewport", "x": rounded(end.X), "y": rounded(end.Y)},
+	}
+	if holdMS > 0 {
+		steps = append(steps, map[string]any{"type": "pause", "duration": holdMS})
+	}
+	steps = append(steps, map[string]any{"type": "pointerUp", "button": 0})
 	return map[string]any{
 		"type":       "pointer",
 		"id":         id,
 		"parameters": map[string]any{"pointerType": "touch"},
-		"actions": []map[string]any{
-			{"type": "pointerMove", "duration": 0, "origin": "viewport", "x": rounded(start.X), "y": rounded(start.Y)},
-			{"type": "pointerDown", "button": 0},
-			{"type": "pointerMove", "duration": durationMS, "origin": "viewport", "x": rounded(end.X), "y": rounded(end.Y)},
-			{"type": "pointerUp", "button": 0},
-		},
+		"actions":    steps,
+	}
+}
+
+func gestureCompletionDelay(fields map[string]string) time.Duration {
+	delay := parseFlowDuration(fields["duration"], 0)
+	if delay < 0 {
+		delay = 0
+	}
+	hold := parseFlowDuration(fields["hold"], 0)
+	if hold > 0 {
+		delay += hold
+	}
+	return delay
+}
+
+func waitForGestureCompletion(fields map[string]string) {
+	if delay := gestureCompletionDelay(fields); delay > 0 {
+		time.Sleep(delay)
 	}
 }
 
