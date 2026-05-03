@@ -88,11 +88,11 @@ func TestInstallSkillsRunsVercelSkillsCLI(t *testing.T) {
 	if err := cli.Run(context.Background(), []string{"install-skills"}); err != nil {
 		t.Fatal(err)
 	}
-	want := "npx skills add bitomule/mav --skill mav --global --agent claude-code codex pi --yes"
+	want := "npx skills add bitomule/mav --skill mav --global --yes"
 	if runner.command != want {
 		t.Fatalf("command=%q want %q", runner.command, want)
 	}
-	if !strings.Contains(out.String(), "ok cmd=install-skills") || !strings.Contains(out.String(), "agents=claude-code,codex,pi") {
+	if !strings.Contains(out.String(), "ok cmd=install-skills") || !strings.Contains(out.String(), "scope=global") {
 		t.Fatalf("got %q", out.String())
 	}
 }

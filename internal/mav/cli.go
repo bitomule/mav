@@ -258,12 +258,12 @@ func (c CLI) installSkills(ctx context.Context) error {
 			"next": "install Node.js/npm so npx is available, then rerun mav install-skills",
 		}).Write(c.Stdout)
 	}
-	args := []string{"skills", "add", "bitomule/mav", "--skill", "mav", "--global", "--agent", "claude-code", "codex", "pi", "--yes"}
+	args := []string{"skills", "add", "bitomule/mav", "--skill", "mav", "--global", "--yes"}
 	result := c.Runner.Run(ctx, "npx", args...)
 	if result.Err != nil {
 		fields := map[string]string{
 			"code": strconv.Itoa(result.Code),
-			"next": "rerun npx skills add bitomule/mav --skill mav --global --agent claude-code codex pi --yes",
+			"next": "rerun npx skills add bitomule/mav --skill mav --global --yes",
 		}
 		if stderr := firstLine(result.Stderr); stderr != "" {
 			fields["stderr"] = stderr
@@ -273,7 +273,7 @@ func (c CLI) installSkills(ctx context.Context) error {
 		}
 		return Fail("install_skills_failed", fields).Write(c.Stdout)
 	}
-	return OK("install-skills", map[string]string{"skill": "mav", "scope": "global", "agents": "claude-code,codex,pi"}).Write(c.Stdout)
+	return OK("install-skills", map[string]string{"skill": "mav", "scope": "global"}).Write(c.Stdout)
 }
 
 func (c CLI) discover(opts GlobalOptions) error {
