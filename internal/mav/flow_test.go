@@ -23,7 +23,7 @@ steps:
   - delay: { duration: 2s }
   - logs: { key: SettingsReached }
   - scrollUntil: { text: Privacy Policy, direction: up, maxSwipes: 3 }
-  - pinch: { x: 200, y: 450, scale: 0.5, panX: 80, panY: -40, duration: 800ms }
+  - pinch: { x: 200, y: 450, scale: 0.5, panX: 80, panY: -40, duration: 800ms, hold: 2s }
   - rotate: { x: 200, y: 450, degrees: 30 }
   - twoFingerPan: { x: 200, y: 450, panX: 20, panY: 10 }
   - actions: { file: .mav/actions/map-zoom.json }
@@ -49,7 +49,7 @@ steps:
 	if flow.Steps[7].Action != "scrollUntil" || flow.Steps[7].Params["maxSwipes"] != "3" {
 		t.Fatalf("scrollUntil=%+v", flow.Steps[7])
 	}
-	if flow.Steps[8].Action != "pinch" || flow.Steps[8].Params["scale"] != "0.5" || flow.Steps[8].Params["panX"] != "80" {
+	if flow.Steps[8].Action != "pinch" || flow.Steps[8].Params["scale"] != "0.5" || flow.Steps[8].Params["panX"] != "80" || flow.Steps[8].Params["hold"] != "2s" {
 		t.Fatalf("pinch=%+v", flow.Steps[8])
 	}
 	if flow.Steps[9].Action != "rotate" || flow.Steps[9].Params["degrees"] != "30" {

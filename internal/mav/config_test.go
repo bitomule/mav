@@ -46,7 +46,7 @@ func (f fakeRunner) Start(ctx context.Context, logPath string, name string, args
 		if arg == "recordVideo" && i+1 < len(args) {
 			path := args[len(args)-1]
 			_ = os.MkdirAll(filepath.Dir(path), 0o755)
-			_ = os.WriteFile(path, []byte("fake-video"), 0o644)
+			_ = os.WriteFile(path, testMovieWithDuration(600, 1200), 0o644)
 		}
 	}
 	return 123, nil

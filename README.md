@@ -143,7 +143,8 @@ Example compact output:
 ```text
 ok cmd=discover bundle=com.example.app config=/repo/.mav/config.yaml target=//App:App
 ok cmd=open run=7fd logs=/tmp/mav/7fd/logs.txt target="iPhone 17 Pro Max"
-ok cmd=ui.tree driver=axe nodes=42 screen=start
+ok cmd=ui.tree driver=axe nodes=42 screen=start screen_source=recognized
+node index=1 id=settings_button label=Settings role=button frame="{{20, 120}, {180, 44}}"
 ```
 
 Use `--raw` only when the underlying tool output is needed:
@@ -182,7 +183,8 @@ evidence
 
 ## Output Contract
 
-Default output is one compact line:
+Default output starts with one compact status line. Commands that inspect
+structured state, such as `mav ui tree`, may add bounded detail lines after it:
 
 ```text
 ok cmd=<command> key=value key=value
@@ -192,7 +194,7 @@ fail code=<error_code> key=value key=value
 Examples:
 
 ```text
-ok cmd=capture file=/tmp/mav/7fd/screen.png run=7fd
+ok cmd=capture file=/tmp/mav/7fd/captures/20260503T120000.000.png run=7fd
 ok cmd=logs file=/tmp/mav/7fd/logs.txt matches=1 run=7fd
 fail code=screen_not_found next="explore with mav ui tree/tap; map updates when the next screen is observed" screen=settings
 fail code=ui_tree_empty driver=axe reason=simulator_accessibility_unavailable recovered=false
@@ -532,13 +534,13 @@ mav ui tap --x X --y Y
 mav ui tap --text TEXT
 mav ui type TEXT
 mav ui swipe [--direction up|down|left|right]
-mav ui pinch --x X --y Y --scale SCALE [--pan-x DX] [--pan-y DY] [--distance D] [--angle DEG] [--rotate DEG] [--duration 800ms]
-mav ui rotate --x X --y Y --degrees DEG [--distance D] [--duration 800ms]
-mav ui twoFingerPan --x X --y Y --pan-x DX --pan-y DY [--distance D] [--angle DEG] [--duration 800ms]
+mav ui pinch --x X --y Y --scale SCALE [--pan-x DX] [--pan-y DY] [--distance D] [--angle DEG] [--rotate DEG] [--duration 800ms] [--hold DURATION]
+mav ui rotate --x X --y Y --degrees DEG [--distance D] [--duration 800ms] [--hold DURATION]
+mav ui twoFingerPan --x X --y Y --pan-x DX --pan-y DY [--distance D] [--angle DEG] [--duration 800ms] [--hold DURATION]
 mav ui actions --file actions.json
 mav ui wait --id ID [--timeout 5s]
 mav ui scrollUntil --id ID [--direction up] [--max-swipes 5]
-mav capture [--run RUN_ID]
+mav capture [--name NAME] [--run RUN_ID]
 mav preview init [--dir MAVPreview] [--bundle-id BUNDLE_ID] [--force]
 mav preview <view-id>
 mav run flow.yaml

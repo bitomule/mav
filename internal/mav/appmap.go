@@ -47,6 +47,7 @@ type Element struct {
 	Label string `json:"label,omitempty"`
 	Role  string `json:"role,omitempty"`
 	Value string `json:"value,omitempty"`
+	Frame string `json:"frame,omitempty"`
 }
 
 type Edge struct {
@@ -76,6 +77,13 @@ type pendingMapAction struct {
 	Text string `json:"text,omitempty"`
 	X    string `json:"x,omitempty"`
 	Y    string `json:"y,omitempty"`
+}
+
+type ScreenObservation struct {
+	Screen         string
+	Source         string
+	PreviousScreen string
+	Elements       []Element
 }
 
 func DefaultAppMap(bundleID string) AppMap {
@@ -385,6 +393,11 @@ func consumePendingMapAction(root string) (pendingMapAction, bool) {
 }
 
 func ObserveScreen(root string, cfg Config, run RunState, rawTree string) (string, error) {
+	observed, err := ObserveScreenDetailed(root, cfg, run, rawTree)
+	return observed.Screen, err
+}
+
+func ObserveScreenDetailed(root string, cfg Config, run RunState, rawTree string) (ScreenObservation, error) {
 	m, err := LoadAppMap(root)
 	if err != nil {
 		m = DefaultAppMap(cfg.BundleID)
@@ -395,20 +408,31 @@ func ObserveScreen(root string, cfg Config, run RunState, rawTree string) (strin
 	elements := ExtractElements(rawTree)
 	current := CurrentScreen(root)
 	screenID := ""
+	source := ""
 	if current == m.Start && blankScreen(m.Screens[m.Start]) {
 		screenID = m.Start
+		source = "start"
 	}
 	if screenID == "" {
 		screenID = recognizeScreen(m, rawTree, elements)
+		if screenID != "" {
+			source = "recognized"
+		}
 	}
 	if screenID == "" {
 		screenID = inferScreenID(elements)
+		if screenID != "" {
+			source = "inferred"
+		}
 	}
-	if screenID == "" {
+	if screenID == "" && len(elements) == 0 {
 		screenID = current
+		if screenID != "" {
+			source = "current"
+		}
 	}
 	if screenID == "" {
-		screenID = m.Start
+		return ScreenObservation{Screen: "unknown", Source: "unmatched", PreviousScreen: current, Elements: elements}, nil
 	}
 	screen := m.Screens[screenID]
 	screen.ID = screenID
@@ -441,10 +465,10 @@ func ObserveScreen(root string, cfg Config, run RunState, rawTree string) (strin
 		m.Screens[pending.From] = from
 	}
 	if err := SaveAppMap(root, m); err != nil {
-		return screenID, err
+		return ScreenObservation{Screen: screenID, Source: source, PreviousScreen: current, Elements: elements}, err
 	}
 	SetCurrentScreen(root, screenID, run.ID)
-	return screenID, nil
+	return ScreenObservation{Screen: screenID, Source: source, PreviousScreen: current, Elements: elements}, nil
 }
 
 func ObserveExpectedScreen(root string, cfg Config, run RunState, rawTree, screenID string) error {
@@ -516,8 +540,9 @@ func walkAX(value any, out *[]Element) {
 			Label: stringField(node, "AXLabel", "label", "title"),
 			Role:  stringField(node, "role_description", "role", "type"),
 			Value: stringField(node, "AXValue", "value"),
+			Frame: stringField(node, "AXFrame", "frame"),
 		}
-		if el.ID != "" || el.Label != "" {
+		if el.ID != "" || el.Label != "" || el.Role != "" || el.Value != "" || el.Frame != "" {
 			*out = append(*out, el)
 		}
 		for _, childKey := range []string{"children", "Children", "AXChildren"} {
@@ -548,8 +573,8 @@ func compactElements(elements []Element) []Element {
 	seen := map[string]bool{}
 	out := []Element{}
 	for _, el := range elements {
-		key := el.ID + "\x00" + el.Label + "\x00" + el.Role + "\x00" + el.Value
-		if key == "\x00\x00\x00" || seen[key] {
+		key := el.ID + "\x00" + el.Label + "\x00" + el.Role + "\x00" + el.Value + "\x00" + el.Frame
+		if key == "\x00\x00\x00\x00\x00" || seen[key] {
 			continue
 		}
 		seen[key] = true

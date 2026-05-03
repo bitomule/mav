@@ -3,10 +3,12 @@ package mav
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type recordingRunner struct {
@@ -62,6 +64,33 @@ func (r *sequenceRecordingRunner) Start(ctx context.Context, logPath string, nam
 	_ = name
 	_ = args
 	return 0, nil
+}
+
+type errorRunner struct {
+	tools  map[string]bool
+	result CommandResult
+}
+
+func (r errorRunner) LookPath(file string) (string, error) {
+	if r.tools[file] {
+		return "/usr/bin/" + file, nil
+	}
+	return "", os.ErrNotExist
+}
+
+func (r errorRunner) Run(ctx context.Context, name string, args ...string) CommandResult {
+	_ = ctx
+	_ = name
+	_ = args
+	return r.result
+}
+
+func (r errorRunner) Start(ctx context.Context, logPath string, name string, args ...string) (int, error) {
+	_ = ctx
+	_ = logPath
+	_ = name
+	_ = args
+	return 0, r.result.Err
 }
 
 func TestGoUnknownScreenFailsDeterministically(t *testing.T) {
@@ -168,6 +197,77 @@ func TestHelpListsCommands(t *testing.T) {
 	}
 	if strings.Contains(got, "--json") {
 		t.Fatalf("help should not mention --json: %q", got)
+	}
+}
+
+func TestUIHelpShowsSpecificPinchFlags(t *testing.T) {
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{}, Root: t.TempDir(), Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "pinch", "--help"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{"mav ui pinch", "--scale", "--pan-x", "--duration", "--hold"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in %q", want, got)
+		}
+	}
+}
+
+func TestCapturePathUsesNameAndAvoidsCollisions(t *testing.T) {
+	run := RunState{Dir: t.TempDir()}
+	first := uniqueCapturePath(run, "Largest Videos")
+	if filepath.Base(first) != "largest-videos.png" {
+		t.Fatalf("first=%q", first)
+	}
+	if err := os.MkdirAll(filepath.Dir(first), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(first, []byte("png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second := uniqueCapturePath(run, "Largest Videos")
+	if filepath.Base(second) != "largest-videos-2.png" {
+		t.Fatalf("second=%q", second)
+	}
+}
+
+func TestUITreePrintsNodeDetailsByDefault(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.Tools = map[string]bool{"axe": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	raw := `[{"AXLabel":"Largest Videos","role":"heading","AXFrame":"{{0, 10}, {200, 40}}","children":[{"AXIdentifier":"delete_button","AXLabel":"Delete","role":"button"}]}]`
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{tools: cfg.Tools, out: map[string]string{"axe describe-ui": raw}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "tree"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{"ok cmd=ui.tree", "node index=1", `label="Largest Videos"`, "frame=", "id=delete_button"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in %q", want, got)
+		}
+	}
+}
+
+func TestSandboxHintForUITreeFailure(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.Tools = map[string]bool{"axe": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	runner := errorRunner{tools: cfg.Tools, result: CommandResult{Stderr: "CoreSimulator operation not permitted", Err: os.ErrPermission}}
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "tree"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.Contains(got, "next=") || !strings.Contains(got, "rerun outside sandbox") {
+		t.Fatalf("got %q", got)
 	}
 }
 
@@ -514,6 +614,39 @@ func TestLaunchLanguageArgs(t *testing.T) {
 	if got != "-AppleLanguages (es) -AppleLocale es_ES" {
 		t.Fatalf("got %q", got)
 	}
+}
+
+func TestMP4DurationRejectsZeroDuration(t *testing.T) {
+	if duration, err := mp4Duration(testMovieWithDuration(600, 0)); err == nil || duration != 0 {
+		t.Fatalf("duration=%v err=%v", duration, err)
+	}
+}
+
+func TestMP4DurationAcceptsPositiveDuration(t *testing.T) {
+	duration, err := mp4Duration(testMovieWithDuration(600, 1200))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if duration != 2*time.Second {
+		t.Fatalf("duration=%v", duration)
+	}
+}
+
+func testMovieWithDuration(timescale, duration uint32) []byte {
+	mvhdPayload := make([]byte, 100)
+	binary.BigEndian.PutUint32(mvhdPayload[12:16], timescale)
+	binary.BigEndian.PutUint32(mvhdPayload[16:20], duration)
+	mvhd := testAtom("mvhd", mvhdPayload)
+	moov := testAtom("moov", mvhd)
+	return append(testAtom("ftyp", []byte("qt  \x00\x00\x00\x00qt  ")), moov...)
+}
+
+func testAtom(kind string, payload []byte) []byte {
+	out := make([]byte, 8+len(payload))
+	binary.BigEndian.PutUint32(out[0:4], uint32(len(out)))
+	copy(out[4:8], kind)
+	copy(out[8:], payload)
+	return out
 }
 
 func TestCountTreeNodes(t *testing.T) {
