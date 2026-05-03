@@ -60,6 +60,12 @@ mav setup --install axe idb
 
 ## Install
 
+With Homebrew:
+
+```bash
+brew install bitomule/tap/mav
+```
+
 Build from source:
 
 ```bash
@@ -81,8 +87,8 @@ ln -sf "$PWD/.build/mav" /usr/local/bin/mav
 ```
 
 Release binaries are built by the GitHub release workflow for tagged releases.
-Homebrew packaging lives in `packaging/homebrew/mav.rb`; checksums must be
-filled from a published release before publishing a tap formula.
+Homebrew packaging lives in `packaging/homebrew/mav.rb` and is published to
+`bitomule/tap`.
 
 ## Quick Start
 
