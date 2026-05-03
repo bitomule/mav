@@ -52,6 +52,26 @@ func TestGenerateReport(t *testing.T) {
 	}
 }
 
+func TestGenerateReportMarksTooShortVideoInvalid(t *testing.T) {
+	dir := t.TempDir()
+	run := RunState{ID: "abc", Dir: dir, LogsPath: filepath.Join(dir, "logs.txt")}
+	if err := os.WriteFile(filepath.Join(dir, "video.mov"), testMovieWithDuration(600, 40), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path, err := GenerateReport(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(data)
+	if !strings.Contains(html, "video_invalid") || !strings.Contains(html, "duration_too_short") {
+		t.Fatalf("report should flag invalid video:\n%s", html)
+	}
+}
+
 func TestSafeFileName(t *testing.T) {
 	if got := safeFileName("Notifications: After Toggle"); got != "notifications-after-toggle" {
 		t.Fatalf("got %q", got)

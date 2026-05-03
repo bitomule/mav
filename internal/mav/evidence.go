@@ -21,15 +21,17 @@ type EvidenceStep struct {
 }
 
 type ReportData struct {
-	RunID      string
-	CreatedAt  string
-	Dir        string
-	Screenshot string
-	Steps      []EvidenceStep
-	Video      string
-	Logs       string
-	Crashes    []string
-	Commands   []string
+	RunID        string
+	CreatedAt    string
+	Dir          string
+	Screenshot   string
+	Steps        []EvidenceStep
+	Video        string
+	VideoInvalid bool
+	VideoIssue   string
+	Logs         string
+	Crashes      []string
+	Commands     []string
 }
 
 func GenerateReport(run RunState) (string, error) {
@@ -53,6 +55,10 @@ func GenerateReport(run RunState) (string, error) {
 		path := filepath.Join(run.Dir, name)
 		if exists(path) {
 			data.Video = path
+			if validation := ValidateEvidenceVideo(path); !validation.OK {
+				data.VideoInvalid = true
+				data.VideoIssue = validation.Issue
+			}
 			break
 		}
 	}
@@ -176,12 +182,12 @@ var reportTemplate = template.Must(template.New("report").Parse(`<!doctype html>
       <h1>MAV Evidence</h1>
       <div class="meta">run={{.RunID}}<br>created={{.CreatedAt}}<br>{{.Dir}}</div>
     </div>
-    <div class="badge">{{if .Video}}video{{else}}no video{{end}} · {{len .Steps}} steps · {{if .Crashes}}{{len .Crashes}} crashes{{else}}0 crashes{{end}}</div>
+    <div class="badge">{{if .Video}}{{if .VideoInvalid}}video_invalid{{else}}video{{end}}{{else}}no video{{end}} · {{len .Steps}} steps · {{if .Crashes}}{{len .Crashes}} crashes{{else}}0 crashes{{end}}</div>
   </header>
 
   <section>
     <h2>Flow Recording</h2>
-    {{if .Video}}<video src="{{.Video}}" controls></video>{{else}}<p class="empty">No video captured. Start evidence recording before the flow and stop it after the tested behavior.</p>{{end}}
+    {{if .Video}}{{if .VideoInvalid}}<p class="empty">Video invalid: {{.VideoIssue}}. The file is kept for inspection, but it is not accepted as evidence.</p>{{end}}<video src="{{.Video}}" controls></video>{{else}}<p class="empty">No video captured. Start evidence recording before the flow and stop it after the tested behavior.</p>{{end}}
   </section>
 
   <section>

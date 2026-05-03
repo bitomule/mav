@@ -57,10 +57,11 @@ type gestureParams struct {
 }
 
 type appiumDriverStatus struct {
-	OK           bool
-	Message      string
-	NodeMismatch bool
-	Next         string
+	OK             bool
+	Message        string
+	NodeMismatch   bool
+	HomePermission bool
+	Next           string
 }
 
 func appiumHasXCUITestDriver(ctx context.Context, runner Runner) bool {
@@ -72,6 +73,16 @@ func checkAppiumXCUITestDriver(ctx context.Context, runner Runner) appiumDriverS
 	output := result.Stdout + "\n" + result.Stderr
 	if result.Err == nil && strings.Contains(strings.ToLower(output), "xcuitest") {
 		return appiumDriverStatus{OK: true}
+	}
+	if looksLikeAppiumHomePermissionFailure(output) {
+		if retry := retryAppiumDriverListWithWritableHome(ctx, runner); retry.OK {
+			return retry
+		}
+		return appiumDriverStatus{
+			Message:        "appium_home_not_writable",
+			HomePermission: true,
+			Next:           "run outside the sandbox or set APPIUM_HOME to a writable directory",
+		}
 	}
 	if looksLikeAppiumNodeRuntimeFailure(output) {
 		return appiumDriverStatus{
@@ -89,6 +100,45 @@ func checkAppiumXCUITestDriver(ctx context.Context, runner Runner) appiumDriverS
 func looksLikeAppiumNodeRuntimeFailure(output string) bool {
 	output = strings.ToLower(output)
 	return strings.Contains(output, "err_require_esm") || strings.Contains(output, "node.js v")
+}
+
+func looksLikeAppiumHomePermissionFailure(output string) bool {
+	output = strings.ToLower(output)
+	return strings.Contains(output, "appium home") && (strings.Contains(output, "writeable") || strings.Contains(output, "writable"))
+}
+
+func retryAppiumDriverListWithWritableHome(ctx context.Context, runner Runner) appiumDriverStatus {
+	cleanup := withWritableAppiumHome(runner)
+	defer cleanup()
+	result := runner.Run(ctx, "appium", "driver", "list", "--installed")
+	output := result.Stdout + "\n" + result.Stderr
+	if result.Err == nil && strings.Contains(strings.ToLower(output), "xcuitest") {
+		return appiumDriverStatus{OK: true}
+	}
+	return appiumDriverStatus{}
+}
+
+func withWritableAppiumHome(runner Runner) func() {
+	if _, ok := runner.(ExecRunner); !ok {
+		return func() {}
+	}
+	if strings.TrimSpace(os.Getenv("APPIUM_HOME")) != "" {
+		return func() {}
+	}
+	dir, err := os.MkdirTemp("", "mav-appium-home-")
+	if err != nil {
+		return func() {}
+	}
+	oldValue, hadValue := os.LookupEnv("APPIUM_HOME")
+	_ = os.Setenv("APPIUM_HOME", dir)
+	return func() {
+		if hadValue {
+			_ = os.Setenv("APPIUM_HOME", oldValue)
+		} else {
+			_ = os.Unsetenv("APPIUM_HOME")
+		}
+		_ = os.RemoveAll(dir)
+	}
 }
 
 type appiumNodeCheck struct {
