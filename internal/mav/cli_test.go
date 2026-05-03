@@ -92,7 +92,7 @@ func TestInstallSkillsRunsVercelSkillsCLI(t *testing.T) {
 	if runner.command != want {
 		t.Fatalf("command=%q want %q", runner.command, want)
 	}
-	if !strings.Contains(out.String(), "ok cmd=install-skills") || !strings.Contains(out.String(), "agents=all") {
+	if !strings.Contains(out.String(), "ok cmd=install-skills") || !strings.Contains(out.String(), "agents=claude-code,codex,pi") {
 		t.Fatalf("got %q", out.String())
 	}
 }

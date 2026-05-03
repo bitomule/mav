@@ -273,7 +273,7 @@ func (c CLI) installSkills(ctx context.Context) error {
 		}
 		return Fail("install_skills_failed", fields).Write(c.Stdout)
 	}
-	return OK("install-skills", map[string]string{"skill": "mav", "scope": "global", "agents": "all"}).Write(c.Stdout)
+	return OK("install-skills", map[string]string{"skill": "mav", "scope": "global", "agents": "claude-code,codex,pi"}).Write(c.Stdout)
 }
 
 func (c CLI) discover(opts GlobalOptions) error {
