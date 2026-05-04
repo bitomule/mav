@@ -95,6 +95,36 @@ func (r errorRunner) Start(ctx context.Context, logPath string, name string, arg
 	return 0, r.result.Err
 }
 
+type appiumHomeRetryRunner struct{}
+
+func (r appiumHomeRetryRunner) LookPath(file string) (string, error) {
+	switch file {
+	case "go", "bazelisk", "xcrun", "axe", "idb", "node", "npm", "appium":
+		return "/usr/bin/" + file, nil
+	default:
+		return "", os.ErrNotExist
+	}
+}
+
+func (r appiumHomeRetryRunner) Run(ctx context.Context, name string, args ...string) CommandResult {
+	_ = ctx
+	if name == "appium" && strings.Join(args, " ") == "driver list --installed" {
+		if os.Getenv("APPIUM_HOME") != "" {
+			return CommandResult{Stdout: "xcuitest@7.0.0\n"}
+		}
+		return CommandResult{Stderr: "The autodetected Appium home path '/Users/me/.appium' must be writeable", Err: os.ErrPermission}
+	}
+	return CommandResult{}
+}
+
+func (r appiumHomeRetryRunner) Start(ctx context.Context, logPath string, name string, args ...string) (int, error) {
+	_ = ctx
+	_ = logPath
+	_ = name
+	_ = args
+	return 0, nil
+}
+
 func TestGoUnknownScreenFailsDeterministically(t *testing.T) {
 	root := t.TempDir()
 	if err := SaveAppMap(root, DefaultAppMap("com.example.demo")); err != nil {
@@ -393,6 +423,21 @@ func TestDoctorReportsAppiumHomePermissionInsteadOfNodeRuntime(t *testing.T) {
 	}
 }
 
+func TestDoctorRetriesAppiumWithWritableHome(t *testing.T) {
+	var out bytes.Buffer
+	t.Setenv("APPIUM_HOME", "")
+	cli := CLI{Runner: appiumHomeRetryRunner{}, Root: t.TempDir(), Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"doctor"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "multitouch=ok") ||
+		!strings.Contains(got, "multitouch_driver=appium") ||
+		strings.Contains(got, "appium_home_not_writable") {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestSubcommandHelp(t *testing.T) {
 	var out bytes.Buffer
 	cli := CLI{Runner: fakeRunner{}, Root: t.TempDir(), Stdout: &out, Stderr: &bytes.Buffer{}}
@@ -458,6 +503,73 @@ func TestUIScrollUntilFindsElement(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "ok cmd=ui.scrollUntil") || !strings.Contains(out.String(), "swipes=0") {
 		t.Fatalf("got %q", out.String())
+	}
+}
+
+func TestUISwipeWithCustomCoordinatesReportsCustomDirection(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.Tools = map[string]bool{"axe": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{tools: cfg.Tools}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "swipe", "--start-x", "10", "--start-y", "20", "--end-x", "30", "--end-y", "40"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{"ok cmd=ui.swipe", "direction=custom", "start_x=10", "start_y=20", "end_x=30", "end_y=40"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in %q", want, got)
+		}
+	}
+	if strings.Contains(got, "direction=--start-x") {
+		t.Fatalf("got confusing direction: %q", got)
+	}
+}
+
+func TestUITreeReportsPendingMapActionForUnknownScreen(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.demo"
+	cfg.Tools = map[string]bool{"axe": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	m := AppMap{
+		AppID: "com.example.demo",
+		Start: "start",
+		Screens: map[string]Screen{
+			"start":            {ID: "start", AssertText: "Home"},
+			"photos-to-delete": {ID: "photos-to-delete", AssertText: "Photos to Delete"},
+		},
+	}
+	if err := SaveAppMap(root, m); err != nil {
+		t.Fatal(err)
+	}
+	run := RunState{ID: "run-pending", Dir: filepath.Join(os.TempDir(), "mav", "run-pending")}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := os.MkdirAll(run.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	SetCurrentScreen(root, "photos-to-delete", run.ID)
+	SetPendingMapAction(root, pendingMapAction{From: "photos-to-delete", ID: "large_videos_button"})
+
+	raw := `[{"AXLabel":"Play","role":"button"}]`
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{tools: cfg.Tools, out: map[string]string{"axe describe-ui": raw}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "tree"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{"screen=unknown", "map_pending=true", "previous_screen=photos-to-delete", `next="add accessibility ids or capture/inspect before mapping"`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in %q", want, got)
+		}
 	}
 }
 
@@ -620,6 +732,87 @@ func TestEvidenceStartRejectsRunWithExistingVideo(t *testing.T) {
 	got := out.String()
 	if !strings.Contains(got, "fail code=evidence_run_not_clean") || !strings.Contains(got, "issue=video_exists") {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestEvidenceReportReportsMissingVideo(t *testing.T) {
+	root := t.TempDir()
+	run := RunState{ID: "abc-no-video", Dir: filepath.Join(os.TempDir(), "mav", "abc-no-video"), LogsPath: filepath.Join(os.TempDir(), "mav", "abc-no-video", "logs.txt")}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := os.MkdirAll(run.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"evidence", "report"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "ok cmd=evidence.report") || !strings.Contains(got, "video=missing") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestEvidenceReportReportsValidVideoPath(t *testing.T) {
+	root := t.TempDir()
+	run := RunState{ID: "abc-video-report", Dir: filepath.Join(os.TempDir(), "mav", "abc-video-report"), LogsPath: filepath.Join(os.TempDir(), "mav", "abc-video-report", "logs.txt")}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := os.MkdirAll(run.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	video := filepath.Join(run.Dir, "video.mov")
+	if err := os.WriteFile(video, testMovieWithDuration(600, 1200), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"evidence", "report"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "ok cmd=evidence.report") || !strings.Contains(got, "video="+video) || !strings.Contains(got, "video_duration=") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestFlowVideoStartStopAliasesRecordVideo(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.Tools = map[string]bool{"xcrun": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run := RunState{ID: "abc-flow-video", Dir: filepath.Join(os.TempDir(), "mav", "abc-flow-video")}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := os.MkdirAll(run.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	cli := CLI{Runner: fakeRunner{tools: cfg.Tools}, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	fields, err := cli.executeFlowStep(context.Background(), run, 1, FlowStep{Action: "video.start"})
+	if err != nil {
+		t.Fatalf("start fields=%v err=%v", fields, err)
+	}
+	if !fileExists(filepath.Join(run.Dir, "video.pid")) {
+		t.Fatalf("video pid was not created")
+	}
+	fields, err = cli.executeFlowStep(context.Background(), run, 2, FlowStep{Action: "video.stop", Params: map[string]string{"note": "Done"}})
+	if err != nil {
+		t.Fatalf("stop fields=%v err=%v", fields, err)
+	}
+	if !fileExists(filepath.Join(run.Dir, "video.mov")) {
+		t.Fatalf("video was not written")
+	}
+	if fileExists(filepath.Join(run.Dir, "video.pid")) {
+		t.Fatalf("video pid should be removed after stop")
 	}
 }
 

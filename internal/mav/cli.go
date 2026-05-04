@@ -753,6 +753,15 @@ func (c CLI) uiTree(ctx context.Context, opts GlobalOptions, cfg Config) error {
 	if previousScreen != "" && previousScreen != screen {
 		fields["previous_screen"] = previousScreen
 	}
+	if screen == "unknown" {
+		if pending, ok := peekPendingMapAction(c.Root); ok {
+			fields["map_pending"] = "true"
+			if pending.From != "" {
+				fields["previous_screen"] = pending.From
+			}
+			fields["next"] = "add accessibility ids or capture/inspect before mapping"
+		}
+	}
 	if recovered {
 		fields["recovered"] = "true"
 	}
@@ -924,24 +933,32 @@ func (c CLI) uiType(ctx context.Context, opts GlobalOptions, cfg Config, args []
 
 func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
 	direction := flagValue(args, "--direction")
-	if direction == "" && len(args) > 0 {
+	if direction == "" && len(args) > 0 && isSwipeDirection(args[0]) {
 		direction = args[0]
 	}
 	if direction == "" {
 		direction = "up"
 	}
+	if !isSwipeDirection(direction) {
+		return Fail("swipe_direction_invalid", map[string]string{"direction": direction, "usage": "mav ui swipe [--direction up|down|left|right] [--start-x X --start-y Y --end-x X --end-y Y]"}).Write(c.Stdout)
+	}
 	startX, startY, endX, endY := swipeCoordinates(direction)
+	customCoordinates := false
 	if value := flagValue(args, "--start-x"); value != "" {
 		startX = value
+		customCoordinates = true
 	}
 	if value := flagValue(args, "--start-y"); value != "" {
 		startY = value
+		customCoordinates = true
 	}
 	if value := flagValue(args, "--end-x"); value != "" {
 		endX = value
+		customCoordinates = true
 	}
 	if value := flagValue(args, "--end-y"); value != "" {
 		endY = value
+		customCoordinates = true
 	}
 	driver := "axe"
 	var result CommandResult
@@ -957,7 +974,15 @@ func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args [
 	if result.Err != nil {
 		return Fail("ui_swipe_failed", map[string]string{"stderr": firstLine(result.Stderr)}).Write(c.Stdout)
 	}
-	return OK("ui.swipe", map[string]string{"direction": direction, "driver": driver}).Write(c.Stdout)
+	fields := map[string]string{"direction": direction, "driver": driver}
+	if customCoordinates {
+		fields["direction"] = "custom"
+		fields["start_x"] = startX
+		fields["start_y"] = startY
+		fields["end_x"] = endX
+		fields["end_y"] = endY
+	}
+	return OK("ui.swipe", fields).Write(c.Stdout)
 }
 
 func (c CLI) uiPinch(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
@@ -1373,6 +1398,9 @@ func (c CLI) executeFlowStep(ctx context.Context, run RunState, index int, step 
 	case "evidence.start":
 		err := c.withStdout(io.Discard).evidenceStart(ctx, GlobalOptions{}, []string{"--run", run.ID})
 		return map[string]string{"run": run.ID}, outputErr(err, "evidence_start_failed")
+	case "video.start":
+		err := c.withStdout(io.Discard).evidenceStart(ctx, GlobalOptions{}, []string{"--run", run.ID})
+		return map[string]string{"run": run.ID}, outputErr(err, "video_start_failed")
 	case "evidence.step":
 		name := step.Params["name"]
 		if name == "" {
@@ -1386,6 +1414,13 @@ func (c CLI) executeFlowStep(ctx context.Context, run RunState, index int, step 
 		}
 		err := c.withStdout(io.Discard).evidenceStop(ctx, GlobalOptions{}, args)
 		return map[string]string{"run": run.ID}, outputErr(err, "evidence_stop_failed")
+	case "video.stop":
+		args := []string{"--run", run.ID}
+		if note := step.Params["note"]; note != "" {
+			args = append(args, "--note", note)
+		}
+		err := c.withStdout(io.Discard).evidenceStop(ctx, GlobalOptions{}, args)
+		return map[string]string{"run": run.ID}, outputErr(err, "video_stop_failed")
 	case "logs":
 		args := flowArgs(step.Params, "--contains", "contains", "--key", "key", "--level", "level")
 		args = append(args, "--run", run.ID)
@@ -2099,7 +2134,18 @@ func (c CLI) evidenceReport(opts GlobalOptions, args []string) error {
 	if err != nil {
 		return Fail("report_failed", map[string]string{"error": err.Error()}).Write(c.Stdout)
 	}
-	return OK("evidence.report", map[string]string{"run": run.ID, "file": path}).Write(c.Stdout)
+	fields := map[string]string{"run": run.ID, "file": path, "video": "missing"}
+	if video, validation := reportVideo(run); video != "" {
+		if validation.OK {
+			fields["video"] = video
+			fields["video_duration"] = validation.Duration.String()
+		} else {
+			fields["video"] = "invalid"
+			fields["video_file"] = video
+			fields["video_issue"] = validation.Issue
+		}
+	}
+	return OK("evidence.report", fields).Write(c.Stdout)
 }
 
 func (c CLI) evidenceStart(ctx context.Context, opts GlobalOptions, args []string) error {
@@ -2418,6 +2464,15 @@ func swipeCoordinates(direction string) (string, string, string, string) {
 		return "80", "500", "360", "500"
 	default:
 		return "220", "760", "220", "260"
+	}
+}
+
+func isSwipeDirection(direction string) bool {
+	switch strings.ToLower(strings.TrimSpace(direction)) {
+	case "up", "down", "left", "right":
+		return true
+	default:
+		return false
 	}
 }
 

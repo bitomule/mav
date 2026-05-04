@@ -11,6 +11,11 @@ does not explore or repair routes by itself. The agent decides the next action.
 ## Workflow
 
 1. Run `mav doctor`.
+   If it reports CoreSimulator, idb, or Appium sandbox/permission failures,
+   rerun MAV outside the sandbox. For Appium home permission failures, MAV
+   retries with a temporary writable `APPIUM_HOME`; if it still reports
+   `appium_home_not_writable`, rerun outside the sandbox or set `APPIUM_HOME`
+   to a writable directory.
 2. If the project lacks `.mav/config.yaml`, run `mav discover` and review the
    generated config.
 3. If the validation needs a specific simulator, runtime, or locale, use
@@ -33,17 +38,23 @@ does not explore or repair routes by itself. The agent decides the next action.
    accessibility identifiers first (`--id`). Use coordinates only when the tree
    is insufficient and the screenshot makes the target unambiguous. Use text as
    the last option because labels change with localization and copy edits.
-8. Use `mav go <screen-id>` only after `.mav/map/index.json` and
+8. Before navigating to a new screen, verify with `mav ui tree` that the target
+   screen has stable accessibility ids or a visible title that MAV can observe.
+   The mapping loop is `mav open`, `mav ui tree`, `mav ui tap --id ...`,
+   `mav ui tree`, then inspect `.mav/map/**`. If the next tree reports
+   `screen=unknown map_pending=true`, the tap was recorded but no reliable route
+   was learned; add/expose accessibility ids or capture/inspect before mapping.
+9. Use `mav go <screen-id>` only after `.mav/map/index.json` and
    `.mav/map/screens/*.json` contain that screen and a route from app launch.
    `mav go` opens the app, records evidence from the start screen to the target,
    validates screen change/assertions, writes a report, and stops run-owned
    streams. If MAV returns `screen_not_found` or `route_not_found`, explore
    manually with `mav ui tree/tap`; the map updates when the next screen is
    observed with `mav ui tree`.
-9. Use `mav preview init` to create a Bazel preview host, wire the view under
+10. Use `mav preview init` to create a Bazel preview host, wire the view under
    test into the generated host, then use `mav preview <view-id>` and `mav capture`.
-10. If `.mav/map/**` changes, review the git diff before continuing.
-11. For ad-hoc sessions started with `mav open`, run `mav stop` when validation
+11. If `.mav/map/**` changes, review the git diff before continuing.
+12. For ad-hoc sessions started with `mav open`, run `mav stop` when validation
     is done. `mav run` stops run-owned streams automatically.
 
 ## Internal Execution Validation
@@ -94,15 +105,19 @@ Use evidence when the user needs proof of verification:
 1. Prefer writing a temporary MAV YAML flow and running it with `mav run`.
 2. The flow should navigate to the relevant state first when that setup is not
    the behavior under test. Start recording as late as possible while still
-   covering the verified action, use `delay` only for fixed launch/animation
-   waits when tree-based waits are not possible, capture named proof points,
-   perform the tested action, capture the result, stop recording immediately
-   after the result is visible, check crashes, and generate a report.
+   covering the verified action, use `wait` for a single `id`, `text`, or
+   `value`, use `waitUntil` with `any` or `changedFrom` for alternate/visual
+   outcomes, and use `delay` only for fixed launch/animation waits when
+   tree-based waits are not possible. Capture named proof points, perform the
+   tested action, capture the result, stop recording immediately after the
+   result is visible, check crashes, and generate a report.
 3. Names should describe the assertion, for example `settings-before-toggle`
    and `settings-after-toggle`.
 4. Share the generated report and evidence as clickable Markdown links using
    absolute paths, for example `[MAV evidence report](/tmp/mav/<run-id>/report.html)`.
-   Include the video and key captures when they are relevant, for example
+   Include the video only when `mav evidence report` reports `video=<path>`;
+   if it reports `video=missing`, the report has screenshots/logs but no video
+   evidence. Include key captures when they are relevant, for example
    `[video](/tmp/mav/<run-id>/video.mov)` and
    `[after-toggle](/tmp/mav/<run-id>/captures/after-toggle.png)`.
 
@@ -112,6 +127,10 @@ being validated. The screenshots must prove the behavior itself, not just that
 the app opened. For a notification toggle, navigate to Settings first if
 Settings is not under test, start recording, capture before toggling, toggle it,
 capture after toggling, then stop.
+
+The supported flow recording steps are `video.start` and `video.stop`;
+`evidence.start` and `evidence.stop` remain supported aliases. Do not use or
+invent `recordVideo: true`.
 
 Use `mav go <screen-id>` for ad-hoc navigation evidence to a mapped screen; this
 is appropriate when the route itself is the evidence. Use `mav run` for feature
@@ -133,7 +152,9 @@ mav ui tap --id privacy_policy_button
 ```
 
 If there is no stable id, use coordinates only after capturing/inspecting a
-screenshot. Use `text` only when neither id nor coordinates are appropriate.
+screenshot. Coordinate taps can be useful for manual visual fallback, but they
+are not the preferred basis for reliable routes. Use `text` only when neither
+id nor coordinates are appropriate.
 
 ## Gestures
 
@@ -187,6 +208,10 @@ fail code=screen_not_found screen=settings
 If `mav ui tree` reports `screen=unknown` with `screen_source=unmatched`, trust
 the live node lines over stale map state and continue exploring with tree/tap or
 capture named evidence before updating routes.
+
+If it also reports `map_pending=true`, the previous tap has not produced a
+mapped screen yet. Do not use `mav go` for that destination until `.mav/map/**`
+contains the screen and route.
 
 If simulator commands fail with a hint like `requires simulator/idb access;
 rerun outside sandbox`, rerun MAV outside the sandbox instead of retrying the
