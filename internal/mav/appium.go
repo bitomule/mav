@@ -119,9 +119,7 @@ func retryAppiumDriverListWithWritableHome(ctx context.Context, runner Runner) a
 }
 
 func withWritableAppiumHome(runner Runner) func() {
-	if _, ok := runner.(ExecRunner); !ok {
-		return func() {}
-	}
+	_ = runner
 	if strings.TrimSpace(os.Getenv("APPIUM_HOME")) != "" {
 		return func() {}
 	}

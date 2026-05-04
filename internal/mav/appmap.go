@@ -392,6 +392,18 @@ func consumePendingMapAction(root string) (pendingMapAction, bool) {
 	return pending, true
 }
 
+func peekPendingMapAction(root string) (pendingMapAction, bool) {
+	data, err := os.ReadFile(filepath.Join(root, MapPendingFile))
+	if err != nil {
+		return pendingMapAction{}, false
+	}
+	var pending pendingMapAction
+	if err := json.Unmarshal(data, &pending); err != nil || pending.From == "" {
+		return pendingMapAction{}, false
+	}
+	return pending, true
+}
+
 func ObserveScreen(root string, cfg Config, run RunState, rawTree string) (string, error) {
 	observed, err := ObserveScreenDetailed(root, cfg, run, rawTree)
 	return observed.Screen, err
