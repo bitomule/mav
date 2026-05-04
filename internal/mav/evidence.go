@@ -51,15 +51,11 @@ func GenerateReport(run RunState) (string, error) {
 			data.Screenshot = path
 		}
 	}
-	for _, name := range []string{"video.mov", "video.mp4"} {
-		path := filepath.Join(run.Dir, name)
-		if exists(path) {
-			data.Video = path
-			if validation := ValidateEvidenceVideo(path); !validation.OK {
-				data.VideoInvalid = true
-				data.VideoIssue = validation.Issue
-			}
-			break
+	if video, validation := reportVideo(run); video != "" {
+		data.Video = video
+		if !validation.OK {
+			data.VideoInvalid = true
+			data.VideoIssue = validation.Issue
 		}
 	}
 	if exists(run.LogsPath) {
@@ -94,6 +90,16 @@ func GenerateReport(run RunState) (string, error) {
 	}
 	defer file.Close()
 	return path, reportTemplate.Execute(file, data)
+}
+
+func reportVideo(run RunState) (string, VideoValidation) {
+	for _, name := range []string{"video.mov", "video.mp4"} {
+		path := filepath.Join(run.Dir, name)
+		if exists(path) {
+			return path, ValidateEvidenceVideo(path)
+		}
+	}
+	return "", VideoValidation{}
 }
 
 func AppendEvidenceStep(run RunState, step EvidenceStep) error {

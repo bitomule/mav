@@ -69,7 +69,9 @@ globally, then installs and verifies the `xcuitest` driver. If Appium was
 installed through a Node version manager, `mav doctor` also checks that the
 active `node` matches the Node path used by the `appium` executable; put that
 Node bin directory first in `PATH` if it reports a `multitouch_issue` related
-to Node.
+to Node. If Appium reports that its home is not writable, MAV retries the driver
+check with a temporary writable `APPIUM_HOME`; if that still fails, rerun MAV
+outside the sandbox or set `APPIUM_HOME` to a writable directory.
 
 ## Install
 
@@ -249,6 +251,12 @@ mav ui tap --id home_settings_button
 mav ui tree
 ```
 
+When navigating to a new screen, first make sure the destination exposes stable
+accessibility identifiers or a visible title in `mav ui tree`. If the next tree
+reports `screen=unknown map_pending=true`, the tap was recorded but the map did
+not learn a route yet; add or expose accessibility ids, capture/inspect the
+screen, then run `mav ui tree` again before relying on `mav go`.
+
 Prefer target selectors in this order:
 
 1. Accessibility id: `mav ui tap --id home_settings_button`
@@ -256,7 +264,8 @@ Prefer target selectors in this order:
 3. Text: `mav ui tap --text Settings`
 
 Coordinates should be used only when the accessibility tree is insufficient and
-a screenshot makes the target unambiguous. Text is the last fallback because
+a screenshot makes the target unambiguous. Coordinate taps are visual fallbacks,
+not the primary way to create reliable routes. Text is the last fallback because
 labels change with localization and copy edits.
 
 Review `.mav/map/**` diffs before relying on a route. The map is source-level
@@ -304,6 +313,7 @@ mav ui tap --x 120 --y 400
 mav ui tap --text "Daily Reminder"
 mav ui type "hello"
 mav ui swipe --direction up
+mav ui swipe --start-x 220 --start-y 760 --end-x 220 --end-y 260
 mav ui pinch --x 200 --y 450 --scale 0.5
 mav ui pinch --x 200 --y 450 --scale 0.5 --pan-x 80 --pan-y -40
 mav ui rotate --x 200 --y 450 --degrees 30
@@ -347,9 +357,9 @@ version: 1
 name: verify_daily_reminder
 steps:
   - open: {}
-  - evidence.start: {}
   - go: { screen: settings }
   - wait: { text: Daily Reminder, timeout: 5s }
+  - video.start: {}
   - evidence.step: { name: before-toggle, note: Daily Reminder before tap }
   - tap: { text: Daily Reminder }
   - waitUntil:
@@ -362,7 +372,7 @@ steps:
   - pinch: { x: 200, y: 450, scale: 0.5, panX: 80, panY: -40, duration: 800ms }
   - logs: { key: SettingsReached }
   - crashes: {}
-  - evidence.stop: {}
+  - video.stop: {}
   - report: {}
 ```
 
@@ -391,11 +401,17 @@ crashes
 evidence.start
 evidence.step
 evidence.stop
+video.start
+video.stop
 report
 ```
 
 On failure, MAV stops run-owned processes, tries to capture failure evidence,
 writes report data, and returns a compact failure line.
+
+Use `wait` for a single `id`, `text`, or `value`. Use `waitUntil` with `any`
+when more than one result is acceptable, and use `changedFrom` after a named
+evidence step when the UI change is visual rather than semantic.
 
 ## Evidence
 
@@ -411,18 +427,31 @@ For feature behavior, use a flow with named evidence points:
 
 ```yaml
 - open: {}
-- evidence.start: {}
 - go: { screen: settings }
+- wait: { id: daily_reminder_button, timeout: 5s }
+- video.start: {}
 - evidence.step: { name: before-toggle, note: Before tapping Daily Reminder }
-- tap: { text: Daily Reminder }
+- tap: { id: daily_reminder_button }
+- waitUntil:
+    any:
+      - id: notification_permission_alert
+      - changedFrom: before-toggle
+    timeout: 5s
 - evidence.step: { name: after-toggle, note: After tapping Daily Reminder }
-- evidence.stop: {}
+- video.stop: {}
 - report: {}
 ```
 
-The video should cover the path from launch/navigation through the tested
-behavior. Screenshots should prove the behavior itself, not only that the app
-opened.
+Start recording as late as possible: navigate and wait for the state first when
+navigation is setup, then record the behavior under test. Screenshots should
+prove the behavior itself, not only that the app opened. The supported recording
+flow steps are `video.start` and `video.stop`; `evidence.start` and
+`evidence.stop` remain supported aliases. Flows do not have a `recordVideo`
+option.
+
+`mav evidence report` prints `video=<path>` only when a valid video exists, and
+`video=missing` when the report has no recording. A report without `video.mov`
+does not prove video evidence was captured.
 
 MAV does not open HTML automatically. Inspect the reported file:
 
@@ -581,6 +610,12 @@ Then inspect `.mav/map/**`.
 
 The simulator accessibility service did not recover after MAV retried. Re-run
 `mav open` or select another simulator with `mav sim select`.
+
+`CoreSimulator`, `idb`, or Appium permission failures
+
+MAV needs direct simulator/device access for launch, accessibility, coordinate
+taps, screenshots, video, and multitouch. If output says to rerun outside the
+sandbox, do that instead of retrying the same command in the sandbox.
 
 `mav logs --key ...` returns no matches
 
