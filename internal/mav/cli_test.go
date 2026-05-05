@@ -44,6 +44,7 @@ type sequenceRecordingRunner struct {
 	tools    map[string]bool
 	commands []string
 	out      map[string]string
+	err      map[string]CommandResult
 }
 
 func (r *sequenceRecordingRunner) LookPath(file string) (string, error) {
@@ -57,6 +58,9 @@ func (r *sequenceRecordingRunner) Run(ctx context.Context, name string, args ...
 	_ = ctx
 	command := name + " " + strings.Join(args, " ")
 	r.commands = append(r.commands, command)
+	if result, ok := r.err[command]; ok {
+		return result
+	}
 	return CommandResult{Stdout: r.out[command]}
 }
 
@@ -123,6 +127,42 @@ func (r appiumHomeRetryRunner) Start(ctx context.Context, logPath string, name s
 	_ = name
 	_ = args
 	return 0, nil
+}
+
+type launchRecipeRunner struct {
+	tools    map[string]bool
+	commands []string
+	results  map[string]CommandResult
+}
+
+func (r *launchRecipeRunner) LookPath(file string) (string, error) {
+	if r.tools[file] {
+		return "/usr/bin/" + file, nil
+	}
+	return "", os.ErrNotExist
+}
+
+func (r *launchRecipeRunner) Run(ctx context.Context, name string, args ...string) CommandResult {
+	_ = ctx
+	command := name + " " + strings.Join(args, " ")
+	r.commands = append(r.commands, command)
+	if name == "/bin/sh" && len(args) == 2 {
+		script := args[1]
+		for needle, result := range r.results {
+			if strings.Contains(script, needle) {
+				return result
+			}
+		}
+	}
+	return CommandResult{}
+}
+
+func (r *launchRecipeRunner) Start(ctx context.Context, logPath string, name string, args ...string) (int, error) {
+	_ = ctx
+	_ = logPath
+	_ = name
+	_ = args
+	return 123, nil
 }
 
 func TestGoUnknownScreenFailsDeterministically(t *testing.T) {
@@ -217,6 +257,43 @@ func TestDoctorReportsCapabilityFallbacks(t *testing.T) {
 	}
 }
 
+func TestCoordinateTapUsesResolvedIDBCapability(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.BundleID = "com.example.app"
+	cfg.Tools = map[string]bool{}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runner := &sequenceRecordingRunner{tools: map[string]bool{"idb": true}}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "tap", "--x", "10", "--y", "20"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "ok cmd=ui.tap") {
+		t.Fatalf("got %q", out.String())
+	}
+	if !strings.Contains(strings.Join(runner.commands, "\n"), "idb ui tap 10 20 --udid SIM") {
+		t.Fatalf("commands=%v", runner.commands)
+	}
+}
+
+func TestDoctorReportsIDBPythonUnsupported(t *testing.T) {
+	var out bytes.Buffer
+	cli := CLI{Runner: errorRunner{
+		tools:  map[string]bool{"idb": true},
+		result: CommandResult{Stderr: "RuntimeError: asyncio.get_event_loop() Python 3.14", Err: os.ErrInvalid},
+	}, Root: t.TempDir(), Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"doctor"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "idb_next=\"pipx install --python python3.12 fb-idb\"") {
+		t.Fatalf("got %q", out.String())
+	}
+}
+
 func TestHelpListsCommands(t *testing.T) {
 	var out bytes.Buffer
 	cli := CLI{Runner: fakeRunner{}, Root: t.TempDir(), Stdout: &out, Stderr: &bytes.Buffer{}}
@@ -229,6 +306,33 @@ func TestHelpListsCommands(t *testing.T) {
 	}
 	if strings.Contains(got, "--json") {
 		t.Fatalf("help should not mention --json: %q", got)
+	}
+}
+
+func TestSetupScaffoldsProjectIdempotently(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "Info.plist"), `<plist><dict><key>CFBundleIdentifier</key><string>com.example.detected</string></dict></plist>`)
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.existing"
+	cfg.SimulatorUDID = "SIM-EXISTING"
+	cfg.Launch = LaunchConfig{Mode: "custom", Commands: LaunchCommands{Launch: "custom launch"}}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{tools: map[string]bool{"xcrun": true}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"setup"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "ok cmd=setup") {
+		t.Fatalf("got %q", out.String())
+	}
+	loaded, err := LoadConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.BundleID != "com.example.existing" || loaded.SimulatorUDID != "SIM-EXISTING" || loaded.Launch.Commands.Launch != "custom launch" {
+		t.Fatalf("loaded=%+v", loaded)
 	}
 }
 
@@ -887,48 +991,68 @@ func TestOpenStartsOnlyProbeLogsByDefault(t *testing.T) {
 	}
 }
 
-func TestPreviewRequiresConfig(t *testing.T) {
+func TestOpenRunsConfiguredLaunchRecipe(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
-	cfg.AppTarget = "//App:App"
 	cfg.BundleID = "com.example.app"
+	cfg.SimulatorUDID = "SIM"
+	cfg.SimulatorName = "iPhone"
+	cfg.Launch = LaunchConfig{Mode: "custom", Commands: LaunchCommands{
+		Build:   "make build-ios",
+		AppPath: "make ios-app-path",
+		Install: `xcrun simctl install "$MAV_UDID" "$MAV_APP_PATH"`,
+		Launch:  `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`,
+	}}
 	if err := SaveConfig(root, cfg); err != nil {
 		t.Fatal(err)
 	}
+	runner := &launchRecipeRunner{
+		tools: map[string]bool{"xcrun": true},
+		results: map[string]CommandResult{
+			"make ios-app-path": {Stdout: "/tmp/App.app\n"},
+		},
+	}
 	var out bytes.Buffer
-	cli := CLI{Runner: fakeRunner{}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
-	if err := cli.Run(context.Background(), []string{"preview", "settings"}); err != nil {
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"open"}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "fail code=preview_not_configured") {
+	if !strings.Contains(out.String(), "ok cmd=open") || !strings.Contains(out.String(), "app=/tmp/App.app") {
 		t.Fatalf("got %q", out.String())
+	}
+	joined := strings.Join(runner.commands, "\n")
+	for _, want := range []string{"make build-ios", "make ios-app-path", "simctl install", "simctl launch"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("commands missing %q:\n%s", want, joined)
+		}
 	}
 }
 
-func TestPreviewInitCreatesHostAndConfig(t *testing.T) {
+func TestOpenRejectsInvalidAppPathOutput(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
 	cfg.BundleID = "com.example.app"
+	cfg.SimulatorUDID = "SIM"
+	cfg.Launch = LaunchConfig{Mode: "custom", Commands: LaunchCommands{
+		AppPath: "make ios-app-path",
+		Launch:  `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`,
+	}}
 	if err := SaveConfig(root, cfg); err != nil {
 		t.Fatal(err)
 	}
+	runner := &launchRecipeRunner{
+		tools: map[string]bool{"xcrun": true},
+		results: map[string]CommandResult{
+			"make ios-app-path": {Stdout: "/tmp/One.app\n/tmp/Two.app\n"},
+		},
+	}
 	var out bytes.Buffer
-	cli := CLI{Runner: fakeRunner{}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
-	if err := cli.Run(context.Background(), []string{"preview", "init"}); err != nil {
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"open"}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "ok cmd=preview.init") {
+	if !strings.Contains(out.String(), "fail code=launch_step_failed") || !strings.Contains(out.String(), "step=app_path") {
 		t.Fatalf("got %q", out.String())
-	}
-	if !exists(filepath.Join(root, "MAVPreview", "BUILD.bazel")) || !exists(filepath.Join(root, "MAVPreview", "PreviewHostApp.swift")) || !exists(filepath.Join(root, "MAVPreview", "Info.plist")) {
-		t.Fatalf("preview host was not created")
-	}
-	loaded, err := LoadConfig(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if loaded.PreviewTarget != "//MAVPreview:MAVPreviewApp" || loaded.PreviewBundleID != "com.example.app.mavpreview" {
-		t.Fatalf("loaded=%+v", loaded)
 	}
 }
 
