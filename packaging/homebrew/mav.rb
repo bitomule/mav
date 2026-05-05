@@ -1,5 +1,5 @@
 class Mav < Formula
-  desc "Mobile Agent Verifier for iOS Bazel apps"
+  desc "Mobile Agent Verifier for iOS apps"
   homepage "https://github.com/bitomule/mav"
   version "0.0.1"
 

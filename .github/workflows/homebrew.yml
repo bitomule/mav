@@ -47,7 +47,7 @@ jobs:
           mkdir -p /tmp/homebrew-formula/Formula
           cat > /tmp/homebrew-formula/Formula/mav.rb <<EOF
           class Mav < Formula
-            desc "Mobile Agent Verifier for iOS Bazel apps"
+            desc "Mobile Agent Verifier for iOS apps"
             homepage "https://github.com/bitomule/mav"
             version "$VERSION"
 
