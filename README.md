@@ -1,7 +1,7 @@
 # MAV
 
 Mobile Agent Verifier (`mav`) is a deterministic agent-native CLI for
-validating iOS Bazel apps from coding agents.
+validating iOS apps from coding agents.
 
 MAV gives agents a compact API to build, launch, observe, navigate, interact,
 capture evidence, read logs, and check crashes. It is intentionally not an
@@ -17,17 +17,17 @@ default; there is no separate JSON mode to opt into.
   logs, crash checks, and HTML evidence.
 - Maintaining an app map that lets `mav go <screen>` navigate from app launch to
   known screens.
-- Testing SwiftUI previews or isolated screens through a Bazel preview host.
 
-MAV currently targets iOS Bazel projects. Simulator support is the main path.
-Real-device support is expected to use idb-backed capabilities where available,
-but the simulator path is the one exercised most heavily today.
+MAV uses a project-local launch recipe to build, locate, install, and launch
+the app. Bazel, Xcode, Tuist, Make, Just, and project scripts are setup-time
+templates only; runtime executes the configured recipe.
 
 ## Status
 
 MAV is early and evolving. The current stable pieces are:
 
-- Bazel discovery for iOS app targets.
+- Configurable project launch recipes.
+- Setup-time detection for common project launch commands.
 - Simulator selection, boot, install, launch, screenshot, and video.
 - AXe-first accessibility tree inspection and semantic interactions.
 - idb coordinate taps and fallback capabilities.
@@ -42,7 +42,6 @@ MAV is early and evolving. The current stable pieces are:
 - macOS.
 - Xcode command line tools.
 - Go, for development builds.
-- Bazelisk, for Bazel app builds.
 - AXe, for accessibility tree and semantic UI actions.
 - idb, for coordinate taps and device/simulator fallback operations.
 - Appium 2 with the XCUITest driver, optional, for true multitouch gestures
@@ -58,14 +57,24 @@ mav doctor
 capability: accessibility and semantic actions use AXe, coordinate taps and
 device fallback use idb, and multitouch uses Appium.
 
-Install supported helper tools:
+Configure the project or install supported helper tools:
+
+```bash
+mav setup
+```
+
+`mav setup` is idempotent. It scaffolds or refreshes `.mav/config.yaml` and the
+initial app map by detecting app identity, simulator defaults, UI tools, and an
+editable launch recipe. Existing explicit choices in `.mav/config.yaml` are
+preserved.
 
 ```bash
 mav setup --install axe idb appium
 ```
 
-`mav setup` uses Homebrew for AXe/idb. For Appium it uses npm, installs Appium
-globally, then installs and verifies the `xcuitest` driver. If Appium was
+`mav setup --install idb` prefers pipx with Python 3.12/3.13 for `fb-idb` and
+uses Homebrew for `idb-companion`. AXe uses Homebrew. For Appium it uses npm,
+installs Appium globally, then installs and verifies the `xcuitest` driver. If Appium was
 installed through a Node version manager, `mav doctor` also checks that the
 active `node` matches the Node path used by the `appium` executable; put that
 Node bin directory first in `PATH` if it reports a `multitouch_issue` related
@@ -123,27 +132,28 @@ push to `bitomule/homebrew-tap`; this is the same pattern used by Koubou.
 
 ## Quick Start
 
-Run from the root of an iOS Bazel app repo:
+Run from the root of an iOS app repo:
 
 ```bash
-mav discover
+mav setup
 mav sim list
 mav sim select --device "iPhone 17 Pro Max" --ios 26
 mav open
 mav ui tree
 ```
 
-`mav discover` creates `.mav/config.yaml` and an initial app map. It caches the
-Bazel app target, bundle id, selected simulator, locale/language, and available
-tools.
+`mav setup` scaffolds `.mav/config.yaml` and an initial app map. It detects
+a bundle id, selected simulator, locale/language, available tools, and a launch
+recipe when it can infer one. It is useful for non-interactive setup and for
+refreshing the generated MAV config after project structure changes.
 
-`mav open` builds, installs, and launches the app. It creates a run directory
+`mav open` executes the configured launch recipe. It creates a run directory
 under `/tmp/mav/<run-id>/` and starts `logs.txt` for MAV probes.
 
 Example compact output:
 
 ```text
-ok cmd=discover bundle=com.example.app config=/repo/.mav/config.yaml target=//App:App
+ok cmd=setup bundle=com.example.app config=/repo/.mav/config.yaml launch_recipe=ok
 ok cmd=open run=7fd logs=/tmp/mav/7fd/logs.txt target="iPhone 17 Pro Max"
 ok cmd=ui.tree driver=axe nodes=42 screen=start screen_source=recognized
 node index=1 id=settings_button label=Settings role=button frame="{{20, 120}, {180, 44}}"
@@ -169,12 +179,10 @@ The top-level commands are:
 doctor
 setup
 install-skills
-discover
 sim
 open
 ui
 capture
-preview
 run
 go
 logs
@@ -519,25 +527,34 @@ You can also pass simulator selection flags to `mav open`:
 mav open --device "iPhone 17 Pro Max" --ios 26 --locale es_ES --language es
 ```
 
-## Previews
+## Launch Recipes
 
-Use previews for isolated SwiftUI screens when launching the full app is too
-slow or the target screen is deep in a flow:
+MAV does not own the build system. Configure project commands in
+`.mav/config.yaml`:
 
-```bash
-mav preview init
-mav preview settings
-mav ui tree
-mav capture
+```yaml
+app:
+  bundle_id: com.example.app
+  process_name: Example
+
+launch:
+  mode: custom
+  commands:
+    build: ./scripts/mav-build.sh
+    app_path: ./scripts/mav-app-path.sh
+    install: xcrun simctl install "$MAV_UDID" "$MAV_APP_PATH"
+    launch: xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"
 ```
 
-`mav preview init` creates a Bazel preview host. Wire the real view and any
-lightweight mocks into the generated host, then launch a preview by id.
+Each command runs from `MAV_ROOT` with stable environment variables:
+`MAV_ROOT`, `MAV_RUN_DIR`, `MAV_UDID`, `MAV_BUNDLE_ID`, `MAV_APP_PATH`,
+`MAV_DEVICE_NAME`, `MAV_RUNTIME`, and `MAV_PLATFORM`. `app_path` must print one
+`.app` path. If the app is already installed, configure only `launch`.
 
 ## Cleanup
 
-Ad-hoc `mav open` and `mav preview` sessions keep log capture running for the
-current run. Stop them when done:
+Ad-hoc `mav open` sessions keep log capture running for the current run. Stop
+them when done:
 
 ```bash
 mav stop
@@ -549,9 +566,9 @@ mav stop
 
 ```text
 mav doctor
+mav setup
 mav setup --install axe idb appium
 mav install-skills
-mav discover
 mav sim list
 mav sim select --device NAME --ios VERSION [--locale LOCALE] [--language LANG]
 mav sim select --udid UDID
@@ -570,8 +587,6 @@ mav ui actions --file actions.json
 mav ui wait --id ID [--timeout 5s]
 mav ui scrollUntil --id ID [--direction up] [--max-swipes 5]
 mav capture [--name NAME] [--run RUN_ID]
-mav preview init [--dir MAVPreview] [--bundle-id BUNDLE_ID] [--force]
-mav preview <view-id>
 mav run flow.yaml
 mav go <screen-id>
 mav logs [--run RUN_ID] [--key KEY] [--contains TEXT] [--level LEVEL]
@@ -590,7 +605,7 @@ mav evidence report [--run RUN_ID]
 Run:
 
 ```bash
-mav discover
+mav setup
 ```
 
 `fail code=screen_not_found` or `fail code=route_not_found`

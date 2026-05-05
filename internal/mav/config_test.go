@@ -52,7 +52,7 @@ func (f fakeRunner) Start(ctx context.Context, logPath string, name string, args
 	return 123, nil
 }
 
-func TestDiscoverConfigFindsBazelApp(t *testing.T) {
+func TestSetupConfigFindsBazelApp(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "MODULE.bazel"), "module(name = \"Demo\")\n")
 	mustWrite(t, filepath.Join(root, "Demo", "BUILD.bazel"), `load("@build_bazel_rules_apple//apple:ios.bzl", "ios_application")
@@ -61,7 +61,7 @@ ios_application(
     bundle_id = "com.example.demo",
 )
 `)
-	cfg, err := DiscoverConfig(root, fakeRunner{tools: map[string]bool{"bazelisk": true, "xcrun": true, "axe": true}})
+	cfg, err := SetupConfig(root, fakeRunner{tools: map[string]bool{"bazelisk": true, "xcrun": true, "axe": true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,12 +76,12 @@ ios_application(
 	}
 }
 
-func TestDiscoverConfigSkipsHiddenWorktrees(t *testing.T) {
+func TestSetupConfigSkipsHiddenWorktrees(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, ".claude", "worktrees", "bad", "Undolly", "BUILD.bazel"), `ios_application(name = "Clean similar photos with Undolly", bundle_id = "bad")`)
 	mustWrite(t, filepath.Join(root, "Undolly", "BUILD.bazel"), `ios_application(name = "UndollyApp", bundle_id = "com.example.release")`)
 	mustWrite(t, filepath.Join(root, "tools", "shared.bzl"), `app_info = struct(bundle_id_debug = "com.example.debug", bundle_id = "com.example.release", executable_name = "Undolly")`)
-	cfg, err := DiscoverConfig(root, fakeRunner{tools: map[string]bool{"bazelisk": true}})
+	cfg, err := SetupConfig(root, fakeRunner{tools: map[string]bool{"bazelisk": true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,11 +96,44 @@ func TestDiscoverConfigSkipsHiddenWorktrees(t *testing.T) {
 	}
 }
 
-func TestDiscoverConfigStoresBootedSimulator(t *testing.T) {
+func TestSetupConfigOnlyUsesIOSApplicationRuleNames(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "BUILD.bazel"), `load("@build_bazel_rules_apple//apple:ios.bzl", "ios_application")
+swift_macro(
+    name = "DIMacros",
+)
+ios_application(
+    name = "DemoApp",
+    bundle_id = "com.example.demo",
+)
+`)
+	cfg, err := SetupConfig(root, fakeRunner{tools: map[string]bool{"bazelisk": true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AppTarget != "//:DemoApp" {
+		t.Fatalf("target=%q", cfg.AppTarget)
+	}
+}
+
+func TestSetupConfigPrefersProjectLaunchScripts(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "BUILD.bazel"), `ios_application(name = "DemoApp", bundle_id = "com.example.demo")`)
+	mustWrite(t, filepath.Join(root, "Makefile"), "mav-build:\n\ttrue\nmav-app-path:\n\tprintf /tmp/App.app\n")
+	cfg, err := SetupConfig(root, fakeRunner{tools: map[string]bool{"bazelisk": true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Launch.Commands.Build != "make mav-build" || cfg.Launch.Commands.AppPath != "make mav-app-path" {
+		t.Fatalf("launch=%+v", cfg.Launch.Commands)
+	}
+}
+
+func TestSetupConfigStoresBootedSimulator(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "Demo", "BUILD.bazel"), `ios_application(name = "DemoApp", bundle_id = "com.example.demo")`)
 	out := `{"devices":{"runtime":[{"udid":"SIM-1","name":"iPhone 17 Pro Max","state":"Booted"}]}}`
-	cfg, err := DiscoverConfig(root, fakeRunner{
+	cfg, err := SetupConfig(root, fakeRunner{
 		tools: map[string]bool{"xcrun": true},
 		out:   map[string]string{"xcrun simctl list devices booted -j": out},
 	})
@@ -112,12 +145,28 @@ func TestDiscoverConfigStoresBootedSimulator(t *testing.T) {
 	}
 }
 
+func TestSetupConfigDoesNotRequireBazelAppTarget(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "Info.plist"), `<plist><dict><key>CFBundleIdentifier</key><string>com.example.demo</string></dict></plist>`)
+	cfg, err := SetupConfig(root, fakeRunner{tools: map[string]bool{"xcrun": true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AppTarget != "" {
+		t.Fatalf("target=%q", cfg.AppTarget)
+	}
+	if cfg.BundleID != "com.example.demo" {
+		t.Fatalf("bundle=%q", cfg.BundleID)
+	}
+}
+
 func TestSaveLoadConfig(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
 	cfg.ProjectName = "Demo"
 	cfg.AppTarget = "//Demo:DemoApp"
 	cfg.BundleID = "com.example.demo"
+	cfg.Launch = LaunchConfig{Mode: "custom", Commands: LaunchCommands{Build: "make build-ios", AppPath: "make app-path", Launch: `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`}}
 	cfg.Tools["axe"] = true
 	if err := SaveConfig(root, cfg); err != nil {
 		t.Fatal(err)
@@ -126,7 +175,7 @@ func TestSaveLoadConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.AppTarget != cfg.AppTarget || !loaded.Tools["axe"] {
+	if loaded.AppTarget != cfg.AppTarget || !loaded.Tools["axe"] || loaded.Launch.Commands.AppPath != "make app-path" {
 		t.Fatalf("loaded=%+v", loaded)
 	}
 }
