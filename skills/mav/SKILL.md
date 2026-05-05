@@ -1,11 +1,11 @@
 ---
 name: mav
-description: Use MAV, the Mobile Agent Verifier CLI, to validate iOS Bazel apps through deterministic simulator/device actions, accessibility tree inspection, screenshots, logs, crashes, and evidence reports.
+description: Use MAV, the Mobile Agent Verifier CLI, to validate iOS apps through deterministic simulator/device actions, configurable launch recipes, accessibility tree inspection, screenshots, logs, crashes, and evidence reports.
 ---
 
 # MAV
 
-Use `mav` when validating an iOS Bazel app locally. MAV is deterministic: it
+Use `mav` when validating an iOS app locally. MAV is deterministic: it
 does not explore or repair routes by itself. The agent decides the next action.
 
 ## Workflow
@@ -16,8 +16,11 @@ does not explore or repair routes by itself. The agent decides the next action.
    retries with a temporary writable `APPIUM_HOME`; if it still reports
    `appium_home_not_writable`, rerun outside the sandbox or set `APPIUM_HOME`
    to a writable directory.
-2. If the project lacks `.mav/config.yaml`, run `mav discover` and review the
-   generated config.
+2. If the project lacks `.mav/config.yaml`, run `mav setup` and review the
+   generated config. Setup is idempotent: it detects app identity, simulator
+   defaults, UI tools, and an editable `launch.commands` recipe while
+   preserving existing explicit choices. MAV uses that recipe to run the app;
+   Bazel/Xcode/Tuist detection is setup-time scaffolding only.
 3. If the validation needs a specific simulator, runtime, or locale, use
    `mav sim list`, then `mav sim select --device ... --ios ... --locale ... --language ...`.
    You can also pass the same target flags to `mav open`.
@@ -51,10 +54,8 @@ does not explore or repair routes by itself. The agent decides the next action.
    streams. If MAV returns `screen_not_found` or `route_not_found`, explore
    manually with `mav ui tree/tap`; the map updates when the next screen is
    observed with `mav ui tree`.
-10. Use `mav preview init` to create a Bazel preview host, wire the view under
-   test into the generated host, then use `mav preview <view-id>` and `mav capture`.
-11. If `.mav/map/**` changes, review the git diff before continuing.
-12. For ad-hoc sessions started with `mav open`, run `mav stop` when validation
+10. If `.mav/map/**` changes, review the git diff before continuing.
+11. For ad-hoc sessions started with `mav open`, run `mav stop` when validation
     is done. `mav run` stops run-owned streams automatically.
 
 ## Internal Execution Validation
@@ -180,18 +181,29 @@ In YAML flows, gesture steps accept the same `hold` key:
 - capture: { name: zoom-held }
 ```
 
-## Previews
+## Launch Recipes
 
-Use previews for isolated SwiftUI screens when launching the full app is too
-slow or deep:
+MAV does not own the project build system. `.mav/config.yaml` should define
+the commands needed to run the app:
 
-1. Run `mav preview init` if the repo does not have a preview host.
-2. Add the real view and any lightweight mocks to `MAVPreview/PreviewHostApp.swift`
-   or the generated host target.
-3. Build and launch it with `mav preview <view-id>`.
-4. Inspect with `mav ui tree`, then `mav capture --name <view-id>` for visual proof.
-5. Include preview screenshots in `mav evidence report` when they support the
-   validation.
+```yaml
+app:
+  bundle_id: com.example.app
+  process_name: Example
+
+launch:
+  mode: custom
+  commands:
+    build: ./scripts/mav-build.sh
+    app_path: ./scripts/mav-app-path.sh
+    install: xcrun simctl install "$MAV_UDID" "$MAV_APP_PATH"
+    launch: xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"
+```
+
+Each command runs from `MAV_ROOT` with `MAV_RUN_DIR`, `MAV_UDID`,
+`MAV_BUNDLE_ID`, `MAV_APP_PATH`, `MAV_DEVICE_NAME`, `MAV_RUNTIME`, and
+`MAV_PLATFORM`. `app_path` must print exactly one `.app` path. If the app is
+already installed, configure only `launch`.
 
 ## Command Output
 

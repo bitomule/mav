@@ -49,7 +49,7 @@ jobs:
           git clone "https://x-access-token:${TAP_TOKEN}@github.com/bitomule/homebrew-tap.git" "$tmp/homebrew-tap"
           cat > "$tmp/homebrew-tap/Formula/mav.rb" <<EOF
           class Mav < Formula
-            desc "Mobile Agent Verifier for iOS Bazel apps"
+            desc "Mobile Agent Verifier for iOS apps"
             homepage "https://github.com/bitomule/mav"
             version "$version"
 
