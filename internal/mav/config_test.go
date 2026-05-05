@@ -166,6 +166,12 @@ func TestSaveLoadConfig(t *testing.T) {
 	cfg.ProjectName = "Demo"
 	cfg.AppTarget = "//Demo:DemoApp"
 	cfg.BundleID = "com.example.demo"
+	cfg.TargetType = "device"
+	cfg.DeviceIdentifier = "COREDEVICE-ID"
+	cfg.DeviceUDID = "REAL-UDID"
+	cfg.DeviceName = "David iPhone"
+	cfg.DeviceModel = "iPhone Air"
+	cfg.DeviceOS = "26.3.1"
 	cfg.Launch = LaunchConfig{Mode: "custom", Commands: LaunchCommands{Build: "make build-ios", AppPath: "make app-path", Launch: `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`}}
 	cfg.Tools["axe"] = true
 	if err := SaveConfig(root, cfg); err != nil {
@@ -175,8 +181,28 @@ func TestSaveLoadConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.AppTarget != cfg.AppTarget || !loaded.Tools["axe"] || loaded.Launch.Commands.AppPath != "make app-path" {
+	if loaded.AppTarget != cfg.AppTarget || !loaded.Tools["axe"] || loaded.Launch.Commands.AppPath != "make app-path" ||
+		loaded.TargetType != "device" || loaded.DeviceIdentifier != "COREDEVICE-ID" || loaded.DeviceUDID != "REAL-UDID" ||
+		loaded.DeviceName != "David iPhone" || loaded.DeviceModel != "iPhone Air" || loaded.DeviceOS != "26.3.1" {
 		t.Fatalf("loaded=%+v", loaded)
+	}
+}
+
+func TestDeviceTargetLaunchRecipeUsesDeviceCtl(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "BUILD.bazel"), `ios_application(name = "DemoApp", bundle_id = "com.example.demo")`)
+	cfg := DefaultConfig(root)
+	cfg.TargetType = "device"
+	cfg.DeviceIdentifier = "COREDEVICE-ID"
+	candidate, ok := selectLaunchCandidate(root, cfg)
+	if !ok {
+		t.Fatal("candidate missing")
+	}
+	if candidate.Launch.Commands.Install != `xcrun devicectl device install app --device "$MAV_DEVICE_ID" "$MAV_APP_PATH"` {
+		t.Fatalf("install=%q", candidate.Launch.Commands.Install)
+	}
+	if candidate.Launch.Commands.Launch != `xcrun devicectl device process launch --device "$MAV_DEVICE_ID" --terminate-existing "$MAV_BUNDLE_ID"` {
+		t.Fatalf("launch=%q", candidate.Launch.Commands.Launch)
 	}
 }
 

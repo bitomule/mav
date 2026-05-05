@@ -27,9 +27,15 @@ type Config struct {
 	DeviceTarget      string
 	BundleID          string
 	ProcessName       string
+	TargetType        string
 	SimulatorUDID     string
 	SimulatorName     string
 	SimulatorRuntime  string
+	DeviceIdentifier  string
+	DeviceUDID        string
+	DeviceName        string
+	DeviceModel       string
+	DeviceOS          string
 	Locale            string
 	Language          string
 	LogSubsystem      string
@@ -57,6 +63,7 @@ type LaunchCommands struct {
 func DefaultConfig(root string) Config {
 	return Config{
 		Root:              root,
+		TargetType:        "simulator",
 		LogCategory:       "probe",
 		PreferredUIDriver: "axe",
 		Tools:             map[string]bool{},
@@ -142,12 +149,24 @@ func LoadConfig(root string) (Config, error) {
 			cfg.BundleID = value
 		case "process_name":
 			cfg.ProcessName = value
+		case "target_type":
+			cfg.TargetType = value
 		case "simulator_udid":
 			cfg.SimulatorUDID = value
 		case "simulator_name":
 			cfg.SimulatorName = value
 		case "simulator_runtime":
 			cfg.SimulatorRuntime = value
+		case "device_identifier":
+			cfg.DeviceIdentifier = value
+		case "device_udid":
+			cfg.DeviceUDID = value
+		case "device_name":
+			cfg.DeviceName = value
+		case "device_model":
+			cfg.DeviceModel = value
+		case "device_os":
+			cfg.DeviceOS = value
 		case "locale":
 			cfg.Locale = value
 		case "language":
@@ -198,9 +217,15 @@ func SaveConfig(root string, cfg Config) error {
 	b.WriteString("\n")
 	writeKV("bundle_id", cfg.BundleID)
 	writeKV("process_name", cfg.ProcessName)
+	writeKV("target_type", normalizeTargetType(cfg.TargetType))
 	writeKV("simulator_udid", cfg.SimulatorUDID)
 	writeKV("simulator_name", cfg.SimulatorName)
 	writeKV("simulator_runtime", cfg.SimulatorRuntime)
+	writeKV("device_identifier", cfg.DeviceIdentifier)
+	writeKV("device_udid", cfg.DeviceUDID)
+	writeKV("device_name", cfg.DeviceName)
+	writeKV("device_model", cfg.DeviceModel)
+	writeKV("device_os", cfg.DeviceOS)
 	writeKV("locale", cfg.Locale)
 	writeKV("language", cfg.Language)
 	writeKV("log_subsystem", probeLogSubsystem(cfg))
@@ -328,6 +353,16 @@ func SetupConfig(root string, runner Runner) (Config, error) {
 		cfg.SimulatorUDID = udid
 		cfg.SimulatorName = name
 		cfg.SimulatorRuntime = runtime
+		if device, ok := detectAvailablePhysicalDevice(runner); ok {
+			cfg.DeviceIdentifier = device.Identifier
+			cfg.DeviceUDID = device.UDID
+			cfg.DeviceName = device.Name
+			cfg.DeviceModel = device.Model
+			cfg.DeviceOS = device.OS
+			if cfg.SimulatorUDID == "" {
+				cfg.TargetType = "device"
+			}
+		}
 	}
 	if cfg.Tools["axe"] {
 		cfg.PreferredUIDriver = "axe"
@@ -354,7 +389,7 @@ func defaultLaunchConfig(cfg Config) LaunchConfig {
 		return LaunchConfig{
 			Mode: "already_installed",
 			Commands: LaunchCommands{
-				Launch: `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`,
+				Launch: targetLaunchCommand(cfg),
 			},
 		}
 	}
@@ -376,6 +411,16 @@ func mergeSetupConfig(existing, detected Config) Config {
 		merged.SimulatorUDID = existing.SimulatorUDID
 		merged.SimulatorName = existing.SimulatorName
 		merged.SimulatorRuntime = existing.SimulatorRuntime
+	}
+	if existing.TargetType != "" {
+		merged.TargetType = normalizeTargetType(existing.TargetType)
+	}
+	if existing.DeviceIdentifier != "" {
+		merged.DeviceIdentifier = existing.DeviceIdentifier
+		merged.DeviceUDID = existing.DeviceUDID
+		merged.DeviceName = existing.DeviceName
+		merged.DeviceModel = existing.DeviceModel
+		merged.DeviceOS = existing.DeviceOS
 	}
 	if existing.Locale != "" {
 		merged.Locale = existing.Locale
@@ -413,6 +458,48 @@ func mergeSetupConfig(existing, detected Config) Config {
 		}
 	}
 	return merged
+}
+
+func normalizeTargetType(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "device":
+		return "device"
+	default:
+		return "simulator"
+	}
+}
+
+func isDeviceTarget(cfg Config) bool {
+	return normalizeTargetType(cfg.TargetType) == "device"
+}
+
+func targetUDID(cfg Config) string {
+	if isDeviceTarget(cfg) {
+		return cfg.DeviceUDID
+	}
+	return cfg.SimulatorUDID
+}
+
+func targetDisplayName(cfg Config) string {
+	if isDeviceTarget(cfg) {
+		if cfg.DeviceName != "" {
+			return cfg.DeviceName
+		}
+		if cfg.DeviceIdentifier != "" {
+			return cfg.DeviceIdentifier
+		}
+		if cfg.DeviceUDID != "" {
+			return cfg.DeviceUDID
+		}
+		return "device"
+	}
+	if cfg.SimulatorName != "" {
+		return cfg.SimulatorName
+	}
+	if cfg.SimulatorUDID != "" {
+		return cfg.SimulatorUDID
+	}
+	return "booted"
 }
 
 func probeLogSubsystem(cfg Config) string {

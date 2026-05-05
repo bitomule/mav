@@ -24,6 +24,9 @@ does not explore or repair routes by itself. The agent decides the next action.
 3. If the validation needs a specific simulator, runtime, or locale, use
    `mav sim list`, then `mav sim select --device ... --ios ... --locale ... --language ...`.
    You can also pass the same target flags to `mav open`.
+   For real devices, use `mav device list`, then
+   `mav device select --id <coredevice-id>` or
+   `mav open --target device --device-id <coredevice-id>`.
 4. Start the app with `mav open`. This creates `/tmp/mav/<run-id>/` and starts
    `logs.txt`. MAV captures a filtered unified log stream for MAV probes.
 5. Prefer `mav ui tree` to understand the current screen. It prints compact
@@ -41,6 +44,8 @@ does not explore or repair routes by itself. The agent decides the next action.
    accessibility identifiers first (`--id`). Use coordinates only when the tree
    is insufficient and the screenshot makes the target unambiguous. Use text as
    the last option because labels change with localization and copy edits.
+   On real devices, AXe semantic actions are unavailable; use `mav ui tree`,
+   `mav capture`, and coordinate actions backed by idb.
 8. Before navigating to a new screen, verify with `mav ui tree` that the target
    screen has stable accessibility ids or a visible title that MAV can observe.
    The mapping loop is `mav open`, `mav ui tree`, `mav ui tap --id ...`,
@@ -131,7 +136,8 @@ capture after toggling, then stop.
 
 The supported flow recording steps are `video.start` and `video.stop`;
 `evidence.start` and `evidence.stop` remain supported aliases. Do not use or
-invent `recordVideo: true`.
+invent `recordVideo: true`. Video evidence is simulator-only; physical devices
+return `video_unsupported target=device`, but screenshot evidence still works.
 
 Use `mav go <screen-id>` for ad-hoc navigation evidence to a mapped screen; this
 is appropriate when the route itself is the evidence. Use `mav run` for feature
@@ -201,9 +207,22 @@ launch:
 ```
 
 Each command runs from `MAV_ROOT` with `MAV_RUN_DIR`, `MAV_UDID`,
-`MAV_BUNDLE_ID`, `MAV_APP_PATH`, `MAV_DEVICE_NAME`, `MAV_RUNTIME`, and
-`MAV_PLATFORM`. `app_path` must print exactly one `.app` path. If the app is
-already installed, configure only `launch`.
+`MAV_TARGET_TYPE`, `MAV_DEVICE_ID`, `MAV_DEVICE_UDID`, `MAV_BUNDLE_ID`,
+`MAV_APP_PATH`, `MAV_DEVICE_NAME`, `MAV_RUNTIME`, and `MAV_PLATFORM`.
+`MAV_UDID` is preserved for old recipes: it is the simulator UDID on simulator
+targets and the hardware UDID on real-device targets. `app_path` must print
+exactly one `.app` path. If the app is already installed, configure only
+`launch`.
+
+For real-device recipes use CoreDevice:
+
+```yaml
+launch:
+  mode: custom
+  commands:
+    install: xcrun devicectl device install app --device "$MAV_DEVICE_ID" "$MAV_APP_PATH"
+    launch: xcrun devicectl device process launch --device "$MAV_DEVICE_ID" --terminate-existing "$MAV_BUNDLE_ID"
+```
 
 ## Command Output
 

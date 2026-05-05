@@ -16,7 +16,7 @@ type launchStep struct {
 func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState) (string, *launchStep, CommandResult) {
 	commands := cfg.Launch.Commands
 	if !hasLaunchCommands(commands) && cfg.BundleID != "" {
-		commands.Launch = `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`
+		commands.Launch = targetLaunchCommand(cfg)
 	}
 	steps := []launchStep{
 		{Name: "healthcheck", Command: commands.Healthcheck},
@@ -67,18 +67,32 @@ func (c CLI) runLaunchCommand(ctx context.Context, cfg Config, run RunState, ste
 }
 
 func launchEnv(cfg Config, run RunState, appPath string) map[string]string {
-	udid := cfg.SimulatorUDID
+	targetType := normalizeTargetType(cfg.TargetType)
+	udid := targetUDID(cfg)
 	if udid == "" {
 		udid = "booted"
+	}
+	deviceID := cfg.DeviceIdentifier
+	if deviceID == "" && targetType == "simulator" {
+		deviceID = udid
+	}
+	deviceName := cfg.SimulatorName
+	runtime := cfg.SimulatorRuntime
+	if targetType == "device" {
+		deviceName = cfg.DeviceName
+		runtime = cfg.DeviceOS
 	}
 	return map[string]string{
 		"MAV_ROOT":        cfg.Root,
 		"MAV_RUN_DIR":     run.Dir,
 		"MAV_UDID":        udid,
+		"MAV_TARGET_TYPE": targetType,
+		"MAV_DEVICE_ID":   deviceID,
+		"MAV_DEVICE_UDID": cfg.DeviceUDID,
 		"MAV_BUNDLE_ID":   cfg.BundleID,
 		"MAV_APP_PATH":    appPath,
-		"MAV_DEVICE_NAME": cfg.SimulatorName,
-		"MAV_RUNTIME":     cfg.SimulatorRuntime,
+		"MAV_DEVICE_NAME": deviceName,
+		"MAV_RUNTIME":     runtime,
 		"MAV_PLATFORM":    "ios",
 	}
 }

@@ -29,7 +29,8 @@ MAV is early and evolving. The current stable pieces are:
 - Configurable project launch recipes.
 - Setup-time detection for common project launch commands.
 - Simulator selection, boot, install, launch, screenshot, and video.
-- AXe-first accessibility tree inspection and semantic interactions.
+- Real iOS/iPadOS device selection, install, launch, screenshots, logs, and crashes where idb/CoreDevice support them.
+- AXe-first simulator accessibility tree inspection and semantic interactions.
 - idb coordinate taps and fallback capabilities.
 - Appium-backed W3C Actions for optional multitouch gestures.
 - Native MAV YAML flows through `mav run`.
@@ -42,8 +43,8 @@ MAV is early and evolving. The current stable pieces are:
 - macOS.
 - Xcode command line tools.
 - Go, for development builds.
-- AXe, for accessibility tree and semantic UI actions.
-- idb, for coordinate taps and device/simulator fallback operations.
+- AXe, for simulator accessibility tree and semantic UI actions.
+- idb, for coordinate taps, real-device UI inspection, screenshots, logs, crashes, and fallback operations.
 - Appium 2 with the XCUITest driver, optional, for true multitouch gestures
   such as pinch, rotate, and two-finger pan.
 
@@ -54,8 +55,9 @@ mav doctor
 ```
 
 `mav doctor` reports capability availability. MAV routes commands by
-capability: accessibility and semantic actions use AXe, coordinate taps and
-device fallback use idb, and multitouch uses Appium.
+capability: simulator accessibility and semantic actions use AXe, coordinate
+taps and real-device fallback use idb, real-device install/launch uses
+CoreDevice through `xcrun devicectl`, and multitouch uses Appium.
 
 Configure the project or install supported helper tools:
 
@@ -64,9 +66,9 @@ mav setup
 ```
 
 `mav setup` is idempotent. It scaffolds or refreshes `.mav/config.yaml` and the
-initial app map by detecting app identity, simulator defaults, UI tools, and an
-editable launch recipe. Existing explicit choices in `.mav/config.yaml` are
-preserved.
+initial app map by detecting app identity, simulator defaults, available real
+iOS devices, UI tools, and an editable launch recipe. Existing explicit choices
+in `.mav/config.yaml` are preserved.
 
 ```bash
 mav setup --install axe idb appium
@@ -143,9 +145,10 @@ mav ui tree
 ```
 
 `mav setup` scaffolds `.mav/config.yaml` and an initial app map. It detects
-a bundle id, selected simulator, locale/language, available tools, and a launch
-recipe when it can infer one. It is useful for non-interactive setup and for
-refreshing the generated MAV config after project structure changes.
+a bundle id, selected simulator or device, locale/language, available tools,
+and a launch recipe when it can infer one. It is useful for non-interactive
+setup and for refreshing the generated MAV config after project structure
+changes.
 
 `mav open` executes the configured launch recipe. It creates a run directory
 under `/tmp/mav/<run-id>/` and starts `logs.txt` for MAV probes.
@@ -331,9 +334,11 @@ mav ui wait --id element_id --timeout 5s
 mav ui scrollUntil --id privacy_policy_button --direction up --max-swipes 4
 ```
 
-MAV chooses drivers by capability. AXe is the default for accessibility tree
-inspection, semantic taps, typing, swipes, waits, and assertions. idb is used
-for coordinate taps and device/simulator fallback operations.
+MAV chooses drivers by capability. AXe is the default for simulator
+accessibility tree inspection, semantic taps, typing, swipes, waits, and
+assertions. AXe is simulator-only. On real devices, use idb-backed tree,
+coordinate actions, screenshots, logs, and crashes; semantic AXe actions fail
+with a `tool_missing` hint that points back to coordinates or a simulator.
 
 Appium is only used for true multitouch. AXe and idb do not expose a real
 pinch or two-finger gesture primitive. MAV sends Appium W3C Actions: multiple
@@ -527,6 +532,30 @@ You can also pass simulator selection flags to `mav open`:
 mav open --device "iPhone 17 Pro Max" --ios 26 --locale es_ES --language es
 ```
 
+## Real Devices
+
+MAV can target paired physical iOS/iPadOS devices through CoreDevice and idb:
+
+```bash
+mav device list
+mav device select --id <coredevice-id>
+mav device select --name "David iPhone"
+mav open --target device --device-id <coredevice-id>
+```
+
+Device selection stores `target_type: device`, the CoreDevice identifier, the
+hardware UDID used by idb/Appium, the display name, model, and OS version in
+`.mav/config.yaml`. Device launch recipes use:
+
+```bash
+xcrun devicectl device install app --device "$MAV_DEVICE_ID" "$MAV_APP_PATH"
+xcrun devicectl device process launch --device "$MAV_DEVICE_ID" --terminate-existing "$MAV_BUNDLE_ID"
+```
+
+Real-device screenshots and screenshot evidence use idb. Video evidence remains
+simulator-only and returns `video_unsupported target=device` on physical
+devices.
+
 ## Launch Recipes
 
 MAV does not own the build system. Configure project commands in
@@ -547,9 +576,12 @@ launch:
 ```
 
 Each command runs from `MAV_ROOT` with stable environment variables:
-`MAV_ROOT`, `MAV_RUN_DIR`, `MAV_UDID`, `MAV_BUNDLE_ID`, `MAV_APP_PATH`,
-`MAV_DEVICE_NAME`, `MAV_RUNTIME`, and `MAV_PLATFORM`. `app_path` must print one
-`.app` path. If the app is already installed, configure only `launch`.
+`MAV_ROOT`, `MAV_RUN_DIR`, `MAV_TARGET_TYPE`, `MAV_UDID`, `MAV_DEVICE_ID`,
+`MAV_DEVICE_UDID`, `MAV_BUNDLE_ID`, `MAV_APP_PATH`, `MAV_DEVICE_NAME`,
+`MAV_RUNTIME`, and `MAV_PLATFORM`. `MAV_UDID` is preserved for compatibility:
+it is the simulator UDID for simulator targets and the hardware UDID for device
+targets. `app_path` must print one `.app` path. If the app is already
+installed, configure only `launch`.
 
 ## Cleanup
 
@@ -573,7 +605,10 @@ mav sim list
 mav sim select --device NAME --ios VERSION [--locale LOCALE] [--language LANG]
 mav sim select --udid UDID
 mav sim boot
-mav open [--device NAME] [--ios VERSION] [--udid UDID] [--locale LOCALE] [--language LANG]
+mav device list
+mav device select --id DEVICE_ID
+mav device select --name DEVICE_NAME
+mav open [--target simulator|device] [--device NAME] [--ios VERSION] [--udid UDID] [--device-id DEVICE_ID] [--locale LOCALE] [--language LANG]
 mav ui tree
 mav ui tap --id ID
 mav ui tap --x X --y Y

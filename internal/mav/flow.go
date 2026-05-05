@@ -46,7 +46,9 @@ type flowStepPayload struct {
 	Contains    string          `yaml:"contains"`
 	Key         string          `yaml:"key"`
 	Level       string          `yaml:"level"`
+	Target      string          `yaml:"target"`
 	Device      string          `yaml:"device"`
+	DeviceID    string          `yaml:"deviceId"`
 	IOS         string          `yaml:"ios"`
 	UDID        string          `yaml:"udid"`
 	Locale      string          `yaml:"locale"`
@@ -132,7 +134,9 @@ func parseFlowStepNode(node yaml.Node) (FlowStep, error) {
 	put("contains", payload.Contains)
 	put("key", payload.Key)
 	put("level", payload.Level)
+	put("target", payload.Target)
 	put("device", payload.Device)
+	put("deviceId", payload.DeviceID)
 	put("ios", payload.IOS)
 	put("udid", payload.UDID)
 	put("locale", payload.Locale)

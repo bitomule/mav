@@ -28,7 +28,7 @@ func (c CLI) resolveCapabilities(ctx context.Context, cfg Config) Capabilities {
 	}
 	caps := Capabilities{Tools: tools}
 	caps.LaunchRecipe = hasLaunchCommands(cfg.Launch.Commands) || cfg.BundleID != ""
-	if tools["axe"] {
+	if !isDeviceTarget(cfg) && tools["axe"] {
 		caps.Accessibility = true
 		caps.AccessibilityDriver = "axe"
 		caps.SemanticActions = true

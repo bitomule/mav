@@ -59,8 +59,8 @@ func detectCustomLaunchCandidates(root string, cfg Config) []LaunchCandidate {
 				Launch: LaunchConfig{Mode: "custom", Commands: LaunchCommands{
 					Build:   build,
 					AppPath: appPath,
-					Install: `xcrun simctl install "$MAV_UDID" "$MAV_APP_PATH"`,
-					Launch:  `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`,
+					Install: targetInstallCommand(cfg),
+					Launch:  targetLaunchCommand(cfg),
 				}},
 			})
 		}
@@ -73,8 +73,8 @@ func detectCustomLaunchCandidates(root string, cfg Config) []LaunchCandidate {
 			Launch: LaunchConfig{Mode: "custom", Commands: LaunchCommands{
 				Build:   "just mav-build",
 				AppPath: "just mav-app-path",
-				Install: `xcrun simctl install "$MAV_UDID" "$MAV_APP_PATH"`,
-				Launch:  `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`,
+				Install: targetInstallCommand(cfg),
+				Launch:  targetLaunchCommand(cfg),
 			}},
 		})
 	}
@@ -93,10 +93,7 @@ func detectBazelLaunchCandidates(root string, cfg Config) []LaunchCandidate {
 	if target == "" {
 		return nil
 	}
-	targetExpr := `"$MAV_UDID"`
-	if cfg.SimulatorUDID != "" {
-		targetExpr = shellQuote(cfg.SimulatorUDID)
-	}
+	targetExpr := targetShellExpr(cfg)
 	return []LaunchCandidate{{
 		Source:      "bazel",
 		Confidence:  80,
@@ -105,8 +102,8 @@ func detectBazelLaunchCandidates(root string, cfg Config) []LaunchCandidate {
 		Launch: LaunchConfig{Mode: "custom", Commands: LaunchCommands{
 			Build:   "bazelisk build " + shellQuote(target),
 			AppPath: "bazelisk cquery --output=files " + shellQuote(target) + " | head -1",
-			Install: "xcrun simctl install " + targetExpr + ` "$MAV_APP_PATH"`,
-			Launch:  "xcrun simctl launch " + targetExpr + ` "$MAV_BUNDLE_ID"`,
+			Install: targetInstallCommandWithExpr(cfg, targetExpr),
+			Launch:  targetLaunchCommandWithExpr(cfg, targetExpr),
 		}},
 	}}
 }
@@ -124,10 +121,10 @@ func detectTuistLaunchCandidates(root string, cfg Config) []LaunchCandidate {
 		Confidence:  65,
 		Description: "Tuist project manifest",
 		Launch: LaunchConfig{Mode: "custom", Commands: LaunchCommands{
-			Build:   "tuist generate && tuist xcodebuild build -scheme " + shellQuote(scheme) + ` -destination "platform=iOS Simulator,id=$MAV_UDID"`,
+			Build:   "tuist generate && tuist xcodebuild build -scheme " + shellQuote(scheme) + " -destination " + shellQuote(xcodeDestination(cfg)),
 			AppPath: `find "$MAV_ROOT" -path "*.app" -type d | head -1`,
-			Install: `xcrun simctl install "$MAV_UDID" "$MAV_APP_PATH"`,
-			Launch:  `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`,
+			Install: targetInstallCommand(cfg),
+			Launch:  targetLaunchCommand(cfg),
 		}},
 	}}
 }
@@ -154,10 +151,59 @@ func detectXcodeLaunchCandidates(root string, cfg Config) []LaunchCandidate {
 		Confidence:  60,
 		Description: "Xcode project/workspace",
 		Launch: LaunchConfig{Mode: "custom", Commands: LaunchCommands{
-			Build:   "xcodebuild " + projectFlag + " " + shellQuote(project) + " -scheme " + shellQuote(scheme) + ` -destination "platform=iOS Simulator,id=$MAV_UDID" build`,
-			AppPath: `find "$HOME/Library/Developer/Xcode/DerivedData" -path "*/Build/Products/*-iphonesimulator/*.app" -type d | head -1`,
-			Install: `xcrun simctl install "$MAV_UDID" "$MAV_APP_PATH"`,
-			Launch:  `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`,
+			Build:   "xcodebuild " + projectFlag + " " + shellQuote(project) + " -scheme " + shellQuote(scheme) + " -destination " + shellQuote(xcodeDestination(cfg)) + " build",
+			AppPath: xcodeAppPathCommand(cfg),
+			Install: targetInstallCommand(cfg),
+			Launch:  targetLaunchCommand(cfg),
 		}},
 	}}
+}
+
+func targetShellExpr(cfg Config) string {
+	if isDeviceTarget(cfg) {
+		return `"$MAV_DEVICE_ID"`
+	}
+	if cfg.SimulatorUDID != "" {
+		return shellQuote(cfg.SimulatorUDID)
+	}
+	return `"$MAV_UDID"`
+}
+
+func targetInstallCommand(cfg Config) string {
+	return targetInstallCommandWithExpr(cfg, targetShellExpr(cfg))
+}
+
+func targetInstallCommandWithExpr(cfg Config, targetExpr string) string {
+	if isDeviceTarget(cfg) {
+		return "xcrun devicectl device install app --device " + targetExpr + ` "$MAV_APP_PATH"`
+	}
+	return "xcrun simctl install " + targetExpr + ` "$MAV_APP_PATH"`
+}
+
+func targetLaunchCommand(cfg Config) string {
+	return targetLaunchCommandWithExpr(cfg, targetShellExpr(cfg))
+}
+
+func targetLaunchCommandWithExpr(cfg Config, targetExpr string) string {
+	if isDeviceTarget(cfg) {
+		return "xcrun devicectl device process launch --device " + targetExpr + ` --terminate-existing "$MAV_BUNDLE_ID"`
+	}
+	return "xcrun simctl launch " + targetExpr + ` "$MAV_BUNDLE_ID"`
+}
+
+func xcodeDestination(cfg Config) string {
+	if isDeviceTarget(cfg) {
+		if cfg.DeviceIdentifier != "" {
+			return "platform=iOS,id=" + cfg.DeviceIdentifier
+		}
+		return "generic/platform=iOS"
+	}
+	return "platform=iOS Simulator,id=$MAV_UDID"
+}
+
+func xcodeAppPathCommand(cfg Config) string {
+	if isDeviceTarget(cfg) {
+		return `find "$HOME/Library/Developer/Xcode/DerivedData" -path "*/Build/Products/*-iphoneos/*.app" -type d | head -1`
+	}
+	return `find "$HOME/Library/Developer/Xcode/DerivedData" -path "*/Build/Products/*-iphonesimulator/*.app" -type d | head -1`
 }

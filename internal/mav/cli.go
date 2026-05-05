@@ -68,6 +68,8 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 		return c.installSkills(ctx)
 	case "sim":
 		return c.sim(ctx, opts, rest[1:])
+	case "device":
+		return c.device(ctx, opts, rest[1:])
 	case "open":
 		return c.open(ctx, opts, rest[1:])
 	case "ui":
@@ -130,6 +132,7 @@ Commands:
   install-skills
               Install the MAV agent skill globally for all supported agents.
   sim         List, select, or boot simulators.
+  device      List or select real iOS devices.
   open        Build, install, launch, and start run logs.
   ui          Inspect and control the current UI.
   capture     Capture the current screen.
@@ -156,9 +159,15 @@ Global flags:
   mav sim select --udid <simulator-udid>
   mav sim boot
 `
+	case "device":
+		return `Usage:
+  mav device list
+  mav device select --id <coredevice-id>
+  mav device select --name <device-name>
+`
 	case "open":
 		return `Usage:
-  mav open [--device NAME] [--ios VERSION] [--udid UDID] [--locale LOCALE] [--language LANG]
+  mav open [--target simulator|device] [--device NAME] [--ios VERSION] [--udid UDID] [--device-id ID] [--locale LOCALE] [--language LANG]
 `
 	case "ui":
 		return `Usage:
@@ -219,7 +228,12 @@ func (c CLI) doctor(ctx context.Context, opts GlobalOptions) error {
 	fields := caps.fields()
 	missing := []string{}
 	nextHint := ""
-	for _, tool := range []string{"axe", "idb"} {
+	requiredTools := []string{"axe", "idb"}
+	if isDeviceTarget(cfg) {
+		requiredTools = []string{"idb"}
+		fields["target_type"] = "device"
+	}
+	for _, tool := range requiredTools {
 		if !tools[tool] {
 			missing = append(missing, tool)
 		}
@@ -408,7 +422,15 @@ func (c CLI) installSkills(ctx context.Context) error {
 func (c CLI) setupProject(opts GlobalOptions) error {
 	cfg, err := SetupConfig(c.Root, c.Runner)
 	if existing, loadErr := LoadConfig(c.Root); loadErr == nil {
+		existingHadLaunch := existing.Launch.Mode != "" || hasLaunchCommands(existing.Launch.Commands)
 		cfg = mergeSetupConfig(existing, cfg)
+		if isDeviceTarget(cfg) && !existingHadLaunch {
+			if candidate, ok := selectLaunchCandidate(c.Root, cfg); ok {
+				cfg.Launch = candidate.Launch
+			} else {
+				cfg.Launch = defaultLaunchConfig(cfg)
+			}
+		}
 	}
 	if saveErr := SaveConfig(c.Root, cfg); saveErr != nil {
 		return saveErr
@@ -417,9 +439,10 @@ func (c CLI) setupProject(opts GlobalOptions) error {
 		_ = SaveAppMap(c.Root, DefaultAppMap(cfg.BundleID))
 	}
 	fields := map[string]string{
-		"config": filepath.Join(c.Root, ConfigFile),
-		"target": cfg.AppTarget,
-		"bundle": cfg.BundleID,
+		"config":      filepath.Join(c.Root, ConfigFile),
+		"target":      cfg.AppTarget,
+		"bundle":      cfg.BundleID,
+		"target_type": normalizeTargetType(cfg.TargetType),
 	}
 	if hasLaunchCommands(cfg.Launch.Commands) {
 		fields["launch_recipe"] = "ok"
@@ -502,6 +525,63 @@ func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 	}
 }
 
+func (c CLI) device(ctx context.Context, opts GlobalOptions, args []string) error {
+	if len(args) == 0 {
+		return Fail("device_command_missing", map[string]string{"usage": "mav device list|select"}).Write(c.Stdout)
+	}
+	switch args[0] {
+	case "list":
+		devices, err := ListPhysicalDevices(c.Runner)
+		if err != nil {
+			fields := map[string]string{"error": err.Error()}
+			addSandboxNext(fields, err.Error())
+			return Fail("device_list_failed", fields).Write(c.Stdout)
+		}
+		if err := OK("device.list", map[string]string{"count": strconv.Itoa(len(devices))}).Write(c.Stdout); err != nil {
+			return err
+		}
+		for _, device := range devices {
+			fmt.Fprintf(c.Stdout, "device id=%s udid=%s name=%q model=%q os=%q state=%s\n", device.Identifier, device.UDID, device.Name, device.Model, device.OS, device.State)
+		}
+		return nil
+	case "select":
+		cfg, err := LoadConfig(c.Root)
+		if err != nil {
+			return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
+		}
+		devices, err := ListPhysicalDevices(c.Runner)
+		if err != nil {
+			return Fail("device_list_failed", map[string]string{"error": err.Error()}).Write(c.Stdout)
+		}
+		device, ok := SelectPhysicalDevice(devices, flagValue(args[1:], "--id"), flagValue(args[1:], "--name"))
+		if !ok {
+			return Fail("device_not_found", map[string]string{"id": flagValue(args[1:], "--id"), "name": flagValue(args[1:], "--name")}).Write(c.Stdout)
+		}
+		applyPhysicalDevice(&cfg, device)
+		if locale := flagValue(args[1:], "--locale"); locale != "" {
+			cfg.Locale = locale
+		}
+		if language := flagValue(args[1:], "--language"); language != "" {
+			cfg.Language = language
+		}
+		if err := SaveConfig(c.Root, cfg); err != nil {
+			return err
+		}
+		return OK("device.select", map[string]string{"id": device.Identifier, "udid": device.UDID, "name": device.Name, "model": device.Model, "os": device.OS}).Write(c.Stdout)
+	default:
+		return Fail("device_unknown_command", map[string]string{"command": args[0]}).Write(c.Stdout)
+	}
+}
+
+func applyPhysicalDevice(cfg *Config, device PhysicalDevice) {
+	cfg.TargetType = "device"
+	cfg.DeviceIdentifier = device.Identifier
+	cfg.DeviceUDID = device.UDID
+	cfg.DeviceName = device.Name
+	cfg.DeviceModel = device.Model
+	cfg.DeviceOS = device.OS
+}
+
 func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error {
 	cfg, err := LoadConfig(c.Root)
 	if err != nil {
@@ -541,12 +621,11 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 		fields["log_subsystem"] = probeLogSubsystem(cfg)
 		fields["log_category"] = probeLogCategory(cfg)
 	}
-	fields["target"] = cfg.SimulatorName
-	if fields["target"] == "" {
-		fields["target"] = cfg.SimulatorUDID
-	}
-	if fields["target"] == "" {
-		fields["target"] = "booted"
+	fields["target"] = targetDisplayName(cfg)
+	fields["target_type"] = normalizeTargetType(cfg.TargetType)
+	if isDeviceTarget(cfg) {
+		fields["device_id"] = cfg.DeviceIdentifier
+		fields["device_udid"] = cfg.DeviceUDID
 	}
 	if m, err := EnsureAppMap(c.Root, cfg); err == nil {
 		SetCurrentScreen(c.Root, m.Start, run.ID)
@@ -556,16 +635,45 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 }
 
 func (c CLI) applyOpenTargetOverrides(ctx context.Context, cfg *Config, args []string) error {
+	targetType := flagValue(args, "--target")
 	device := flagValue(args, "--device")
 	ios := flagValue(args, "--ios")
 	udid := flagValue(args, "--udid")
+	deviceID := flagValue(args, "--device-id")
 	if locale := flagValue(args, "--locale"); locale != "" {
 		cfg.Locale = locale
 	}
 	if language := flagValue(args, "--language"); language != "" {
 		cfg.Language = language
 	}
-	if device == "" && ios == "" && udid == "" {
+	if targetType != "" {
+		normalizedTargetType := normalizeTargetType(targetType)
+		switch normalizedTargetType {
+		case "device":
+			cfg.TargetType = "device"
+		case "simulator":
+			cfg.TargetType = "simulator"
+		}
+		if normalizedTargetType != strings.ToLower(strings.TrimSpace(targetType)) {
+			return fmt.Errorf("target_invalid")
+		}
+	}
+	if deviceID != "" || normalizeTargetType(targetType) == "device" {
+		devices, err := ListPhysicalDevices(c.Runner)
+		if err != nil {
+			return err
+		}
+		selected, ok := SelectPhysicalDevice(devices, deviceID, device)
+		if !ok && deviceID == "" && cfg.DeviceIdentifier != "" {
+			selected, ok = SelectPhysicalDevice(devices, cfg.DeviceIdentifier, "")
+		}
+		if !ok {
+			return fmt.Errorf("device_not_found")
+		}
+		applyPhysicalDevice(cfg, selected)
+		return SaveConfig(c.Root, *cfg)
+	}
+	if device == "" && ios == "" && udid == "" && targetType == "" {
 		return nil
 	}
 	sims, err := ListSimulators(c.Runner)
@@ -579,6 +687,7 @@ func (c CLI) applyOpenTargetOverrides(ctx context.Context, cfg *Config, args []s
 	cfg.SimulatorUDID = sim.UDID
 	cfg.SimulatorName = sim.Name
 	cfg.SimulatorRuntime = sim.Runtime
+	cfg.TargetType = "simulator"
 	boot := c.Runner.Run(ctx, "xcrun", "simctl", "boot", sim.UDID)
 	if boot.Err != nil && !strings.Contains(boot.Stderr, "Unable to boot device in current state") {
 		return fmt.Errorf("%s", firstLine(boot.Stderr))
@@ -604,7 +713,7 @@ func (c CLI) startProbeLogs(ctx context.Context, cfg Config, run RunState) (int,
 	subsystem := probeLogSubsystem(cfg)
 	category := probeLogCategory(cfg)
 	predicate := fmt.Sprintf(`subsystem == "%s" AND category == "%s"`, subsystem, category)
-	if hasTool(cfg, "xcrun") && cfg.SimulatorUDID != "" {
+	if !isDeviceTarget(cfg) && hasTool(cfg, "xcrun") && cfg.SimulatorUDID != "" {
 		args := []string{"simctl", "spawn", cfg.SimulatorUDID, "log", "stream", "--style", "compact", "--level", "debug", "--predicate", predicate}
 		pid, err := c.Runner.Start(ctx, run.LogsPath, "xcrun", args...)
 		if err == nil {
@@ -623,6 +732,9 @@ func (c CLI) startProbeLogs(ctx context.Context, cfg Config, run RunState) (int,
 			appendProcess(run, "probe-logs", pid, "idb "+strings.Join(args, " "))
 		}
 		return pid, err
+	}
+	if isDeviceTarget(cfg) {
+		return 0, fmt.Errorf("log_tool_missing")
 	}
 	if !hasTool(cfg, "xcrun") {
 		return 0, fmt.Errorf("log_tool_missing")
@@ -756,7 +868,7 @@ func screenConfidence(source string) string {
 }
 
 func (c CLI) describeUITree(ctx context.Context, cfg Config) (string, CommandResult, error) {
-	if hasTool(cfg, "axe") {
+	if !isDeviceTarget(cfg) && hasTool(cfg, "axe") {
 		return "axe", c.Runner.Run(ctx, "axe", axeTargetArgs(cfg, "describe-ui")...), nil
 	}
 	if hasTool(cfg, "idb") {
@@ -766,6 +878,9 @@ func (c CLI) describeUITree(ctx context.Context, cfg Config) (string, CommandRes
 }
 
 func (c CLI) recoverEmptyAXTree(ctx context.Context, cfg Config) error {
+	if isDeviceTarget(cfg) {
+		return fmt.Errorf("device_recovery_unavailable")
+	}
 	if !hasTool(cfg, "xcrun") || cfg.SimulatorUDID == "" {
 		return fmt.Errorf("simulator_recovery_unavailable")
 	}
@@ -837,8 +952,8 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 	y := flagValue(args, "--y")
 	caps := c.resolveCapabilities(ctx, cfg)
 	if id != "" || text != "" {
-		if !caps.Tools["axe"] {
-			return Fail("tool_missing", map[string]string{"tool": "axe", "next": "use mav ui tap --x X --y Y when AXe is unavailable"}).Write(c.Stdout)
+		if isDeviceTarget(cfg) || !caps.Tools["axe"] {
+			return Fail("tool_missing", map[string]string{"tool": "axe", "next": "use idb coordinates or simulator AXe"}).Write(c.Stdout)
 		}
 		axeArgs := axeTargetArgs(cfg, "tap")
 		fields := map[string]string{}
@@ -898,6 +1013,9 @@ func (c CLI) uiType(ctx context.Context, opts GlobalOptions, cfg Config, args []
 	if len(args) == 0 {
 		return Fail("type_text_missing", nil).Write(c.Stdout)
 	}
+	if isDeviceTarget(cfg) || !hasTool(cfg, "axe") {
+		return Fail("tool_missing", map[string]string{"tool": "axe", "next": "use idb coordinates or simulator AXe"}).Write(c.Stdout)
+	}
 	axeArgs := axeTargetArgs(cfg, "type")
 	axeArgs = append(axeArgs, strings.Join(args, " "))
 	result := c.Runner.Run(ctx, "axe", axeArgs...)
@@ -938,7 +1056,7 @@ func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args [
 	}
 	driver := "axe"
 	var result CommandResult
-	if hasTool(cfg, "axe") {
+	if !isDeviceTarget(cfg) && hasTool(cfg, "axe") {
 		axeArgs := axeTargetArgs(cfg, "swipe", "--start-x", startX, "--start-y", startY, "--end-x", endX, "--end-y", endY)
 		result = c.Runner.Run(ctx, "axe", axeArgs...)
 	} else if hasTool(cfg, "idb") {
@@ -1052,6 +1170,9 @@ func (c CLI) uiWait(ctx context.Context, opts GlobalOptions, cfg Config, args []
 	}
 	deadline := time.Now().Add(timeout)
 	for {
+		if isDeviceTarget(cfg) || !hasTool(cfg, "axe") {
+			return Fail("tool_missing", map[string]string{"tool": "axe", "next": "use idb coordinates or simulator AXe"}).Write(c.Stdout)
+		}
 		result := c.Runner.Run(ctx, "axe", axeTargetArgs(cfg, "describe-ui")...)
 		if result.Err == nil && strings.Contains(result.Stdout, id) {
 			return OK("ui.wait", map[string]string{"id": id}).Write(c.Stdout)
@@ -1140,13 +1261,13 @@ func (c CLI) captureScreenshot(ctx context.Context, cfg Config, path string) (Co
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return CommandResult{}, err
 	}
-	if hasTool(cfg, "axe") {
+	if !isDeviceTarget(cfg) && hasTool(cfg, "axe") {
 		return c.Runner.Run(ctx, "axe", axeTargetArgs(cfg, "screenshot", "--output", path)...), nil
 	}
 	if hasTool(cfg, "idb") {
 		return c.Runner.Run(ctx, "idb", idbTargetArgs(cfg, "screenshot", path)...), nil
 	}
-	if hasTool(cfg, "xcrun") {
+	if !isDeviceTarget(cfg) && hasTool(cfg, "xcrun") {
 		target := cfg.SimulatorUDID
 		if target == "" {
 			target = "booted"
@@ -1202,7 +1323,7 @@ func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) err
 func (c CLI) executeFlowStep(ctx context.Context, run RunState, index int, step FlowStep) (map[string]string, error) {
 	switch step.Action {
 	case "open":
-		err := c.withStdout(io.Discard).open(ctx, GlobalOptions{}, flowArgs(step.Params, "--device", "device", "--ios", "ios", "--udid", "udid", "--locale", "locale", "--language", "language"))
+		err := c.withStdout(io.Discard).open(ctx, GlobalOptions{}, flowArgs(step.Params, "--target", "target", "--device", "device", "--ios", "ios", "--udid", "udid", "--device-id", "deviceId", "--locale", "locale", "--language", "language"))
 		return map[string]string{"run": run.ID}, outputErr(err, "open_failed")
 	case "go":
 		screen := step.Params["screen"]
@@ -2031,6 +2152,9 @@ func (c CLI) evidenceStart(ctx context.Context, opts GlobalOptions, args []strin
 	}
 	path, pid, err := c.startVideoRecording(ctx, cfg, run)
 	if err != nil {
+		if strings.Contains(err.Error(), "video_unsupported") {
+			return Fail("video_unsupported", map[string]string{"run": run.ID, "target": "device"}).Write(c.Stdout)
+		}
 		return Fail("evidence_start_failed", map[string]string{"run": run.ID, "error": err.Error()}).Write(c.Stdout)
 	}
 	if err := os.WriteFile(filepath.Join(run.Dir, "video.pid"), []byte(strconv.Itoa(pid)+"\n"), 0o644); err != nil {
@@ -2309,7 +2433,7 @@ func isContainerAtom(kind string) bool {
 
 func axeTargetArgs(cfg Config, args ...string) []string {
 	out := append([]string{}, args...)
-	if cfg.SimulatorUDID != "" {
+	if !isDeviceTarget(cfg) && cfg.SimulatorUDID != "" {
 		out = append(out, "--udid", cfg.SimulatorUDID)
 	}
 	return out
@@ -2317,8 +2441,8 @@ func axeTargetArgs(cfg Config, args ...string) []string {
 
 func idbTargetArgs(cfg Config, args ...string) []string {
 	out := append([]string{}, args...)
-	if cfg.SimulatorUDID != "" {
-		out = append(out, "--udid", cfg.SimulatorUDID)
+	if udid := targetUDID(cfg); udid != "" {
+		out = append(out, "--udid", udid)
 	}
 	return out
 }
@@ -2346,6 +2470,9 @@ func isSwipeDirection(direction string) bool {
 }
 
 func (c CLI) startVideoRecording(ctx context.Context, cfg Config, run RunState) (string, int, error) {
+	if isDeviceTarget(cfg) {
+		return "", 0, fmt.Errorf("video_unsupported target=device")
+	}
 	if !hasTool(cfg, "xcrun") {
 		return "", 0, fmt.Errorf("xcrun_missing")
 	}
