@@ -359,6 +359,9 @@ func TestSetupScaffoldsProjectIdempotently(t *testing.T) {
 	if !strings.Contains(out.String(), "ok cmd=setup") {
 		t.Fatalf("got %q", out.String())
 	}
+	if !strings.Contains(out.String(), "multitouch=missing") || !strings.Contains(out.String(), `multitouch_next="mav setup --install appium"`) {
+		t.Fatalf("setup should report appium next step: %q", out.String())
+	}
 	loaded, err := LoadConfig(root)
 	if err != nil {
 		t.Fatal(err)
@@ -407,14 +410,14 @@ func TestUITreePrintsNodeDetailsByDefault(t *testing.T) {
 	if err := SaveConfig(root, cfg); err != nil {
 		t.Fatal(err)
 	}
-	raw := `[{"AXLabel":"Largest Videos","role":"heading","AXFrame":"{{0, 10}, {200, 40}}","children":[{"AXIdentifier":"delete_button","AXLabel":"Delete","role":"button"}]}]`
+	raw := `[{"AXLabel":"Largest Videos","role":"heading","AXFrame":"{{0, 10}, {200, 40}}","AXEnabled":true,"AXSubrole":"AXHeading","AXTitle":"Largest Videos","pid":123,"children":[{"AXIdentifier":"delete_button","AXLabel":"Delete","role":"button","enabled":false}]}]`
 	var out bytes.Buffer
 	cli := CLI{Runner: fakeRunner{tools: cfg.Tools, out: map[string]string{"axe describe-ui": raw}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
 	if err := cli.Run(context.Background(), []string{"ui", "tree"}); err != nil {
 		t.Fatal(err)
 	}
 	got := out.String()
-	for _, want := range []string{"ok cmd=ui.tree", "node index=1", `label="Largest Videos"`, "frame=", "id=delete_button"} {
+	for _, want := range []string{"ok cmd=ui.tree", "node index=1", `label="Largest Videos"`, "frame=", "enabled=true", "subrole=AXHeading", `title="Largest Videos"`, "pid=123", "id=delete_button", "enabled=false"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in %q", want, got)
 		}
@@ -475,8 +478,10 @@ func TestUITreePreferAppiumUsesSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := out.String()
-	if !strings.Contains(got, "driver=appium") || !strings.Contains(got, "id=EmailField") || !strings.Contains(got, "value=Email") {
-		t.Fatalf("got %q", got)
+	for _, want := range []string{"driver=appium", "id=EmailField", "value=Email", "enabled=true", "title=Email", "pid=321"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in %q", want, got)
+		}
 	}
 	if !containsCall(*calls, "/wd/hub/session/s1/source") {
 		t.Fatalf("source not requested: %v", *calls)
@@ -862,7 +867,7 @@ func setupAppiumSemanticTest(t *testing.T) (string, Config, *httptest.Server, *[
 		calls = append(calls, r.Method+" "+r.URL.Path+" "+string(body))
 		switch {
 		case r.URL.Path == "/wd/hub/session/s1/source":
-			_, _ = io.WriteString(w, `{"value":"<AppiumAUT type=\"XCUIElementTypeApplication\" name=\"Demo\"><XCUIElementTypeTextField name=\"EmailField\" label=\"\" value=\"Email\" x=\"10\" y=\"20\" width=\"100\" height=\"40\"/></AppiumAUT>"}`)
+			_, _ = io.WriteString(w, `{"value":"<AppiumAUT type=\"XCUIElementTypeApplication\" name=\"Demo\"><XCUIElementTypeTextField name=\"EmailField\" label=\"\" value=\"Email\" enabled=\"true\" title=\"Email\" pid=\"321\" x=\"10\" y=\"20\" width=\"100\" height=\"40\"/></AppiumAUT>"}`)
 		case r.URL.Path == "/wd/hub/session/s1/element":
 			_, _ = io.WriteString(w, `{"value":{"element-6066-11e4-a52e-4f735466cecf":"el1"}}`)
 		case r.URL.Path == "/wd/hub/session/s1/element/el1/click":
@@ -1164,6 +1169,81 @@ func TestUIScrollUntilFindsElement(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "ok cmd=ui.scrollUntil") || !strings.Contains(out.String(), "swipes=0") {
 		t.Fatalf("got %q", out.String())
+	}
+}
+
+func TestUIWaitAcceptsTextAndValue(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		raw  string
+		want string
+	}{
+		{name: "text", args: []string{"ui", "wait", "--text", "Privacy Policy", "--timeout", "1ms"}, raw: `{"AXLabel":"Privacy Policy"}`, want: `text="Privacy Policy"`},
+		{name: "value", args: []string{"ui", "wait", "--value", "Email", "--timeout", "1ms"}, raw: `{"AXValue":"Email"}`, want: "value=Email"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			cfg := DefaultConfig(root)
+			cfg.Tools = map[string]bool{"axe": true}
+			if err := SaveConfig(root, cfg); err != nil {
+				t.Fatal(err)
+			}
+			var out bytes.Buffer
+			cli := CLI{Runner: fakeRunner{tools: cfg.Tools, out: map[string]string{"axe describe-ui": tc.raw}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+			if err := cli.Run(context.Background(), tc.args); err != nil {
+				t.Fatal(err)
+			}
+			got := out.String()
+			if !strings.Contains(got, "ok cmd=ui.wait") || !strings.Contains(got, tc.want) {
+				t.Fatalf("got %q", got)
+			}
+		})
+	}
+}
+
+func TestUIWaitMatchesSpecificElementFields(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.Tools = map[string]bool{"axe": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{tools: cfg.Tools, out: map[string]string{"axe describe-ui": `{"AXLabel":"Email"}`}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "wait", "--value", "Email", "--timeout", "1ms"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "fail code=ui_wait_timeout") || !strings.Contains(got, "value=Email") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestUITapTextFailureReportsValueMatch(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.Tools = map[string]bool{"axe": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runner := &sequenceRecordingRunner{
+		tools: cfg.Tools,
+		out:   map[string]string{"axe describe-ui": `[{"AXValue":"Email","role":"text field"}]`},
+		err: map[string]CommandResult{
+			"axe tap --label Email": {Stderr: "No accessibility element matched --label 'Email'", Err: os.ErrNotExist},
+		},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"--prefer-driver", "axe", "ui", "tap", "--text", "Email"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{"fail code=ui_tap_text_no_label_match", "matched_value=1", "matched_label=0", "--prefer-driver appium"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in %q", want, got)
+		}
 	}
 }
 

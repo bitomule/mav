@@ -76,6 +76,9 @@ func TestSafeFileName(t *testing.T) {
 	if got := safeFileName("Notifications: After Toggle"); got != "notifications-after-toggle" {
 		t.Fatalf("got %q", got)
 	}
+	if got := safeFileName("Selecciona una categoría / ¿Cuánto pesa?"); got != "selecciona-una-categoria-cuanto-pesa" {
+		t.Fatalf("got %q", got)
+	}
 }
 
 func TestLoadEvidenceSteps(t *testing.T) {

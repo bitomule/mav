@@ -145,7 +145,11 @@ mav ui tree
 `mav setup` scaffolds `.mav/config.yaml` and an initial app map. It detects
 a bundle id, selected simulator, locale/language, available tools, and a launch
 recipe when it can infer one. It is useful for non-interactive setup and for
-refreshing the generated MAV config after project structure changes.
+refreshing the generated MAV config after project structure changes. Launch
+recipe detection is intentionally conservative: MAV recognizes explicit
+`Makefile`/`justfile` MAV targets, `scripts/mav-build` plus
+`scripts/mav-app-path`, Fastlane `mav_build` plus `mav_app_path`, and standard
+Bazel/Tuist/Xcode project shapes.
 
 `mav open` executes the configured launch recipe. It creates a run directory
 under `/tmp/mav/<run-id>/` and starts `logs.txt` for MAV probes.
@@ -153,10 +157,10 @@ under `/tmp/mav/<run-id>/` and starts `logs.txt` for MAV probes.
 Example compact output:
 
 ```text
-ok cmd=setup bundle=com.example.app config=/repo/.mav/config.yaml launch_recipe=ok
+ok cmd=setup bundle=com.example.app config=/repo/.mav/config.yaml launch_recipe=ok multitouch=missing multitouch_next="mav setup --install appium"
 ok cmd=open run=7fd logs=/tmp/mav/7fd/logs.txt target="iPhone 17 Pro Max"
 ok cmd=ui.tree driver=axe nodes=42 screen=start screen_source=recognized
-node index=1 id=settings_button label=Settings role=button frame="{{20, 120}, {180, 44}}"
+node index=1 id=settings_button label=Settings role=button enabled=true frame="{{20, 120}, {180, 44}}"
 ```
 
 Use `--raw` only when the underlying tool output is needed:
@@ -329,6 +333,8 @@ mav ui rotate --x 200 --y 450 --degrees 30
 mav ui twoFingerPan --x 200 --y 450 --pan-x 80 --pan-y -40
 mav ui actions --file .mav/actions/map-zoom.json
 mav ui wait --id element_id --timeout 5s
+mav ui wait --text "Privacy Policy" --timeout 5s
+mav ui wait --value "Email" --timeout 5s
 mav ui scrollUntil --id privacy_policy_button --direction up --max-swipes 4
 ```
 
@@ -344,6 +350,10 @@ id/text fails. Use `--prefer-driver axe` to debug AXe-only behavior and
 `--prefer-driver appium` for system UI, PHPicker, permission prompts, form
 placeholders, and wrappers that carry an accessibility identifier but are not
 accessibility elements.
+
+If `mav ui tap --text X` fails because AXe sees `X` as a value/placeholder but
+not as a label, MAV reports `ui_tap_text_no_label_match` with `matched_value`
+and suggests Appium predicate matching. Prefer stable ids when possible.
 
 When you expect to need Appium, run `mav open --warm-appium` to create the WDA
 session after the launch recipe finishes so the first Appium-backed tree or tap
