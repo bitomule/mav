@@ -316,6 +316,7 @@ The caller should then explore manually with `mav ui tree`, `mav ui tap`,
 
 ```bash
 mav ui tree
+mav ui tree --prefer-driver appium
 mav ui tap --id element_id
 mav ui tap --x 120 --y 400
 mav ui tap --text "Daily Reminder"
@@ -331,14 +332,33 @@ mav ui wait --id element_id --timeout 5s
 mav ui scrollUntil --id privacy_policy_button --direction up --max-swipes 4
 ```
 
-MAV chooses drivers by capability. AXe is the default for accessibility tree
-inspection, semantic taps, typing, swipes, waits, and assertions. idb is used
-for coordinate taps and device/simulator fallback operations.
+MAV chooses drivers by capability. AXe is the default fast path for
+accessibility tree inspection, semantic taps, typing, swipes, waits, and
+assertions. idb is used for coordinate taps and device/simulator fallback
+operations.
 
-Appium is only used for true multitouch. AXe and idb do not expose a real
-pinch or two-finger gesture primitive. MAV sends Appium W3C Actions: multiple
-touch sources execute step-by-step in concurrent ticks, which lets a flow move
-two fingers at the same time for pinch+pan, rotate, and two-finger drag.
+For `mav ui tree` and semantic `mav ui tap`, `--prefer-driver auto` is the
+default. In auto mode MAV tries AXe first, then falls back to Appium/WDA when
+the AXe tree is empty, unmatched, or pending a map update, or when an AXe tap by
+id/text fails. Use `--prefer-driver axe` to debug AXe-only behavior and
+`--prefer-driver appium` for system UI, PHPicker, permission prompts, form
+placeholders, and wrappers that carry an accessibility identifier but are not
+accessibility elements.
+
+When you expect to need Appium, run `mav open --warm-appium` to create the WDA
+session during launch so the first Appium-backed tree or tap does not pay the
+full cold-start cost.
+
+The app map records driver hints as it learns routes. A screen observed through
+Appium is saved with `driver: appium`, and a transition tapped through Appium is
+saved as an edge with `driver: appium`. `mav go <screen-id>` reads those hints,
+warms Appium automatically when the route needs it, and forces Appium only for
+the mapped actions that require it.
+
+Appium is also used for true multitouch. AXe and idb do not expose a real pinch
+or two-finger gesture primitive. MAV sends Appium W3C Actions: multiple touch
+sources execute step-by-step in concurrent ticks, which lets a flow move two
+fingers at the same time for pinch+pan, rotate, and two-finger drag.
 
 Observation priority:
 
@@ -573,11 +593,11 @@ mav sim list
 mav sim select --device NAME --ios VERSION [--locale LOCALE] [--language LANG]
 mav sim select --udid UDID
 mav sim boot
-mav open [--device NAME] [--ios VERSION] [--udid UDID] [--locale LOCALE] [--language LANG]
-mav ui tree
-mav ui tap --id ID
+mav open [--device NAME] [--ios VERSION] [--udid UDID] [--locale LOCALE] [--language LANG] [--warm-appium]
+mav ui tree [--prefer-driver auto|axe|appium]
+mav ui tap --id ID [--prefer-driver auto|axe|appium]
 mav ui tap --x X --y Y
-mav ui tap --text TEXT
+mav ui tap --text TEXT [--prefer-driver auto|axe|appium]
 mav ui type TEXT
 mav ui swipe [--direction up|down|left|right]
 mav ui pinch --x X --y Y --scale SCALE [--pan-x DX] [--pan-y DY] [--distance D] [--angle DEG] [--rotate DEG] [--duration 800ms] [--hold DURATION]

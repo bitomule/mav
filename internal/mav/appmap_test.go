@@ -149,3 +149,39 @@ func TestObserveScreenDoesNotReuseStaleCurrentForUnmatchedTree(t *testing.T) {
 		t.Fatalf("pending action should remain for a confident observation")
 	}
 }
+
+func TestObserveScreenPersistsDriverOnScreenAndEdge(t *testing.T) {
+	root := t.TempDir()
+	m := AppMap{
+		AppID: "com.example.demo",
+		Start: "home",
+		Screens: map[string]Screen{
+			"home":     {ID: "home", AssertText: "Home"},
+			"settings": {ID: "settings", AssertText: "Settings"},
+		},
+	}
+	if err := SaveAppMap(root, m); err != nil {
+		t.Fatal(err)
+	}
+	SetCurrentScreen(root, "home", "run1")
+	SetPendingMapAction(root, pendingMapAction{From: "home", ID: "settings_button", Driver: "appium"})
+	raw := `[{"AXLabel":"Settings","role":"heading"}]`
+	observed, err := ObserveScreenDetailedWithDriver(root, Config{BundleID: "com.example.demo"}, RunState{ID: "run1", Dir: t.TempDir()}, raw, "appium")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed.Screen != "settings" {
+		t.Fatalf("observed=%+v", observed)
+	}
+	loaded, err := LoadAppMap(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Screens["settings"].Driver != "appium" {
+		t.Fatalf("screen driver=%q", loaded.Screens["settings"].Driver)
+	}
+	edges := loaded.Screens["home"].Edges
+	if len(edges) != 1 || edges[0].Driver != "appium" {
+		t.Fatalf("edges=%+v", edges)
+	}
+}

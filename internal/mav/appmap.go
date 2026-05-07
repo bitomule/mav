@@ -28,6 +28,7 @@ type AppMap struct {
 type Screen struct {
 	ID          string       `json:"id"`
 	Title       string       `json:"title,omitempty"`
+	Driver      string       `json:"driver,omitempty"`
 	AssertID    string       `json:"assert_id,omitempty"`
 	AssertText  string       `json:"assert_text,omitempty"`
 	Recognizers []Recognizer `json:"recognizers,omitempty"`
@@ -57,6 +58,7 @@ type Edge struct {
 	X      string `json:"x,omitempty"`
 	Y      string `json:"y,omitempty"`
 	Wait   string `json:"wait,omitempty"`
+	Driver string `json:"driver,omitempty"`
 	Source string `json:"source,omitempty"`
 }
 
@@ -72,11 +74,12 @@ type mapCurrent struct {
 }
 
 type pendingMapAction struct {
-	From string `json:"from"`
-	ID   string `json:"id,omitempty"`
-	Text string `json:"text,omitempty"`
-	X    string `json:"x,omitempty"`
-	Y    string `json:"y,omitempty"`
+	From   string `json:"from"`
+	ID     string `json:"id,omitempty"`
+	Text   string `json:"text,omitempty"`
+	X      string `json:"x,omitempty"`
+	Y      string `json:"y,omitempty"`
+	Driver string `json:"driver,omitempty"`
 }
 
 type ScreenObservation struct {
@@ -327,9 +330,13 @@ func loadYAMLAppMap(root string) (AppMap, error) {
 				currentEdge.Y = value
 			case "wait":
 				currentEdge.Wait = value
+			case "driver":
+				currentEdge.Driver = value
 			}
 		} else {
 			switch key {
+			case "driver":
+				current.Driver = value
 			case "assert_id":
 				current.AssertID = value
 			case "assert_text":
@@ -410,6 +417,10 @@ func ObserveScreen(root string, cfg Config, run RunState, rawTree string) (strin
 }
 
 func ObserveScreenDetailed(root string, cfg Config, run RunState, rawTree string) (ScreenObservation, error) {
+	return ObserveScreenDetailedWithDriver(root, cfg, run, rawTree, "")
+}
+
+func ObserveScreenDetailedWithDriver(root string, cfg Config, run RunState, rawTree, driver string) (ScreenObservation, error) {
 	m, err := LoadAppMap(root)
 	if err != nil {
 		m = DefaultAppMap(cfg.BundleID)
@@ -448,6 +459,9 @@ func ObserveScreenDetailed(root string, cfg Config, run RunState, rawTree string
 	}
 	screen := m.Screens[screenID]
 	screen.ID = screenID
+	if driver != "" {
+		screen.Driver = driver
+	}
 	screen.Elements = elements
 	if screen.Title == "" {
 		screen.Title = inferScreenTitle(elements, screenID)
@@ -473,7 +487,7 @@ func ObserveScreenDetailed(root string, cfg Config, run RunState, rawTree string
 	if pending, ok := consumePendingMapAction(root); ok && pending.From != screenID {
 		from := m.Screens[pending.From]
 		from.ID = pending.From
-		from.Edges = upsertEdge(from.Edges, Edge{To: screenID, ID: pending.ID, Text: pending.Text, X: pending.X, Y: pending.Y, Wait: "1s", Source: "observed"})
+		from.Edges = upsertEdge(from.Edges, Edge{To: screenID, ID: pending.ID, Text: pending.Text, X: pending.X, Y: pending.Y, Wait: "1s", Driver: pending.Driver, Source: "observed"})
 		m.Screens[pending.From] = from
 	}
 	if err := SaveAppMap(root, m); err != nil {
@@ -484,6 +498,10 @@ func ObserveScreenDetailed(root string, cfg Config, run RunState, rawTree string
 }
 
 func ObserveExpectedScreen(root string, cfg Config, run RunState, rawTree, screenID string) error {
+	return ObserveExpectedScreenWithDriver(root, cfg, run, rawTree, screenID, "")
+}
+
+func ObserveExpectedScreenWithDriver(root string, cfg Config, run RunState, rawTree, screenID, driver string) error {
 	if screenID == "" {
 		return fmt.Errorf("screen_id_missing")
 	}
@@ -497,6 +515,9 @@ func ObserveExpectedScreen(root string, cfg Config, run RunState, rawTree, scree
 	elements := ExtractElements(rawTree)
 	screen := m.Screens[screenID]
 	screen.ID = screenID
+	if driver != "" {
+		screen.Driver = driver
+	}
 	screen.Elements = elements
 	if screen.Title == "" {
 		screen.Title = inferScreenTitle(elements, screenID)

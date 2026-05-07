@@ -24,9 +24,10 @@ type CLI struct {
 }
 
 type GlobalOptions struct {
-	Verbose bool
-	Raw     bool
-	Help    bool
+	Verbose      bool
+	Raw          bool
+	Help         bool
+	PreferDriver string
 }
 
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
@@ -94,7 +95,8 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 func parseGlobal(args []string) (GlobalOptions, []string) {
 	opts := GlobalOptions{}
 	rest := make([]string, 0, len(args))
-	for _, arg := range args {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
 		switch arg {
 		case "--verbose":
 			opts.Verbose = true
@@ -102,11 +104,34 @@ func parseGlobal(args []string) (GlobalOptions, []string) {
 			opts.Raw = true
 		case "--help", "-h":
 			opts.Help = true
+		case "--prefer-driver":
+			if i+1 < len(args) {
+				opts.PreferDriver = args[i+1]
+				i++
+			} else {
+				rest = append(rest, arg)
+			}
 		default:
-			rest = append(rest, arg)
+			if strings.HasPrefix(arg, "--prefer-driver=") {
+				opts.PreferDriver = strings.TrimPrefix(arg, "--prefer-driver=")
+			} else {
+				rest = append(rest, arg)
+			}
 		}
 	}
 	return opts, rest
+}
+
+func normalizePreferDriver(value string) (string, error) {
+	if strings.TrimSpace(value) == "" {
+		return "auto", nil
+	}
+	switch value {
+	case "auto", "axe", "appium":
+		return value, nil
+	default:
+		return "", fmt.Errorf("prefer_driver_invalid")
+	}
 }
 
 func (c CLI) help(opts GlobalOptions, topic string) error {
@@ -143,6 +168,8 @@ Commands:
 Global flags:
   --raw       Emit raw underlying tool output where supported.
   --verbose   Print extra debug details where supported.
+  --prefer-driver auto|axe|appium
+              Prefer a UI driver for semantic tree/tap commands.
   --help,-h   Show help.
 `
 	case "setup":
@@ -158,14 +185,14 @@ Global flags:
 `
 	case "open":
 		return `Usage:
-  mav open [--device NAME] [--ios VERSION] [--udid UDID] [--locale LOCALE] [--language LANG]
+  mav open [--device NAME] [--ios VERSION] [--udid UDID] [--locale LOCALE] [--language LANG] [--warm-appium]
 `
 	case "ui":
 		return `Usage:
-  mav ui tree
-  mav ui tap --id ID
+  mav ui tree [--prefer-driver auto|axe|appium]
+  mav ui tap --id ID [--prefer-driver auto|axe|appium]
   mav ui tap --x X --y Y
-  mav ui tap --text TEXT
+  mav ui tap --text TEXT [--prefer-driver auto|axe|appium]
   mav ui type TEXT
   mav ui swipe [--direction up|down|left|right]
   mav ui pinch --x X --y Y --scale SCALE [--pan-x DX] [--pan-y DY] [--distance D] [--angle DEG] [--rotate DEG] [--duration 800ms] [--hold DURATION]
@@ -178,7 +205,7 @@ Global flags:
 	case "capture":
 		return "Usage: mav capture [--name NAME] [--run RUN_ID]\n"
 	case "ui tree":
-		return "Usage: mav ui tree\n\nPrints compact screen metadata followed by bounded node lines with id, label, role, value, and frame when available.\n"
+		return "Usage: mav ui tree [--prefer-driver auto|axe|appium]\n\nPrints compact screen metadata followed by bounded node lines with id, label, role, value, and frame when available.\n"
 	case "ui swipe":
 		return "Usage: mav ui swipe [--direction up|down|left|right] [--start-x X --start-y Y --end-x X --end-y Y]\n"
 	case "ui pinch":
@@ -520,6 +547,7 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	if err := SaveCurrentRun(c.Root, run); err != nil {
 		return err
 	}
+	appiumWarmup := c.startAppiumWarmup(ctx, cfg, run, hasFlag(args, "--warm-appium"))
 	probeLogPID, probeLogErr := c.startProbeLogs(ctx, cfg, run)
 	if probeLogErr != nil {
 		appendFile(run.LogsPath, "mav probe log capture failed: "+probeLogErr.Error()+"\n")
@@ -541,6 +569,22 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 		fields["log_subsystem"] = probeLogSubsystem(cfg)
 		fields["log_category"] = probeLogCategory(cfg)
 	}
+	if appiumWarmup != nil {
+		result := <-appiumWarmup
+		fields["appium_warmup"] = result.Status
+		if result.SessionID != "" {
+			fields["appium_session"] = result.SessionID
+		}
+		if result.PID > 0 {
+			fields["appium_pid"] = strconv.Itoa(result.PID)
+		}
+		if result.Issue != "" {
+			fields["appium_warmup_issue"] = result.Issue
+		}
+		if result.Next != "" {
+			fields["appium_warmup_next"] = result.Next
+		}
+	}
 	fields["target"] = cfg.SimulatorName
 	if fields["target"] == "" {
 		fields["target"] = cfg.SimulatorUDID
@@ -553,6 +597,52 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 		ClearPendingMapAction(c.Root)
 	}
 	return OK("open", fields).Write(c.Stdout)
+}
+
+type appiumWarmupResult struct {
+	Status    string
+	SessionID string
+	PID       int
+	Issue     string
+	Next      string
+}
+
+func (c CLI) startAppiumWarmup(ctx context.Context, cfg Config, run RunState, enabled bool) <-chan appiumWarmupResult {
+	if !enabled {
+		return nil
+	}
+	ch := make(chan appiumWarmupResult, 1)
+	go func() {
+		start := time.Now()
+		if err := c.ensureAppiumAvailable(ctx); err != nil {
+			result := appiumWarmupErrorResult(err)
+			appendFile(run.LogsPath, fmt.Sprintf("mav appium warmup failed elapsed=%s issue=%s\n", time.Since(start), result.Issue))
+			ch <- result
+			return
+		}
+		session, err := c.ensureAppiumSession(ctx, cfg, run)
+		if err != nil {
+			result := appiumWarmupErrorResult(err)
+			appendFile(run.LogsPath, fmt.Sprintf("mav appium warmup failed elapsed=%s issue=%s\n", time.Since(start), result.Issue))
+			ch <- result
+			return
+		}
+		appendFile(run.LogsPath, fmt.Sprintf("mav appium warmup ok elapsed=%s session=%s\n", time.Since(start), session.SessionID))
+		ch <- appiumWarmupResult{Status: "ok", SessionID: session.SessionID, PID: session.PID}
+	}()
+	return ch
+}
+
+func appiumWarmupErrorResult(err error) appiumWarmupResult {
+	result := appiumWarmupResult{Status: "failed", Issue: err.Error()}
+	if appErr, ok := err.(appiumError); ok {
+		result.Issue = appErr.Message
+		if result.Issue == "" {
+			result.Issue = appErr.Code
+		}
+		result.Next = appErr.Next
+	}
+	return result
 }
 
 func (c CLI) applyOpenTargetOverrides(ctx context.Context, cfg *Config, args []string) error {
@@ -670,68 +760,62 @@ func (c CLI) ui(ctx context.Context, opts GlobalOptions, args []string) error {
 }
 
 func (c CLI) uiTree(ctx context.Context, opts GlobalOptions, cfg Config) error {
-	driver, result, err := c.describeUITree(ctx, cfg)
+	prefer, err := normalizePreferDriver(opts.PreferDriver)
 	if err != nil {
-		return Fail("tool_missing", map[string]string{"tool": "axe|idb", "next": "mav setup --install axe idb"}).Write(c.Stdout)
+		return Fail("prefer_driver_invalid", map[string]string{"usage": "--prefer-driver auto|axe|appium"}).Write(c.Stdout)
+	}
+	driver, result, err := c.describeUITree(ctx, cfg, prefer)
+	if err != nil {
+		return c.writeUITreeToolError(err)
 	}
 	recovered := false
-	if result.Err == nil && isEmptyAXTree(result.Stdout) {
+	if driver == "axe" && result.Err == nil && isEmptyAXTree(result.Stdout) {
 		if err := c.recoverEmptyAXTree(ctx, cfg); err == nil {
-			if retryDriver, retryResult, retryErr := c.describeUITree(ctx, cfg); retryErr == nil {
+			if retryDriver, retryResult, retryErr := c.describeUITree(ctx, cfg, prefer); retryErr == nil {
 				driver = retryDriver
 				result = retryResult
 				recovered = true
 			}
 		}
 	}
-	if opts.Raw {
-		fmt.Fprint(c.Stdout, result.Stdout)
-		return nil
-	}
 	if result.Err != nil {
 		fields := map[string]string{"stderr": firstLine(result.Stderr)}
 		addSandboxNext(fields, result.Stderr)
 		return Fail("ui_tree_failed", fields).Write(c.Stdout)
 	}
+	state := c.observeUITree(cfg, result.Stdout, driver)
+	if prefer == "auto" && driver != "appium" && shouldFallbackToAppiumTree(result.Stdout, state) {
+		if appiumDriver, appiumResult, appiumErr := c.describeUITree(ctx, cfg, "appium"); appiumErr == nil && appiumResult.Err == nil && !isEmptyAXTree(appiumResult.Stdout) {
+			driver = appiumDriver
+			result = appiumResult
+			state = c.observeUITree(cfg, result.Stdout, driver)
+		}
+	}
+	if opts.Raw {
+		fmt.Fprint(c.Stdout, result.Stdout)
+		return nil
+	}
 	if isEmptyAXTree(result.Stdout) {
 		return Fail("ui_tree_empty", map[string]string{"driver": driver, "reason": "simulator_accessibility_unavailable", "recovered": strconv.FormatBool(recovered)}).Write(c.Stdout)
 	}
-	screen := "unknown"
-	screenSource := ""
-	previousScreen := ""
-	elements := ExtractElements(result.Stdout)
-	if run, err := LoadRun(c.Root, ""); err == nil {
-		if observed, err := ObserveScreenDetailed(c.Root, cfg, run, result.Stdout); err == nil && observed.Screen != "" {
-			screen = observed.Screen
-			screenSource = observed.Source
-			previousScreen = observed.PreviousScreen
-			elements = observed.Elements
-		}
+	fields := map[string]string{"driver": driver, "nodes": strconv.Itoa(state.Nodes), "screen": state.Screen}
+	if state.ScreenSource != "" {
+		fields["screen_source"] = state.ScreenSource
 	}
-	nodes := countTreeNodes(result.Stdout)
-	if nodes == 0 {
-		nodes = strings.Count(result.Stdout, "\n")
-	}
-	fields := map[string]string{"driver": driver, "nodes": strconv.Itoa(nodes), "screen": screen}
-	if screenSource != "" {
-		fields["screen_source"] = screenSource
-	}
-	if screenSource == "recognized" || screenSource == "inferred" || screenSource == "start" {
-		fields["recognized_screen"] = screen
-		fields["screen_confidence"] = screenConfidence(screenSource)
+	if state.ScreenSource == "recognized" || state.ScreenSource == "inferred" || state.ScreenSource == "start" {
+		fields["recognized_screen"] = state.Screen
+		fields["screen_confidence"] = screenConfidence(state.ScreenSource)
 		fields["screen"] = "unknown"
 	}
-	if previousScreen != "" && previousScreen != screen {
-		fields["previous_screen"] = previousScreen
+	if state.PreviousScreen != "" && state.PreviousScreen != state.Screen {
+		fields["previous_screen"] = state.PreviousScreen
 	}
-	if screen == "unknown" {
-		if pending, ok := peekPendingMapAction(c.Root); ok {
-			fields["map_pending"] = "true"
-			if pending.From != "" {
-				fields["previous_screen"] = pending.From
-			}
-			fields["next"] = "add accessibility ids or capture/inspect before mapping"
+	if state.MapPending {
+		fields["map_pending"] = "true"
+		if state.PendingFrom != "" {
+			fields["previous_screen"] = state.PendingFrom
 		}
+		fields["next"] = "add accessibility ids or capture/inspect before mapping"
 	}
 	if recovered {
 		fields["recovered"] = "true"
@@ -739,7 +823,67 @@ func (c CLI) uiTree(ctx context.Context, opts GlobalOptions, cfg Config) error {
 	if err := OK("ui.tree", fields).Write(c.Stdout); err != nil {
 		return err
 	}
-	return writeElementLines(c.Stdout, elements)
+	return writeElementLines(c.Stdout, state.Elements)
+}
+
+type uiTreeState struct {
+	Screen         string
+	ScreenSource   string
+	PreviousScreen string
+	Driver         string
+	Elements       []Element
+	Nodes          int
+	MapPending     bool
+	PendingFrom    string
+}
+
+func (c CLI) observeUITree(cfg Config, raw string, driver ...string) uiTreeState {
+	treeDriver := ""
+	if len(driver) > 0 {
+		treeDriver = driver[0]
+	}
+	state := uiTreeState{
+		Driver:   treeDriver,
+		Screen:   "unknown",
+		Elements: ExtractElements(raw),
+		Nodes:    countTreeNodes(raw),
+	}
+	if run, err := LoadRun(c.Root, ""); err == nil {
+		if observed, err := ObserveScreenDetailedWithDriver(c.Root, cfg, run, raw, treeDriver); err == nil && observed.Screen != "" {
+			state.Screen = observed.Screen
+			state.ScreenSource = observed.Source
+			state.PreviousScreen = observed.PreviousScreen
+			state.Elements = observed.Elements
+		}
+	}
+	if state.Nodes == 0 {
+		state.Nodes = strings.Count(raw, "\n")
+	}
+	if state.Screen == "unknown" {
+		if pending, ok := peekPendingMapAction(c.Root); ok {
+			state.MapPending = true
+			state.PendingFrom = pending.From
+		}
+	}
+	return state
+}
+
+func shouldFallbackToAppiumTree(raw string, state uiTreeState) bool {
+	return isEmptyAXTree(raw) || state.Nodes <= 1 || len(state.Elements) == 0 || state.ScreenSource == "unmatched" || state.MapPending
+}
+
+func (c CLI) writeUITreeToolError(err error) error {
+	if appErr, ok := err.(appiumError); ok {
+		fields := map[string]string{"tool": "appium"}
+		if appErr.Message != "" {
+			fields["stderr"] = appErr.Message
+		}
+		if appErr.Next != "" {
+			fields["next"] = appErr.Next
+		}
+		return Fail(appErr.Code, fields).Write(c.Stdout)
+	}
+	return Fail("tool_missing", map[string]string{"tool": "axe|idb", "next": "mav setup --install axe idb"}).Write(c.Stdout)
 }
 
 func screenConfidence(source string) string {
@@ -755,9 +899,19 @@ func screenConfidence(source string) string {
 	}
 }
 
-func (c CLI) describeUITree(ctx context.Context, cfg Config) (string, CommandResult, error) {
+func (c CLI) describeUITree(ctx context.Context, cfg Config, prefer string) (string, CommandResult, error) {
+	if prefer == "appium" {
+		raw, err := c.appiumSourceTree(ctx, cfg)
+		if err != nil {
+			return "", CommandResult{}, err
+		}
+		return "appium", CommandResult{Stdout: raw}, nil
+	}
 	if hasTool(cfg, "axe") {
 		return "axe", c.Runner.Run(ctx, "axe", axeTargetArgs(cfg, "describe-ui")...), nil
+	}
+	if prefer == "axe" {
+		return "", CommandResult{}, fmt.Errorf("tree_tool_missing")
 	}
 	if hasTool(cfg, "idb") {
 		return "idb", c.Runner.Run(ctx, "idb", idbTargetArgs(cfg, "ui", "describe-all", "--json", "--nested")...), nil
@@ -812,7 +966,7 @@ func (c CLI) waitForTreeReady(ctx context.Context, cfg Config, timeout time.Dura
 	deadline := time.Now().Add(timeout)
 	recovered := false
 	for time.Now().Before(deadline) {
-		_, result, err := c.describeUITree(ctx, cfg)
+		driver, result, err := c.describeUITree(ctx, cfg, "auto")
 		if err != nil {
 			return "", err
 		}
@@ -821,6 +975,14 @@ func (c CLI) waitForTreeReady(ctx context.Context, cfg Config, timeout time.Dura
 			recovered = true
 			time.Sleep(500 * time.Millisecond)
 			continue
+		}
+		if result.Err == nil && driver != "appium" {
+			state := uiTreeState{Elements: ExtractElements(result.Stdout), Nodes: countTreeNodes(result.Stdout)}
+			if shouldFallbackToAppiumTree(result.Stdout, state) {
+				if _, appiumResult, appiumErr := c.describeUITree(ctx, cfg, "appium"); appiumErr == nil && appiumResult.Err == nil {
+					result = appiumResult
+				}
+			}
 		}
 		if result.Err == nil && !isEmptyAXTree(result.Stdout) && countTreeNodes(result.Stdout) > 1 && len(ExtractElements(result.Stdout)) > 0 {
 			return result.Stdout, nil
@@ -835,29 +997,63 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 	text := flagValue(args, "--text")
 	x := flagValue(args, "--x")
 	y := flagValue(args, "--y")
+	prefer, err := normalizePreferDriver(opts.PreferDriver)
+	if err != nil {
+		return Fail("prefer_driver_invalid", map[string]string{"usage": "--prefer-driver auto|axe|appium"}).Write(c.Stdout)
+	}
 	caps := c.resolveCapabilities(ctx, cfg)
 	if id != "" || text != "" {
-		if !caps.Tools["axe"] {
-			return Fail("tool_missing", map[string]string{"tool": "axe", "next": "use mav ui tap --x X --y Y when AXe is unavailable"}).Write(c.Stdout)
-		}
-		axeArgs := axeTargetArgs(cfg, "tap")
 		fields := map[string]string{}
 		command := "mav ui tap"
 		if id != "" {
-			axeArgs = append(axeArgs, "--id", id)
 			fields["id"] = id
 			command += " --id " + id
 		} else {
-			axeArgs = append(axeArgs, "--label", text)
 			fields["text"] = text
 			command += " --text " + text
 		}
+		if prefer == "appium" {
+			if err := c.uiTapAppium(ctx, cfg, id, text); err != nil {
+				return c.writeAppiumTapError(err)
+			}
+			fields["driver"] = "appium"
+			c.appendCurrentCommand(command+" --prefer-driver appium", CommandResult{})
+			c.recordPendingTap(id, text, "", "", "appium")
+			return OK("ui.tap", fields).Write(c.Stdout)
+		}
+		if !caps.Tools["axe"] {
+			if prefer == "auto" {
+				if err := c.uiTapAppium(ctx, cfg, id, text); err == nil {
+					fields["driver"] = "appium"
+					c.appendCurrentCommand(command+" --prefer-driver appium", CommandResult{})
+					c.recordPendingTap(id, text, "", "", "appium")
+					return OK("ui.tap", fields).Write(c.Stdout)
+				}
+			}
+			return Fail("tool_missing", map[string]string{"tool": "axe", "next": "use mav ui tap --x X --y Y when AXe is unavailable"}).Write(c.Stdout)
+		}
+		axeArgs := axeTargetArgs(cfg, "tap")
+		if id != "" {
+			axeArgs = append(axeArgs, "--id", id)
+		} else {
+			axeArgs = append(axeArgs, "--label", text)
+		}
 		result := c.Runner.Run(ctx, "axe", axeArgs...)
 		if result.Err != nil {
+			if prefer == "auto" {
+				if err := c.uiTapAppium(ctx, cfg, id, text); err == nil {
+					fields["driver"] = "appium"
+					fields["fallback"] = "axe"
+					c.appendCurrentCommand(command+" --prefer-driver appium", CommandResult{})
+					c.recordPendingTap(id, text, "", "", "appium")
+					return OK("ui.tap", fields).Write(c.Stdout)
+				}
+			}
 			return Fail("ui_tap_failed", map[string]string{"stderr": firstLine(result.Stderr)}).Write(c.Stdout)
 		}
+		fields["driver"] = "axe"
 		c.appendCurrentCommand(command, result)
-		c.recordPendingTap(id, text, "", "")
+		c.recordPendingTap(id, text, "", "", "axe")
 		return OK("ui.tap", fields).Write(c.Stdout)
 	}
 	if x != "" && y != "" {
@@ -873,18 +1069,47 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			return Fail("ui_tap_failed", map[string]string{"stderr": firstLine(result.Stderr)}).Write(c.Stdout)
 		}
 		c.appendCurrentCommand("mav ui tap --x "+x+" --y "+y, result)
-		c.recordPendingTap("", "", x, y)
+		c.recordPendingTap("", "", x, y, "idb")
 		return OK("ui.tap", map[string]string{"x": x, "y": y}).Write(c.Stdout)
 	}
 	return Fail("tap_target_missing", map[string]string{"usage": "mav ui tap --id ID | --x X --y Y | --text TEXT"}).Write(c.Stdout)
 }
 
-func (c CLI) recordPendingTap(id, text, x, y string) {
+func (c CLI) uiTapAppium(ctx context.Context, cfg Config, id, text string) error {
+	if id != "" {
+		return c.appiumClickByAccessibilityID(ctx, cfg, id)
+	}
+	if text != "" {
+		return c.appiumClickByPredicate(ctx, cfg, appiumTextPredicate(text))
+	}
+	return appiumError{Code: "tap_target_missing", Message: "tap target missing"}
+}
+
+func appiumTextPredicate(text string) string {
+	escaped := strings.ReplaceAll(text, "'", "\\'")
+	return "value == '" + escaped + "' OR name == '" + escaped + "' OR label == '" + escaped + "'"
+}
+
+func (c CLI) writeAppiumTapError(err error) error {
+	if appErr, ok := err.(appiumError); ok {
+		fields := map[string]string{"tool": "appium"}
+		if appErr.Message != "" {
+			fields["stderr"] = appErr.Message
+		}
+		if appErr.Next != "" {
+			fields["next"] = appErr.Next
+		}
+		return Fail(appErr.Code, fields).Write(c.Stdout)
+	}
+	return Fail("ui_tap_failed", map[string]string{"tool": "appium", "stderr": err.Error()}).Write(c.Stdout)
+}
+
+func (c CLI) recordPendingTap(id, text, x, y, driver string) {
 	from := CurrentScreen(c.Root)
 	if from == "" {
 		return
 	}
-	SetPendingMapAction(c.Root, pendingMapAction{From: from, ID: id, Text: text, X: x, Y: y})
+	SetPendingMapAction(c.Root, pendingMapAction{From: from, ID: id, Text: text, X: x, Y: y, Driver: driver})
 }
 
 func (c CLI) appendCurrentCommand(command string, result CommandResult) {
@@ -1336,10 +1561,30 @@ func (c CLI) goScreen(ctx context.Context, opts GlobalOptions, args []string) er
 		}
 		return Fail(code, fields).Write(c.Stdout)
 	}
-	if _, cfgErr := LoadConfig(c.Root); cfgErr != nil {
+	cfg, cfgErr := LoadConfig(c.Root)
+	if cfgErr != nil {
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
-	if err := c.withStdout(io.Discard).open(ctx, GlobalOptions{}, nil); err != nil {
+	openArgs := []string{}
+	needsDriver := routeRequiredDriver(m, screenID, route)
+	if needsDriver == "appium" {
+		if err := c.ensureAppiumAvailable(ctx); err != nil {
+			fields := map[string]string{"screen": screenID, "required_driver": "appium"}
+			if appErr, ok := err.(appiumError); ok {
+				if appErr.Message != "" {
+					fields["issue"] = appErr.Message
+				}
+				if appErr.Next != "" {
+					fields["next"] = appErr.Next
+				}
+			} else {
+				fields["issue"] = err.Error()
+			}
+			return Fail("required_driver_missing", fields).Write(c.Stdout)
+		}
+		openArgs = append(openArgs, "--warm-appium")
+	}
+	if err := c.withStdout(io.Discard).open(ctx, GlobalOptions{}, openArgs); err != nil {
 		return Fail("open_failed", map[string]string{"screen": screenID}).Write(c.Stdout)
 	}
 	run, runErr := LoadRun(c.Root, "")
@@ -1350,7 +1595,6 @@ func (c CLI) goScreen(ctx context.Context, opts GlobalOptions, args []string) er
 	if err := c.withStdout(io.Discard).evidenceStart(ctx, GlobalOptions{}, []string{"--run", run.ID}); err != nil {
 		return Fail("evidence_start_failed", map[string]string{"run": run.ID, "screen": screenID}).Write(c.Stdout)
 	}
-	cfg, _ := LoadConfig(c.Root)
 	if raw, err := c.waitForTreeReady(ctx, cfg, 8*time.Second); err == nil {
 		_ = ObserveExpectedScreen(c.Root, cfg, run, raw, m.Start)
 	} else {
@@ -1385,7 +1629,22 @@ func (c CLI) goScreen(ctx context.Context, opts GlobalOptions, args []string) er
 	fields["run"] = run.ID
 	fields["report"] = filepath.Join(run.Dir, "report.html")
 	fields["video"] = filepath.Join(run.Dir, "video.mov")
+	if needsDriver != "" {
+		fields["required_driver"] = needsDriver
+	}
 	return OK("go", fields).Write(c.Stdout)
+}
+
+func routeRequiredDriver(m AppMap, target string, route []Edge) string {
+	for _, edge := range route {
+		if edge.Driver == "appium" {
+			return "appium"
+		}
+	}
+	if screen := m.Screens[target]; screen.Driver == "appium" {
+		return "appium"
+	}
+	return ""
 }
 
 func (c CLI) navigateToScreen(ctx context.Context, screenID string, routeOverride ...[]Edge) (map[string]string, error) {
@@ -1427,7 +1686,13 @@ func (c CLI) navigateToScreen(ctx context.Context, screenID string, routeOverrid
 		if edge.X != "" && edge.Y != "" {
 			args = append(args, "--x", edge.X, "--y", edge.Y)
 		}
-		if err := c.withStdout(io.Discard).uiTap(ctx, GlobalOptions{}, cfg, args); err != nil {
+		tapOpts := GlobalOptions{}
+		if edge.Driver == "appium" {
+			tapOpts.PreferDriver = "appium"
+		} else if edge.Driver == "axe" {
+			tapOpts.PreferDriver = "axe"
+		}
+		if err := c.withStdout(io.Discard).uiTap(ctx, tapOpts, cfg, args); err != nil {
 			return map[string]string{"screen": screenID, "target": edge.To}, fmt.Errorf("tap_failed")
 		}
 		if edge.Wait != "" {
@@ -1440,7 +1705,7 @@ func (c CLI) navigateToScreen(ctx context.Context, screenID string, routeOverrid
 		if sameTreeForRoute(beforeTree, afterTree) {
 			return map[string]string{"screen": screenID, "target": edge.To}, fmt.Errorf("route_no_screen_change")
 		}
-		_ = ObserveExpectedScreen(c.Root, cfg, run, afterTree, edge.To)
+		_ = ObserveExpectedScreenWithDriver(c.Root, cfg, run, afterTree, edge.To, edge.Driver)
 		SetCurrentScreen(c.Root, edge.To, run.ID)
 		ClearPendingMapAction(c.Root)
 	}
