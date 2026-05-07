@@ -20,6 +20,7 @@ type FlowStep struct {
 	Action string
 	Params map[string]string
 	Any    []FlowCondition
+	Do     []FlowStep
 }
 
 type FlowCondition struct {
@@ -102,7 +103,13 @@ func ParseFlow(data []byte) (Flow, error) {
 }
 
 func parseFlowStepNode(node yaml.Node) (FlowStep, error) {
-	if node.Kind != yaml.MappingNode || len(node.Content) != 2 {
+	if node.Kind != yaml.MappingNode {
+		return FlowStep{}, fmt.Errorf("step_action_missing")
+	}
+	if whenNode, ok := mappingValue(node, "when"); ok {
+		return parseWhenFlowStepNode(node, whenNode)
+	}
+	if len(node.Content) != 2 {
 		return FlowStep{}, fmt.Errorf("step_action_missing")
 	}
 	action := node.Content[0].Value
@@ -153,6 +160,75 @@ func parseFlowStepNode(node yaml.Node) (FlowStep, error) {
 	put("degrees", payload.Degrees)
 	put("file", payload.File)
 	return FlowStep{Action: action, Params: params, Any: payload.Any}, nil
+}
+
+type flowWhenPayload struct {
+	Visible FlowCondition   `yaml:"visible"`
+	Text    string          `yaml:"text"`
+	ID      string          `yaml:"id"`
+	Value   string          `yaml:"value"`
+	Any     []FlowCondition `yaml:"any"`
+}
+
+func parseWhenFlowStepNode(node yaml.Node, whenNode *yaml.Node) (FlowStep, error) {
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key := node.Content[i].Value
+		if key != "when" && key != "do" {
+			return FlowStep{}, fmt.Errorf("when_field_unknown field=%s", key)
+		}
+	}
+	doNode, ok := mappingValue(node, "do")
+	if !ok {
+		return FlowStep{}, fmt.Errorf("when_do_missing")
+	}
+	var payload flowWhenPayload
+	if err := whenNode.Decode(&payload); err != nil {
+		return FlowStep{}, err
+	}
+	params := map[string]string{}
+	condition := payload.Visible
+	if condition.Text == "" && condition.ID == "" && condition.Value == "" {
+		condition = FlowCondition{Text: payload.Text, ID: payload.ID, Value: payload.Value}
+	}
+	putParam(params, "text", condition.Text)
+	putParam(params, "id", condition.ID)
+	putParam(params, "value", condition.Value)
+	if len(params) == 0 && len(payload.Any) == 0 {
+		return FlowStep{}, fmt.Errorf("when_condition_missing")
+	}
+	if doNode.Kind != yaml.SequenceNode || len(doNode.Content) == 0 {
+		return FlowStep{}, fmt.Errorf("when_do_missing")
+	}
+	steps := make([]FlowStep, 0, len(doNode.Content))
+	for _, child := range doNode.Content {
+		step, err := parseFlowStepNode(*child)
+		if err != nil {
+			return FlowStep{}, err
+		}
+		if step.Action == "open" || step.Action == "exec" {
+			return FlowStep{}, fmt.Errorf("when_child_unsupported action=%s", step.Action)
+		}
+		steps = append(steps, step)
+	}
+	return FlowStep{Action: "when", Params: params, Any: payload.Any, Do: steps}, nil
+}
+
+func mappingValue(node yaml.Node, key string) (*yaml.Node, bool) {
+	if node.Kind != yaml.MappingNode {
+		return nil, false
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return node.Content[i+1], true
+		}
+	}
+	return nil, false
+}
+
+func putParam(params map[string]string, key, value string) {
+	if strings.TrimSpace(value) != "" {
+		params[key] = value
+	}
 }
 
 func parseScalarFlowStep(action, value string) (FlowStep, bool) {

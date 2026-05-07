@@ -1478,6 +1478,8 @@ func (c CLI) executeFlowStep(ctx context.Context, run RunState, index int, step 
 	case "open":
 		err := c.withStdout(io.Discard).open(ctx, GlobalOptions{}, flowArgs(step.Params, "--device", "device", "--ios", "ios", "--udid", "udid", "--locale", "locale", "--language", "language"))
 		return map[string]string{"run": run.ID}, outputErr(err, "open_failed")
+	case "when":
+		return c.executeWhenFlowStep(ctx, run, index, step)
 	case "go":
 		screen := step.Params["screen"]
 		if screen == "" {
@@ -1580,6 +1582,40 @@ func (c CLI) executeFlowStep(ctx context.Context, run RunState, index int, step 
 	default:
 		return nil, fmt.Errorf("unknown_step")
 	}
+}
+
+func (c CLI) executeWhenFlowStep(ctx context.Context, run RunState, index int, step FlowStep) (map[string]string, error) {
+	if len(step.Do) == 0 {
+		return nil, fmt.Errorf("when_do_missing")
+	}
+	matched, err := c.evaluateFlowCondition(ctx, step.Params, step.Any)
+	if err != nil {
+		return copyParams(step.Params), err
+	}
+	fields := copyParams(step.Params)
+	fields["matched"] = strconv.FormatBool(matched)
+	fields["steps"] = strconv.Itoa(len(step.Do))
+	if !matched {
+		fields["skipped"] = strconv.Itoa(len(step.Do))
+		return fields, nil
+	}
+	for childIndex, child := range step.Do {
+		childStart := time.Now()
+		childFields, err := c.executeFlowStep(ctx, run, childIndex+1, child)
+		elapsed := time.Since(childStart)
+		if err != nil {
+			fields["child_step"] = strconv.Itoa(childIndex + 1)
+			fields["child_action"] = child.Action
+			fields["child_code"] = err.Error()
+			for key, value := range childFields {
+				fields["child_"+key] = value
+			}
+			return fields, err
+		}
+		appendFlowStep(run, index, "when."+child.Action, elapsed, "ok", childFields)
+	}
+	fields["executed"] = strconv.Itoa(len(step.Do))
+	return fields, nil
 }
 
 func (c CLI) goScreen(ctx context.Context, opts GlobalOptions, args []string) error {
