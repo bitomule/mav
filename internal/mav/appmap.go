@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -44,11 +45,15 @@ type Recognizer struct {
 }
 
 type Element struct {
-	ID    string `json:"id,omitempty"`
-	Label string `json:"label,omitempty"`
-	Role  string `json:"role,omitempty"`
-	Value string `json:"value,omitempty"`
-	Frame string `json:"frame,omitempty"`
+	ID      string `json:"id,omitempty"`
+	Label   string `json:"label,omitempty"`
+	Role    string `json:"role,omitempty"`
+	Value   string `json:"value,omitempty"`
+	Frame   string `json:"frame,omitempty"`
+	Enabled string `json:"enabled,omitempty"`
+	Subrole string `json:"subrole,omitempty"`
+	Title   string `json:"title,omitempty"`
+	PID     string `json:"pid,omitempty"`
 }
 
 type Edge struct {
@@ -569,13 +574,17 @@ func walkAX(value any, out *[]Element) {
 		}
 	case map[string]any:
 		el := Element{
-			ID:    stringField(node, "AXIdentifier", "identifier", "AXUniqueId"),
-			Label: stringField(node, "AXLabel", "label", "title"),
-			Role:  stringField(node, "role_description", "role", "type"),
-			Value: stringField(node, "AXValue", "value"),
-			Frame: stringField(node, "AXFrame", "frame"),
+			ID:      stringField(node, "AXIdentifier", "identifier", "AXUniqueId"),
+			Label:   stringField(node, "AXLabel", "label", "title"),
+			Role:    stringField(node, "role_description", "role", "type"),
+			Value:   stringField(node, "AXValue", "value"),
+			Frame:   stringField(node, "AXFrame", "frame"),
+			Enabled: boolStringField(node, "AXEnabled", "enabled"),
+			Subrole: stringField(node, "AXSubrole", "subrole"),
+			Title:   stringField(node, "AXTitle", "title"),
+			PID:     stringField(node, "AXPid", "AXPID", "pid"),
 		}
-		if el.ID != "" || el.Label != "" || el.Role != "" || el.Value != "" || el.Frame != "" {
+		if el.ID != "" || el.Label != "" || el.Role != "" || el.Value != "" || el.Frame != "" || el.Enabled != "" || el.Subrole != "" || el.Title != "" || el.PID != "" {
 			*out = append(*out, el)
 		}
 		for _, childKey := range []string{"children", "Children", "AXChildren"} {
@@ -602,12 +611,33 @@ func stringField(node map[string]any, keys ...string) string {
 	return ""
 }
 
+func boolStringField(node map[string]any, keys ...string) string {
+	for _, key := range keys {
+		switch value := node[key].(type) {
+		case bool:
+			return strconv.FormatBool(value)
+		case string:
+			text := strings.TrimSpace(value)
+			if strings.EqualFold(text, "true") || strings.EqualFold(text, "false") {
+				return strings.ToLower(text)
+			}
+		case nil:
+		default:
+			text := strings.TrimSpace(fmt.Sprint(value))
+			if strings.EqualFold(text, "true") || strings.EqualFold(text, "false") {
+				return strings.ToLower(text)
+			}
+		}
+	}
+	return ""
+}
+
 func compactElements(elements []Element) []Element {
 	seen := map[string]bool{}
 	out := []Element{}
 	for _, el := range elements {
-		key := el.ID + "\x00" + el.Label + "\x00" + el.Role + "\x00" + el.Value + "\x00" + el.Frame
-		if key == "\x00\x00\x00\x00\x00" || seen[key] {
+		key := el.ID + "\x00" + el.Label + "\x00" + el.Role + "\x00" + el.Value + "\x00" + el.Frame + "\x00" + el.Enabled + "\x00" + el.Subrole + "\x00" + el.Title + "\x00" + el.PID
+		if key == "\x00\x00\x00\x00\x00\x00\x00\x00\x00" || seen[key] {
 			continue
 		}
 		seen[key] = true
