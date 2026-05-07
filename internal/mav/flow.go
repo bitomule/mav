@@ -106,6 +106,11 @@ func parseFlowStepNode(node yaml.Node) (FlowStep, error) {
 		return FlowStep{}, fmt.Errorf("step_action_missing")
 	}
 	action := node.Content[0].Value
+	if node.Content[1].Kind == yaml.ScalarNode {
+		if step, ok := parseScalarFlowStep(action, node.Content[1].Value); ok {
+			return step, nil
+		}
+	}
 	var payload flowStepPayload
 	if err := node.Content[1].Decode(&payload); err != nil {
 		return FlowStep{}, err
@@ -148,6 +153,20 @@ func parseFlowStepNode(node yaml.Node) (FlowStep, error) {
 	put("degrees", payload.Degrees)
 	put("file", payload.File)
 	return FlowStep{Action: action, Params: params, Any: payload.Any}, nil
+}
+
+func parseScalarFlowStep(action, value string) (FlowStep, bool) {
+	if strings.TrimSpace(value) == "" {
+		return FlowStep{}, false
+	}
+	switch action {
+	case "type":
+		return FlowStep{Action: action, Params: map[string]string{"text": value}}, true
+	case "delay", "sleep":
+		return FlowStep{Action: action, Params: map[string]string{"duration": strings.TrimSpace(value)}}, true
+	default:
+		return FlowStep{}, false
+	}
 }
 
 func parseFlowDuration(value string, fallback time.Duration) time.Duration {
