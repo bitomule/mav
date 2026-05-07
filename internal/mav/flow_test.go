@@ -116,6 +116,51 @@ steps:
 	}
 }
 
+func TestParseFlowWhenConditional(t *testing.T) {
+	flow, err := ParseFlow([]byte(`
+steps:
+  - when: { visible: { id: ToggleX } }
+    do:
+      - tap: { id: ToggleX }
+      - wait: { text: Enabled }
+  - when: { text: Continue }
+    do:
+      - tap: { text: Continue }
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(flow.Steps) != 2 {
+		t.Fatalf("steps=%+v", flow.Steps)
+	}
+	first := flow.Steps[0]
+	if first.Action != "when" || first.Params["id"] != "ToggleX" || len(first.Do) != 2 {
+		t.Fatalf("first=%+v", first)
+	}
+	if first.Do[0].Action != "tap" || first.Do[0].Params["id"] != "ToggleX" {
+		t.Fatalf("first do=%+v", first.Do)
+	}
+	second := flow.Steps[1]
+	if second.Action != "when" || second.Params["text"] != "Continue" || len(second.Do) != 1 {
+		t.Fatalf("second=%+v", second)
+	}
+}
+
+func TestParseFlowRejectsInvalidWhen(t *testing.T) {
+	for _, data := range []string{
+		"steps:\n  - when: { visible: { id: ToggleX } }\n",
+		"steps:\n  - when: { visible: { id: ToggleX } }\n    do: []\n",
+		"steps:\n  - when: {}\n    do:\n      - tap: { id: ToggleX }\n",
+		"steps:\n  - when: { visible: { id: ToggleX } }\n    tap: { id: ToggleX }\n    do:\n      - tap: { id: ToggleX }\n",
+		"steps:\n  - when: { visible: { id: ToggleX } }\n    do:\n      - open: {}\n",
+		"steps:\n  - when: { visible: { id: ToggleX } }\n    do:\n      - exec: { cmd: echo hi }\n",
+	} {
+		if _, err := ParseFlow([]byte(data)); err == nil {
+			t.Fatalf("expected error for %q", data)
+		}
+	}
+}
+
 func TestParseFlowRejectsEmptyScalarTypeAndDelay(t *testing.T) {
 	for _, data := range []string{
 		"steps:\n  - type: \"   \"\n",
