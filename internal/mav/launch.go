@@ -14,10 +14,6 @@ type launchStep struct {
 }
 
 func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState) (string, *launchStep, CommandResult) {
-	return c.runLaunchRecipeWithHook(ctx, cfg, run, nil)
-}
-
-func (c CLI) runLaunchRecipeWithHook(ctx context.Context, cfg Config, run RunState, beforeStep func(launchStep)) (string, *launchStep, CommandResult) {
 	commands := cfg.Launch.Commands
 	if !hasLaunchCommands(commands) && cfg.BundleID != "" {
 		commands.Launch = `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`
@@ -37,9 +33,6 @@ func (c CLI) runLaunchRecipeWithHook(ctx context.Context, cfg Config, run RunSta
 	for _, step := range steps {
 		if strings.TrimSpace(step.Command) == "" {
 			continue
-		}
-		if beforeStep != nil {
-			beforeStep(step)
 		}
 		result := c.runLaunchCommand(ctx, cfg, run, step, env)
 		if result.Err != nil {
