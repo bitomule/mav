@@ -3,6 +3,7 @@ package mav
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +22,7 @@ type FlowStep struct {
 	Params map[string]string
 	Any    []FlowCondition
 	Do     []FlowStep
+	Env    map[string]string
 }
 
 type FlowCondition struct {
@@ -66,11 +68,36 @@ type flowStepPayload struct {
 }
 
 func LoadFlow(path string) (Flow, error) {
+	return loadFlow(path, nil, nil, false)
+}
+
+func loadFlow(path string, env map[string]string, stack []string, nestedInWhen bool) (Flow, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return Flow{}, err
+	}
+	for _, active := range stack {
+		if active == absPath {
+			return Flow{}, fmt.Errorf("include_cycle file=%s", path)
+		}
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Flow{}, err
 	}
-	return ParseFlow(data)
+	flow, err := ParseFlow(data)
+	if err != nil {
+		return Flow{}, err
+	}
+	steps, err := expandFlowSteps(flow.Steps, filepath.Dir(absPath), env, append(stack, absPath), nestedInWhen)
+	if err != nil {
+		return Flow{}, err
+	}
+	if err := validateFlowSteps(steps); err != nil {
+		return Flow{}, err
+	}
+	flow.Steps = steps
+	return flow, nil
 }
 
 func ParseFlow(data []byte) (Flow, error) {
@@ -113,6 +140,9 @@ func parseFlowStepNode(node yaml.Node) (FlowStep, error) {
 		return FlowStep{}, fmt.Errorf("step_action_missing")
 	}
 	action := node.Content[0].Value
+	if action == "include" {
+		return parseIncludeFlowStepNode(node.Content[1])
+	}
 	if node.Content[1].Kind == yaml.ScalarNode {
 		if step, ok := parseScalarFlowStep(action, node.Content[1].Value); ok {
 			return step, nil
@@ -213,6 +243,26 @@ func parseWhenFlowStepNode(node yaml.Node, whenNode *yaml.Node) (FlowStep, error
 	return FlowStep{Action: "when", Params: params, Any: payload.Any, Do: steps}, nil
 }
 
+type flowIncludePayload struct {
+	File string         `yaml:"file"`
+	Env  map[string]any `yaml:"env"`
+}
+
+func parseIncludeFlowStepNode(node *yaml.Node) (FlowStep, error) {
+	var payload flowIncludePayload
+	if err := node.Decode(&payload); err != nil {
+		return FlowStep{}, err
+	}
+	if strings.TrimSpace(payload.File) == "" {
+		return FlowStep{}, fmt.Errorf("include_file_missing")
+	}
+	env := map[string]string{}
+	for key, value := range payload.Env {
+		env[key] = fmt.Sprint(value)
+	}
+	return FlowStep{Action: "include", Params: map[string]string{"file": payload.File}, Env: env}, nil
+}
+
 func mappingValue(node yaml.Node, key string) (*yaml.Node, bool) {
 	if node.Kind != yaml.MappingNode {
 		return nil, false
@@ -242,6 +292,144 @@ func parseScalarFlowStep(action, value string) (FlowStep, bool) {
 		return FlowStep{Action: action, Params: map[string]string{"duration": strings.TrimSpace(value)}}, true
 	default:
 		return FlowStep{}, false
+	}
+}
+
+func expandFlowSteps(steps []FlowStep, baseDir string, env map[string]string, stack []string, nestedInWhen bool) ([]FlowStep, error) {
+	var expanded []FlowStep
+	for _, step := range steps {
+		if step.Action == "include" {
+			includeEnv, err := mergeIncludeEnv(env, step.Env)
+			if err != nil {
+				return nil, err
+			}
+			file, err := expandEnvString(step.Params["file"], includeEnv)
+			if err != nil {
+				return nil, err
+			}
+			if !filepath.IsAbs(file) {
+				file = filepath.Join(baseDir, file)
+			}
+			included, err := loadFlow(file, includeEnv, stack, nestedInWhen)
+			if err != nil {
+				return nil, err
+			}
+			expanded = append(expanded, included.Steps...)
+			continue
+		}
+		updated, err := expandFlowStepEnv(step, baseDir, env, stack, nestedInWhen)
+		if err != nil {
+			return nil, err
+		}
+		expanded = append(expanded, updated)
+	}
+	return expanded, nil
+}
+
+func validateFlowSteps(steps []FlowStep) error {
+	for _, step := range steps {
+		if !isSupportedFlowAction(step.Action) {
+			return fmt.Errorf("unknown_step action=%s", step.Action)
+		}
+		if len(step.Do) > 0 {
+			if err := validateFlowSteps(step.Do); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func isSupportedFlowAction(action string) bool {
+	switch action {
+	case "open", "when", "go", "tree", "tap", "type", "swipe", "pinch", "rotate", "twoFingerPan", "actions",
+		"delay", "sleep", "wait", "assert", "waitUntil", "scrollUntil", "capture",
+		"evidence.start", "video.start", "evidence.step", "evidence.stop", "video.stop",
+		"logs", "exec", "crashes", "report":
+		return true
+	default:
+		return false
+	}
+}
+
+func expandFlowStepEnv(step FlowStep, baseDir string, env map[string]string, stack []string, nestedInWhen bool) (FlowStep, error) {
+	if nestedInWhen && (step.Action == "open" || step.Action == "exec") {
+		return FlowStep{}, fmt.Errorf("when_child_unsupported action=%s", step.Action)
+	}
+	for key, value := range step.Params {
+		expanded, err := expandEnvString(value, env)
+		if err != nil {
+			return FlowStep{}, err
+		}
+		step.Params[key] = expanded
+	}
+	for i := range step.Any {
+		condition, err := expandFlowConditionEnv(step.Any[i], env)
+		if err != nil {
+			return FlowStep{}, err
+		}
+		step.Any[i] = condition
+	}
+	if len(step.Do) > 0 {
+		do, err := expandFlowSteps(step.Do, baseDir, env, stack, true)
+		if err != nil {
+			return FlowStep{}, err
+		}
+		step.Do = do
+	}
+	return step, nil
+}
+
+func expandFlowConditionEnv(condition FlowCondition, env map[string]string) (FlowCondition, error) {
+	var err error
+	if condition.Text, err = expandEnvString(condition.Text, env); err != nil {
+		return FlowCondition{}, err
+	}
+	if condition.ID, err = expandEnvString(condition.ID, env); err != nil {
+		return FlowCondition{}, err
+	}
+	if condition.Value, err = expandEnvString(condition.Value, env); err != nil {
+		return FlowCondition{}, err
+	}
+	if condition.ChangedFrom, err = expandEnvString(condition.ChangedFrom, env); err != nil {
+		return FlowCondition{}, err
+	}
+	return condition, nil
+}
+
+func mergeIncludeEnv(parent map[string]string, include map[string]string) (map[string]string, error) {
+	merged := map[string]string{}
+	for key, value := range parent {
+		merged[key] = value
+	}
+	for key, value := range include {
+		expanded, err := expandEnvString(value, parent)
+		if err != nil {
+			return nil, err
+		}
+		merged[key] = expanded
+	}
+	return merged, nil
+}
+
+func expandEnvString(value string, env map[string]string) (string, error) {
+	out := value
+	for {
+		start := strings.Index(out, "${env.")
+		if start < 0 {
+			return out, nil
+		}
+		end := strings.Index(out[start:], "}")
+		if end < 0 {
+			return "", fmt.Errorf("env_binding_invalid")
+		}
+		end += start
+		name := out[start+len("${env.") : end]
+		replacement, ok := env[name]
+		if !ok {
+			return "", fmt.Errorf("env_missing name=%s", name)
+		}
+		out = out[:start] + replacement + out[end+1:]
 	}
 }
 
