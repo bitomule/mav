@@ -1,6 +1,9 @@
 package mav
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -158,6 +161,178 @@ func TestParseFlowRejectsInvalidWhen(t *testing.T) {
 		if _, err := ParseFlow([]byte(data)); err == nil {
 			t.Fatalf("expected error for %q", data)
 		}
+	}
+}
+
+func TestParseFlowIncludeStep(t *testing.T) {
+	flow, err := ParseFlow([]byte(`
+steps:
+  - include:
+      file: components/login.mav.yaml
+      env:
+        USER: sellersXp
+        FRESH_INSTALL: true
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(flow.Steps) != 1 {
+		t.Fatalf("steps=%+v", flow.Steps)
+	}
+	step := flow.Steps[0]
+	if step.Action != "include" || step.Params["file"] != "components/login.mav.yaml" {
+		t.Fatalf("step=%+v", step)
+	}
+	if step.Env["USER"] != "sellersXp" || step.Env["FRESH_INSTALL"] != "true" {
+		t.Fatalf("env=%+v", step.Env)
+	}
+}
+
+func TestLoadFlowExpandsIncludeWithEnv(t *testing.T) {
+	root := t.TempDir()
+	writeTestFlow(t, filepath.Join(root, "main.yaml"), `
+steps:
+  - tap: { id: before_login }
+  - include:
+      file: components/login.yaml
+      env:
+        USER: sellersXp
+        FRESH_INSTALL: true
+  - tap: { id: after_login }
+`)
+	writeTestFlow(t, filepath.Join(root, "components", "login.yaml"), `
+steps:
+  - tap: { id: "${env.USER}_email" }
+  - type: "fresh=${env.FRESH_INSTALL}"
+`)
+	flow, err := LoadFlow(filepath.Join(root, "main.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(flow.Steps) != 4 {
+		t.Fatalf("steps=%+v", flow.Steps)
+	}
+	if flow.Steps[1].Action != "tap" || flow.Steps[1].Params["id"] != "sellersXp_email" {
+		t.Fatalf("included tap=%+v", flow.Steps[1])
+	}
+	if flow.Steps[2].Action != "type" || flow.Steps[2].Params["text"] != "fresh=true" {
+		t.Fatalf("included type=%+v", flow.Steps[2])
+	}
+}
+
+func TestLoadFlowIncludeEnvCanReferenceParentEnv(t *testing.T) {
+	root := t.TempDir()
+	writeTestFlow(t, filepath.Join(root, "main.yaml"), `
+steps:
+  - include:
+      file: wrapper.yaml
+      env:
+        USER: sellersXp
+`)
+	writeTestFlow(t, filepath.Join(root, "wrapper.yaml"), `
+steps:
+  - include:
+      file: login.yaml
+      env:
+        ACCOUNT: "${env.USER}-account"
+`)
+	writeTestFlow(t, filepath.Join(root, "login.yaml"), `
+steps:
+  - type: "${env.ACCOUNT}"
+`)
+	flow, err := LoadFlow(filepath.Join(root, "main.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(flow.Steps) != 1 || flow.Steps[0].Params["text"] != "sellersXp-account" {
+		t.Fatalf("steps=%+v", flow.Steps)
+	}
+}
+
+func TestLoadFlowIncludeFileCanReferenceIncludeEnv(t *testing.T) {
+	root := t.TempDir()
+	writeTestFlow(t, filepath.Join(root, "main.yaml"), `
+steps:
+  - include:
+      file: "components/${env.COMPONENT}.yaml"
+      env:
+        COMPONENT: login
+        USER: sellersXp
+`)
+	writeTestFlow(t, filepath.Join(root, "components", "login.yaml"), `
+steps:
+  - tap: { id: "${env.USER}_email" }
+`)
+	flow, err := LoadFlow(filepath.Join(root, "main.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(flow.Steps) != 1 || flow.Steps[0].Params["id"] != "sellersXp_email" {
+		t.Fatalf("steps=%+v", flow.Steps)
+	}
+}
+
+func TestLoadFlowDetectsIncludeCycle(t *testing.T) {
+	root := t.TempDir()
+	writeTestFlow(t, filepath.Join(root, "a.yaml"), "steps:\n  - include: { file: b.yaml }\n")
+	writeTestFlow(t, filepath.Join(root, "b.yaml"), "steps:\n  - include: { file: a.yaml }\n")
+	_, err := LoadFlow(filepath.Join(root, "a.yaml"))
+	if err == nil || !strings.Contains(err.Error(), "include_cycle") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestLoadFlowRejectsUnknownIncludedAction(t *testing.T) {
+	root := t.TempDir()
+	writeTestFlow(t, filepath.Join(root, "main.yaml"), "steps:\n  - include: { file: bad.yaml }\n")
+	writeTestFlow(t, filepath.Join(root, "bad.yaml"), "steps:\n  - typo: {}\n")
+	_, err := LoadFlow(filepath.Join(root, "main.yaml"))
+	if err == nil || !strings.Contains(err.Error(), "unknown_step action=typo") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestLoadFlowRejectsMissingEnvBinding(t *testing.T) {
+	root := t.TempDir()
+	writeTestFlow(t, filepath.Join(root, "main.yaml"), `
+steps:
+  - include: { file: login.yaml }
+`)
+	writeTestFlow(t, filepath.Join(root, "login.yaml"), `
+steps:
+  - type: "${env.USER}"
+`)
+	_, err := LoadFlow(filepath.Join(root, "main.yaml"))
+	if err == nil || !strings.Contains(err.Error(), "env_missing name=USER") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestLoadFlowRejectsUnsupportedIncludeInsideWhen(t *testing.T) {
+	root := t.TempDir()
+	writeTestFlow(t, filepath.Join(root, "main.yaml"), `
+steps:
+  - when: { visible: { id: Gate } }
+    do:
+      - include: { file: launch.yaml }
+`)
+	writeTestFlow(t, filepath.Join(root, "launch.yaml"), `
+steps:
+  - open: {}
+`)
+	_, err := LoadFlow(filepath.Join(root, "main.yaml"))
+	if err == nil || !strings.Contains(err.Error(), "when_child_unsupported action=open") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func writeTestFlow(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
