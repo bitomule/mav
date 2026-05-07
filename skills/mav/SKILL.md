@@ -136,6 +136,18 @@ the app opened. For a notification toggle, navigate to Settings first if
 Settings is not under test, start recording, capture before toggling, toggle it,
 capture after toggling, then stop.
 
+YAML flow steps `type`, `delay`, and `sleep` accept concise scalar forms as
+aliases for their object forms:
+
+```yaml
+- type: "Search text"
+- type: { text: "Search text" }
+- delay: 500ms
+- delay: { duration: 500ms }
+- sleep: 500ms
+- sleep: { duration: 500ms }
+```
+
 The supported flow recording steps are `video.start` and `video.stop`;
 `evidence.start` and `evidence.stop` remain supported aliases. Do not use or
 invent `recordVideo: true`.

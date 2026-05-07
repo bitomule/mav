@@ -390,6 +390,8 @@ steps:
   - video.start: {}
   - evidence.step: { name: before-toggle, note: Daily Reminder before tap }
   - tap: { text: Daily Reminder }
+  - type: "Search text"
+  - delay: 500ms
   - waitUntil:
       any:
         - text: "Don't Allow"
@@ -423,6 +425,7 @@ assert
 capture
 scrollUntil
 delay
+sleep
 logs
 exec
 crashes
@@ -432,6 +435,18 @@ evidence.stop
 video.start
 video.stop
 report
+```
+
+`type`, `delay`, and `sleep` accept both scalar and object forms. These are
+equivalent:
+
+```yaml
+- type: "Search text"
+- type: { text: "Search text" }
+- delay: 500ms
+- delay: { duration: 500ms }
+- sleep: 500ms
+- sleep: { duration: 500ms }
 ```
 
 On failure, MAV stops run-owned processes, tries to capture failure evidence,
