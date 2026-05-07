@@ -115,7 +115,8 @@ Use evidence when the user needs proof of verification:
    the behavior under test. Start recording as late as possible while still
    covering the verified action, use `wait` for a single `id`, `text`, or
    `value`, use `waitUntil` with `any` or `changedFrom` for alternate/visual
-   outcomes, and use `delay` only for fixed launch/animation waits when
+   outcomes, use `when` for optional UI that may already be dismissed or in a
+   different state, and use `delay` only for fixed launch/animation waits when
    tree-based waits are not possible. Capture named proof points, perform the
    tested action, capture the result, stop recording immediately after the
    result is visible, check crashes, and generate a report.
@@ -146,6 +147,16 @@ aliases for their object forms:
 - delay: { duration: 500ms }
 - sleep: 500ms
 - sleep: { duration: 500ms }
+```
+
+Use `when` to guard optional UI. It checks once and skips the `do` block without
+failing when the condition is not visible. Keep `open` and `exec` as top-level
+steps; they are not valid inside `do` blocks.
+
+```yaml
+- when: { visible: { text: Continue } }
+  do:
+    - tap: { text: Continue }
 ```
 
 The supported flow recording steps are `video.start` and `video.stop`;

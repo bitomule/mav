@@ -1477,6 +1477,78 @@ func TestFlowVideoStartStopAliasesRecordVideo(t *testing.T) {
 	}
 }
 
+func TestFlowWhenExecutesDoBlockWhenVisible(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.Tools = map[string]bool{"axe": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	runner := &sequenceRecordingRunner{
+		tools: cfg.Tools,
+		out:   map[string]string{"axe describe-ui": `[{"AXUniqueId":"ToggleX","AXLabel":"Toggle"}]`},
+	}
+	cli := CLI{Runner: runner, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	fields, err := cli.executeFlowStep(context.Background(), run, 1, FlowStep{
+		Action: "when",
+		Params: map[string]string{"id": "ToggleX"},
+		Do:     []FlowStep{{Action: "tap", Params: map[string]string{"id": "ToggleX"}}},
+	})
+	if err != nil {
+		t.Fatalf("fields=%v err=%v", fields, err)
+	}
+	if fields["matched"] != "true" || fields["executed"] != "1" {
+		t.Fatalf("fields=%v", fields)
+	}
+	if !containsCall(runner.commands, "axe describe-ui") || !containsCall(runner.commands, "axe tap --id ToggleX") {
+		t.Fatalf("commands=%v", runner.commands)
+	}
+}
+
+func TestFlowWhenSkipsDoBlockWhenNotVisible(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.Tools = map[string]bool{"axe": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	runner := &sequenceRecordingRunner{
+		tools: cfg.Tools,
+		out:   map[string]string{"axe describe-ui": `[{"AXUniqueId":"Other","AXLabel":"Other"}]`},
+	}
+	cli := CLI{Runner: runner, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	fields, err := cli.executeFlowStep(context.Background(), run, 1, FlowStep{
+		Action: "when",
+		Params: map[string]string{"id": "ToggleX"},
+		Do:     []FlowStep{{Action: "tap", Params: map[string]string{"id": "ToggleX"}}},
+	})
+	if err != nil {
+		t.Fatalf("fields=%v err=%v", fields, err)
+	}
+	if fields["matched"] != "false" || fields["skipped"] != "1" {
+		t.Fatalf("fields=%v", fields)
+	}
+	if containsCall(runner.commands, "axe tap --id ToggleX") {
+		t.Fatalf("tap should not run: %v", runner.commands)
+	}
+}
+
 func TestUIPinchRecordsHighLevelCommand(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
