@@ -586,6 +586,10 @@ func appiumNodeFromStart(start xml.StartElement) *appiumXMLNode {
 	put("identifier", attrs["name"])
 	put("label", attrs["label"])
 	put("value", attrs["value"])
+	put("enabled", attrs["enabled"])
+	put("subrole", attrs["subrole"])
+	put("title", attrs["title"])
+	put("pid", attrs["pid"])
 	put("frame", appiumFrame(attrs))
 	return &appiumXMLNode{Data: data}
 }

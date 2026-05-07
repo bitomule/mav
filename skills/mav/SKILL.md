@@ -19,8 +19,10 @@ does not explore or repair routes by itself. The agent decides the next action.
 2. If the project lacks `.mav/config.yaml`, run `mav setup` and review the
    generated config. Setup is idempotent: it detects app identity, simulator
    defaults, UI tools, and an editable `launch.commands` recipe while
-   preserving existing explicit choices. MAV uses that recipe to run the app;
-   Bazel/Xcode/Tuist detection is setup-time scaffolding only.
+   preserving existing explicit choices. MAV uses that recipe to run the app.
+   Detection is conservative: explicit MAV Make/Just targets, explicit
+   `scripts/mav-build` + `scripts/mav-app-path`, explicit Fastlane
+   `mav_build` + `mav_app_path`, and standard Bazel/Xcode/Tuist shapes.
 3. If the validation needs a specific simulator, runtime, or locale, use
    `mav sim list`, then `mav sim select --device ... --ios ... --locale ... --language ...`.
    You can also pass the same target flags to `mav open`.
@@ -30,14 +32,14 @@ does not explore or repair routes by itself. The agent decides the next action.
    log stream for MAV probes.
 5. Prefer `mav ui tree` to understand the current screen. It prints compact
    screen metadata followed by bounded `node ...` lines with ids, labels, roles,
-   values, and frames when available. Treat this as the primary structured UI
-   source for agents; do not ask for `--json`. If the simulator accessibility
-   service returns an empty `AXApplication` tree, MAV attempts recovery
-   internally; do not work around it with screenshots unless `mav ui tree` fails
-   after recovery. In the default `--prefer-driver auto` mode, MAV may fall
-   back to Appium/WDA when AXe returns an empty or unmatched tree. Use
-   `mav ui tree --prefer-driver appium` when inspecting system UI, PHPicker, or
-   permission prompts.
+   values, enabled state, subroles, titles, pids, and frames when available.
+   Treat this as the primary structured UI source for agents; do not ask for
+   `--json`. If the simulator accessibility service returns an empty
+   `AXApplication` tree, MAV attempts recovery internally; do not work around it
+   with screenshots unless `mav ui tree` fails after recovery. In the default
+   `--prefer-driver auto` mode, MAV may fall back to Appium/WDA when AXe returns
+   an empty or unmatched tree. Use `mav ui tree --prefer-driver appium` when
+   inspecting system UI, PHPicker, or permission prompts.
 6. Use `mav capture --name <descriptive-name>` only when the tree is
    insufficient or visual evidence is needed. Captures are unique by default
    under `/tmp/mav/<run-id>/captures/`, and `--name` gives the client and report
@@ -47,7 +49,8 @@ does not explore or repair routes by itself. The agent decides the next action.
    appium` when the id is on a non-accessible wrapper or when `--text` must
    match a field value/placeholder. Use coordinates only when the tree is
    insufficient and the screenshot makes the target unambiguous. Use text as
-   the last option because labels change with localization and copy edits.
+   the last option because labels change with localization and copy edits. Use
+   `mav ui wait --id`, `--text`, or `--value` for readiness checks.
 8. Before navigating to a new screen, verify with `mav ui tree` that the target
    screen has stable accessibility ids or a visible title that MAV can observe.
    The mapping loop is `mav open`, `mav ui tree`, `mav ui tap --id ...`,
@@ -268,7 +271,7 @@ Output is intentionally compact and agent-friendly by default:
 ```text
 ok cmd=open run=7fd logs=/tmp/mav/7fd/logs.txt
 ok cmd=ui.tree driver=axe nodes=42 screen=settings screen_source=recognized
-node index=1 id=settings_button label=Settings role=button frame="{{20, 120}, {180, 44}}"
+node index=1 id=settings_button label=Settings role=button enabled=true frame="{{20, 120}, {180, 44}}"
 ok cmd=capture file=/tmp/mav/7fd/captures/largest-videos-after-pinch.png run=7fd
 fail code=screen_not_found screen=settings
 ```
@@ -286,6 +289,10 @@ permission alerts, non-accessibility wrapper views, and text-field placeholders.
 Use `--prefer-driver appium` to force WDA/XCUITest for those cases, or leave the
 default `auto` mode to let MAV fall back when AXe cannot provide a usable tree
 or tap target.
+
+If `mav ui tap --text X` returns `ui_tap_text_no_label_match`, AXe found `X` as
+a value/placeholder but not as a label. Prefer a stable id, retry with
+`--prefer-driver appium`, or use coordinates only after capture inspection.
 
 MAV persists driver hints in `.mav/map/**`: screens and route edges can carry
 `driver: appium`. When `mav go <screen-id>` sees an Appium-required route, it
