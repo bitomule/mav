@@ -547,18 +547,26 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	if err := SaveCurrentRun(c.Root, run); err != nil {
 		return err
 	}
-	appiumWarmup := c.startAppiumWarmup(ctx, cfg, run, hasFlag(args, "--warm-appium"))
+	warmAppium := hasFlag(args, "--warm-appium")
+	var appiumWarmup <-chan appiumWarmupResult
 	probeLogPID, probeLogErr := c.startProbeLogs(ctx, cfg, run)
 	if probeLogErr != nil {
 		appendFile(run.LogsPath, "mav probe log capture failed: "+probeLogErr.Error()+"\n")
 	}
-	appPath, failedStep, failedResult := c.runLaunchRecipe(ctx, cfg, run)
+	appPath, failedStep, failedResult := c.runLaunchRecipeWithHook(ctx, cfg, run, func(step launchStep) {
+		if warmAppium && step.Name == "launch" && appiumWarmup == nil {
+			appiumWarmup = c.startAppiumWarmup(ctx, cfg, run, true)
+		}
+	})
 	if failedStep != nil {
 		fields := map[string]string{"run": run.ID, "logs": run.LogsPath, "step": failedStep.Name, "stderr": firstLine(failedResult.Stderr)}
 		if fields["stderr"] == "" {
 			fields["stderr"] = failedResult.Err.Error()
 		}
 		return Fail("launch_step_failed", fields).Write(c.Stdout)
+	}
+	if warmAppium && appiumWarmup == nil {
+		appiumWarmup = c.startAppiumWarmup(ctx, cfg, run, true)
 	}
 	fields := map[string]string{"run": run.ID, "logs": run.LogsPath, "dir": run.Dir}
 	if appPath != "" {
@@ -783,12 +791,12 @@ func (c CLI) uiTree(ctx context.Context, opts GlobalOptions, cfg Config) error {
 		addSandboxNext(fields, result.Stderr)
 		return Fail("ui_tree_failed", fields).Write(c.Stdout)
 	}
-	state := c.observeUITree(cfg, result.Stdout, driver)
+	state := c.observeUITree(cfg, result.Stdout, driver, false)
 	if prefer == "auto" && driver != "appium" && shouldFallbackToAppiumTree(result.Stdout, state) {
 		if appiumDriver, appiumResult, appiumErr := c.describeUITree(ctx, cfg, "appium"); appiumErr == nil && appiumResult.Err == nil && !isEmptyAXTree(appiumResult.Stdout) {
 			driver = appiumDriver
 			result = appiumResult
-			state = c.observeUITree(cfg, result.Stdout, driver)
+			state = c.observeUITree(cfg, result.Stdout, driver, false)
 		}
 	}
 	if opts.Raw {
@@ -798,6 +806,7 @@ func (c CLI) uiTree(ctx context.Context, opts GlobalOptions, cfg Config) error {
 	if isEmptyAXTree(result.Stdout) {
 		return Fail("ui_tree_empty", map[string]string{"driver": driver, "reason": "simulator_accessibility_unavailable", "recovered": strconv.FormatBool(recovered)}).Write(c.Stdout)
 	}
+	state = c.observeUITree(cfg, result.Stdout, driver, true)
 	fields := map[string]string{"driver": driver, "nodes": strconv.Itoa(state.Nodes), "screen": state.Screen}
 	if state.ScreenSource != "" {
 		fields["screen_source"] = state.ScreenSource
@@ -837,24 +846,61 @@ type uiTreeState struct {
 	PendingFrom    string
 }
 
-func (c CLI) observeUITree(cfg Config, raw string, driver ...string) uiTreeState {
-	treeDriver := ""
-	if len(driver) > 0 {
-		treeDriver = driver[0]
-	}
+func (c CLI) observeUITree(cfg Config, raw, treeDriver string, persist bool) uiTreeState {
 	state := uiTreeState{
 		Driver:   treeDriver,
 		Screen:   "unknown",
 		Elements: ExtractElements(raw),
 		Nodes:    countTreeNodes(raw),
 	}
-	if run, err := LoadRun(c.Root, ""); err == nil {
-		if observed, err := ObserveScreenDetailedWithDriver(c.Root, cfg, run, raw, treeDriver); err == nil && observed.Screen != "" {
-			state.Screen = observed.Screen
-			state.ScreenSource = observed.Source
-			state.PreviousScreen = observed.PreviousScreen
-			state.Elements = observed.Elements
+	if persist {
+		if run, err := LoadRun(c.Root, ""); err == nil {
+			if observed, err := ObserveScreenDetailedWithDriver(c.Root, cfg, run, raw, treeDriver); err == nil && observed.Screen != "" {
+				state.Screen = observed.Screen
+				state.ScreenSource = observed.Source
+				state.PreviousScreen = observed.PreviousScreen
+				state.Elements = observed.Elements
+			}
 		}
+	} else if m, err := LoadAppMap(c.Root); err == nil {
+		current := CurrentScreen(c.Root)
+		screenID := ""
+		source := ""
+		if current != "" {
+			if screen, ok := m.Screens[current]; ok && screenMatches(screen, raw, state.Elements) {
+				screenID = current
+				source = "current"
+			}
+		}
+		if screenID == "" {
+			screenID = recognizeScreen(m, raw, state.Elements)
+			if screenID != "" {
+				source = "recognized"
+			}
+		}
+		if screenID == "" {
+			screenID = inferScreenID(state.Elements)
+			if screenID != "" {
+				source = "inferred"
+			}
+		}
+		if screenID == "" && len(state.Elements) == 0 {
+			screenID = current
+			if screenID != "" {
+				source = "current"
+			}
+		}
+		if screenID != "" {
+			state.Screen = screenID
+			state.ScreenSource = source
+			state.PreviousScreen = current
+		} else {
+			state.ScreenSource = "unmatched"
+			state.PreviousScreen = current
+		}
+	} else if screenID := inferScreenID(state.Elements); screenID != "" {
+		state.Screen = screenID
+		state.ScreenSource = "inferred"
 	}
 	if state.Nodes == 0 {
 		state.Nodes = strings.Count(raw, "\n")
@@ -1638,6 +1684,9 @@ func (c CLI) goScreen(ctx context.Context, opts GlobalOptions, args []string) er
 func routeRequiredDriver(m AppMap, target string, route []Edge) string {
 	for _, edge := range route {
 		if edge.Driver == "appium" {
+			return "appium"
+		}
+		if screen := m.Screens[edge.To]; screen.Driver == "appium" {
 			return "appium"
 		}
 	}

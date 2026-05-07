@@ -902,6 +902,21 @@ func TestGoWarmsAndForcesAppiumForMappedAppiumEdge(t *testing.T) {
 	}
 }
 
+func TestRouteRequiredDriverChecksIntermediateScreens(t *testing.T) {
+	m := AppMap{
+		Start: "home",
+		Screens: map[string]Screen{
+			"home":     {ID: "home"},
+			"picker":   {ID: "picker", Driver: "appium"},
+			"settings": {ID: "settings"},
+		},
+	}
+	route := []Edge{{To: "picker", ID: "picker_button"}, {To: "settings", ID: "done_button"}}
+	if got := routeRequiredDriver(m, "settings", route); got != "appium" {
+		t.Fatalf("driver=%q", got)
+	}
+}
+
 func TestUIScrollUntilFindsElement(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
