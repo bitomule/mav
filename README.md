@@ -575,6 +575,20 @@ Then use an `exec` step:
 and `MAV_LOGS` set. This is an opt-in guard for trusted project checks, not a
 security sandbox for untrusted commands.
 
+Use `out` to bind trimmed stdout for later steps. The binding name must use
+letters, numbers, `_`, or `-`, and cannot start with a number or `-`. JSON
+stdout exposes nested fields; plain text stdout is available as the binding
+itself:
+
+```yaml
+- exec:
+    cmd: "node utils/get_test_user.js sellersXp"
+    out: credentials
+    timeout: 10s
+- tap: { id: EmailField }
+- type: "${exec.credentials.email}"
+```
+
 ## Simulators
 
 ```bash
