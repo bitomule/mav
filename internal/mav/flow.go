@@ -40,6 +40,7 @@ type flowStepPayload struct {
 	X           string          `yaml:"x"`
 	Y           string          `yaml:"y"`
 	Cmd         string          `yaml:"cmd"`
+	Out         string          `yaml:"out"`
 	Name        string          `yaml:"name"`
 	Note        string          `yaml:"note"`
 	Timeout     string          `yaml:"timeout"`
@@ -165,6 +166,7 @@ func parseFlowStepNode(node yaml.Node) (FlowStep, error) {
 	put("x", payload.X)
 	put("y", payload.Y)
 	put("cmd", payload.Cmd)
+	put("out", payload.Out)
 	put("name", payload.Name)
 	put("note", payload.Note)
 	put("timeout", payload.Timeout)

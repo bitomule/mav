@@ -1442,10 +1442,11 @@ func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) err
 	if err != nil {
 		return err
 	}
+	bindings := flowExecBindings{}
 	start := time.Now()
 	for index, step := range flow.Steps {
 		stepStart := time.Now()
-		fields, err := c.executeFlowStep(ctx, run, index+1, step)
+		fields, err := c.executeFlowStepBound(ctx, run, index+1, step, bindings)
 		elapsed := time.Since(stepStart)
 		if err != nil {
 			failFields := map[string]string{
@@ -1471,6 +1472,230 @@ func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) err
 	}
 	_ = c.withStdout(io.Discard).stop(ctx, GlobalOptions{}, []string{"--run", run.ID})
 	return OK("run", map[string]string{"name": flow.Name, "run": run.ID, "steps": strconv.Itoa(len(flow.Steps)), "elapsed": time.Since(start).String()}).Write(c.Stdout)
+}
+
+type flowExecBinding struct {
+	Raw     string
+	JSON    any
+	HasJSON bool
+}
+
+type flowExecBindings map[string]flowExecBinding
+
+func newFlowExecBinding(raw string) flowExecBinding {
+	trimmed := strings.TrimSpace(raw)
+	binding := flowExecBinding{Raw: trimmed}
+	var decoded any
+	if err := json.Unmarshal([]byte(trimmed), &decoded); err == nil {
+		binding.JSON = decoded
+		binding.HasJSON = true
+	}
+	return binding
+}
+
+func substituteExecBindingsInStep(step FlowStep, bindings flowExecBindings) (FlowStep, error) {
+	return substituteExecBindingsInStepFields(step, bindings, true)
+}
+
+func substituteExecBindingsInStepHeader(step FlowStep, bindings flowExecBindings) (FlowStep, error) {
+	return substituteExecBindingsInStepFields(step, bindings, false)
+}
+
+func substituteExecBindingsInStepFields(step FlowStep, bindings flowExecBindings, includeDo bool) (FlowStep, error) {
+	prepared := step
+	var err error
+	if step.Params != nil {
+		prepared.Params = make(map[string]string, len(step.Params))
+	}
+	for key, value := range step.Params {
+		prepared.Params[key], err = substituteExecBindings(value, bindings)
+		if err != nil {
+			return FlowStep{}, err
+		}
+	}
+	if step.Any != nil {
+		prepared.Any = make([]FlowCondition, len(step.Any))
+	}
+	for i := range step.Any {
+		prepared.Any[i], err = substituteExecBindingsInCondition(step.Any[i], bindings)
+		if err != nil {
+			return FlowStep{}, err
+		}
+	}
+	if includeDo {
+		if step.Do != nil {
+			prepared.Do = make([]FlowStep, len(step.Do))
+		}
+		for i := range step.Do {
+			prepared.Do[i], err = substituteExecBindingsInStep(step.Do[i], bindings)
+			if err != nil {
+				return FlowStep{}, err
+			}
+		}
+	}
+	return prepared, nil
+}
+
+func substituteExecBindingsInCondition(condition FlowCondition, bindings flowExecBindings) (FlowCondition, error) {
+	var err error
+	if condition.Text, err = substituteExecBindings(condition.Text, bindings); err != nil {
+		return FlowCondition{}, err
+	}
+	if condition.ID, err = substituteExecBindings(condition.ID, bindings); err != nil {
+		return FlowCondition{}, err
+	}
+	if condition.Value, err = substituteExecBindings(condition.Value, bindings); err != nil {
+		return FlowCondition{}, err
+	}
+	if condition.ChangedFrom, err = substituteExecBindings(condition.ChangedFrom, bindings); err != nil {
+		return FlowCondition{}, err
+	}
+	return condition, nil
+}
+
+func substituteExecBindings(value string, bindings flowExecBindings) (string, error) {
+	out := value
+	searchFrom := 0
+	for {
+		if searchFrom >= len(out) {
+			return out, nil
+		}
+		start := strings.Index(out[searchFrom:], "${exec.")
+		if start < 0 {
+			return out, nil
+		}
+		start += searchFrom
+		end := strings.Index(out[start:], "}")
+		if end < 0 {
+			return "", fmt.Errorf("exec_binding_invalid")
+		}
+		end += start
+		expr := out[start+len("${exec.") : end]
+		replacement, err := resolveExecBinding(expr, bindings)
+		if err != nil {
+			return "", err
+		}
+		out = out[:start] + replacement + out[end+1:]
+		searchFrom = start + len(replacement)
+	}
+}
+
+func resolveExecBinding(expr string, bindings flowExecBindings) (string, error) {
+	name := expr
+	path := ""
+	if dot := strings.Index(expr, "."); dot >= 0 {
+		name = expr[:dot]
+		path = expr[dot+1:]
+	}
+	if name == "" {
+		return "", fmt.Errorf("exec_binding_invalid")
+	}
+	binding, ok := bindings[name]
+	if !ok {
+		return "", fmt.Errorf("exec_binding_missing name=%s", name)
+	}
+	if path == "" {
+		return binding.Raw, nil
+	}
+	if !binding.HasJSON {
+		return "", fmt.Errorf("exec_json_path_missing name=%s path=%s", name, path)
+	}
+	value, ok := lookupExecJSONPath(binding.JSON, strings.Split(path, "."))
+	if !ok {
+		return "", fmt.Errorf("exec_json_path_missing name=%s path=%s", name, path)
+	}
+	return execBindingValueString(value), nil
+}
+
+func lookupExecJSONPath(value any, parts []string) (any, bool) {
+	current := value
+	for _, part := range parts {
+		if part == "" {
+			return nil, false
+		}
+		switch typed := current.(type) {
+		case map[string]any:
+			next, ok := typed[part]
+			if !ok {
+				return nil, false
+			}
+			current = next
+		case []any:
+			index, err := strconv.Atoi(part)
+			if err != nil || index < 0 || index >= len(typed) {
+				return nil, false
+			}
+			current = typed[index]
+		default:
+			return nil, false
+		}
+	}
+	return current, true
+}
+
+func execBindingValueString(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case nil:
+		return ""
+	default:
+		data, err := json.Marshal(typed)
+		if err != nil {
+			return fmt.Sprint(typed)
+		}
+		return string(data)
+	}
+}
+
+func validExecBindingName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		alpha := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z'
+		digit := r >= '0' && r <= '9'
+		if alpha || r == '_' || i > 0 && (digit || r == '-') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func (c CLI) executeFlowStepBound(ctx context.Context, run RunState, index int, step FlowStep, bindings flowExecBindings) (map[string]string, error) {
+	if step.Action == "when" {
+		prepared, err := substituteExecBindingsInStepHeader(step, bindings)
+		if err != nil {
+			return nil, err
+		}
+		return c.executeWhenFlowStepBound(ctx, run, index, prepared, bindings)
+	}
+	prepared, err := substituteExecBindingsInStep(step, bindings)
+	if err != nil {
+		return nil, err
+	}
+	switch prepared.Action {
+	case "exec":
+		if out := prepared.Params["out"]; out != "" && !validExecBindingName(out) {
+			return map[string]string{"out": out}, fmt.Errorf("exec_out_invalid")
+		}
+		fields, raw, err := c.execFlowShellOutput(ctx, run, index, prepared.Params)
+		if err != nil {
+			return fields, err
+		}
+		if out := prepared.Params["out"]; out != "" {
+			if strings.TrimSpace(raw) == "" {
+				fields["out"] = out
+				return fields, fmt.Errorf("exec_output_missing")
+			}
+			bindings[out] = newFlowExecBinding(raw)
+			fields["out"] = out
+		}
+		return fields, nil
+	default:
+		return c.executeFlowStep(ctx, run, index, prepared)
+	}
 }
 
 func (c CLI) executeFlowStep(ctx context.Context, run RunState, index int, step FlowStep) (map[string]string, error) {
@@ -1602,6 +1827,40 @@ func (c CLI) executeWhenFlowStep(ctx context.Context, run RunState, index int, s
 	for childIndex, child := range step.Do {
 		childStart := time.Now()
 		childFields, err := c.executeFlowStep(ctx, run, childIndex+1, child)
+		elapsed := time.Since(childStart)
+		if err != nil {
+			fields["child_step"] = strconv.Itoa(childIndex + 1)
+			fields["child_action"] = child.Action
+			fields["child_code"] = err.Error()
+			for key, value := range childFields {
+				fields["child_"+key] = value
+			}
+			return fields, err
+		}
+		appendFlowStep(run, index, "when."+child.Action, elapsed, "ok", childFields)
+	}
+	fields["executed"] = strconv.Itoa(len(step.Do))
+	return fields, nil
+}
+
+func (c CLI) executeWhenFlowStepBound(ctx context.Context, run RunState, index int, step FlowStep, bindings flowExecBindings) (map[string]string, error) {
+	if len(step.Do) == 0 {
+		return nil, fmt.Errorf("when_do_missing")
+	}
+	matched, err := c.evaluateFlowCondition(ctx, step.Params, step.Any)
+	if err != nil {
+		return copyParams(step.Params), err
+	}
+	fields := copyParams(step.Params)
+	fields["matched"] = strconv.FormatBool(matched)
+	fields["steps"] = strconv.Itoa(len(step.Do))
+	if !matched {
+		fields["skipped"] = strconv.Itoa(len(step.Do))
+		return fields, nil
+	}
+	for childIndex, child := range step.Do {
+		childStart := time.Now()
+		childFields, err := c.executeFlowStepBound(ctx, run, childIndex+1, child, bindings)
 		elapsed := time.Since(childStart)
 		if err != nil {
 			fields["child_step"] = strconv.Itoa(childIndex + 1)
@@ -2046,16 +2305,21 @@ func (c CLI) scrollUntilFlowCondition(ctx context.Context, params map[string]str
 }
 
 func (c CLI) execFlowShell(ctx context.Context, run RunState, index int, params map[string]string) (map[string]string, error) {
+	fields, _, err := c.execFlowShellOutput(ctx, run, index, params)
+	return fields, err
+}
+
+func (c CLI) execFlowShellOutput(ctx context.Context, run RunState, index int, params map[string]string) (map[string]string, string, error) {
 	cfg, err := LoadConfig(c.Root)
 	if err != nil {
-		return nil, fmt.Errorf("config_not_found")
+		return nil, "", fmt.Errorf("config_not_found")
 	}
 	if !cfg.AllowShell {
-		return map[string]string{"next": "set allow_shell: true in .mav/config.yaml for trusted project-local flows"}, fmt.Errorf("shell_not_allowed")
+		return map[string]string{"next": "set allow_shell: true in .mav/config.yaml for trusted project-local flows"}, "", fmt.Errorf("shell_not_allowed")
 	}
 	command := params["cmd"]
 	if strings.TrimSpace(command) == "" {
-		return nil, fmt.Errorf("exec_cmd_missing")
+		return nil, "", fmt.Errorf("exec_cmd_missing")
 	}
 	timeout := parseFlowDuration(params["timeout"], 30*time.Second)
 	if timeout <= 0 {
@@ -2097,16 +2361,16 @@ func (c CLI) execFlowShell(ctx context.Context, run RunState, index int, params 
 	}
 	if stepCtx.Err() == context.DeadlineExceeded {
 		fields["timeout"] = timeout.String()
-		return fields, fmt.Errorf("exec_timeout")
+		return fields, stdout.String(), fmt.Errorf("exec_timeout")
 	}
 	if contains := params["contains"]; contains != "" && !strings.Contains(stdout.String()+stderr.String(), contains) {
 		fields["contains"] = contains
-		return fields, fmt.Errorf("exec_assert_failed")
+		return fields, stdout.String(), fmt.Errorf("exec_assert_failed")
 	}
 	if err != nil {
-		return fields, fmt.Errorf("exec_failed")
+		return fields, stdout.String(), fmt.Errorf("exec_failed")
 	}
-	return fields, nil
+	return fields, stdout.String(), nil
 }
 
 func (c CLI) evaluateFlowCondition(ctx context.Context, params map[string]string, any []FlowCondition) (bool, error) {

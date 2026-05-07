@@ -1284,6 +1284,219 @@ func TestExecStepRunsInProjectRoot(t *testing.T) {
 	}
 }
 
+func TestExecStepBindsJSONOutput(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.AllowShell = true
+	cfg.Tools = map[string]bool{"axe": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	runner := &sequenceRecordingRunner{tools: cfg.Tools}
+	cli := CLI{Runner: runner, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	bindings := flowExecBindings{}
+	fields, err := cli.executeFlowStepBound(context.Background(), run, 1, FlowStep{Action: "exec", Params: map[string]string{
+		"cmd": `printf '{"email":"seller@example.com","profile":{"code":42},"enabled":true}'`,
+		"out": "credentials",
+	}}, bindings)
+	if err != nil {
+		t.Fatalf("fields=%v err=%v", fields, err)
+	}
+	if fields["out"] != "credentials" {
+		t.Fatalf("fields=%v", fields)
+	}
+	if _, ok := bindings["credentials"]; !ok {
+		t.Fatalf("bindings=%+v", bindings)
+	}
+	_, err = cli.executeFlowStepBound(context.Background(), run, 2, FlowStep{Action: "type", Params: map[string]string{"text": "${exec.credentials.email}-${exec.credentials.profile.code}-${exec.credentials.enabled}"}}, bindings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsCall(runner.commands, "axe type seller@example.com-42-true") {
+		t.Fatalf("commands=%v", runner.commands)
+	}
+}
+
+func TestExecStepBindsRawStringOutput(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.AllowShell = true
+	cfg.Tools = map[string]bool{"axe": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	runner := &sequenceRecordingRunner{tools: cfg.Tools}
+	cli := CLI{Runner: runner, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	bindings := flowExecBindings{}
+	if _, err := cli.executeFlowStepBound(context.Background(), run, 1, FlowStep{Action: "exec", Params: map[string]string{"cmd": "printf raw-token", "out": "token"}}, bindings); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cli.executeFlowStepBound(context.Background(), run, 2, FlowStep{Action: "type", Params: map[string]string{"text": "${exec.token}"}}, bindings); err != nil {
+		t.Fatal(err)
+	}
+	if !containsCall(runner.commands, "axe type raw-token") {
+		t.Fatalf("commands=%v", runner.commands)
+	}
+}
+
+func TestExecBindingErrors(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.AllowShell = true
+	cfg.Tools = map[string]bool{"axe": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	cli := CLI{Runner: &sequenceRecordingRunner{tools: cfg.Tools}, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	bindings := flowExecBindings{}
+	if _, err := cli.executeFlowStepBound(context.Background(), run, 1, FlowStep{Action: "type", Params: map[string]string{"text": "${exec.missing}"}}, bindings); err == nil || !strings.Contains(err.Error(), "exec_binding_missing name=missing") {
+		t.Fatalf("err=%v", err)
+	}
+	if _, err := cli.executeFlowStepBound(context.Background(), run, 2, FlowStep{Action: "exec", Params: map[string]string{"cmd": "true", "out": "empty"}}, bindings); err == nil || err.Error() != "exec_output_missing" {
+		t.Fatalf("err=%v", err)
+	}
+	sideEffect := filepath.Join(root, "should-not-exist")
+	if fields, err := cli.executeFlowStepBound(context.Background(), run, 3, FlowStep{Action: "exec", Params: map[string]string{"cmd": "touch " + shellQuote(sideEffect), "out": "bad.name"}}, bindings); err == nil || err.Error() != "exec_out_invalid" || fields["out"] != "bad.name" {
+		t.Fatalf("fields=%v err=%v", fields, err)
+	}
+	if _, err := os.Stat(sideEffect); !os.IsNotExist(err) {
+		t.Fatalf("invalid out command should not run, stat err=%v", err)
+	}
+	if _, err := cli.executeFlowStepBound(context.Background(), run, 4, FlowStep{Action: "exec", Params: map[string]string{"cmd": `printf '{"email":"seller@example.com"}'`, "out": "credentials"}}, bindings); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cli.executeFlowStepBound(context.Background(), run, 5, FlowStep{Action: "type", Params: map[string]string{"text": "${exec.credentials.password}"}}, bindings); err == nil || !strings.Contains(err.Error(), "exec_json_path_missing name=credentials path=password") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestExecBindingSubstitutionDoesNotMutateStep(t *testing.T) {
+	original := FlowStep{
+		Action: "when",
+		Params: map[string]string{"text": "${exec.token}"},
+		Any:    []FlowCondition{{Text: "${exec.token}"}},
+		Do:     []FlowStep{{Action: "type", Params: map[string]string{"text": "${exec.token}"}}},
+	}
+	bindings := flowExecBindings{"token": newFlowExecBinding("raw-token")}
+	prepared, err := substituteExecBindingsInStep(original, bindings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Params["text"] != "raw-token" || prepared.Any[0].Text != "raw-token" || prepared.Do[0].Params["text"] != "raw-token" {
+		t.Fatalf("prepared=%+v", prepared)
+	}
+	if original.Params["text"] != "${exec.token}" || original.Any[0].Text != "${exec.token}" || original.Do[0].Params["text"] != "${exec.token}" {
+		t.Fatalf("original mutated=%+v", original)
+	}
+}
+
+func TestExecBindingSubstitutionTreatsInsertedPlaceholdersAsLiteral(t *testing.T) {
+	bindings := flowExecBindings{
+		"token": newFlowExecBinding("${exec.token}"),
+		"tail":  newFlowExecBinding("done"),
+	}
+	got, err := substituteExecBindings("value=${exec.token};tail=${exec.tail}", bindings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "value=${exec.token};tail=done" {
+		t.Fatalf("got=%q", got)
+	}
+}
+
+func TestExecBindingFromIncludeEnv(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.AllowShell = true
+	cfg.Tools = map[string]bool{"axe": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFlow(t, filepath.Join(root, "main.yaml"), `
+steps:
+  - exec: { cmd: "printf '{\"email\":\"seller@example.com\"}'", out: credentials }
+  - include:
+      file: login.yaml
+      env:
+        EMAIL: "${exec.credentials.email}"
+`)
+	writeTestFlow(t, filepath.Join(root, "login.yaml"), `
+steps:
+  - type: "${env.EMAIL}"
+`)
+	flow, err := LoadFlow(filepath.Join(root, "main.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(flow.Steps) != 2 || flow.Steps[1].Params["text"] != "${exec.credentials.email}" {
+		t.Fatalf("steps=%+v", flow.Steps)
+	}
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	runner := &sequenceRecordingRunner{tools: cfg.Tools}
+	cli := CLI{Runner: runner, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	bindings := flowExecBindings{}
+	for index, step := range flow.Steps {
+		if _, err := cli.executeFlowStepBound(context.Background(), run, index+1, step, bindings); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !containsCall(runner.commands, "axe type seller@example.com") {
+		t.Fatalf("commands=%v", runner.commands)
+	}
+}
+
+func TestExecBindingInsideSkippedWhenDoIsNotResolved(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.Tools = map[string]bool{"axe": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	runner := &sequenceRecordingRunner{
+		tools: cfg.Tools,
+		out:   map[string]string{"axe describe-ui": `[{"AXUniqueId":"Other"}]`},
+	}
+	cli := CLI{Runner: runner, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	fields, err := cli.executeFlowStepBound(context.Background(), run, 1, FlowStep{
+		Action: "when",
+		Params: map[string]string{"id": "Gate"},
+		Do:     []FlowStep{{Action: "type", Params: map[string]string{"text": "${exec.later.value}"}}},
+	}, flowExecBindings{})
+	if err != nil {
+		t.Fatalf("fields=%v err=%v", fields, err)
+	}
+	if fields["matched"] != "false" || fields["skipped"] != "1" {
+		t.Fatalf("fields=%v", fields)
+	}
+	if containsCall(runner.commands, "axe type") {
+		t.Fatalf("commands=%v", runner.commands)
+	}
+}
+
 func TestLogsReadsCurrentRunFile(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, MavDir), 0o755); err != nil {

@@ -106,6 +106,19 @@ calls. MAV runs the command in the project root with `MAV_ROOT`, `MAV_RUN_ID`,
 and applies the requested timeout. Treat this as a trusted-project opt-in, not
 as a hard sandbox for arbitrary untrusted commands.
 
+Use `out` when a trusted helper should feed later steps. MAV binds trimmed
+stdout; binding names must use letters, numbers, `_`, or `-`, and cannot start
+with a number or `-`. JSON stdout exposes fields through `${exec.NAME.field}`,
+while plain text stdout is available as `${exec.NAME}`:
+
+```yaml
+- exec:
+    cmd: "node utils/get_test_user.js sellersXp"
+    out: credentials
+    timeout: 10s
+- type: "${exec.credentials.email}"
+```
+
 ## Evidence
 
 Use evidence when the user needs proof of verification:
