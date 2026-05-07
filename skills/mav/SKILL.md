@@ -24,22 +24,29 @@ does not explore or repair routes by itself. The agent decides the next action.
 3. If the validation needs a specific simulator, runtime, or locale, use
    `mav sim list`, then `mav sim select --device ... --ios ... --locale ... --language ...`.
    You can also pass the same target flags to `mav open`.
-4. Start the app with `mav open`. This creates `/tmp/mav/<run-id>/` and starts
-   `logs.txt`. MAV captures a filtered unified log stream for MAV probes.
+4. Start the app with `mav open`. Use `mav open --warm-appium` when the session
+   is likely to need Appium-backed tree or tap fallback. This creates
+   `/tmp/mav/<run-id>/` and starts `logs.txt`. MAV captures a filtered unified
+   log stream for MAV probes.
 5. Prefer `mav ui tree` to understand the current screen. It prints compact
    screen metadata followed by bounded `node ...` lines with ids, labels, roles,
    values, and frames when available. Treat this as the primary structured UI
    source for agents; do not ask for `--json`. If the simulator accessibility
    service returns an empty `AXApplication` tree, MAV attempts recovery
    internally; do not work around it with screenshots unless `mav ui tree` fails
-   after recovery.
+   after recovery. In the default `--prefer-driver auto` mode, MAV may fall
+   back to Appium/WDA when AXe returns an empty or unmatched tree. Use
+   `mav ui tree --prefer-driver appium` when inspecting system UI, PHPicker, or
+   permission prompts.
 6. Use `mav capture --name <descriptive-name>` only when the tree is
    insufficient or visual evidence is needed. Captures are unique by default
    under `/tmp/mav/<run-id>/captures/`, and `--name` gives the client and report
    a stable, readable proof point such as `largest-videos-after-pinch`.
 7. Use `mav ui tap/type/swipe/wait/scrollUntil` for manual exploration. Prefer
-   accessibility identifiers first (`--id`). Use coordinates only when the tree
-   is insufficient and the screenshot makes the target unambiguous. Use text as
+   accessibility identifiers first (`--id`). Use `mav ui tap --prefer-driver
+   appium` when the id is on a non-accessible wrapper or when `--text` must
+   match a field value/placeholder. Use coordinates only when the tree is
+   insufficient and the screenshot makes the target unambiguous. Use text as
    the last option because labels change with localization and copy edits.
 8. Before navigating to a new screen, verify with `mav ui tree` that the target
    screen has stable accessibility ids or a visible title that MAV can observe.
@@ -224,6 +231,18 @@ capture named evidence before updating routes.
 If it also reports `map_pending=true`, the previous tap has not produced a
 mapped screen yet. Do not use `mav go` for that destination until `.mav/map/**`
 contains the screen and route.
+
+AXe is the fast semantic driver, but it can miss system-process UI, PHPicker,
+permission alerts, non-accessibility wrapper views, and text-field placeholders.
+Use `--prefer-driver appium` to force WDA/XCUITest for those cases, or leave the
+default `auto` mode to let MAV fall back when AXe cannot provide a usable tree
+or tap target.
+
+MAV persists driver hints in `.mav/map/**`: screens and route edges can carry
+`driver: appium`. When `mav go <screen-id>` sees an Appium-required route, it
+warms Appium automatically and forces Appium for only those mapped actions. If
+it reports `required_driver=appium`, keep Appium installed and prefer
+`mav open --warm-appium` for related manual exploration.
 
 If simulator commands fail with a hint like `requires simulator/idb access;
 rerun outside sandbox`, rerun MAV outside the sandbox instead of retrying the

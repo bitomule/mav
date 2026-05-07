@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -97,6 +98,37 @@ func (r errorRunner) Start(ctx context.Context, logPath string, name string, arg
 	_ = name
 	_ = args
 	return 0, r.result.Err
+}
+
+type appiumFallbackRunner struct {
+	tools map[string]bool
+}
+
+func (r appiumFallbackRunner) LookPath(file string) (string, error) {
+	if r.tools[file] {
+		return "/usr/bin/" + file, nil
+	}
+	return "", os.ErrNotExist
+}
+
+func (r appiumFallbackRunner) Run(ctx context.Context, name string, args ...string) CommandResult {
+	_ = ctx
+	key := name + " " + strings.Join(args, " ")
+	if key == "appium driver list --installed" {
+		return CommandResult{Stdout: "xcuitest@7.0.0\n"}
+	}
+	if strings.HasPrefix(key, "axe tap ") {
+		return CommandResult{Stderr: "No accessibility element matched", Err: os.ErrNotExist}
+	}
+	return CommandResult{}
+}
+
+func (r appiumFallbackRunner) Start(ctx context.Context, logPath string, name string, args ...string) (int, error) {
+	_ = ctx
+	_ = logPath
+	_ = name
+	_ = args
+	return 123, nil
 }
 
 type appiumHomeRetryRunner struct{}
@@ -430,6 +462,449 @@ func TestUITreeReportsRecognizedScreenSeparately(t *testing.T) {
 	}
 }
 
+func TestUITreePreferAppiumUsesSource(t *testing.T) {
+	root, cfg, server, calls := setupAppiumSemanticTest(t)
+	defer server.Close()
+
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{
+		tools: cfg.Tools,
+		out:   map[string]string{"appium driver list --installed": "xcuitest@7.0.0\n"},
+	}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "tree", "--prefer-driver", "appium"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "driver=appium") || !strings.Contains(got, "id=EmailField") || !strings.Contains(got, "value=Email") {
+		t.Fatalf("got %q", got)
+	}
+	if !containsCall(*calls, "/wd/hub/session/s1/source") {
+		t.Fatalf("source not requested: %v", *calls)
+	}
+}
+
+func TestUITreePreferAxeDoesNotFallbackToAppium(t *testing.T) {
+	root, cfg, server, calls := setupAppiumSemanticTest(t)
+	defer server.Close()
+	cfg.Tools["axe"] = true
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	raw := `[{"role":"AXApplication","AXFrame":"{{0, 0}, {0, 0}}"}]`
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{
+		tools: cfg.Tools,
+		out: map[string]string{
+			"axe describe-ui --udid SIM":     raw,
+			"appium driver list --installed": "xcuitest@7.0.0\n",
+		},
+	}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "tree", "--prefer-driver", "axe"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.Contains(got, "fail code=ui_tree_empty") || !strings.Contains(got, "driver=axe") {
+		t.Fatalf("got %q", got)
+	}
+	if containsCall(*calls, "/wd/hub/session/s1/source") {
+		t.Fatalf("unexpected appium source request: %v", *calls)
+	}
+}
+
+func TestUITreeAutoFallsBackToAppiumForEmptyTree(t *testing.T) {
+	root, cfg, server, calls := setupAppiumSemanticTest(t)
+	defer server.Close()
+	cfg.Tools["axe"] = true
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	raw := `[{"role":"AXApplication","AXFrame":"{{0, 0}, {0, 0}}"}]`
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{
+		tools: cfg.Tools,
+		out: map[string]string{
+			"axe describe-ui --udid SIM":     raw,
+			"appium driver list --installed": "xcuitest@7.0.0\n",
+		},
+	}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "tree"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "driver=appium") || !containsCall(*calls, "/wd/hub/session/s1/source") {
+		t.Fatalf("got %q calls=%v", got, *calls)
+	}
+}
+
+func TestUITapAutoFallsBackToAppiumByID(t *testing.T) {
+	root, cfg, server, calls := setupAppiumSemanticTest(t)
+	defer server.Close()
+	cfg.Tools["axe"] = true
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: appiumFallbackRunner{tools: cfg.Tools}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "tap", "--id", "checkout_button"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "driver=appium") || !strings.Contains(got, "fallback=axe") {
+		t.Fatalf("got %q", got)
+	}
+	if !containsCall(*calls, `"using":"accessibility id"`) || !containsCall(*calls, `"value":"checkout_button"`) || !containsCall(*calls, "/click") {
+		t.Fatalf("calls=%v", *calls)
+	}
+}
+
+func TestUITapAutoFallsBackToAppiumPredicateForText(t *testing.T) {
+	root, cfg, server, calls := setupAppiumSemanticTest(t)
+	defer server.Close()
+	cfg.Tools["axe"] = true
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: appiumFallbackRunner{tools: cfg.Tools}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "tap", "--text", "Email"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "driver=appium") || !strings.Contains(got, "fallback=axe") {
+		t.Fatalf("got %q", got)
+	}
+	if !containsCall(*calls, `"using":"predicate string"`) ||
+		!containsCall(*calls, "value == 'Email' OR name == 'Email' OR label == 'Email'") ||
+		!containsCall(*calls, "/click") {
+		t.Fatalf("calls=%v", *calls)
+	}
+}
+
+func TestUITapAutoReportsAppiumErrorWhenAxeMissing(t *testing.T) {
+	calls := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		calls = append(calls, r.Method+" "+r.URL.Path+" "+string(body))
+		http.Error(w, "element not found", http.StatusNotFound)
+	}))
+	defer server.Close()
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.BundleID = "com.example.app"
+	cfg.Tools = map[string]bool{"appium": true, "node": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAppiumSession(run, appiumSessionState{PID: 123, BaseURL: server.URL + appiumBasePath, SessionID: "s1", UDID: "SIM", BundleID: "com.example.app"}); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{
+		tools: cfg.Tools,
+		out:   map[string]string{"appium driver list --installed": "xcuitest@7.0.0\n"},
+	}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "tap", "--id", "missing_button"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "fail code=ui_tap_failed") || !strings.Contains(got, "tool=appium") {
+		t.Fatalf("got %q calls=%v", got, calls)
+	}
+}
+
+func TestUITapAutoReportsAppiumErrorWhenAxeFails(t *testing.T) {
+	calls := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		calls = append(calls, r.Method+" "+r.URL.Path+" "+string(body))
+		http.Error(w, "element not found", http.StatusNotFound)
+	}))
+	defer server.Close()
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.BundleID = "com.example.app"
+	cfg.Tools = map[string]bool{"axe": true, "appium": true, "node": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAppiumSession(run, appiumSessionState{PID: 123, BaseURL: server.URL + appiumBasePath, SessionID: "s1", UDID: "SIM", BundleID: "com.example.app"}); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: appiumFallbackRunner{tools: cfg.Tools}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "tap", "--id", "missing_button"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "fail code=ui_tap_failed") || !strings.Contains(got, "tool=appium") {
+		t.Fatalf("got %q calls=%v", got, calls)
+	}
+	if !containsCall(calls, "/wd/hub/session/s1/element") {
+		t.Fatalf("appium element lookup not attempted: %v", calls)
+	}
+}
+
+func TestOpenWarmAppiumCreatesSession(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.app"
+	cfg.SimulatorUDID = "SIM"
+	cfg.SimulatorName = "iPhone"
+	cfg.Tools = map[string]bool{"appium": true, "node": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	oldClient := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Path {
+		case "/wd/hub/status":
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"value":{"ready":true}}`)), Header: http.Header{}}, nil
+		case "/wd/hub/session":
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"value":{"sessionId":"warm-session"}}`)), Header: http.Header{}}, nil
+		default:
+			return &http.Response{StatusCode: 404, Body: io.NopCloser(strings.NewReader(`not found`)), Header: http.Header{}}, nil
+		}
+	})}
+	defer func() { http.DefaultClient = oldClient }()
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{
+		tools: cfg.Tools,
+		out:   map[string]string{"appium driver list --installed": "xcuitest@7.0.0\n"},
+	}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"open", "--warm-appium"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "appium_warmup=ok") || !strings.Contains(got, "appium_session=warm-session") {
+		t.Fatalf("got %q", got)
+	}
+	run, err := LoadRun(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readAppiumSession(run); err != nil {
+		t.Fatalf("appium session not persisted: %v", err)
+	}
+}
+
+func TestWaitForTreeReadyFallsBackToAppiumForUnmatchedTree(t *testing.T) {
+	root, cfg, server, calls := setupAppiumSemanticTest(t)
+	defer server.Close()
+	cfg.Tools["axe"] = true
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	m := AppMap{
+		AppID: "com.example.app",
+		Start: "home",
+		Screens: map[string]Screen{
+			"home": {ID: "home", AssertText: "Home"},
+		},
+	}
+	if err := SaveAppMap(root, m); err != nil {
+		t.Fatal(err)
+	}
+	SetCurrentScreen(root, "home", "run-appium")
+	cli := CLI{Runner: fakeRunner{
+		tools: cfg.Tools,
+		out: map[string]string{
+			"axe describe-ui --udid SIM":     `[{"AXLabel":"Buy","role":"button"}]`,
+			"appium driver list --installed": "xcuitest@7.0.0\n",
+		},
+	}, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	raw, err := cli.waitForTreeReady(context.Background(), cfg, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(raw, "EmailField") || !containsCall(*calls, "/wd/hub/session/s1/source") {
+		t.Fatalf("raw=%q calls=%v", raw, *calls)
+	}
+}
+
+func TestWaitForTreeReadyDoesNotAcceptUnmatchedTreeWhenAppiumFails(t *testing.T) {
+	calls := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		calls = append(calls, r.Method+" "+r.URL.Path+" "+string(body))
+		http.Error(w, "source unavailable", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.BundleID = "com.example.app"
+	cfg.Tools = map[string]bool{"axe": true, "appium": true, "node": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	m := AppMap{
+		AppID: "com.example.app",
+		Start: "home",
+		Screens: map[string]Screen{
+			"home": {ID: "home", AssertText: "Home"},
+		},
+	}
+	if err := SaveAppMap(root, m); err != nil {
+		t.Fatal(err)
+	}
+	SetCurrentScreen(root, "home", "run-appium")
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAppiumSession(run, appiumSessionState{PID: 123, BaseURL: server.URL + appiumBasePath, SessionID: "s1", UDID: "SIM", BundleID: "com.example.app"}); err != nil {
+		t.Fatal(err)
+	}
+	cli := CLI{Runner: fakeRunner{
+		tools: cfg.Tools,
+		out: map[string]string{
+			"axe describe-ui --udid SIM":     `[{"AXLabel":"Buy","role":"button"},{"AXLabel":"Other","role":"button"}]`,
+			"appium driver list --installed": "xcuitest@7.0.0\n",
+		},
+	}, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	raw, err := cli.waitForTreeReady(context.Background(), cfg, 350*time.Millisecond)
+	if err == nil {
+		t.Fatalf("expected tree_not_ready, got raw=%q", raw)
+	}
+	if !strings.Contains(err.Error(), "tree_not_ready") {
+		t.Fatalf("err=%v", err)
+	}
+	if !containsCall(calls, "/wd/hub/session/s1/source") {
+		t.Fatalf("appium source not attempted: %v", calls)
+	}
+}
+
+func TestGoFailsEarlyWhenRequiredAppiumWarmupFails(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.demo"
+	cfg.SimulatorUDID = "SIM"
+	cfg.Tools = map[string]bool{"axe": true, "xcrun": true, "appium": true, "node": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	m := AppMap{
+		AppID: "com.example.demo",
+		Start: "home",
+		Screens: map[string]Screen{
+			"home":     {ID: "home", Edges: []Edge{{To: "settings", ID: "settings_button", Driver: "appium"}}},
+			"settings": {ID: "settings", AssertText: "Settings"},
+		},
+	}
+	if err := SaveAppMap(root, m); err != nil {
+		t.Fatal(err)
+	}
+	oldClient := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Path {
+		case "/wd/hub/status":
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"value":{"ready":true}}`)), Header: http.Header{}}, nil
+		case "/wd/hub/session":
+			return &http.Response{StatusCode: 500, Body: io.NopCloser(strings.NewReader(`{"value":{"error":"session not created"}}`)), Header: http.Header{}}, nil
+		default:
+			return &http.Response{StatusCode: 404, Body: io.NopCloser(strings.NewReader(`not found`)), Header: http.Header{}}, nil
+		}
+	})}
+	defer func() { http.DefaultClient = oldClient }()
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{
+		tools: cfg.Tools,
+		out:   map[string]string{"appium driver list --installed": "xcuitest@7.0.0\n"},
+	}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"go", "settings"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "fail code=required_driver_missing") ||
+		!strings.Contains(got, "required_driver=appium") ||
+		!strings.Contains(got, "issue=appium_warmup_failed") {
+		t.Fatalf("got %q", got)
+	}
+	run, err := LoadRun(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	commands, err := os.ReadFile(run.Commands)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(commands), "mav stop") {
+		t.Fatalf("expected stop command, commands=%s", commands)
+	}
+}
+
+func setupAppiumSemanticTest(t *testing.T) (string, Config, *httptest.Server, *[]string) {
+	t.Helper()
+	calls := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		calls = append(calls, r.Method+" "+r.URL.Path+" "+string(body))
+		switch {
+		case r.URL.Path == "/wd/hub/session/s1/source":
+			_, _ = io.WriteString(w, `{"value":"<AppiumAUT type=\"XCUIElementTypeApplication\" name=\"Demo\"><XCUIElementTypeTextField name=\"EmailField\" label=\"\" value=\"Email\" x=\"10\" y=\"20\" width=\"100\" height=\"40\"/></AppiumAUT>"}`)
+		case r.URL.Path == "/wd/hub/session/s1/element":
+			_, _ = io.WriteString(w, `{"value":{"element-6066-11e4-a52e-4f735466cecf":"el1"}}`)
+		case r.URL.Path == "/wd/hub/session/s1/element/el1/click":
+			_, _ = io.WriteString(w, `{"value":null}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.BundleID = "com.example.app"
+	cfg.Tools = map[string]bool{"appium": true, "node": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := os.MkdirAll(run.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAppiumSession(run, appiumSessionState{PID: 123, BaseURL: server.URL + appiumBasePath, SessionID: "s1", UDID: "SIM", BundleID: "com.example.app"}); err != nil {
+		t.Fatal(err)
+	}
+	return root, cfg, server, &calls
+}
+
+func containsCall(calls []string, want string) bool {
+	for _, call := range calls {
+		if strings.Contains(call, want) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestSandboxHintForUITreeFailure(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
@@ -589,6 +1064,88 @@ func TestGoUsesNativeMAVActions(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "ok cmd=go") {
 		t.Fatalf("got %q", out.String())
+	}
+}
+
+func TestGoWarmsAndForcesAppiumForMappedAppiumEdge(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.demo"
+	cfg.SimulatorUDID = "SIM"
+	cfg.Tools = map[string]bool{"axe": true, "xcrun": true, "appium": true, "node": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	m := AppMap{
+		AppID: "com.example.demo",
+		Start: "home",
+		Screens: map[string]Screen{
+			"home":     {ID: "home", Edges: []Edge{{To: "settings", ID: "settings_button", Wait: "1", Driver: "appium"}}},
+			"settings": {ID: "settings", AssertText: "Settings"},
+		},
+	}
+	if err := SaveAppMap(root, m); err != nil {
+		t.Fatal(err)
+	}
+	httpCalls := []string{}
+	oldClient := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body := []byte{}
+		if r.Body != nil {
+			body, _ = io.ReadAll(r.Body)
+		}
+		httpCalls = append(httpCalls, r.Method+" "+r.URL.Path+" "+string(body))
+		switch {
+		case r.URL.Path == "/wd/hub/status":
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"value":{"ready":true}}`)), Header: http.Header{}}, nil
+		case r.URL.Path == "/wd/hub/session":
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"value":{"sessionId":"s1"}}`)), Header: http.Header{}}, nil
+		case r.URL.Path == "/wd/hub/session/s1/element":
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"value":{"element-6066-11e4-a52e-4f735466cecf":"el1"}}`)), Header: http.Header{}}, nil
+		case r.URL.Path == "/wd/hub/session/s1/element/el1/click":
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"value":null}`)), Header: http.Header{}}, nil
+		default:
+			return &http.Response{StatusCode: 404, Body: io.NopCloser(strings.NewReader(`not found`)), Header: http.Header{}}, nil
+		}
+	})}
+	defer func() { http.DefaultClient = oldClient }()
+	var out bytes.Buffer
+	runner := fakeRunner{
+		tools: cfg.Tools,
+		out:   map[string]string{"appium driver list --installed": "xcuitest@7.0.0\n"},
+		seq: map[string][]string{"axe describe-ui --udid SIM": {
+			`{"AXLabel":"Home","children":[{"AXLabel":"Settings"}]}`,
+			`{"AXLabel":"Home","children":[{"AXLabel":"Settings"}]}`,
+			`{"AXLabel":"Settings","children":[{"AXLabel":"Daily Reminder"}]}`,
+			`{"AXLabel":"Settings","children":[{"AXLabel":"Daily Reminder"}]}`,
+		}},
+		calls: map[string]int{},
+	}
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"go", "settings"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "ok cmd=go") || !strings.Contains(got, "required_driver=appium") {
+		t.Fatalf("got %q", got)
+	}
+	if !containsCall(httpCalls, "/wd/hub/session ") || !containsCall(httpCalls, `"using":"accessibility id"`) || !containsCall(httpCalls, "/click") {
+		t.Fatalf("httpCalls=%v", httpCalls)
+	}
+}
+
+func TestRouteRequiredDriverChecksIntermediateScreens(t *testing.T) {
+	m := AppMap{
+		Start: "home",
+		Screens: map[string]Screen{
+			"home":     {ID: "home"},
+			"picker":   {ID: "picker", Driver: "appium"},
+			"settings": {ID: "settings"},
+		},
+	}
+	route := []Edge{{To: "picker", ID: "picker_button"}, {To: "settings", ID: "done_button"}}
+	if got := routeRequiredDriver(m, "settings", route); got != "appium" {
+		t.Fatalf("driver=%q", got)
 	}
 }
 
