@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
 	"math"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -365,19 +367,8 @@ func waitForGestureCompletion(fields map[string]string) {
 }
 
 func (c CLI) performAppiumActions(ctx context.Context, cfg Config, actions any) error {
-	if _, err := c.Runner.LookPath("appium"); err != nil {
-		return appiumError{Code: "tool_missing", Message: "appium missing", Next: "mav setup --install appium"}
-	}
-	if nodeCheck := checkAppiumNodePath(c.Runner); !nodeCheck.OK {
-		return appiumError{Code: "tool_missing", Message: nodeCheck.Message, Next: nodeCheck.Next}
-	}
-	driverStatus := checkAppiumXCUITestDriver(ctx, c.Runner)
-	if !driverStatus.OK {
-		next := driverStatus.Next
-		if next == "" {
-			next = "mav setup --install appium"
-		}
-		return appiumError{Code: "tool_missing", Message: driverStatus.Message, Next: next}
+	if err := c.ensureAppiumAvailable(ctx); err != nil {
+		return err
 	}
 	run, runErr := LoadRun(c.Root, "")
 	transient := false
@@ -404,6 +395,222 @@ func (c CLI) performAppiumActions(ctx context.Context, cfg Config, actions any) 
 	}
 	_ = appiumDelete(ctx, session.BaseURL+"/session/"+session.SessionID+"/actions")
 	return nil
+}
+
+func (c CLI) ensureAppiumAvailable(ctx context.Context) error {
+	if _, err := c.Runner.LookPath("appium"); err != nil {
+		return appiumError{Code: "tool_missing", Message: "appium missing", Next: "mav setup --install appium"}
+	}
+	if nodeCheck := checkAppiumNodePath(c.Runner); !nodeCheck.OK {
+		return appiumError{Code: "tool_missing", Message: nodeCheck.Message, Next: nodeCheck.Next}
+	}
+	driverStatus := checkAppiumXCUITestDriver(ctx, c.Runner)
+	if !driverStatus.OK {
+		next := driverStatus.Next
+		if next == "" {
+			next = "mav setup --install appium"
+		}
+		return appiumError{Code: "tool_missing", Message: driverStatus.Message, Next: next}
+	}
+	return nil
+}
+
+func (c CLI) appiumSessionForCommand(ctx context.Context, cfg Config) (appiumSessionState, func(), error) {
+	if err := c.ensureAppiumAvailable(ctx); err != nil {
+		return appiumSessionState{}, func() {}, err
+	}
+	run, runErr := LoadRun(c.Root, "")
+	transient := false
+	if runErr != nil || run.ID == "" {
+		var err error
+		run, err = NewRunState()
+		if err != nil {
+			return appiumSessionState{}, func() {}, err
+		}
+		transient = true
+	}
+	session, err := c.ensureAppiumSession(ctx, cfg, run)
+	cleanup := func() {}
+	if transient {
+		cleanup = func() {
+			if session.PID > 0 {
+				_ = stopProcess(session.PID)
+			}
+		}
+	}
+	if err != nil {
+		cleanup()
+		return session, func() {}, err
+	}
+	return session, cleanup, nil
+}
+
+func (c CLI) appiumSourceTree(ctx context.Context, cfg Config) (string, error) {
+	session, cleanup, err := c.appiumSessionForCommand(ctx, cfg)
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
+	var response map[string]any
+	if err := appiumGetJSON(ctx, session.BaseURL+"/session/"+session.SessionID+"/source", &response); err != nil {
+		return "", appiumError{Code: "ui_tree_failed", Message: err.Error()}
+	}
+	source, ok := response["value"].(string)
+	if !ok {
+		return "", appiumError{Code: "ui_tree_failed", Message: "appium source missing"}
+	}
+	raw, err := appiumSourceToAXJSON(source)
+	if err != nil {
+		return "", appiumError{Code: "ui_tree_failed", Message: err.Error()}
+	}
+	return raw, nil
+}
+
+func (c CLI) appiumClickByAccessibilityID(ctx context.Context, cfg Config, id string) error {
+	return c.appiumFindElementAndClick(ctx, cfg, "accessibility id", id)
+}
+
+func (c CLI) appiumClickByPredicate(ctx context.Context, cfg Config, predicate string) error {
+	return c.appiumFindElementAndClick(ctx, cfg, "predicate string", predicate)
+}
+
+func (c CLI) appiumFindElementAndClick(ctx context.Context, cfg Config, using, value string) error {
+	session, cleanup, err := c.appiumSessionForCommand(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	var response map[string]any
+	body := map[string]any{"using": using, "value": value}
+	if err := appiumPostJSON(ctx, session.BaseURL+"/session/"+session.SessionID+"/element", body, &response); err != nil {
+		return appiumError{Code: "ui_tap_failed", Message: err.Error()}
+	}
+	elementID := appiumElementID(response)
+	if elementID == "" {
+		return appiumError{Code: "ui_tap_failed", Message: "appium element id missing"}
+	}
+	clickURL := session.BaseURL + "/session/" + session.SessionID + "/element/" + url.PathEscape(elementID) + "/click"
+	if err := appiumPostJSON(ctx, clickURL, map[string]any{}, nil); err != nil {
+		return appiumError{Code: "ui_tap_failed", Message: err.Error()}
+	}
+	return nil
+}
+
+func appiumElementID(response map[string]any) string {
+	value, _ := response["value"].(map[string]any)
+	for _, key := range []string{"element-6066-11e4-a52e-4f735466cecf", "ELEMENT"} {
+		if id, ok := value[key].(string); ok && id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+func appiumGetJSON(ctx context.Context, target string, out any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	respData, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return errors.New(firstLine(string(respData)))
+	}
+	if out != nil && len(respData) > 0 {
+		return json.Unmarshal(respData, out)
+	}
+	return nil
+}
+
+type appiumXMLNode struct {
+	Data     map[string]any
+	Children []*appiumXMLNode
+}
+
+func appiumSourceToAXJSON(source string) (string, error) {
+	decoder := xml.NewDecoder(strings.NewReader(source))
+	var roots []*appiumXMLNode
+	var stack []*appiumXMLNode
+	for {
+		token, err := decoder.Token()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return "", fmt.Errorf("appium_source_xml_invalid")
+		}
+		switch value := token.(type) {
+		case xml.StartElement:
+			node := appiumNodeFromStart(value)
+			if len(stack) == 0 {
+				roots = append(roots, node)
+			} else {
+				parent := stack[len(stack)-1]
+				parent.Children = append(parent.Children, node)
+			}
+			stack = append(stack, node)
+		case xml.EndElement:
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
+		}
+	}
+	out := make([]any, 0, len(roots))
+	for _, root := range roots {
+		out = append(out, root.toMap())
+	}
+	data, err := json.Marshal(out)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func appiumNodeFromStart(start xml.StartElement) *appiumXMLNode {
+	attrs := map[string]string{}
+	for _, attr := range start.Attr {
+		attrs[attr.Name.Local] = strings.TrimSpace(attr.Value)
+	}
+	data := map[string]any{
+		"type": start.Name.Local,
+	}
+	put := func(key, value string) {
+		if value != "" {
+			data[key] = value
+		}
+	}
+	put("identifier", attrs["name"])
+	put("label", attrs["label"])
+	put("value", attrs["value"])
+	put("frame", appiumFrame(attrs))
+	return &appiumXMLNode{Data: data}
+}
+
+func (n *appiumXMLNode) toMap() map[string]any {
+	out := map[string]any{}
+	for key, value := range n.Data {
+		out[key] = value
+	}
+	if len(n.Children) > 0 {
+		children := make([]any, 0, len(n.Children))
+		for _, child := range n.Children {
+			children = append(children, child.toMap())
+		}
+		out["children"] = children
+	}
+	return out
+}
+
+func appiumFrame(attrs map[string]string) string {
+	x, y, width, height := attrs["x"], attrs["y"], attrs["width"], attrs["height"]
+	if x == "" && y == "" && width == "" && height == "" {
+		return ""
+	}
+	return "{{" + x + ", " + y + "}, {" + width + ", " + height + "}}"
 }
 
 func (c CLI) ensureAppiumSession(ctx context.Context, cfg Config, run RunState) (appiumSessionState, error) {
