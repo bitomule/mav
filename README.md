@@ -425,6 +425,7 @@ actions
 wait
 waitUntil
 when
+include
 assert
 capture
 scrollUntil
@@ -468,6 +469,19 @@ blocks are for UI/evidence steps and cannot contain `open` or `exec`:
 - when: { visible: { id: ToggleX } }
   do:
     - tap: { id: ToggleX }
+```
+
+Use `include` to compose reusable sub-flows. The included file path is resolved
+relative to the file that declares it, and `env` values are available to the
+included flow as `${env.NAME}`. The `file` field may also reference values from
+the same `env` block:
+
+```yaml
+- include:
+    file: "components/auth/${env.USER}.mav.yaml"
+    env:
+      USER: sellersXp
+      FRESH_INSTALL: true
 ```
 
 ## Evidence

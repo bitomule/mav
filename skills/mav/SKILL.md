@@ -159,6 +159,19 @@ steps; they are not valid inside `do` blocks.
     - tap: { text: Continue }
 ```
 
+Use `include` to compose reusable flow fragments. Resolve paths relative to the
+including YAML file and pass values through `env`; included steps can reference
+them with `${env.NAME}`. The `file` field can reference values from the same
+`env` block:
+
+```yaml
+- include:
+    file: "components/auth/${env.USER}.mav.yaml"
+    env:
+      USER: sellersXp
+      FRESH_INSTALL: true
+```
+
 The supported flow recording steps are `video.start` and `video.stop`;
 `evidence.start` and `evidence.stop` remain supported aliases. Do not use or
 invent `recordVideo: true`.
