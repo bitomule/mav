@@ -459,7 +459,7 @@ func ObserveScreenDetailedWithDriver(root string, cfg Config, run RunState, rawT
 	}
 	screen := m.Screens[screenID]
 	screen.ID = screenID
-	if driver != "" {
+	if driver == "appium" || (driver != "" && screen.Driver != "appium") {
 		screen.Driver = driver
 	}
 	screen.Elements = elements
@@ -515,7 +515,7 @@ func ObserveExpectedScreenWithDriver(root string, cfg Config, run RunState, rawT
 	elements := ExtractElements(rawTree)
 	screen := m.Screens[screenID]
 	screen.ID = screenID
-	if driver != "" {
+	if driver == "appium" || (driver != "" && screen.Driver != "appium") {
 		screen.Driver = driver
 	}
 	screen.Elements = elements
@@ -724,6 +724,9 @@ func isScreenTitle(value string) bool {
 func upsertEdge(edges []Edge, edge Edge) []Edge {
 	for i, existing := range edges {
 		if existing.To == edge.To && existing.ID == edge.ID && existing.Text == edge.Text && existing.X == edge.X && existing.Y == edge.Y {
+			if existing.Driver == "appium" && edge.Driver != "appium" {
+				edge.Driver = existing.Driver
+			}
 			edges[i] = edge
 			return edges
 		}

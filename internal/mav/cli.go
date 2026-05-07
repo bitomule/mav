@@ -553,11 +553,7 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	if probeLogErr != nil {
 		appendFile(run.LogsPath, "mav probe log capture failed: "+probeLogErr.Error()+"\n")
 	}
-	appPath, failedStep, failedResult := c.runLaunchRecipeWithHook(ctx, cfg, run, func(step launchStep) {
-		if warmAppium && step.Name == "launch" && appiumWarmup == nil {
-			appiumWarmup = c.startAppiumWarmup(ctx, cfg, run, true)
-		}
-	})
+	appPath, failedStep, failedResult := c.runLaunchRecipe(ctx, cfg, run)
 	if failedStep != nil {
 		fields := map[string]string{"run": run.ID, "logs": run.LogsPath, "step": failedStep.Name, "stderr": firstLine(failedResult.Stderr)}
 		if fields["stderr"] == "" {
@@ -565,7 +561,7 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 		}
 		return Fail("launch_step_failed", fields).Write(c.Stdout)
 	}
-	if warmAppium && appiumWarmup == nil {
+	if warmAppium {
 		appiumWarmup = c.startAppiumWarmup(ctx, cfg, run, true)
 	}
 	fields := map[string]string{"run": run.ID, "logs": run.LogsPath, "dir": run.Dir}
@@ -1023,10 +1019,13 @@ func (c CLI) waitForTreeReady(ctx context.Context, cfg Config, timeout time.Dura
 			continue
 		}
 		if result.Err == nil && driver != "appium" {
-			state := uiTreeState{Elements: ExtractElements(result.Stdout), Nodes: countTreeNodes(result.Stdout)}
+			state := c.observeUITree(cfg, result.Stdout, driver, false)
 			if shouldFallbackToAppiumTree(result.Stdout, state) {
-				if _, appiumResult, appiumErr := c.describeUITree(ctx, cfg, "appium"); appiumErr == nil && appiumResult.Err == nil {
+				if _, appiumResult, appiumErr := c.describeUITree(ctx, cfg, "appium"); appiumErr == nil && appiumResult.Err == nil && !isEmptyAXTree(appiumResult.Stdout) && countTreeNodes(appiumResult.Stdout) > 1 && len(ExtractElements(appiumResult.Stdout)) > 0 {
 					result = appiumResult
+				} else {
+					time.Sleep(300 * time.Millisecond)
+					continue
 				}
 			}
 		}
@@ -1074,6 +1073,8 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 					c.appendCurrentCommand(command+" --prefer-driver appium", CommandResult{})
 					c.recordPendingTap(id, text, "", "", "appium")
 					return OK("ui.tap", fields).Write(c.Stdout)
+				} else {
+					return c.writeAppiumTapError(err)
 				}
 			}
 			return Fail("tool_missing", map[string]string{"tool": "axe", "next": "use mav ui tap --x X --y Y when AXe is unavailable"}).Write(c.Stdout)
@@ -1093,6 +1094,8 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 					c.appendCurrentCommand(command+" --prefer-driver appium", CommandResult{})
 					c.recordPendingTap(id, text, "", "", "appium")
 					return OK("ui.tap", fields).Write(c.Stdout)
+				} else {
+					return c.writeAppiumTapError(err)
 				}
 			}
 			return Fail("ui_tap_failed", map[string]string{"stderr": firstLine(result.Stderr)}).Write(c.Stdout)
@@ -1636,6 +1639,18 @@ func (c CLI) goScreen(ctx context.Context, opts GlobalOptions, args []string) er
 	run, runErr := LoadRun(c.Root, "")
 	if runErr != nil {
 		return Fail("run_not_found", nil).Write(c.Stdout)
+	}
+	if needsDriver == "appium" {
+		if session, err := readAppiumSession(run); err != nil || session.SessionID == "" {
+			_ = c.withStdout(io.Discard).stop(ctx, GlobalOptions{}, []string{"--run", run.ID})
+			return Fail("required_driver_missing", map[string]string{
+				"screen":          screenID,
+				"required_driver": "appium",
+				"issue":           "appium_warmup_failed",
+				"next":            "run mav open --warm-appium and inspect the run appium.log",
+				"run":             run.ID,
+			}).Write(c.Stdout)
+		}
 	}
 	evidenceStarted := time.Now()
 	if err := c.withStdout(io.Discard).evidenceStart(ctx, GlobalOptions{}, []string{"--run", run.ID}); err != nil {

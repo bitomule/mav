@@ -346,8 +346,8 @@ placeholders, and wrappers that carry an accessibility identifier but are not
 accessibility elements.
 
 When you expect to need Appium, run `mav open --warm-appium` to create the WDA
-session during launch so the first Appium-backed tree or tap does not pay the
-full cold-start cost.
+session after the launch recipe finishes so the first Appium-backed tree or tap
+does not pay the full cold-start cost.
 
 The app map records driver hints as it learns routes. A screen observed through
 Appium is saved with `driver: appium`, and a transition tapped through Appium is
