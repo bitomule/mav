@@ -392,6 +392,9 @@ steps:
   - tap: { text: Daily Reminder }
   - type: "Search text"
   - delay: 500ms
+  - when: { visible: { text: Continue } }
+    do:
+      - tap: { text: Continue }
   - waitUntil:
       any:
         - text: "Don't Allow"
@@ -421,6 +424,7 @@ twoFingerPan
 actions
 wait
 waitUntil
+when
 assert
 capture
 scrollUntil
@@ -455,6 +459,16 @@ writes report data, and returns a compact failure line.
 Use `wait` for a single `id`, `text`, or `value`. Use `waitUntil` with `any`
 when more than one result is acceptable, and use `changedFrom` after a named
 evidence step when the UI change is visual rather than semantic.
+
+Use `when` for optional UI. MAV evaluates the condition once; if it is visible,
+it runs the `do` block, otherwise it skips the block without failing. `do`
+blocks are for UI/evidence steps and cannot contain `open` or `exec`:
+
+```yaml
+- when: { visible: { id: ToggleX } }
+  do:
+    - tap: { id: ToggleX }
+```
 
 ## Evidence
 
