@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -125,6 +126,129 @@ func TestSetupConfigPrefersProjectLaunchScripts(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg.Launch.Commands.Build != "make mav-build" || cfg.Launch.Commands.AppPath != "make mav-app-path" {
+		t.Fatalf("launch=%+v", cfg.Launch.Commands)
+	}
+}
+
+func TestSetupConfigDoesNotUsePartialMakefileRecipe(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "BUILD.bazel"), `ios_application(name = "DemoApp", bundle_id = "com.example.demo")`)
+	mustWrite(t, filepath.Join(root, "Makefile"), "build-ios:\n\ttrue\n")
+	cfg, err := SetupConfig(root, fakeRunner{tools: map[string]bool{"bazelisk": true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(cfg.Launch.Commands.Build, "make") || cfg.Launch.Commands.AppPath == "" {
+		t.Fatalf("launch=%+v", cfg.Launch.Commands)
+	}
+}
+
+func TestSetupConfigUsesExplicitMAVScripts(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "BUILD.bazel"), `ios_application(name = "DemoApp", bundle_id = "com.example.demo")`)
+	mustWrite(t, filepath.Join(root, "scripts", "mav-build"), "#!/bin/sh\ntrue\n")
+	mustWrite(t, filepath.Join(root, "scripts", "mav-app-path"), "#!/bin/sh\nprintf /tmp/App.app\n")
+	cfg, err := SetupConfig(root, fakeRunner{tools: map[string]bool{"bazelisk": true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Launch.Commands.Build != "./scripts/mav-build" || cfg.Launch.Commands.AppPath != "./scripts/mav-app-path" {
+		t.Fatalf("launch=%+v", cfg.Launch.Commands)
+	}
+}
+
+func TestSetupConfigUsesExplicitJustMAVRecipes(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "BUILD.bazel"), `ios_application(name = "DemoApp", bundle_id = "com.example.demo")`)
+	mustWrite(t, filepath.Join(root, "justfile"), "mav-build:\n  true\nmav-app-path:\n  printf /tmp/App.app\n")
+	cfg, err := SetupConfig(root, fakeRunner{tools: map[string]bool{"bazelisk": true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Launch.Commands.Build != "just mav-build" || cfg.Launch.Commands.AppPath != "just mav-app-path" {
+		t.Fatalf("launch=%+v", cfg.Launch.Commands)
+	}
+}
+
+func TestSetupConfigDoesNotGuessUnrelatedJustfile(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "BUILD.bazel"), `ios_application(name = "DemoApp", bundle_id = "com.example.demo")`)
+	mustWrite(t, filepath.Join(root, "justfile"), "build:\n  true\n")
+	cfg, err := SetupConfig(root, fakeRunner{tools: map[string]bool{"bazelisk": true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(cfg.Launch.Commands.Build, "just") {
+		t.Fatalf("launch=%+v", cfg.Launch.Commands)
+	}
+}
+
+func TestSetupConfigUsesExplicitFastlaneMAVLanes(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "BUILD.bazel"), `ios_application(name = "DemoApp", bundle_id = "com.example.demo")`)
+	mustWrite(t, filepath.Join(root, "fastlane", "Fastfile"), `
+default_platform(:ios)
+platform :ios do
+  lane :mav_build do
+  end
+  private_lane :mav_app_path do
+  end
+end
+`)
+	cfg, err := SetupConfig(root, fakeRunner{tools: map[string]bool{"bazelisk": true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Launch.Commands.Build != "bundle exec fastlane mav_build" || cfg.Launch.Commands.AppPath != "bundle exec fastlane mav_app_path" {
+		t.Fatalf("launch=%+v", cfg.Launch.Commands)
+	}
+}
+
+func TestSetupConfigDoesNotUseCommentedFastlaneMAVLanes(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "BUILD.bazel"), `ios_application(name = "DemoApp", bundle_id = "com.example.demo")`)
+	mustWrite(t, filepath.Join(root, "fastlane", "Fastfile"), `
+# lane :mav_build do
+# end
+# private_lane :mav_app_path do
+# end
+`)
+	cfg, err := SetupConfig(root, fakeRunner{tools: map[string]bool{"bazelisk": true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(cfg.Launch.Commands.Build, "fastlane") {
+		t.Fatalf("launch=%+v", cfg.Launch.Commands)
+	}
+}
+
+func TestSetupConfigDoesNotUseFastlanePrefixLaneNames(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "BUILD.bazel"), `ios_application(name = "DemoApp", bundle_id = "com.example.demo")`)
+	mustWrite(t, filepath.Join(root, "fastlane", "Fastfile"), `
+lane :mav_build_debug do
+end
+private_lane :mav_app_path_extra do
+end
+`)
+	cfg, err := SetupConfig(root, fakeRunner{tools: map[string]bool{"bazelisk": true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(cfg.Launch.Commands.Build, "fastlane") {
+		t.Fatalf("launch=%+v", cfg.Launch.Commands)
+	}
+}
+
+func TestSetupConfigDoesNotGuessTenteWrapper(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "BUILD.bazel"), `ios_application(name = "DemoApp", bundle_id = "com.example.demo")`)
+	mustWrite(t, filepath.Join(root, "tente.toml"), "[build]\n")
+	cfg, err := SetupConfig(root, fakeRunner{tools: map[string]bool{"bazelisk": true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(cfg.Launch.Commands.Build, "tente") {
 		t.Fatalf("launch=%+v", cfg.Launch.Commands)
 	}
 }

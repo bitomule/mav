@@ -40,6 +40,19 @@ func selectLaunchCandidate(root string, cfg Config) (LaunchCandidate, bool) {
 
 func detectCustomLaunchCandidates(root string, cfg Config) []LaunchCandidate {
 	var out []LaunchCandidate
+	if exists(filepath.Join(root, "scripts", "mav-build")) && exists(filepath.Join(root, "scripts", "mav-app-path")) {
+		out = append(out, LaunchCandidate{
+			Source:      "custom",
+			Confidence:  93,
+			Description: "project MAV scripts",
+			Launch: LaunchConfig{Mode: "custom", Commands: LaunchCommands{
+				Build:   "./scripts/mav-build",
+				AppPath: "./scripts/mav-app-path",
+				Install: `xcrun simctl install "$MAV_UDID" "$MAV_APP_PATH"`,
+				Launch:  `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`,
+			}},
+		})
+	}
 	if exists(filepath.Join(root, "Makefile")) {
 		data, _ := os.ReadFile(filepath.Join(root, "Makefile"))
 		text := string(data)
@@ -51,7 +64,7 @@ func detectCustomLaunchCandidates(root string, cfg Config) []LaunchCandidate {
 		if appPath == "" {
 			appPath = makeTargetCommand(text, "ios-app-path", "make ios-app-path")
 		}
-		if build != "" || appPath != "" {
+		if build != "" && appPath != "" {
 			out = append(out, LaunchCandidate{
 				Source:      "custom",
 				Confidence:  95,
@@ -65,18 +78,39 @@ func detectCustomLaunchCandidates(root string, cfg Config) []LaunchCandidate {
 			})
 		}
 	}
-	if exists(filepath.Join(root, "justfile")) || exists(filepath.Join(root, "Justfile")) {
-		out = append(out, LaunchCandidate{
-			Source:      "custom",
-			Confidence:  90,
-			Description: "project just recipes",
-			Launch: LaunchConfig{Mode: "custom", Commands: LaunchCommands{
-				Build:   "just mav-build",
-				AppPath: "just mav-app-path",
-				Install: `xcrun simctl install "$MAV_UDID" "$MAV_APP_PATH"`,
-				Launch:  `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`,
-			}},
-		})
+	if path := firstExisting(filepath.Join(root, "justfile"), filepath.Join(root, "Justfile")); path != "" {
+		data, _ := os.ReadFile(path)
+		text := string(data)
+		if justRecipe(text, "mav-build") && justRecipe(text, "mav-app-path") {
+			out = append(out, LaunchCandidate{
+				Source:      "custom",
+				Confidence:  90,
+				Description: "project just MAV recipes",
+				Launch: LaunchConfig{Mode: "custom", Commands: LaunchCommands{
+					Build:   "just mav-build",
+					AppPath: "just mav-app-path",
+					Install: `xcrun simctl install "$MAV_UDID" "$MAV_APP_PATH"`,
+					Launch:  `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`,
+				}},
+			})
+		}
+	}
+	if exists(filepath.Join(root, "fastlane", "Fastfile")) {
+		data, _ := os.ReadFile(filepath.Join(root, "fastlane", "Fastfile"))
+		text := string(data)
+		if fastlaneLane(text, "mav_build") && fastlaneLane(text, "mav_app_path") {
+			out = append(out, LaunchCandidate{
+				Source:      "custom",
+				Confidence:  91,
+				Description: "project Fastlane MAV lanes",
+				Launch: LaunchConfig{Mode: "custom", Commands: LaunchCommands{
+					Build:   "bundle exec fastlane mav_build",
+					AppPath: "bundle exec fastlane mav_app_path",
+					Install: `xcrun simctl install "$MAV_UDID" "$MAV_APP_PATH"`,
+					Launch:  `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`,
+				}},
+			})
+		}
 	}
 	return out
 }
@@ -84,6 +118,53 @@ func detectCustomLaunchCandidates(root string, cfg Config) []LaunchCandidate {
 func makeTargetCommand(makefile, target, command string) string {
 	if strings.Contains(makefile, "\n"+target+":") || strings.HasPrefix(makefile, target+":") {
 		return command
+	}
+	return ""
+}
+
+func justRecipe(justfile, recipe string) bool {
+	for _, line := range strings.Split(justfile, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		if line == recipe+":" || strings.HasPrefix(line, recipe+" ") || strings.HasPrefix(line, recipe+":") {
+			return true
+		}
+	}
+	return false
+}
+
+func fastlaneLane(fastfile, lane string) bool {
+	for _, line := range strings.Split(fastfile, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		if exactFastlaneLaneLine(line, "lane", lane) || exactFastlaneLaneLine(line, "private_lane", lane) {
+			return true
+		}
+	}
+	return false
+}
+
+func exactFastlaneLaneLine(line, keyword, lane string) bool {
+	prefix := keyword + " :" + lane
+	if line == prefix {
+		return true
+	}
+	if !strings.HasPrefix(line, prefix) {
+		return false
+	}
+	next := line[len(prefix)]
+	return next == ' ' || next == '\t' || next == ','
+}
+
+func firstExisting(paths ...string) string {
+	for _, path := range paths {
+		if exists(path) {
+			return path
+		}
 	}
 	return ""
 }

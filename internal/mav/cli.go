@@ -200,12 +200,14 @@ Global flags:
   mav ui twoFingerPan --x X --y Y --pan-x DX --pan-y DY [--distance D] [--angle DEG] [--duration 800ms] [--hold DURATION]
   mav ui actions --file actions.json
   mav ui wait --id ID [--timeout 5s]
+  mav ui wait --text TEXT [--timeout 5s]
+  mav ui wait --value VALUE [--timeout 5s]
   mav ui scrollUntil --id ID [--direction up] [--max-swipes 5]
 `
 	case "capture":
 		return "Usage: mav capture [--name NAME] [--run RUN_ID]\n"
 	case "ui tree":
-		return "Usage: mav ui tree [--prefer-driver auto|axe|appium]\n\nPrints compact screen metadata followed by bounded node lines with id, label, role, value, and frame when available.\n"
+		return "Usage: mav ui tree [--prefer-driver auto|axe|appium]\n\nPrints compact screen metadata followed by bounded node lines with id, label, role, value, enabled, subrole, title, pid, and frame when available.\n"
 	case "ui swipe":
 		return "Usage: mav ui swipe [--direction up|down|left|right] [--start-x X --start-y Y --end-x X --end-y Y]\n"
 	case "ui pinch":
@@ -458,6 +460,10 @@ func (c CLI) setupProject(opts GlobalOptions) error {
 	}
 	if err != nil {
 		fields["warning"] = err.Error()
+	}
+	if _, appiumErr := c.Runner.LookPath("appium"); appiumErr != nil {
+		fields["multitouch"] = "missing"
+		fields["multitouch_next"] = "mav setup --install appium"
 	}
 	return OK("setup", fields).Write(c.Stdout)
 }
@@ -1087,6 +1093,7 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		}
 		result := c.Runner.Run(ctx, "axe", axeArgs...)
 		if result.Err != nil {
+			diagnosticFields, hasTextDiagnostic := c.diagnoseTextTapFailure(ctx, cfg, text, result.Stderr)
 			if prefer == "auto" {
 				if err := c.uiTapAppium(ctx, cfg, id, text); err == nil {
 					fields["driver"] = "appium"
@@ -1095,8 +1102,14 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 					c.recordPendingTap(id, text, "", "", "appium")
 					return OK("ui.tap", fields).Write(c.Stdout)
 				} else {
+					if hasTextDiagnostic {
+						return Fail("ui_tap_text_no_label_match", diagnosticFields).Write(c.Stdout)
+					}
 					return c.writeAppiumTapError(err)
 				}
+			}
+			if hasTextDiagnostic {
+				return Fail("ui_tap_text_no_label_match", diagnosticFields).Write(c.Stdout)
 			}
 			return Fail("ui_tap_failed", map[string]string{"stderr": firstLine(result.Stderr)}).Write(c.Stdout)
 		}
@@ -1122,6 +1135,39 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		return OK("ui.tap", map[string]string{"x": x, "y": y}).Write(c.Stdout)
 	}
 	return Fail("tap_target_missing", map[string]string{"usage": "mav ui tap --id ID | --x X --y Y | --text TEXT"}).Write(c.Stdout)
+}
+
+func (c CLI) diagnoseTextTapFailure(ctx context.Context, cfg Config, text, stderr string) (map[string]string, bool) {
+	if text == "" {
+		return nil, false
+	}
+	result := c.Runner.Run(ctx, "axe", axeTargetArgs(cfg, "describe-ui")...)
+	if result.Err != nil {
+		return nil, false
+	}
+	labelMatches := 0
+	valueMatches := 0
+	for _, el := range ExtractElements(result.Stdout) {
+		if el.Label == text {
+			labelMatches++
+		}
+		if el.Value == text {
+			valueMatches++
+		}
+	}
+	if valueMatches == 0 || labelMatches > 0 {
+		return nil, false
+	}
+	fields := map[string]string{
+		"text":          text,
+		"matched_value": strconv.Itoa(valueMatches),
+		"matched_label": strconv.Itoa(labelMatches),
+		"next":          "--text matched AXValue but not AXLabel; use --prefer-driver appium for predicate matching, prefer --id, or tap coordinates from a capture",
+	}
+	if line := firstLine(stderr); line != "" {
+		fields["stderr"] = line
+	}
+	return fields, true
 }
 
 func (c CLI) uiTapAppium(ctx context.Context, cfg Config, id, text string) error {
@@ -1314,9 +1360,13 @@ func (c CLI) writeAppiumGestureError(err error) error {
 }
 
 func (c CLI) uiWait(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
+	_ = opts
+	_ = cfg
 	id := flagValue(args, "--id")
-	if id == "" {
-		return Fail("wait_target_missing", map[string]string{"usage": "mav ui wait --id ID"}).Write(c.Stdout)
+	text := flagValue(args, "--text")
+	value := flagValue(args, "--value")
+	if id == "" && text == "" && value == "" {
+		return Fail("wait_target_missing", map[string]string{"usage": "mav ui wait --id ID | --text TEXT | --value VALUE"}).Write(c.Stdout)
 	}
 	timeout := 5 * time.Second
 	if raw := flagValue(args, "--timeout"); raw != "" {
@@ -1324,17 +1374,23 @@ func (c CLI) uiWait(ctx context.Context, opts GlobalOptions, cfg Config, args []
 			timeout = parsed
 		}
 	}
-	deadline := time.Now().Add(timeout)
-	for {
-		result := c.Runner.Run(ctx, "axe", axeTargetArgs(cfg, "describe-ui")...)
-		if result.Err == nil && strings.Contains(result.Stdout, id) {
-			return OK("ui.wait", map[string]string{"id": id}).Write(c.Stdout)
+	params := map[string]string{"id": id, "text": text, "value": value, "timeout": timeout.String()}
+	if err := c.waitForFlowCondition(ctx, params, nil); err != nil {
+		fields := map[string]string{}
+		for key, raw := range params {
+			if raw != "" {
+				fields[key] = raw
+			}
 		}
-		if time.Now().After(deadline) {
-			return Fail("ui_wait_timeout", map[string]string{"id": id}).Write(c.Stdout)
-		}
-		time.Sleep(250 * time.Millisecond)
+		return Fail("ui_wait_timeout", fields).Write(c.Stdout)
 	}
+	fields := map[string]string{}
+	for key, raw := range params {
+		if raw != "" && key != "timeout" {
+			fields[key] = raw
+		}
+	}
+	return OK("ui.wait", fields).Write(c.Stdout)
 }
 
 func (c CLI) uiScrollUntil(ctx context.Context, opts GlobalOptions, args []string) error {
@@ -2117,15 +2173,19 @@ func writeElementLines(w io.Writer, elements []Element) error {
 			return err
 		}
 		fields := map[string]string{
-			"index": strconv.Itoa(i + 1),
-			"id":    el.ID,
-			"label": el.Label,
-			"role":  el.Role,
-			"value": el.Value,
-			"frame": el.Frame,
+			"index":   strconv.Itoa(i + 1),
+			"id":      el.ID,
+			"label":   el.Label,
+			"role":    el.Role,
+			"value":   el.Value,
+			"enabled": el.Enabled,
+			"subrole": el.Subrole,
+			"title":   el.Title,
+			"pid":     el.PID,
+			"frame":   el.Frame,
 		}
 		parts := []string{"node"}
-		keys := []string{"index", "id", "label", "role", "value", "frame"}
+		keys := []string{"index", "id", "label", "role", "value", "enabled", "subrole", "title", "pid", "frame"}
 		for _, key := range keys {
 			if fields[key] != "" {
 				parts = append(parts, key+"="+quoteIfNeeded(fields[key]))
@@ -2402,16 +2462,26 @@ func (c CLI) evaluateSingleCondition(ctx context.Context, condition FlowConditio
 		return false, fmt.Errorf("tree_failed")
 	}
 	raw := result.Stdout
-	if condition.Text != "" && !strings.Contains(raw, condition.Text) {
-		return false, nil
+	return flowConditionMatchesElements(ExtractElements(raw), condition), nil
+}
+
+func flowConditionMatchesElements(elements []Element, condition FlowCondition) bool {
+	if condition.Text == "" && condition.ID == "" && condition.Value == "" {
+		return false
 	}
-	if condition.ID != "" && !strings.Contains(raw, condition.ID) {
-		return false, nil
+	for _, el := range elements {
+		if condition.ID != "" && el.ID != condition.ID {
+			continue
+		}
+		if condition.Text != "" && el.Label != condition.Text && el.Title != condition.Text {
+			continue
+		}
+		if condition.Value != "" && el.Value != condition.Value {
+			continue
+		}
+		return true
 	}
-	if condition.Value != "" && !strings.Contains(raw, condition.Value) {
-		return false, nil
-	}
-	return condition.Text != "" || condition.ID != "" || condition.Value != "", nil
+	return false
 }
 
 func (c CLI) screenshotChangedFrom(ctx context.Context, name string) (bool, error) {
@@ -3063,7 +3133,7 @@ func fileExists(path string) bool {
 }
 
 func safeFileName(value string) string {
-	value = strings.TrimSpace(strings.ToLower(value))
+	value = strings.TrimSpace(transliterateLatin(strings.ToLower(value)))
 	if value == "" {
 		return "step"
 	}
@@ -3085,6 +3155,35 @@ func safeFileName(value string) string {
 		return "step"
 	}
 	return out
+}
+
+func transliterateLatin(value string) string {
+	var b strings.Builder
+	for _, r := range value {
+		if repl, ok := latinASCII[r]; ok {
+			b.WriteString(repl)
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+var latinASCII = map[rune]string{
+	'á': "a", 'à': "a", 'â': "a", 'ä': "a", 'ã': "a", 'å': "a", 'ā': "a", 'ă': "a", 'ą': "a",
+	'ç': "c", 'ć': "c", 'č': "c",
+	'ď': "d", 'đ': "d",
+	'é': "e", 'è': "e", 'ê': "e", 'ë': "e", 'ē': "e", 'ė': "e", 'ę': "e",
+	'í': "i", 'ì': "i", 'î': "i", 'ï': "i", 'ī': "i", 'į': "i",
+	'ñ': "n", 'ń': "n",
+	'ó': "o", 'ò': "o", 'ô': "o", 'ö': "o", 'õ': "o", 'ø': "o", 'ō': "o", 'ő': "o",
+	'ú': "u", 'ù': "u", 'û': "u", 'ü': "u", 'ū': "u", 'ů': "u", 'ű': "u", 'ų': "u",
+	'ý': "y", 'ÿ': "y",
+	'ř': "r", 'ŕ': "r",
+	'š': "s", 'ś': "s",
+	'ť': "t",
+	'ž': "z", 'ź': "z", 'ż': "z",
+	'æ': "ae", 'œ': "oe", 'ß': "ss",
 }
 
 func flagValue(args []string, name string) string {
