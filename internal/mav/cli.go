@@ -187,7 +187,7 @@ Global flags:
 `
 	case "open":
 		return `Usage:
-  mav open [--device NAME] [--ios VERSION] [--udid UDID] [--locale LOCALE] [--language LANG] [--warm-appium]
+  mav open [--device NAME] [--ios VERSION] [--udid UDID] [--locale LOCALE] [--language LANG] [--clear-state] [--warm-appium]
 `
 	case "ui":
 		return `Usage:
@@ -195,7 +195,10 @@ Global flags:
   mav ui tap --id ID [--prefer-driver auto|axe|appium]
   mav ui tap --x X --y Y
   mav ui tap --text TEXT [--prefer-driver auto|axe|appium]
-  mav ui type TEXT
+  mav ui tap --value VALUE [--prefer-driver auto|appium]
+  mav ui type TEXT [--prefer-driver auto|axe|appium]
+  mav ui erase [--id ID | --text TEXT | --value VALUE | --focused true] [--prefer-driver appium]
+  mav ui hideKeyboard
   mav ui swipe [--direction up|down|left|right]
   mav ui pinch --x X --y Y --scale SCALE [--pan-x DX] [--pan-y DY] [--distance D] [--angle DEG] [--rotate DEG] [--duration 800ms] [--hold DURATION]
   mav ui rotate --x X --y Y --degrees DEG [--distance D] [--duration 800ms] [--hold DURATION]
@@ -742,7 +745,7 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	if probeLogErr != nil {
 		appendFile(run.LogsPath, "mav probe log capture failed: "+probeLogErr.Error()+"\n")
 	}
-	appPath, failedStep, failedResult := c.runLaunchRecipe(ctx, cfg, run)
+	appPath, failedStep, failedResult := c.runLaunchRecipe(ctx, cfg, run, hasFlag(args, "--clear-state"))
 	if failedStep != nil {
 		fields := map[string]string{"run": run.ID, "logs": run.LogsPath, "step": failedStep.Name, "stderr": firstLine(failedResult.Stderr)}
 		if fields["stderr"] == "" {
@@ -937,7 +940,7 @@ func (c CLI) startProbeLogs(ctx context.Context, cfg Config, run RunState) (int,
 
 func (c CLI) ui(ctx context.Context, opts GlobalOptions, args []string) error {
 	if len(args) == 0 {
-		return Fail("ui_command_missing", map[string]string{"usage": "mav ui tree|tap|type|swipe|pinch|rotate|twoFingerPan|actions|wait|scrollUntil"}).Write(c.Stdout)
+		return Fail("ui_command_missing", map[string]string{"usage": "mav ui tree|tap|type|erase|hideKeyboard|swipe|pinch|rotate|twoFingerPan|actions|wait|scrollUntil"}).Write(c.Stdout)
 	}
 	cfg, err := LoadConfig(c.Root)
 	if err != nil {
@@ -950,6 +953,10 @@ func (c CLI) ui(ctx context.Context, opts GlobalOptions, args []string) error {
 		return c.uiTap(ctx, opts, cfg, args[1:])
 	case "type":
 		return c.uiType(ctx, opts, cfg, args[1:])
+	case "erase":
+		return c.uiErase(ctx, opts, cfg, args[1:])
+	case "hideKeyboard":
+		return c.uiHideKeyboard(ctx, opts, cfg, args[1:])
 	case "swipe":
 		return c.uiSwipe(ctx, opts, cfg, args[1:])
 	case "pinch":
@@ -1269,6 +1276,7 @@ func (c CLI) waitForTreeReady(ctx context.Context, cfg Config, timeout time.Dura
 func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
 	id := flagValue(args, "--id")
 	text := flagValue(args, "--text")
+	value := flagValue(args, "--value")
 	x := flagValue(args, "--x")
 	y := flagValue(args, "--y")
 	prefer, err := normalizePreferDriver(opts.PreferDriver)
@@ -1276,32 +1284,35 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		return Fail("prefer_driver_invalid", map[string]string{"usage": "--prefer-driver auto|axe|appium"}).Write(c.Stdout)
 	}
 	caps := c.resolveCapabilities(ctx, cfg)
-	if id != "" || text != "" {
+	if id != "" || text != "" || value != "" {
 		fields := map[string]string{}
 		command := "mav ui tap"
 		if id != "" {
 			fields["id"] = id
 			command += " --id " + id
-		} else {
+		} else if text != "" {
 			fields["text"] = text
 			command += " --text " + text
+		} else {
+			fields["value"] = value
+			command += " --value " + value
 		}
 		if prefer == "appium" {
-			if err := c.uiTapAppium(ctx, cfg, id, text); err != nil {
+			if err := c.uiTapAppium(ctx, cfg, id, text, value); err != nil {
 				return c.writeAppiumTapError(err)
 			}
 			fields["driver"] = "appium"
 			c.appendCurrentCommand(command+" --prefer-driver appium", CommandResult{})
-			c.recordPendingTap(id, text, "", "", "appium")
+			c.recordPendingTap(id, text, value, "", "", "appium")
 			return OK("ui.tap", fields).Write(c.Stdout)
 		}
 		if !caps.Tools["axe"] {
 			if prefer == "auto" {
-				if err := c.uiTapAppium(ctx, cfg, id, text); err == nil {
+				if err := c.uiTapAppium(ctx, cfg, id, text, value); err == nil {
 					fields["driver"] = "appium"
 					fields["attempted"] = "appium"
 					c.appendCurrentCommand(command+" --prefer-driver appium", CommandResult{})
-					c.recordPendingTap(id, text, "", "", "appium")
+					c.recordPendingTap(id, text, value, "", "", "appium")
 					return OK("ui.tap", fields).Write(c.Stdout)
 				} else {
 					return c.writeAppiumTapError(err)
@@ -1309,25 +1320,38 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			}
 			return Fail("tool_missing", map[string]string{"tool": "axe", "next": "use mav ui tap --x X --y Y when AXe is unavailable"}).Write(c.Stdout)
 		}
+		if value != "" {
+			if prefer == "auto" {
+				if err := c.uiTapAppium(ctx, cfg, id, text, value); err != nil {
+					return c.writeAppiumTapError(err)
+				}
+				fields["driver"] = "appium"
+				fields["attempted"] = "appium"
+				c.appendCurrentCommand(command+" --prefer-driver appium", CommandResult{})
+				c.recordPendingTap(id, text, value, "", "", "appium")
+				return OK("ui.tap", fields).Write(c.Stdout)
+			}
+			return Fail("tap_target_missing", map[string]string{"usage": "mav ui tap --value VALUE requires --prefer-driver auto|appium"}).Write(c.Stdout)
+		}
 		if prefer == "auto" && id != "" && c.shouldRouteTextInputWrapperTapToAppium(ctx, cfg, id) {
-			if err := c.uiTapAppium(ctx, cfg, id, text); err == nil {
+			if err := c.uiTapAppium(ctx, cfg, id, text, value); err == nil {
 				fields["driver"] = "appium"
 				fields["attempted"] = "axe,appium"
 				fields["fallback"] = "axe"
 				fields["fallback_reason"] = "text_input_wrapper"
 				c.appendCurrentCommand(command+" --prefer-driver appium", CommandResult{})
-				c.recordPendingTap(id, text, "", "", "appium")
+				c.recordPendingTap(id, text, value, "", "", "appium")
 				return OK("ui.tap", fields).Write(c.Stdout)
 			}
 		}
 		if prefer == "auto" && c.shouldRouteContainerTapToAppium(ctx, cfg, id, text) {
-			if err := c.uiTapAppium(ctx, cfg, id, text); err == nil {
+			if err := c.uiTapAppium(ctx, cfg, id, text, value); err == nil {
 				fields["driver"] = "appium"
 				fields["attempted"] = "axe,appium"
 				fields["fallback"] = "axe"
 				fields["fallback_reason"] = "container_tap"
 				c.appendCurrentCommand(command+" --prefer-driver appium", CommandResult{})
-				c.recordPendingTap(id, text, "", "", "appium")
+				c.recordPendingTap(id, text, value, "", "", "appium")
 				return OK("ui.tap", fields).Write(c.Stdout)
 			} else {
 				return c.writeAppiumTapErrorWithFields(err, map[string]string{"attempted": "axe,appium", "fallback": "axe", "fallback_reason": "container_tap"})
@@ -1343,13 +1367,13 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		if result.Err != nil {
 			diagnosticFields, hasTextDiagnostic := c.diagnoseTextTapFailure(ctx, cfg, text, result.Stderr)
 			if prefer == "auto" {
-				if err := c.uiTapAppium(ctx, cfg, id, text); err == nil {
+				if err := c.uiTapAppium(ctx, cfg, id, text, value); err == nil {
 					fields["driver"] = "appium"
 					fields["attempted"] = "axe,appium"
 					fields["fallback"] = "axe"
 					fields["fallback_reason"] = "axe_no_match"
 					c.appendCurrentCommand(command+" --prefer-driver appium", CommandResult{})
-					c.recordPendingTap(id, text, "", "", "appium")
+					c.recordPendingTap(id, text, value, "", "", "appium")
 					return OK("ui.tap", fields).Write(c.Stdout)
 				} else {
 					if hasTextDiagnostic {
@@ -1365,7 +1389,7 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		}
 		fields["driver"] = "axe"
 		c.appendCurrentCommand(command, result)
-		c.recordPendingTap(id, text, "", "", "axe")
+		c.recordPendingTap(id, text, value, "", "", "axe")
 		return OK("ui.tap", fields).Write(c.Stdout)
 	}
 	if x != "" && y != "" {
@@ -1381,10 +1405,10 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			return Fail("ui_tap_failed", map[string]string{"stderr": firstLine(result.Stderr)}).Write(c.Stdout)
 		}
 		c.appendCurrentCommand("mav ui tap --x "+x+" --y "+y, result)
-		c.recordPendingTap("", "", x, y, "idb")
+		c.recordPendingTap("", "", "", x, y, "idb")
 		return OK("ui.tap", map[string]string{"x": x, "y": y}).Write(c.Stdout)
 	}
-	return Fail("tap_target_missing", map[string]string{"usage": "mav ui tap --id ID | --x X --y Y | --text TEXT"}).Write(c.Stdout)
+	return Fail("tap_target_missing", map[string]string{"usage": "mav ui tap --id ID | --x X --y Y | --text TEXT | --value VALUE"}).Write(c.Stdout)
 }
 
 func (c CLI) shouldRouteTextInputWrapperTapToAppium(ctx context.Context, cfg Config, id string) bool {
@@ -1576,17 +1600,21 @@ func (c CLI) diagnoseTextTapFailure(ctx context.Context, cfg Config, text, stder
 	return fields, true
 }
 
-func (c CLI) uiTapAppium(ctx context.Context, cfg Config, id, text string) error {
+func (c CLI) uiTapAppium(ctx context.Context, cfg Config, id, text, value string) error {
 	if id != "" {
 		return c.appiumClickByAccessibilityID(ctx, cfg, id)
 	}
-	if text != "" {
-		return c.appiumClickByPredicate(ctx, cfg, appiumTextPredicate(text))
+	if text != "" || value != "" {
+		return c.appiumClickByPredicate(ctx, cfg, appiumTargetPredicate(text, value))
 	}
 	return appiumError{Code: "tap_target_missing", Message: "tap target missing"}
 }
 
-func appiumTextPredicate(text string) string {
+func appiumTargetPredicate(text, value string) string {
+	if value != "" && text == "" {
+		escaped := strings.ReplaceAll(value, "'", "\\'")
+		return "value == '" + escaped + "'"
+	}
 	escaped := strings.ReplaceAll(text, "'", "\\'")
 	return "value == '" + escaped + "' OR name == '" + escaped + "' OR label == '" + escaped + "'"
 }
@@ -1616,12 +1644,12 @@ func (c CLI) writeAppiumTapErrorWithFields(err error, extra map[string]string) e
 	return Fail("ui_tap_failed", fields).Write(c.Stdout)
 }
 
-func (c CLI) recordPendingTap(id, text, x, y, driver string) {
+func (c CLI) recordPendingTap(id, text, value, x, y, driver string) {
 	from := CurrentScreen(c.Root)
 	if from == "" {
 		return
 	}
-	SetPendingMapAction(c.Root, pendingMapAction{From: from, ID: id, Text: text, X: x, Y: y, Driver: driver})
+	SetPendingMapAction(c.Root, pendingMapAction{From: from, ID: id, Text: text, Value: value, X: x, Y: y, Driver: driver})
 }
 
 func (c CLI) appendCurrentCommand(command string, result CommandResult) {
@@ -1635,27 +1663,95 @@ func (c CLI) uiType(ctx context.Context, opts GlobalOptions, cfg Config, args []
 	if len(args) == 0 {
 		return Fail("type_text_missing", nil).Write(c.Stdout)
 	}
+	prefer, err := normalizePreferDriver(opts.PreferDriver)
+	if err != nil {
+		return Fail("prefer_driver_invalid", map[string]string{"usage": "--prefer-driver auto|axe|appium"}).Write(c.Stdout)
+	}
 	before, focusKnown := c.focusedTextInput(ctx, cfg)
 	if focusKnown && before == nil {
 		return Fail("type_no_focused_field", map[string]string{"next": "No text input has keyboard focus. Use 'mav ui tap --prefer-driver appium' on the field, then retry type."}).Write(c.Stdout)
 	}
 	text := strings.Join(args, " ")
-	axeArgs := axeTargetArgs(cfg, "type")
-	axeArgs = append(axeArgs, text)
-	result := c.Runner.Run(ctx, "axe", axeArgs...)
-	if result.Err != nil {
-		return Fail("ui_type_failed", map[string]string{"stderr": firstLine(result.Stderr)}).Write(c.Stdout)
+	driver := "axe"
+	if prefer == "appium" {
+		if err := c.appiumTypeActiveElement(ctx, cfg, text); err != nil {
+			if appErr, ok := err.(appiumError); ok && appErr.Code == "type_no_focused_field" {
+				return Fail("type_no_focused_field", map[string]string{"next": "No text input has keyboard focus. Tap the field with Appium and retry type."}).Write(c.Stdout)
+			}
+			return Fail("ui_type_failed", map[string]string{"tool": "appium", "stderr": err.Error()}).Write(c.Stdout)
+		}
+		driver = "appium"
+	} else {
+		axeArgs := axeTargetArgs(cfg, "type")
+		axeArgs = append(axeArgs, text)
+		result := c.Runner.Run(ctx, "axe", axeArgs...)
+		if result.Err != nil {
+			if prefer == "auto" {
+				return Fail("ui_type_failed", map[string]string{"stderr": firstLine(result.Stderr), "next": "retry with --prefer-driver appium for Appium/XCUITest text entry"}).Write(c.Stdout)
+			}
+			return Fail("ui_type_failed", map[string]string{"stderr": firstLine(result.Stderr)}).Write(c.Stdout)
+		}
 	}
 	fields := map[string]string{
 		"chars":      strconv.Itoa(len(text)),
 		"chars_sent": strconv.Itoa(len(text)),
+		"driver":     driver,
 	}
 	if before != nil {
 		if after, ok := c.focusedTextInput(ctx, cfg); ok && after != nil {
 			fields["chars_received"] = strconv.Itoa(receivedCharDelta(before.Value, after.Value, text))
+			if prefer == "auto" && strings.ContainsAny(text, "@#&") && !strings.HasSuffix(after.Value, text) {
+				fields["warning"] = "typed_text_may_be_corrupted"
+				fields["next"] = "retry with --prefer-driver appium"
+			}
 		}
 	}
 	return OK("ui.type", fields).Write(c.Stdout)
+}
+
+func (c CLI) uiErase(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
+	prefer, err := normalizePreferDriver(opts.PreferDriver)
+	if err != nil {
+		return Fail("prefer_driver_invalid", map[string]string{"usage": "--prefer-driver auto|axe|appium"}).Write(c.Stdout)
+	}
+	if prefer == "axe" {
+		return Fail("ui_erase_failed", map[string]string{"next": "erase requires Appium; retry with --prefer-driver appium"}).Write(c.Stdout)
+	}
+	id := flagValue(args, "--id")
+	text := flagValue(args, "--text")
+	value := flagValue(args, "--value")
+	focused := flagValue(args, "--focused") == "true" || hasFlag(args, "--focused")
+	if err := c.appiumClearElement(ctx, cfg, id, text, value, focused); err != nil {
+		fields := map[string]string{"tool": "appium"}
+		if appErr, ok := err.(appiumError); ok && appErr.Next != "" {
+			fields["next"] = appErr.Next
+		}
+		fields["stderr"] = err.Error()
+		return Fail("ui_erase_failed", fields).Write(c.Stdout)
+	}
+	fields := map[string]string{"driver": "appium"}
+	if id != "" {
+		fields["id"] = id
+	}
+	if text != "" {
+		fields["text"] = text
+	}
+	if value != "" {
+		fields["value"] = value
+	}
+	if focused {
+		fields["focused"] = "true"
+	}
+	return OK("ui.erase", fields).Write(c.Stdout)
+}
+
+func (c CLI) uiHideKeyboard(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
+	_ = opts
+	_ = args
+	if err := c.appiumHideKeyboard(ctx, cfg); err != nil {
+		return Fail("ui_hide_keyboard_failed", map[string]string{"tool": "appium", "stderr": err.Error()}).Write(c.Stdout)
+	}
+	return OK("ui.hideKeyboard", map[string]string{"driver": "appium"}).Write(c.Stdout)
 }
 
 func (c CLI) focusedTextInput(ctx context.Context, cfg Config) (*Element, bool) {
@@ -2239,6 +2335,13 @@ func (c CLI) executeFlowStepBoundWithOptions(ctx context.Context, opts GlobalOpt
 		}
 		return c.executeWhenFlowStepBoundWithOptions(ctx, opts, run, index, prepared, bindings)
 	}
+	if step.Action == "whileNotVisible" {
+		prepared, err := substituteExecBindingsInStepHeader(step, bindings)
+		if err != nil {
+			return nil, err
+		}
+		return c.executeWhileNotVisibleFlowStepBoundWithOptions(ctx, opts, run, index, prepared, bindings)
+	}
 	prepared, err := substituteExecBindingsInStep(step, bindings)
 	if err != nil {
 		return nil, err
@@ -2277,10 +2380,17 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 	}
 	switch step.Action {
 	case "open":
-		err := c.withStdout(io.Discard).open(ctx, GlobalOptions{}, flowArgs(step.Params, "--device", "device", "--ios", "ios", "--udid", "udid", "--locale", "locale", "--language", "language"))
-		return map[string]string{"run": run.ID}, outputErr(err, "open_failed")
+		args := flowArgs(step.Params, "--device", "device", "--ios", "ios", "--udid", "udid", "--locale", "locale", "--language", "language")
+		if step.Params["clearState"] == "true" {
+			args = append(args, "--clear-state")
+		}
+		var out bytes.Buffer
+		err := c.withStdout(&out).open(ctx, GlobalOptions{}, args)
+		return map[string]string{"run": run.ID}, commandOutputErr(err, out.String(), "open_failed")
 	case "when":
 		return c.executeWhenFlowStepWithOptions(ctx, opts, run, index, step)
+	case "whileNotVisible":
+		return c.executeWhileNotVisibleFlowStepBoundWithOptions(ctx, opts, run, index, step, nil)
 	case "go":
 		screen := step.Params["screen"]
 		if screen == "" {
@@ -2293,12 +2403,33 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 		return map[string]string{"driver": prefer}, outputErr(err, "tree_failed")
 	case "tap":
 		args := flowArgs(step.Params, "--id", "id", "--text", "text", "--value", "value", "--x", "x", "--y", "y")
-		err := c.withStdout(io.Discard).uiTap(ctx, GlobalOptions{PreferDriver: prefer}, mustLoadConfig(c.Root), args)
-		return copyParams(step.Params), outputErr(err, "tap_failed")
+		var out bytes.Buffer
+		err := c.withStdout(&out).uiTap(ctx, GlobalOptions{PreferDriver: prefer}, mustLoadConfig(c.Root), args)
+		cmdErr := commandOutputErr(err, out.String(), "tap_failed")
+		if cmdErr != nil && step.Params["optional"] == "true" {
+			fields := copyParams(step.Params)
+			fields["skipped"] = "true"
+			return fields, nil
+		}
+		return copyParams(step.Params), cmdErr
 	case "type":
 		text := step.Params["text"]
-		err := c.withStdout(io.Discard).uiType(ctx, GlobalOptions{}, mustLoadConfig(c.Root), []string{text})
-		return map[string]string{"chars": strconv.Itoa(len(text))}, outputErr(err, "type_failed")
+		var out bytes.Buffer
+		err := c.withStdout(&out).uiType(ctx, GlobalOptions{PreferDriver: prefer}, mustLoadConfig(c.Root), []string{text})
+		fields := map[string]string{"chars": strconv.Itoa(len(text))}
+		if prefer != "" {
+			fields["driver"] = prefer
+		}
+		return fields, commandOutputErr(err, out.String(), "type_failed")
+	case "erase":
+		args := flowArgs(step.Params, "--id", "id", "--text", "text", "--value", "value", "--focused", "focused")
+		var out bytes.Buffer
+		err := c.withStdout(&out).uiErase(ctx, GlobalOptions{PreferDriver: prefer}, mustLoadConfig(c.Root), args)
+		return copyParams(step.Params), commandOutputErr(err, out.String(), "erase_failed")
+	case "hideKeyboard":
+		var out bytes.Buffer
+		err := c.withStdout(&out).uiHideKeyboard(ctx, GlobalOptions{}, mustLoadConfig(c.Root), nil)
+		return map[string]string{"driver": "appium"}, commandOutputErr(err, out.String(), "hide_keyboard_failed")
 	case "swipe":
 		args := flowArgs(step.Params, "--direction", "direction")
 		err := c.withStdout(io.Discard).uiSwipe(ctx, GlobalOptions{PreferDriver: prefer}, mustLoadConfig(c.Root), args)
@@ -2469,6 +2600,69 @@ func (c CLI) executeWhenFlowStepBoundWithOptions(ctx context.Context, opts Globa
 	return fields, nil
 }
 
+func (c CLI) executeWhileNotVisibleFlowStepBoundWithOptions(ctx context.Context, opts GlobalOptions, run RunState, index int, step FlowStep, bindings flowExecBindings) (map[string]string, error) {
+	if len(step.Do) == 0 {
+		return nil, fmt.Errorf("while_do_missing")
+	}
+	prefer, preferErr := flowStepPreferDriver(opts, step)
+	if preferErr != nil {
+		return copyParams(step.Params), preferErr
+	}
+	timeout := parseFlowDuration(step.Params["timeout"], 30*time.Second)
+	if timeout <= 0 {
+		return copyParams(step.Params), fmt.Errorf("while_timeout_invalid")
+	}
+	start := time.Now()
+	fields := copyParams(step.Params)
+	iterations := 0
+	executed := 0
+	for {
+		matched, err := c.evaluateFlowConditionWithPrefer(ctx, step.Params, step.Any, prefer)
+		if err != nil {
+			return fields, err
+		}
+		if matched {
+			fields["matched"] = "true"
+			fields["iterations"] = strconv.Itoa(iterations)
+			fields["executed"] = strconv.Itoa(executed)
+			return fields, nil
+		}
+		if time.Since(start) >= timeout {
+			fields["matched"] = "false"
+			fields["iterations"] = strconv.Itoa(iterations)
+			fields["executed"] = strconv.Itoa(executed)
+			return fields, fmt.Errorf("while_timeout")
+		}
+		iterations++
+		for childIndex, child := range step.Do {
+			childStart := time.Now()
+			var childFields map[string]string
+			var err error
+			if bindings != nil {
+				childFields, err = c.executeFlowStepBoundWithOptions(ctx, opts, run, childIndex+1, child, bindings)
+			} else {
+				childFields, err = c.executeFlowStepWithOptions(ctx, opts, run, childIndex+1, child)
+			}
+			elapsed := time.Since(childStart)
+			if err != nil {
+				fields["child_step"] = strconv.Itoa(childIndex + 1)
+				fields["child_action"] = child.Action
+				fields["child_code"] = err.Error()
+				for key, value := range childFields {
+					fields["child_"+key] = value
+				}
+				return fields, err
+			}
+			executed++
+			appendFlowStep(run, index, "whileNotVisible."+child.Action, elapsed, "ok", childFields)
+			if time.Since(start) >= timeout {
+				break
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
 func (c CLI) goScreen(ctx context.Context, opts GlobalOptions, args []string) error {
 	if len(args) == 0 {
 		return Fail("screen_missing", map[string]string{"usage": "mav go SCREEN_ID"}).Write(c.Stdout)
@@ -2634,6 +2828,9 @@ func (c CLI) navigateToScreen(ctx context.Context, screenID string, routeOverrid
 		if edge.Text != "" {
 			args = append(args, "--text", edge.Text)
 		}
+		if edge.Value != "" {
+			args = append(args, "--value", edge.Value)
+		}
 		if edge.X != "" && edge.Y != "" {
 			args = append(args, "--x", edge.X, "--y", edge.Y)
 		}
@@ -2696,6 +2893,16 @@ func (c CLI) withStdout(stdout io.Writer) CLI {
 
 func outputErr(err error, code string) error {
 	if err != nil {
+		return fmt.Errorf("%s", code)
+	}
+	return nil
+}
+
+func commandOutputErr(err error, out, code string) error {
+	if err != nil {
+		return fmt.Errorf("%s", code)
+	}
+	if strings.HasPrefix(strings.TrimSpace(out), "fail code=") {
 		return fmt.Errorf("%s", code)
 	}
 	return nil
