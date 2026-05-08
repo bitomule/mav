@@ -747,7 +747,7 @@ func screenMatchSpecificity(screen Screen, elements []Element, isStart bool) int
 		switch rec.Kind {
 		case "text":
 			if hasScreenText(elements, rec.Value) {
-				score = max(score, 30)
+				score = max(score, 30+min(len([]rune(rec.Value)), 60))
 			}
 		case "id":
 			for _, el := range elements {
@@ -762,7 +762,7 @@ func screenMatchSpecificity(screen Screen, elements []Element, isStart bool) int
 		}
 	}
 	if screen.AssertText != "" && hasScreenText(elements, screen.AssertText) {
-		score = max(score, 35)
+		score = max(score, 35+min(len([]rune(screen.AssertText)), 60))
 	}
 	if screen.AssertID != "" {
 		for _, el := range elements {
@@ -783,7 +783,7 @@ func screenMatchSpecificity(screen Screen, elements []Element, isStart bool) int
 
 func isApplicationRootElement(el Element) bool {
 	role := strings.ToLower(strings.TrimSpace(el.Role))
-	return role == "application" || role == "axapplication"
+	return role == "application" || role == "axapplication" || role == "xcuielementtypeapplication" || role == "appiumaut"
 }
 
 func hasScreenText(elements []Element, label string) bool {
@@ -816,9 +816,41 @@ func firstStableElementID(elements []Element) string {
 func inferScreenID(elements []Element) string {
 	title := inferScreenTitle(elements, "")
 	if title == "" {
-		return ""
+		return inferStableTabScreenID(elements)
 	}
 	return safeFileName(title)
+}
+
+func inferStableTabScreenID(elements []Element) string {
+	for _, el := range elements {
+		role := strings.ToLower(el.Role)
+		if !strings.Contains(role, "tab") && !strings.Contains(role, "button") && !strings.Contains(role, "control") {
+			continue
+		}
+		if !isSelectedTabValue(el.Value) {
+			continue
+		}
+		name := strings.ToLower(strings.TrimSpace(firstNonEmpty(el.ID, el.Label, el.Title)))
+		switch name {
+		case "inicio", "home":
+			return "home"
+		}
+	}
+	return ""
+}
+
+func isSelectedTabValue(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return value == "1" || value == "true" || value == "selected"
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func inferScreenTitle(elements []Element, fallback string) string {
@@ -842,11 +874,39 @@ func isScreenTitle(value string) bool {
 	if len(value) < 3 || len(value) > 40 {
 		return false
 	}
+	if looksPersonalizedHeading(value) {
+		return false
+	}
 	if strings.ContainsAny(value, "\n0123456789") {
 		return false
 	}
 	reject := map[string]bool{"photos": true, "videos": true, "analysis": true, "suggestions": true, "tab bar": true}
 	return !reject[strings.ToLower(value)]
+}
+
+func looksPersonalizedHeading(value string) bool {
+	words := strings.Fields(strings.ToLower(value))
+	if len(words) < 3 || len(words) > 6 {
+		return false
+	}
+	personalizedPrefixes := map[string]bool{
+		"elegidos":     true,
+		"recomendados": true,
+		"picked":       true,
+		"recommended":  true,
+		"suggested":    true,
+	}
+	if !personalizedPrefixes[words[0]] {
+		return false
+	}
+	for _, connector := range []string{"para", "for", "to", "de"} {
+		for i, word := range words {
+			if word == connector && i > 0 && i < len(words)-1 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func upsertEdge(edges []Edge, edge Edge) []Edge {

@@ -424,7 +424,7 @@ Use flows for repeatable feature validation:
 version: 1
 name: verify_daily_reminder
 steps:
-  - open: {}
+  - open: { clearState: true }      # clear-state is also accepted
   - go: { screen: settings }
   - wait: { text: Daily Reminder, timeout: 5s }
   - video.start: {}
@@ -470,8 +470,10 @@ interaction needs a specific backend:
 
 This applies to `tree`, `tap`, `swipe`, `wait`, `assert`, `waitUntil`, and
 `scrollUntil`; `type` and `erase` can also force Appium for form fields. In
-`auto` mode, MAV also routes taps inside table, collection, or sheet containers
-through Appium when AXe can match the text but may not activate the row.
+`auto` mode, MAV also routes taps inside table, collection, sheet, and tab bar
+containers through Appium/WDA when AXe can match the text but may not activate
+the row or tab. `wait`, `assert`, `waitUntil`, and `whileNotVisible` also retry
+their condition with Appium when AXe misses the target.
 
 Supported step types:
 
@@ -508,6 +510,11 @@ video.start
 video.stop
 report
 ```
+
+`hideKeyboard` verifies that the keyboard disappeared. If WDA reports success
+but the keyboard is still present, MAV retries with alternate Appium strategies
+and then fails with `ui_hide_keyboard_failed reason=keyboard_still_visible`
+instead of returning a false positive.
 
 `type`, `delay`, and `sleep` accept both scalar and object forms. These are
 equivalent:
@@ -754,6 +761,7 @@ mav ui scrollUntil --id ID [--direction up] [--max-swipes 5]
 mav capture [--name NAME] [--run RUN_ID]
 mav run flow.yaml
 mav go <screen-id>
+mav map prune [--filter coordinate-edges|duplicate-selectors|low-confidence] [--apply-warnings] [--dry-run]
 mav logs [--run RUN_ID] [--key KEY] [--contains TEXT] [--level LEVEL]
 mav stop [--run RUN_ID]
 mav crashes [--raw]

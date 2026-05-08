@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -784,6 +785,95 @@ func TestUIEraseAndHideKeyboardUseAppium(t *testing.T) {
 		!containsCall(*calls, `POST /wd/hub/session/s1/execute/sync {"args":[],"script":"mobile: hideKeyboard"}`) {
 		t.Fatalf("calls=%v", *calls)
 	}
+}
+
+func TestUIHideKeyboardRetriesAndVerifiesKeyboardDisappeared(t *testing.T) {
+	sources := []string{
+		`<App><XCUIElementTypeKeyboard name="Keyboard"/></App>`,
+		`<App><XCUIElementTypeKeyboard name="Keyboard"/></App>`,
+		`<App><XCUIElementTypeButton name="Submit" label="Submit"/></App>`,
+	}
+	root, cfg, server, calls := setupHideKeyboardSourceTest(t, sources)
+	defer server.Close()
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{
+		tools: cfg.Tools,
+		out:   map[string]string{"appium driver list --installed": "xcuitest@8.4.3\n"},
+	}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "hideKeyboard"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "ok cmd=ui.hideKeyboard") || !strings.Contains(got, "verified=true") {
+		t.Fatalf("got %q", got)
+	}
+	if !containsCall(*calls, `"script":"mobile: hideKeyboard"`) {
+		t.Fatalf("hideKeyboard not called: %v", *calls)
+	}
+}
+
+func TestUIHideKeyboardFailsWhenKeyboardRemainsVisible(t *testing.T) {
+	sources := []string{
+		`<App><XCUIElementTypeKeyboard name="Keyboard"/></App>`,
+		`<App><XCUIElementTypeKeyboard name="Keyboard"/></App>`,
+		`<App><XCUIElementTypeKeyboard name="Keyboard"/></App>`,
+		`<App><XCUIElementTypeKeyboard name="Keyboard"/></App>`,
+	}
+	root, cfg, server, _ := setupHideKeyboardSourceTest(t, sources)
+	defer server.Close()
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{
+		tools: cfg.Tools,
+		out:   map[string]string{"appium driver list --installed": "xcuitest@8.4.3\n"},
+	}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "hideKeyboard"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "fail code=ui_hide_keyboard_failed") || !strings.Contains(got, "reason=keyboard_still_visible") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func setupHideKeyboardSourceTest(t *testing.T, sources []string) (string, Config, *httptest.Server, *[]string) {
+	t.Helper()
+	calls := []string{}
+	sourceIndex := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		calls = append(calls, r.Method+" "+r.URL.Path+" "+string(body))
+		switch {
+		case r.URL.Path == "/wd/hub/session/s1/source":
+			if sourceIndex >= len(sources) {
+				sourceIndex = len(sources) - 1
+			}
+			_, _ = io.WriteString(w, `{"value":`+strconv.Quote(sources[sourceIndex])+`}`)
+			sourceIndex++
+		case r.URL.Path == "/wd/hub/session/s1/execute/sync":
+			_, _ = io.WriteString(w, `{"value":null}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.Tools = map[string]bool{"appium": true, "node": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAppiumSession(run, appiumSessionState{PID: 123, BaseURL: server.URL + appiumBasePath, SessionID: "s1", UDID: "SIM"}); err != nil {
+		t.Fatal(err)
+	}
+	return root, cfg, server, &calls
 }
 
 func TestUITreeIncludeSystemUsesActiveAppSource(t *testing.T) {
@@ -2967,6 +3057,54 @@ func TestFlowWaitUsesPreferredDriver(t *testing.T) {
 	}
 }
 
+func TestFlowConditionAutoFallsBackToAppiumWhenAxeMisses(t *testing.T) {
+	calls := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		calls = append(calls, r.Method+" "+r.URL.Path+" "+string(body))
+		if r.URL.Path == "/wd/hub/session/s1/source" {
+			_, _ = io.WriteString(w, `{"value":"<App><XCUIElementTypeTabBar><XCUIElementTypeButton name=\"Vender\" label=\"Vender\" enabled=\"true\"/></XCUIElementTypeTabBar></App>"}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.BundleID = "com.example.app"
+	cfg.Tools = map[string]bool{"axe": true, "appium": true, "node": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAppiumSession(run, appiumSessionState{PID: 123, BaseURL: server.URL + appiumBasePath, SessionID: "s1", UDID: "SIM", BundleID: "com.example.app"}); err != nil {
+		t.Fatal(err)
+	}
+	runner := &sequenceRecordingRunner{
+		tools: cfg.Tools,
+		out: map[string]string{
+			"axe describe-ui --udid SIM":     `[{"AXLabel":"Home","role":"AXStaticText"}]`,
+			"appium driver list --installed": "xcuitest@8.4.3\n",
+		},
+	}
+	cli := CLI{Runner: runner, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	matched, err := cli.evaluateSingleConditionWithPrefer(context.Background(), FlowCondition{ID: "Vender"}, "auto")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !matched || !containsCall(calls, "/wd/hub/session/s1/source") {
+		t.Fatalf("matched=%v calls=%v", matched, calls)
+	}
+}
+
 func TestUIWaitUsesGlobalPreferDriver(t *testing.T) {
 	calls := []string{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -3239,6 +3377,118 @@ func TestUITapAutoRoutesSelfCellTapToAppium(t *testing.T) {
 		t.Fatalf("self cell tap should route before axe tap: %v", runner.commands)
 	}
 	if !containsCall(calls, "/wd/hub/session/s1/element/el1/click") {
+		t.Fatalf("calls=%v", calls)
+	}
+}
+
+func TestUITapAppiumRoutesTabBarItemToMobileTap(t *testing.T) {
+	calls := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		calls = append(calls, r.Method+" "+r.URL.Path+" "+string(body))
+		switch {
+		case r.URL.Path == "/wd/hub/session/s1/source":
+			_, _ = io.WriteString(w, `{"value":"<App><XCUIElementTypeTabBar><XCUIElementTypeButton name=\"Vender\" label=\"Vender\" x=\"160\" y=\"820\" width=\"94\" height=\"44\" enabled=\"true\"/></XCUIElementTypeTabBar></App>"}`)
+		case r.URL.Path == "/wd/hub/session/s1/execute/sync":
+			_, _ = io.WriteString(w, `{"value":null}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.BundleID = "com.example.app"
+	cfg.Tools = map[string]bool{"appium": true, "node": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAppiumSession(run, appiumSessionState{PID: 123, BaseURL: server.URL + appiumBasePath, SessionID: "s1", UDID: "SIM", BundleID: "com.example.app"}); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{
+		tools: cfg.Tools,
+		out:   map[string]string{"appium driver list --installed": "xcuitest@8.4.3\n"},
+	}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "tap", "--id", "Vender", "--prefer-driver", "appium"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "ok cmd=ui.tap") {
+		t.Fatalf("output=%q", out.String())
+	}
+	if !containsCall(calls, `"script":"mobile: tap"`) || !containsCall(calls, `"x":207`) || !containsCall(calls, `"y":842`) {
+		t.Fatalf("calls=%v", calls)
+	}
+	if containsCall(calls, "/element") {
+		t.Fatalf("tab bar item should not use element click: calls=%v", calls)
+	}
+}
+
+func TestUITapAutoRoutesTabBarItemToAppiumMobileTap(t *testing.T) {
+	calls := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		calls = append(calls, r.Method+" "+r.URL.Path+" "+string(body))
+		switch {
+		case r.URL.Path == "/wd/hub/session/s1/source":
+			_, _ = io.WriteString(w, `{"value":"<App><XCUIElementTypeTabBar><XCUIElementTypeButton name=\"Vender\" label=\"Vender\" x=\"160\" y=\"820\" width=\"94\" height=\"44\" enabled=\"true\"/></XCUIElementTypeTabBar></App>"}`)
+		case r.URL.Path == "/wd/hub/session/s1/execute/sync":
+			_, _ = io.WriteString(w, `{"value":null}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.BundleID = "com.example.app"
+	cfg.Tools = map[string]bool{"axe": true, "appium": true, "node": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAppiumSession(run, appiumSessionState{PID: 123, BaseURL: server.URL + appiumBasePath, SessionID: "s1", UDID: "SIM", BundleID: "com.example.app"}); err != nil {
+		t.Fatal(err)
+	}
+	raw := `[{"role":"AXTabBar","children":[{"AXIdentifier":"Vender","AXLabel":"Vender","role":"AXTab"}]}]`
+	runner := &sequenceRecordingRunner{
+		tools: cfg.Tools,
+		out: map[string]string{
+			"axe describe-ui --udid SIM":     raw,
+			"appium driver list --installed": "xcuitest@8.4.3\n",
+		},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "tap", "--id", "Vender"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "driver=appium") || !strings.Contains(got, "fallback_reason=container_tap") {
+		t.Fatalf("got %q", got)
+	}
+	if containsCall(runner.commands, "axe tap --id Vender") {
+		t.Fatalf("tab tap should route before axe tap: %v", runner.commands)
+	}
+	if !containsCall(calls, `"script":"mobile: tap"`) {
 		t.Fatalf("calls=%v", calls)
 	}
 }
@@ -3537,6 +3787,47 @@ func TestRunFlowFailsWhenEraseOrHideKeyboardFail(t *testing.T) {
 				t.Fatalf("got %q", got)
 			}
 		})
+	}
+}
+
+func TestMapPruneApplyWarningsRemovesCoordinateAndDuplicateEdges(t *testing.T) {
+	root := t.TempDir()
+	m := AppMap{
+		AppID: "com.example.app",
+		Start: "home",
+		Screens: map[string]Screen{
+			"home": {
+				ID: "home",
+				Edges: []Edge{
+					{To: "details", X: "100", Y: "200"},
+					{To: "settings", ID: "settings_button"},
+					{To: "profile", ID: "settings_button"},
+					{From: "other", To: "details", ID: "details_button"},
+				},
+			},
+			"details":  {ID: "details"},
+			"settings": {ID: "settings"},
+			"profile":  {ID: "profile"},
+		},
+	}
+	if err := SaveAppMap(root, m); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.mapCommand([]string{"prune", "--apply-warnings"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.Contains(got, "pruned=3") {
+		t.Fatalf("got %q", got)
+	}
+	loaded, err := LoadAppMap(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edges := loaded.Screens["home"].Edges
+	if len(edges) != 1 || edges[0].To != "settings" {
+		t.Fatalf("edges=%+v", edges)
 	}
 }
 

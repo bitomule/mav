@@ -33,6 +33,7 @@ steps:
   - twoFingerPan: { x: 200, y: 450, panX: 20, panY: 10 }
   - actions: { file: .mav/actions/map-zoom.json }
   - open: { clearState: true }
+  - open: { clear-state: true }
   - erase: { value: "Email", focused: true, prefer-driver: appium }
   - hideKeyboard: {}
   - whileNotVisible:
@@ -46,7 +47,7 @@ steps:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if flow.Name != "verify_daily_reminder" || len(flow.Steps) != 18 {
+	if flow.Name != "verify_daily_reminder" || len(flow.Steps) != 19 {
 		t.Fatalf("flow=%+v", flow)
 	}
 	if flow.Steps[1].Action != "go" || flow.Steps[1].Params["screen"] != "settings" {
@@ -85,14 +86,17 @@ steps:
 	if flow.Steps[14].Action != "open" || flow.Steps[14].Params["clearState"] != "true" {
 		t.Fatalf("open clearState=%+v", flow.Steps[14])
 	}
-	if flow.Steps[15].Action != "erase" || flow.Steps[15].Params["value"] != "Email" || flow.Steps[15].Params["focused"] != "true" {
-		t.Fatalf("erase=%+v", flow.Steps[15])
+	if flow.Steps[15].Action != "open" || flow.Steps[15].Params["clearState"] != "true" {
+		t.Fatalf("open clear-state=%+v", flow.Steps[15])
 	}
-	if flow.Steps[16].Action != "hideKeyboard" {
-		t.Fatalf("hideKeyboard=%+v", flow.Steps[16])
+	if flow.Steps[16].Action != "erase" || flow.Steps[16].Params["value"] != "Email" || flow.Steps[16].Params["focused"] != "true" {
+		t.Fatalf("erase=%+v", flow.Steps[16])
 	}
-	if flow.Steps[17].Action != "whileNotVisible" || flow.Steps[17].Params["text"] != "You" || flow.Steps[17].Params["timeout"] != "30s" || len(flow.Steps[17].Do) != 2 || flow.Steps[17].Do[0].Params["optional"] != "true" {
-		t.Fatalf("while=%+v", flow.Steps[17])
+	if flow.Steps[17].Action != "hideKeyboard" {
+		t.Fatalf("hideKeyboard=%+v", flow.Steps[17])
+	}
+	if flow.Steps[18].Action != "whileNotVisible" || flow.Steps[18].Params["text"] != "You" || flow.Steps[18].Params["timeout"] != "30s" || len(flow.Steps[18].Do) != 2 || flow.Steps[18].Do[0].Params["optional"] != "true" {
+		t.Fatalf("while=%+v", flow.Steps[18])
 	}
 }
 
