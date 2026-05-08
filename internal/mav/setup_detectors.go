@@ -95,23 +95,6 @@ func detectCustomLaunchCandidates(root string, cfg Config) []LaunchCandidate {
 			})
 		}
 	}
-	if exists(filepath.Join(root, "fastlane", "Fastfile")) {
-		data, _ := os.ReadFile(filepath.Join(root, "fastlane", "Fastfile"))
-		text := string(data)
-		if fastlaneLane(text, "mav_build") && fastlaneLane(text, "mav_app_path") {
-			out = append(out, LaunchCandidate{
-				Source:      "custom",
-				Confidence:  91,
-				Description: "project Fastlane MAV lanes",
-				Launch: LaunchConfig{Mode: "custom", Commands: LaunchCommands{
-					Build:   "bundle exec fastlane mav_build",
-					AppPath: "bundle exec fastlane mav_app_path",
-					Install: `xcrun simctl install "$MAV_UDID" "$MAV_APP_PATH"`,
-					Launch:  `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`,
-				}},
-			})
-		}
-	}
 	return out
 }
 
@@ -133,31 +116,6 @@ func justRecipe(justfile, recipe string) bool {
 		}
 	}
 	return false
-}
-
-func fastlaneLane(fastfile, lane string) bool {
-	for _, line := range strings.Split(fastfile, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "#") {
-			continue
-		}
-		if exactFastlaneLaneLine(line, "lane", lane) || exactFastlaneLaneLine(line, "private_lane", lane) {
-			return true
-		}
-	}
-	return false
-}
-
-func exactFastlaneLaneLine(line, keyword, lane string) bool {
-	prefix := keyword + " :" + lane
-	if line == prefix {
-		return true
-	}
-	if !strings.HasPrefix(line, prefix) {
-		return false
-	}
-	next := line[len(prefix)]
-	return next == ' ' || next == '\t' || next == ','
 }
 
 func firstExisting(paths ...string) string {

@@ -63,10 +63,11 @@ Configure the project or install supported helper tools:
 mav setup
 ```
 
-`mav setup` is idempotent. It scaffolds or refreshes `.mav/config.yaml` and the
-initial app map by detecting app identity, simulator defaults, UI tools, and an
-editable launch recipe. Existing explicit choices in `.mav/config.yaml` are
-preserved.
+`mav setup` is idempotent and interactive by default. It scaffolds or refreshes
+`.mav/config.yaml` and the initial app map by detecting app identity, simulator
+defaults, UI tools, and an editable launch recipe, then asks you to accept or
+replace each value. Existing explicit choices in `.mav/config.yaml` are
+preserved. Use `mav setup --non-interactive` for CI/scripts.
 
 ```bash
 mav setup --install axe idb appium
@@ -142,14 +143,13 @@ mav open
 mav ui tree
 ```
 
-`mav setup` scaffolds `.mav/config.yaml` and an initial app map. It detects
-a bundle id, selected simulator, locale/language, available tools, and a launch
-recipe when it can infer one. It is useful for non-interactive setup and for
-refreshing the generated MAV config after project structure changes. Launch
-recipe detection is intentionally conservative: MAV recognizes explicit
+`mav setup` scaffolds `.mav/config.yaml` and an initial app map. By default it
+is interactive: MAV detects a bundle id, selected simulator, locale/language,
+available tools, and a launch recipe when it can infer one, then lets you accept
+or replace each value. Use `mav setup --non-interactive` for CI/scripts.
+Launch recipe detection is intentionally conservative: MAV recognizes explicit
 `Makefile`/`justfile` MAV targets, `scripts/mav-build` plus
-`scripts/mav-app-path`, Fastlane `mav_build` plus `mav_app_path`, and standard
-Bazel/Tuist/Xcode project shapes.
+`scripts/mav-app-path`, and standard Bazel/Tuist/Xcode project shapes.
 
 `mav open` executes the configured launch recipe. It creates a run directory
 under `/tmp/mav/<run-id>/` and starts `logs.txt` for MAV probes.
@@ -653,7 +653,7 @@ mav stop
 
 ```text
 mav doctor
-mav setup
+mav setup [--non-interactive]
 mav setup --install axe idb appium
 mav install-skills
 mav sim list
