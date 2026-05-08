@@ -164,18 +164,16 @@ func TestScreenRecognizerRequiresExplicitScreenID(t *testing.T) {
 	if screenMatches(screen, "", []Element{{Label: "Settings", Role: "heading"}}) {
 		t.Fatalf("live tree without explicit screen id should not match")
 	}
+	screen = Screen{ID: "settings", Recognizers: []Recognizer{{Kind: "id", Value: "mav.screen.home"}}}
+	if screenHasExplicitScreenIdentity(screen) || screenMatches(screen, "", []Element{{ID: "mav.screen.home"}}) {
+		t.Fatalf("mismatched mav.screen id should not validate or match")
+	}
 }
 
-func TestValidateRequiresExplicitStartScreenID(t *testing.T) {
-	m := AppMap{
-		Start: "start",
-		Screens: map[string]Screen{
-			"start": {ID: "start"},
-		},
-	}
-	err := ValidateAppMap(m)
-	if err == nil || !strings.Contains(err.Error(), "app_map_screen_identity_missing screen=start") {
-		t.Fatalf("err=%v", err)
+func TestValidateAllowsLaunchStartRecognizer(t *testing.T) {
+	m := DefaultAppMap("com.example.demo")
+	if err := ValidateAppMap(m); err != nil {
+		t.Fatalf("launch start should validate: %v", err)
 	}
 }
 
@@ -241,7 +239,7 @@ func TestObserveScreenIdentityMissingClearsCurrentAndPending(t *testing.T) {
 	}
 }
 
-func TestObserveScreenDoesNotTreatBlankStartAsCatchAll(t *testing.T) {
+func TestObserveScreenUsesLaunchRecognizerForCurrentStart(t *testing.T) {
 	root := t.TempDir()
 	m := DefaultAppMap("com.example.demo")
 	if err := SaveAppMap(root, m); err != nil {
@@ -253,8 +251,39 @@ func TestObserveScreenDoesNotTreatBlankStartAsCatchAll(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if observed.Screen == "start" || observed.Source == "start" {
-		t.Fatalf("blank start should not catch all trees: %+v", observed)
+	if observed.Screen != "start" || observed.Source != "current" {
+		t.Fatalf("observed=%+v", observed)
+	}
+}
+
+func TestObserveScreenPrefersExplicitIdentityOverCurrentLaunch(t *testing.T) {
+	root := t.TempDir()
+	m := DefaultAppMap("com.example.demo")
+	m.Screens["home"] = testExplicitScreen("home")
+	if err := SaveAppMap(root, m); err != nil {
+		t.Fatal(err)
+	}
+	SetCurrentScreen(root, "start", "run1")
+	raw := `[{"AXIdentifier":"mav.screen.home","role":"group","children":[{"AXLabel":"Home","role":"heading"}]}]`
+	observed, err := ObserveScreenDetailed(root, Config{BundleID: "com.example.demo"}, RunState{ID: "run1", Dir: t.TempDir()}, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed.Screen != "home" || observed.Source != "recognized" {
+		t.Fatalf("observed=%+v", observed)
+	}
+}
+
+func TestObserveScreenDoesNotRecognizeLaunchStartWithoutCurrent(t *testing.T) {
+	root := t.TempDir()
+	m := DefaultAppMap("com.example.demo")
+	if err := SaveAppMap(root, m); err != nil {
+		t.Fatal(err)
+	}
+	raw := `[{"AXLabel":"Welcome","role":"heading"}]`
+	observed, err := ObserveScreenDetailed(root, Config{BundleID: "com.example.demo"}, RunState{ID: "run1", Dir: t.TempDir()}, raw)
+	if err != nil {
+		t.Fatal(err)
 	}
 	if observed.Screen != "unknown" || observed.Source != "identity_missing" {
 		t.Fatalf("observed=%+v", observed)
@@ -284,9 +313,70 @@ func TestExplicitScreenIdentityIgnoresPersonalizedFeedHeading(t *testing.T) {
 		{Label: "Elegidos para conchita", Role: "heading"},
 		{ID: "mav.screen.inicio", Label: "Inicio", Role: "tab", Value: "1"},
 	}
-	identity, ok := explicitScreenIdentity(elements)
+	identity, ok := explicitScreenIdentity(elements, Config{})
 	if !ok || identity.ID != "inicio" || identity.Recognizer.Value != "mav.screen.inicio" {
 		t.Fatalf("identity=%+v ok=%v", identity, ok)
+	}
+}
+
+func TestExplicitScreenIdentityUsesConfiguredNaturalIdentifier(t *testing.T) {
+	cfg := Config{ScreenIdentifiers: map[string]string{"upload-form": "UploadFormView"}}
+	elements := []Element{
+		{ID: "UploadFormView", Role: "group"},
+	}
+	identity, ok := explicitScreenIdentity(elements, cfg)
+	if !ok || identity.ID != "upload-form" || identity.Recognizer.Value != "UploadFormView" {
+		t.Fatalf("identity=%+v ok=%v", identity, ok)
+	}
+	screen := Screen{ID: "upload-form", Recognizers: []Recognizer{identity.Recognizer}}
+	if !screenMatches(screen, "", elements) {
+		t.Fatalf("configured natural id should match")
+	}
+	if err := ValidateAppMap(AppMap{Start: "upload-form", Screens: map[string]Screen{"upload-form": screen}}); err != nil {
+		t.Fatalf("configured natural id should validate: %v", err)
+	}
+}
+
+func TestPrefixedScreenIdentityWinsOverConfiguredNaturalIdentifier(t *testing.T) {
+	cfg := Config{ScreenIdentifiers: map[string]string{"upload-form": "UploadFormView"}}
+	elements := []Element{
+		{ID: "UploadFormView", Role: "group"},
+		{ID: "mav.screen.home", Role: "group"},
+	}
+	identity, ok := explicitScreenIdentity(elements, cfg)
+	if !ok || identity.ID != "home" {
+		t.Fatalf("identity=%+v ok=%v", identity, ok)
+	}
+	screen := Screen{ID: "upload-form", Recognizers: []Recognizer{{Kind: "id", Value: "UploadFormView"}}}
+	if screenMatches(screen, "", elements) {
+		t.Fatalf("natural id should not match when tree declares a different mav.screen id")
+	}
+}
+
+func TestConfiguredNaturalIdentifierWinsOverExistingRecognizer(t *testing.T) {
+	root := t.TempDir()
+	cfg := Config{
+		BundleID:          "com.example.demo",
+		ScreenIdentifiers: map[string]string{"upload-form": "UploadFormView"},
+	}
+	if err := SaveAppMap(root, AppMap{
+		AppID: "com.example.demo",
+		Start: "start",
+		Screens: map[string]Screen{
+			"start":       DefaultAppMap("com.example.demo").Screens["start"],
+			"old-details": {ID: "old-details", Recognizers: []Recognizer{{Kind: "id", Value: "StaleDetailsView"}}},
+			"upload-form": {ID: "upload-form", Recognizers: []Recognizer{{Kind: "id", Value: "UploadFormView"}}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	raw := `[{"AXIdentifier":"UploadFormView","role":"group"},{"AXIdentifier":"StaleDetailsView","role":"group"}]`
+	observed, err := ObserveScreenDetailed(root, cfg, RunState{ID: "run1", Dir: t.TempDir()}, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed.Screen != "upload-form" || observed.Source != "recognized" {
+		t.Fatalf("observed=%+v", observed)
 	}
 }
 
@@ -301,7 +391,7 @@ func TestExplicitScreenIdentityRejectsInvalidSuffix(t *testing.T) {
 	}
 }
 
-func TestLoadAppMapMigratesExplicitAssertIDRecognizer(t *testing.T) {
+func TestLoadAppMapDoesNotMigrateExplicitAssertIDRecognizer(t *testing.T) {
 	root := t.TempDir()
 	if err := SaveAppMap(root, AppMap{
 		AppID: "com.example.demo",
@@ -317,10 +407,10 @@ func TestLoadAppMapMigratesExplicitAssertIDRecognizer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateAppMap(loaded); err != nil {
-		t.Fatalf("legacy assert_id should satisfy explicit screen identity: %v", err)
+	if err := ValidateAppMap(loaded); err == nil || !strings.Contains(err.Error(), "app_map_screen_identity_missing screen=settings") {
+		t.Fatalf("legacy assert_id should not satisfy explicit screen identity: %v", err)
 	}
-	if !screenHasExplicitScreenIdentity(loaded.Screens["settings"]) {
+	if screenHasExplicitScreenIdentity(loaded.Screens["settings"]) {
 		t.Fatalf("screen=%+v", loaded.Screens["settings"])
 	}
 }
@@ -361,7 +451,7 @@ func TestObserveScreenPersistsDriverOnScreenAndEdge(t *testing.T) {
 	}
 }
 
-func TestObserveScreenAddsExplicitIdentityToLegacyScreen(t *testing.T) {
+func TestObserveScreenDoesNotMigrateLegacyTextOnlyScreen(t *testing.T) {
 	root := t.TempDir()
 	m := AppMap{
 		AppID: "com.example.demo",
@@ -386,10 +476,10 @@ func TestObserveScreenAddsExplicitIdentityToLegacyScreen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateAppMap(loaded); err != nil {
-		t.Fatalf("migrated map should validate: %v", err)
+	if err := ValidateAppMap(loaded); err == nil || !strings.Contains(err.Error(), "app_map_screen_identity_missing screen=settings") {
+		t.Fatalf("legacy text-only screen should not be migrated: %v", err)
 	}
-	if !screenHasExplicitScreenIdentity(loaded.Screens["settings"]) {
+	if screenHasExplicitScreenIdentity(loaded.Screens["settings"]) {
 		t.Fatalf("screen=%+v", loaded.Screens["settings"])
 	}
 }

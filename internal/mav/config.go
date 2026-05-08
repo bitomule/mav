@@ -36,6 +36,7 @@ type Config struct {
 	LogCategory       string
 	PreferredUIDriver string
 	AllowShell        bool
+	ScreenIdentifiers map[string]string
 	Launch            LaunchConfig
 	Tools             map[string]bool
 }
@@ -59,6 +60,7 @@ func DefaultConfig(root string) Config {
 		Root:              root,
 		LogCategory:       "probe",
 		PreferredUIDriver: "axe",
+		ScreenIdentifiers: map[string]string{},
 		Tools:             map[string]bool{},
 	}
 }
@@ -95,6 +97,13 @@ func LoadConfig(root string) (Config, error) {
 			key, value, ok := splitYAMLKV(line)
 			if ok {
 				cfg.Tools[key] = value == "true"
+			}
+			continue
+		}
+		if section == "screen_identifiers" && indent >= 2 {
+			key, value, ok := splitYAMLKV(line)
+			if ok && key != "" && value != "" {
+				cfg.ScreenIdentifiers[key] = value
 			}
 			continue
 		}
@@ -208,6 +217,21 @@ func SaveConfig(root string, cfg Config) error {
 	writeKV("preferred_ui_driver", cfg.PreferredUIDriver)
 	if cfg.AllowShell {
 		b.WriteString("allow_shell: true\n")
+	}
+	if len(cfg.ScreenIdentifiers) > 0 {
+		b.WriteString("screen_identifiers:\n")
+		keys := make([]string, 0, len(cfg.ScreenIdentifiers))
+		for key := range cfg.ScreenIdentifiers {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			b.WriteString("  ")
+			b.WriteString(key)
+			b.WriteString(": ")
+			b.WriteString(yamlQuote(cfg.ScreenIdentifiers[key]))
+			b.WriteString("\n")
+		}
 	}
 	if cfg.Launch.Mode != "" || hasLaunchCommands(cfg.Launch.Commands) {
 		mode := cfg.Launch.Mode

@@ -652,6 +652,80 @@ func TestUITreePendingTapPrefersScreenOtherThanPendingFrom(t *testing.T) {
 	}
 }
 
+func TestUITreePrefersExplicitIdentityOverCurrentLaunch(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.demo"
+	cfg.Tools = map[string]bool{"axe": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	m := DefaultAppMap("com.example.demo")
+	m.Screens["home"] = testExplicitScreen("home")
+	if err := SaveAppMap(root, m); err != nil {
+		t.Fatal(err)
+	}
+	run := RunState{ID: "run-tree", Dir: filepath.Join(os.TempDir(), "mav", "run-tree-launch")}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := os.MkdirAll(run.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	SetCurrentScreen(root, "start", run.ID)
+	raw := `[{"AXIdentifier":"mav.screen.home","role":"group","children":[{"AXLabel":"Home","role":"heading"}]}]`
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{tools: cfg.Tools, out: map[string]string{"axe describe-ui": raw}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "tree"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "recognized_screen=home") || !strings.Contains(got, "screen=unknown") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestUITreeConfiguredNaturalIdentifierWinsOverExistingRecognizer(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.demo"
+	cfg.Tools = map[string]bool{"axe": true}
+	cfg.ScreenIdentifiers["upload-form"] = "UploadFormView"
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveAppMap(root, AppMap{
+		AppID: "com.example.demo",
+		Start: "start",
+		Screens: map[string]Screen{
+			"start":       DefaultAppMap("com.example.demo").Screens["start"],
+			"old-details": {ID: "old-details", Recognizers: []Recognizer{{Kind: "id", Value: "StaleDetailsView"}}},
+			"upload-form": {ID: "upload-form", Recognizers: []Recognizer{{Kind: "id", Value: "UploadFormView"}}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	run := RunState{ID: "run-tree", Dir: filepath.Join(os.TempDir(), "mav", "run-tree-configured-id")}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := os.MkdirAll(run.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	raw := `[{"AXIdentifier":"UploadFormView","role":"group"},{"AXIdentifier":"StaleDetailsView","role":"group"}]`
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{tools: cfg.Tools, out: map[string]string{"axe describe-ui": raw}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "tree"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "recognized_screen=upload-form") || strings.Contains(got, "recognized_screen=old-details") {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestUITreePreferAppiumUsesSource(t *testing.T) {
 	root, cfg, server, calls := setupAppiumSemanticTest(t)
 	defer server.Close()
@@ -716,6 +790,52 @@ func TestUITreeAutoFallsBackToAppiumForScreenIdentity(t *testing.T) {
 	}
 	if home.Driver != "appium" {
 		t.Fatalf("home driver=%q", home.Driver)
+	}
+	if !containsCall(*calls, "/wd/hub/session/s1/source") {
+		t.Fatalf("source not requested: %v", *calls)
+	}
+}
+
+func TestUITreeAutoFallbackDoesNotTreatLaunchCurrentAsReadyWhilePending(t *testing.T) {
+	root, cfg, server, calls := setupAppiumSemanticTest(t)
+	defer server.Close()
+	cfg.Tools = map[string]bool{"axe": true, "appium": true, "node": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveAppMap(root, AppMap{
+		AppID: "com.example.app",
+		Start: "start",
+		Screens: map[string]Screen{
+			"start": DefaultAppMap("com.example.app").Screens["start"],
+			"home":  testExplicitScreen("home"),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	run, err := LoadRun(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	SetCurrentScreen(root, "start", run.ID)
+	SetPendingMapAction(root, pendingMapAction{From: "start", ID: "Vender"})
+	axeRaw := `[{"AXLabel":"Home","role":"heading"}]`
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{
+		tools: cfg.Tools,
+		out: map[string]string{
+			"axe describe-ui":                axeRaw,
+			"appium driver list --installed": "xcuitest@7.0.0\n",
+		},
+	}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "tree"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{"driver=appium", "recognized_screen=home", "previous_screen=start"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in %q", want, got)
+		}
 	}
 	if !containsCall(*calls, "/wd/hub/session/s1/source") {
 		t.Fatalf("source not requested: %v", *calls)
@@ -2736,7 +2856,7 @@ func TestUITreeReportsPendingMapActionForUnknownScreen(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := out.String()
-	for _, want := range []string{"screen=unknown", "previous_screen=photos-to-delete", `next="add a stable screen accessibility identifier such as mav.screen.\u003cid\u003e before mapping"`} {
+	for _, want := range []string{"screen=unknown", "previous_screen=photos-to-delete", "screen_identifiers"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in %q", want, got)
 		}

@@ -1020,7 +1020,7 @@ func (c CLI) uiTree(ctx context.Context, opts GlobalOptions, cfg Config, args []
 	if prefer == "auto" && driver != "appium" && shouldTryAppiumTreeFallback(result.Stdout, state) {
 		if appium, appiumErr := c.describeUITree(ctx, cfg, "appium", true); appiumErr == nil && appium.Result.Err == nil && !isEmptyAXTree(appium.Result.Stdout) {
 			appiumState := c.observeUITree(cfg, appium.Result.Stdout, appium.Driver, false)
-			if shouldUseAppiumTreeFallback(result.Stdout, state, appiumState) {
+			if shouldUseAppiumTreeFallback(result.Stdout, state, appiumState, cfg) {
 				described = appium
 				driver = appium.Driver
 				result = appium.Result
@@ -1099,24 +1099,28 @@ func (c CLI) observeUITree(cfg Config, raw, treeDriver string, persist bool) uiT
 		}
 	} else if m, err := LoadAppMap(c.Root); err == nil {
 		current := CurrentScreen(c.Root)
+		_, hasPending := peekPendingMapAction(c.Root)
 		screenID := ""
 		source := ""
-		if current != "" {
-			if screen, ok := m.Screens[current]; ok && screenMatches(screen, raw, state.Elements) {
+		if current != "" && !hasPending {
+			if screen, ok := m.Screens[current]; ok && currentScreenMatches(screen, raw, state.Elements) {
 				screenID = current
 				source = "current"
 			}
+		}
+		identity, hasIdentity := explicitScreenIdentity(state.Elements, cfg)
+		if screenID != "" && hasIdentity && identity.ID != screenID {
+			screenID = ""
+			source = ""
+		}
+		if screenID == "" && hasIdentity {
+			screenID = identity.ID
+			source = identityScreenSource(m, identity.ID, state.Elements)
 		}
 		if screenID == "" {
 			screenID = recognizeScreen(m, raw, state.Elements)
 			if screenID != "" {
 				source = "recognized"
-			}
-		}
-		if screenID == "" {
-			if identity, ok := explicitScreenIdentity(state.Elements); ok {
-				screenID = identity.ID
-				source = "explicit_id"
 			}
 		}
 		if screenID != "" {
@@ -1148,18 +1152,18 @@ func shouldTryAppiumTreeFallback(raw string, state uiTreeState) bool {
 	return shouldFallbackToAppiumTree(raw, state) || state.ScreenSource == "identity_missing"
 }
 
-func shouldUseAppiumTreeFallback(raw string, state, appiumState uiTreeState) bool {
+func shouldUseAppiumTreeFallback(raw string, state, appiumState uiTreeState, cfg Config) bool {
 	if shouldFallbackToAppiumTree(raw, state) {
 		return true
 	}
-	return state.ScreenSource == "identity_missing" && appiumStateHasExplicitScreenIdentity(appiumState)
+	return state.ScreenSource == "identity_missing" && appiumStateHasExplicitScreenIdentity(appiumState, cfg)
 }
 
-func appiumStateHasExplicitScreenIdentity(state uiTreeState) bool {
+func appiumStateHasExplicitScreenIdentity(state uiTreeState, cfg Config) bool {
 	if state.Screen == "" || state.Screen == "unknown" || state.ScreenSource == "identity_missing" {
 		return false
 	}
-	identity, ok := explicitScreenIdentity(state.Elements)
+	identity, ok := explicitScreenIdentity(state.Elements, cfg)
 	return ok && identity.ID == state.Screen
 }
 
@@ -1169,7 +1173,7 @@ func addIdentityMissingNext(fields map[string]string, described describedUITree)
 		fields["next"] = "this looks like a system overlay. Cannot add accessibility id from app code. Use --include-system or coordinate taps."
 		return
 	}
-	fields["next"] = "add a stable screen accessibility identifier such as mav.screen.<id> before mapping"
+	fields["next"] = "add a stable screen accessibility identifier, or map a natural identifier under screen_identifiers in .mav/config.yaml"
 }
 
 func (c CLI) writeUITreeToolError(err error) error {
@@ -1307,7 +1311,7 @@ func (c CLI) waitForTreeReady(ctx context.Context, cfg Config, timeout time.Dura
 			if shouldTryAppiumTreeFallback(result.Stdout, state) {
 				if appium, appiumErr := c.describeUITree(ctx, cfg, "appium", true); appiumErr == nil && appium.Result.Err == nil && !isEmptyAXTree(appium.Result.Stdout) && countTreeNodes(appium.Result.Stdout) > 1 && len(ExtractElements(appium.Result.Stdout)) > 0 {
 					appiumState := c.observeUITree(cfg, appium.Result.Stdout, appium.Driver, false)
-					if !shouldUseAppiumTreeFallback(result.Stdout, state, appiumState) {
+					if !shouldUseAppiumTreeFallback(result.Stdout, state, appiumState, cfg) {
 						time.Sleep(300 * time.Millisecond)
 						continue
 					}
@@ -2350,7 +2354,7 @@ func (c CLI) observeFlowStepScreen(ctx context.Context, opts GlobalOptions, run 
 		if shouldTryAppiumTreeFallback(raw, state) {
 			if appium, appiumErr := c.describeUITree(ctx, cfg, "appium", true); appiumErr == nil && appium.Result.Err == nil && !isEmptyAXTree(appium.Result.Stdout) {
 				appiumState := c.observeUITree(cfg, appium.Result.Stdout, appium.Driver, false)
-				if shouldUseAppiumTreeFallback(raw, state, appiumState) {
+				if shouldUseAppiumTreeFallback(raw, state, appiumState, cfg) {
 					driver = appium.Driver
 					raw = appium.Result.Stdout
 				}
@@ -2934,7 +2938,7 @@ func (c CLI) goScreen(ctx context.Context, opts GlobalOptions, args []string) er
 	if _, ok := m.Screens[screenID]; !ok {
 		return Fail("screen_not_found", map[string]string{
 			"screen": screenID,
-			"next":   "add mav.screen.<id> to the app, then explore with mav ui tree/tap",
+			"next":   "add or configure a stable screen identifier, then explore with mav ui tree/tap",
 		}).Write(c.Stdout)
 	}
 	route, routeErr := Route(m, screenID)
@@ -3021,7 +3025,7 @@ func (c CLI) goScreen(ctx context.Context, opts GlobalOptions, args []string) er
 		fields := map[string]string{"screen": screenID}
 		code := routeErr.Error()
 		if code == "screen_not_found" || code == "route_not_found" || code == "route_start_not_found" {
-			fields["next"] = "add mav.screen.<id> to the app, then explore with mav ui tree/tap"
+			fields["next"] = "add or configure a stable screen identifier, then explore with mav ui tree/tap"
 		}
 		_ = c.withStdout(io.Discard).evidenceStop(ctx, GlobalOptions{}, []string{"--run", run.ID, "--note", "No route to " + screenID})
 		_ = c.withStdout(io.Discard).evidenceReport(GlobalOptions{}, []string{"--run", run.ID})
