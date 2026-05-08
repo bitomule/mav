@@ -28,6 +28,29 @@ func TestRoute(t *testing.T) {
 	}
 }
 
+func TestRouteFromUsesObservedStartAndSkipsLowConfidenceEdges(t *testing.T) {
+	m := AppMap{
+		AppID: "com.example.demo",
+		Start: "start",
+		Screens: map[string]Screen{
+			"start":    {ID: "start", Edges: []Edge{{To: "wrong", ID: "buy", Confidence: "low"}}},
+			"home":     {ID: "home", Edges: []Edge{{To: "settings", ID: "settings_button"}}},
+			"wrong":    {ID: "wrong"},
+			"settings": {ID: "settings", AssertID: "settings_view"},
+		},
+	}
+	if _, err := RouteFrom(m, "start", "wrong"); err == nil || err.Error() != "route_not_found" {
+		t.Fatalf("low confidence edge should not route: %v", err)
+	}
+	route, err := RouteFrom(m, "home", "settings")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(route) != 1 || route[0].From != "home" {
+		t.Fatalf("route=%+v", route)
+	}
+}
+
 func TestRouteUnknownScreen(t *testing.T) {
 	m := DefaultAppMap("com.example.demo")
 	_, err := Route(m, "settings")
@@ -163,6 +186,26 @@ func TestObserveScreenDoesNotReuseStaleCurrentForUnmatchedTree(t *testing.T) {
 	}
 }
 
+func TestObserveScreenDoesNotTreatBlankStartAsCatchAll(t *testing.T) {
+	root := t.TempDir()
+	m := DefaultAppMap("com.example.demo")
+	if err := SaveAppMap(root, m); err != nil {
+		t.Fatal(err)
+	}
+	SetCurrentScreen(root, "start", "run1")
+	raw := `[{"AXLabel":"Welcome","role":"heading"}]`
+	observed, err := ObserveScreenDetailed(root, Config{BundleID: "com.example.demo"}, RunState{ID: "run1", Dir: t.TempDir()}, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed.Screen == "start" || observed.Source == "start" {
+		t.Fatalf("blank start should not catch all trees: %+v", observed)
+	}
+	if observed.Screen != "welcome" || observed.Source != "inferred" {
+		t.Fatalf("observed=%+v", observed)
+	}
+}
+
 func TestObserveScreenPersistsDriverOnScreenAndEdge(t *testing.T) {
 	root := t.TempDir()
 	m := AppMap{
@@ -261,6 +304,14 @@ func TestUpsertEdgePreservesAppiumDriverHint(t *testing.T) {
 	edges := []Edge{{To: "settings", ID: "settings_button", Driver: "appium"}}
 	updated := upsertEdge(edges, Edge{To: "settings", ID: "settings_button", Driver: "axe"})
 	if len(updated) != 1 || updated[0].Driver != "appium" {
+		t.Fatalf("edges=%+v", updated)
+	}
+}
+
+func TestUpsertEdgePreservesFromConfidenceAndFailures(t *testing.T) {
+	edges := []Edge{{From: "home", To: "settings", ID: "settings_button", Confidence: "high", FailureCount: 1, LastFailure: "then"}}
+	updated := upsertEdge(edges, Edge{To: "settings", ID: "settings_button", Driver: "axe"})
+	if len(updated) != 1 || updated[0].From != "home" || updated[0].Confidence != "high" || updated[0].FailureCount != 1 || updated[0].LastFailure != "then" {
 		t.Fatalf("edges=%+v", updated)
 	}
 }

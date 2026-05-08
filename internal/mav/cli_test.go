@@ -46,6 +46,8 @@ type sequenceRecordingRunner struct {
 	commands []string
 	out      map[string]string
 	err      map[string]CommandResult
+	seq      map[string][]string
+	calls    map[string]int
 }
 
 func (r *sequenceRecordingRunner) LookPath(file string) (string, error) {
@@ -62,6 +64,17 @@ func (r *sequenceRecordingRunner) Run(ctx context.Context, name string, args ...
 	if result, ok := r.err[command]; ok {
 		return result
 	}
+	if values := r.seq[command]; len(values) > 0 {
+		index := 0
+		if r.calls != nil {
+			index = r.calls[command]
+			if index >= len(values) {
+				index = len(values) - 1
+			}
+			r.calls[command]++
+		}
+		return CommandResult{Stdout: values[index]}
+	}
 	return CommandResult{Stdout: r.out[command]}
 }
 
@@ -70,7 +83,7 @@ func (r *sequenceRecordingRunner) Start(ctx context.Context, logPath string, nam
 	_ = logPath
 	_ = name
 	_ = args
-	return 0, nil
+	return 123, nil
 }
 
 type errorRunner struct {
@@ -1703,6 +1716,349 @@ func TestGoUsesNativeMAVActions(t *testing.T) {
 	}
 }
 
+func TestGoAlreadyAtTargetAfterLaunchIsNoop(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.demo"
+	cfg.Tools = map[string]bool{"axe": true, "xcrun": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	m := AppMap{
+		AppID: "com.example.demo",
+		Start: "start",
+		Screens: map[string]Screen{
+			"start":    {ID: "start"},
+			"settings": {ID: "settings", AssertText: "Settings"},
+		},
+	}
+	if err := SaveAppMap(root, m); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	runner := fakeRunner{
+		tools: map[string]bool{"axe": true, "xcrun": true},
+		seq: map[string][]string{"axe describe-ui": {
+			`{"AXLabel":"Settings","role":"heading","children":[{"AXLabel":"Daily Reminder","role":"static text"}]}`,
+			`{"AXLabel":"Settings","role":"heading","children":[{"AXLabel":"Daily Reminder","role":"static text"}]}`,
+		}},
+		calls: map[string]int{},
+	}
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"go", "settings"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "ok cmd=go") || !strings.Contains(got, "already_at_target=true") || !strings.Contains(got, "steps=0") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestNavigateFailsWhenChangedTreeIsNotTarget(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.demo"
+	cfg.Tools = map[string]bool{"axe": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	m := AppMap{
+		AppID: "com.example.demo",
+		Start: "home",
+		Screens: map[string]Screen{
+			"home":     {ID: "home", AssertText: "Home", Edges: []Edge{{From: "home", To: "settings", ID: "settings_button", Driver: "axe"}}},
+			"profile":  {ID: "profile", AssertText: "Profile"},
+			"settings": {ID: "settings", AssertText: "Settings"},
+		},
+	}
+	if err := SaveAppMap(root, m); err != nil {
+		t.Fatal(err)
+	}
+	run := RunState{ID: "run-route", Dir: filepath.Join(t.TempDir(), "run-route")}
+	if err := os.MkdirAll(run.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	SetCurrentScreen(root, "home", run.ID)
+	runner := fakeRunner{
+		tools: map[string]bool{"axe": true},
+		seq: map[string][]string{"axe describe-ui": {
+			`{"AXLabel":"Home","role":"heading","children":[{"AXIdentifier":"settings_button","AXLabel":"Settings","role":"button"}]}`,
+			`{"AXLabel":"Profile","role":"heading","children":[{"AXLabel":"Name","role":"static text"}]}`,
+		}},
+		calls: map[string]int{},
+	}
+	cli := CLI{Runner: runner, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	fields, err := cli.navigateToScreen(context.Background(), "settings")
+	if err == nil || err.Error() != "route_target_not_observed" {
+		t.Fatalf("fields=%v err=%v", fields, err)
+	}
+	if fields["stuck_at"] != "profile" || fields["edge_target"] != "settings" {
+		t.Fatalf("fields=%v", fields)
+	}
+	loaded, loadErr := LoadScreen(root, "home")
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if len(loaded.Edges) != 1 || loaded.Edges[0].To != "settings" {
+		t.Fatalf("route playback should not learn failed edge: %+v", loaded.Edges)
+	}
+	if _, ok := peekPendingMapAction(root); ok {
+		t.Fatalf("route playback should not leave pending map action")
+	}
+}
+
+func TestGoDoesNotReuseStartRouteWhenLaunchScreenDiffers(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.demo"
+	cfg.Tools = map[string]bool{"axe": true, "xcrun": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveAppMap(root, AppMap{
+		AppID: "com.example.demo",
+		Start: "start",
+		Screens: map[string]Screen{
+			"start":      {ID: "start", Edges: []Edge{{From: "start", To: "onboarding", ID: "next_button"}}},
+			"onboarding": {ID: "onboarding", AssertText: "Onboarding", Edges: []Edge{{From: "onboarding", To: "settings", ID: "settings_button"}}},
+			"home":       {ID: "home", AssertText: "Home"},
+			"settings":   {ID: "settings", AssertText: "Settings"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runner := &sequenceRecordingRunner{
+		tools: map[string]bool{"axe": true, "xcrun": true},
+		out: map[string]string{
+			"axe describe-ui": `{"AXLabel":"Home","role":"heading","children":[{"AXLabel":"Settings","role":"button"}]}`,
+		},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"go", "settings"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "fail code=route_not_found") {
+		t.Fatalf("got %q", got)
+	}
+	for _, command := range runner.commands {
+		if strings.Contains(command, "axe tap") {
+			t.Fatalf("should not execute stale start route, commands=%v", runner.commands)
+		}
+	}
+}
+
+func TestGoStartDoesNotSucceedWhenLaunchRecognizesDifferentScreen(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.demo"
+	cfg.Tools = map[string]bool{"axe": true, "xcrun": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveAppMap(root, AppMap{
+		AppID: "com.example.demo",
+		Start: "start",
+		Screens: map[string]Screen{
+			"start": {ID: "start"},
+			"home":  {ID: "home", AssertText: "Home"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{
+		tools: map[string]bool{"axe": true, "xcrun": true},
+		out: map[string]string{
+			"axe describe-ui": `{"AXLabel":"Home","role":"heading","children":[{"AXLabel":"Settings","role":"button"}]}`,
+		},
+	}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"go", "start"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "fail code=route_not_found") || strings.Contains(got, "already_at_target=true") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestLegacyCoordinateRouteStillExecutesIDBTap(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.demo"
+	cfg.Tools = map[string]bool{"axe": true, "idb": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveAppMap(root, AppMap{
+		AppID: "com.example.demo",
+		Start: "home",
+		Screens: map[string]Screen{
+			"home":     {ID: "home", AssertText: "Home", Edges: []Edge{{From: "home", To: "settings", X: "10", Y: "20", Driver: "idb"}}},
+			"settings": {ID: "settings", AssertText: "Settings"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	run := RunState{ID: "run-coordinate", Dir: filepath.Join(t.TempDir(), "run-coordinate")}
+	if err := os.MkdirAll(run.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	SetCurrentScreen(root, "home", run.ID)
+	runner := &sequenceRecordingRunner{
+		tools: map[string]bool{"axe": true, "idb": true},
+		seq: map[string][]string{"axe describe-ui": {
+			`{"AXLabel":"Home","role":"heading","children":[{"AXLabel":"Settings","role":"button"}]}`,
+			`{"AXLabel":"Settings","role":"heading","children":[{"AXLabel":"Daily Reminder","role":"static text"}]}`,
+		}},
+		calls: map[string]int{},
+	}
+	cli := CLI{Runner: runner, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	fields, err := cli.navigateToScreen(context.Background(), "settings")
+	if err != nil {
+		t.Fatalf("fields=%v err=%v", fields, err)
+	}
+	if fields["screen"] != "settings" {
+		t.Fatalf("fields=%v", fields)
+	}
+	if !containsCall(runner.commands, "idb ui tap 10 20") {
+		t.Fatalf("commands=%v", runner.commands)
+	}
+}
+
+func TestRouteEdgeDriversDoesNotPersistAutoAsDriver(t *testing.T) {
+	drivers := routeEdgeDrivers(Edge{To: "settings", ID: "settings_button"})
+	if len(drivers) != 2 || drivers[0] != "" || drivers[1] != "appium" {
+		t.Fatalf("drivers=%v", drivers)
+	}
+	drivers = routeEdgeDrivers(Edge{To: "settings", ID: "settings_button", Driver: "auto"})
+	if len(drivers) != 2 || drivers[0] != "" || drivers[1] != "appium" {
+		t.Fatalf("drivers=%v", drivers)
+	}
+}
+
+func TestRoutePlaybackReportsTapFailureAndClearsPending(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.demo"
+	cfg.Tools = map[string]bool{"axe": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveAppMap(root, AppMap{
+		AppID: "com.example.demo",
+		Start: "home",
+		Screens: map[string]Screen{
+			"home":     {ID: "home", AssertText: "Home", Edges: []Edge{{From: "home", To: "settings", X: "10", Y: "20", Driver: "idb"}}},
+			"settings": {ID: "settings", AssertText: "Settings"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	run := RunState{ID: "run-tap-fail", Dir: filepath.Join(t.TempDir(), "run-tap-fail")}
+	if err := os.MkdirAll(run.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	SetCurrentScreen(root, "home", run.ID)
+	cli := CLI{Runner: fakeRunner{
+		tools: cfg.Tools,
+		out: map[string]string{
+			"axe describe-ui": `{"AXLabel":"Home","role":"heading","children":[{"AXLabel":"Settings","role":"button"}]}`,
+		},
+	}, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	fields, err := cli.navigateToScreen(context.Background(), "settings")
+	if err == nil || err.Error() != "tap_failed" {
+		t.Fatalf("fields=%v err=%v", fields, err)
+	}
+	if _, ok := peekPendingMapAction(root); ok {
+		t.Fatalf("tap failure should clear pending map action")
+	}
+}
+
+func TestOutputFailureCode(t *testing.T) {
+	code, ok := outputFailureCode("fail code=tool_missing tool=idb\n")
+	if !ok || code != "tool_missing" {
+		t.Fatalf("code=%q ok=%v", code, ok)
+	}
+	if _, ok := outputFailureCode("ok cmd=ui.tap driver=axe\n"); ok {
+		t.Fatalf("ok output should not be failure")
+	}
+}
+
+func TestCoordinateTapDoesNotCreatePendingMapAction(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.demo"
+	cfg.Tools = map[string]bool{"idb": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveAppMap(root, AppMap{
+		AppID: "com.example.demo",
+		Start: "home",
+		Screens: map[string]Screen{
+			"home": {ID: "home", AssertText: "Home"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	SetCurrentScreen(root, "home", "run1")
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{tools: cfg.Tools}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "tap", "--x", "10", "--y", "20"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := peekPendingMapAction(root); ok {
+		t.Fatalf("coordinate tap should not be recorded as pending map action")
+	}
+	got := out.String()
+	if !strings.Contains(got, "driver=idb") || !strings.Contains(got, "route_recorded=false") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestMapVerifyWarnsAboutCoordinateAndDuplicateEdges(t *testing.T) {
+	root := t.TempDir()
+	if err := SaveAppMap(root, AppMap{
+		AppID: "com.example.demo",
+		Start: "home",
+		Screens: map[string]Screen{
+			"home": {ID: "home", Edges: []Edge{
+				{To: "settings", ID: "open"},
+				{To: "profile", ID: "open"},
+				{To: "picker", X: "10", Y: "20"},
+				{From: "start", To: "settings", ID: "wrong_from"},
+			}},
+			"settings": {ID: "settings"},
+			"profile":  {ID: "profile"},
+			"picker":   {ID: "picker"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"map", "verify"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{"fail code=app_map_warnings", "coordinate_edges=1", "duplicate_selectors=1", "from_mismatches=1"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in %q", want, got)
+		}
+	}
+}
+
 func TestGoWarmsAndForcesAppiumForMappedAppiumEdge(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
@@ -1750,10 +2106,10 @@ func TestGoWarmsAndForcesAppiumForMappedAppiumEdge(t *testing.T) {
 		tools: cfg.Tools,
 		out:   map[string]string{"appium driver list --installed": "xcuitest@7.0.0\n"},
 		seq: map[string][]string{"axe describe-ui --udid SIM": {
-			`{"AXLabel":"Home","children":[{"AXLabel":"Settings"}]}`,
-			`{"AXLabel":"Home","children":[{"AXLabel":"Settings"}]}`,
-			`{"AXLabel":"Settings","children":[{"AXLabel":"Daily Reminder"}]}`,
-			`{"AXLabel":"Settings","children":[{"AXLabel":"Daily Reminder"}]}`,
+			`{"AXLabel":"Home","role":"heading","children":[{"AXLabel":"Settings","role":"button"}]}`,
+			`{"AXLabel":"Home","role":"heading","children":[{"AXLabel":"Settings","role":"button"}]}`,
+			`{"AXLabel":"Settings","role":"heading","children":[{"AXLabel":"Daily Reminder","role":"static text"}]}`,
+			`{"AXLabel":"Settings","role":"heading","children":[{"AXLabel":"Daily Reminder","role":"static text"}]}`,
 		}},
 		calls: map[string]int{},
 	}
