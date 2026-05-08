@@ -1050,7 +1050,9 @@ func (c CLI) uiTree(ctx context.Context, opts GlobalOptions, cfg Config, args []
 		if state.PendingFrom != "" {
 			fields["previous_screen"] = state.PendingFrom
 		}
-		fields["next"] = "add accessibility ids or capture/inspect before mapping"
+		fields["next"] = "add a stable screen accessibility identifier such as mav.screen.<id> before mapping"
+	} else if state.ScreenSource == "identity_missing" {
+		fields["next"] = "add a stable screen accessibility identifier such as mav.screen.<id> before mapping"
 	}
 	if recovered {
 		fields["recovered"] = "true"
@@ -1109,15 +1111,9 @@ func (c CLI) observeUITree(cfg Config, raw, treeDriver string, persist bool) uiT
 			}
 		}
 		if screenID == "" {
-			screenID = inferScreenID(state.Elements)
-			if screenID != "" {
-				source = "inferred"
-			}
-		}
-		if screenID == "" && len(state.Elements) == 0 {
-			screenID = current
-			if screenID != "" {
-				source = "current"
+			if identity, ok := explicitScreenIdentity(state.Elements); ok {
+				screenID = identity.ID
+				source = "explicit_id"
 			}
 		}
 		if screenID != "" {
@@ -1125,12 +1121,9 @@ func (c CLI) observeUITree(cfg Config, raw, treeDriver string, persist bool) uiT
 			state.ScreenSource = source
 			state.PreviousScreen = current
 		} else {
-			state.ScreenSource = "unmatched"
+			state.ScreenSource = "identity_missing"
 			state.PreviousScreen = current
 		}
-	} else if screenID := inferScreenID(state.Elements); screenID != "" {
-		state.Screen = screenID
-		state.ScreenSource = "inferred"
 	}
 	if state.Nodes == 0 {
 		state.Nodes = strings.Count(raw, "\n")
@@ -1271,6 +1264,7 @@ func (c CLI) waitForTreeReady(ctx context.Context, cfg Config, timeout time.Dura
 			if shouldFallbackToAppiumTree(result.Stdout, state) {
 				if appium, appiumErr := c.describeUITree(ctx, cfg, "appium", true); appiumErr == nil && appium.Result.Err == nil && !isEmptyAXTree(appium.Result.Stdout) && countTreeNodes(appium.Result.Stdout) > 1 && len(ExtractElements(appium.Result.Stdout)) > 0 {
 					result = appium.Result
+					driver = appium.Driver
 				} else {
 					time.Sleep(300 * time.Millisecond)
 					continue
@@ -1278,6 +1272,13 @@ func (c CLI) waitForTreeReady(ctx context.Context, cfg Config, timeout time.Dura
 			}
 		}
 		if result.Err == nil && !isEmptyAXTree(result.Stdout) && countTreeNodes(result.Stdout) > 1 && len(ExtractElements(result.Stdout)) > 0 {
+			if _, mapErr := LoadAppMap(c.Root); mapErr == nil {
+				state := c.observeUITree(cfg, result.Stdout, driver, false)
+				if state.ScreenSource == "identity_missing" || state.ScreenSource == "unmatched" || state.MapPending {
+					time.Sleep(300 * time.Millisecond)
+					continue
+				}
+			}
 			return result.Stdout, nil
 		}
 		time.Sleep(300 * time.Millisecond)
@@ -2836,7 +2837,7 @@ func (c CLI) goScreen(ctx context.Context, opts GlobalOptions, args []string) er
 	if _, ok := m.Screens[screenID]; !ok {
 		return Fail("screen_not_found", map[string]string{
 			"screen": screenID,
-			"next":   "explore with mav ui tree/tap; map updates when the next screen is observed",
+			"next":   "add mav.screen.<id> to the app, then explore with mav ui tree/tap",
 		}).Write(c.Stdout)
 	}
 	route, routeErr := Route(m, screenID)
@@ -2923,7 +2924,7 @@ func (c CLI) goScreen(ctx context.Context, opts GlobalOptions, args []string) er
 		fields := map[string]string{"screen": screenID}
 		code := routeErr.Error()
 		if code == "screen_not_found" || code == "route_not_found" || code == "route_start_not_found" {
-			fields["next"] = "explore with mav ui tree/tap; map updates when the next screen is observed"
+			fields["next"] = "add mav.screen.<id> to the app, then explore with mav ui tree/tap"
 		}
 		_ = c.withStdout(io.Discard).evidenceStop(ctx, GlobalOptions{}, []string{"--run", run.ID, "--note", "No route to " + screenID})
 		_ = c.withStdout(io.Discard).evidenceReport(GlobalOptions{}, []string{"--run", run.ID})
@@ -3126,8 +3127,13 @@ func verifyMapFields(m AppMap) map[string]string {
 	lowConfidence := 0
 	duplicateSelectors := 0
 	fromMismatches := 0
+	identityMissing := 0
 	seenSelectors := map[string]string{}
 	for from, screen := range m.Screens {
+		if !screenHasExplicitScreenIdentity(screen) {
+			identityMissing++
+			warnings++
+		}
 		for _, edge := range screen.Edges {
 			if edge.From != "" && edge.From != from {
 				fromMismatches++
@@ -3158,6 +3164,7 @@ func verifyMapFields(m AppMap) map[string]string {
 		"low_confidence":      strconv.Itoa(lowConfidence),
 		"duplicate_selectors": strconv.Itoa(duplicateSelectors),
 		"from_mismatches":     strconv.Itoa(fromMismatches),
+		"identity_missing":    strconv.Itoa(identityMissing),
 	}
 }
 

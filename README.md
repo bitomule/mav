@@ -167,7 +167,7 @@ Example compact output:
 ```text
 ok cmd=setup bundle=com.example.app config=/repo/.mav/config.yaml launch_recipe=ok multitouch=missing multitouch_next="mav setup --install appium"
 ok cmd=open run=7fd logs=/tmp/mav/7fd/logs.txt target="iPhone 17 Pro Max"
-ok cmd=ui.tree driver=axe nodes=42 screen=start screen_source=recognized
+ok cmd=ui.tree driver=axe nodes=42 screen=unknown recognized_screen=settings screen_source=recognized
 node index=1 id=settings_button label=Settings role=button enabled=true frame="{{20, 120}, {180, 44}}"
 ```
 
@@ -218,7 +218,7 @@ Examples:
 ```text
 ok cmd=capture file=/tmp/mav/7fd/captures/20260503T120000.000.png run=7fd
 ok cmd=logs file=/tmp/mav/7fd/logs.txt matches=1 run=7fd
-fail code=screen_not_found next="explore with mav ui tree/tap; map updates when the next screen is observed" screen=settings
+fail code=screen_not_found next="add mav.screen.<id> to the app, then explore with mav ui tree/tap" screen=settings
 fail code=ui_tree_empty driver=axe reason=simulator_accessibility_unavailable recovered=false
 ```
 
@@ -255,12 +255,41 @@ Run state:
 
 ## App Map
 
-The app map is JSON. It is updated by normal MAV commands:
+The app map is JSON. It is updated by normal MAV commands, but only for screens
+that expose an explicit screen accessibility identifier. MAV recognizes these
+prefixes:
+
+```text
+mav.screen.<screen-id>
+screen.<screen-id>
+```
+
+For example, a node with `id=mav.screen.settings` becomes map screen
+`settings`. If the current tree has no explicit screen id, MAV still prints the
+tree and UI commands still work, but the map is not updated and any pending
+route edge is discarded.
+
+SwiftUI:
+
+```swift
+SettingsView()
+    .accessibilityIdentifier("mav.screen.settings")
+```
+
+UIKit:
+
+```swift
+view.accessibilityIdentifier = "mav.screen.settings"
+```
+
+Mapping flow:
 
 1. `mav open` resets the current screen to the configured start screen.
-2. `mav ui tree` records the current accessibility tree and screen elements.
+2. `mav ui tree` records the current accessibility tree and screen elements if
+   the tree contains `mav.screen.<screen-id>` or `screen.<screen-id>`.
 3. `mav ui tap ...` records a pending action from the current screen.
-4. The next `mav ui tree` observes the next screen and writes the route edge.
+4. The next `mav ui tree` observes the next explicit screen id and writes the
+   route edge.
 
 Basic mapping loop:
 
@@ -271,11 +300,11 @@ mav ui tap --id home_settings_button
 mav ui tree
 ```
 
-When navigating to a new screen, first make sure the destination exposes stable
-accessibility identifiers or a visible title in `mav ui tree`. If the next tree
-reports `screen=unknown map_pending=true`, the tap was recorded but the map did
-not learn a route yet; add or expose accessibility ids, capture/inspect the
-screen, then run `mav ui tree` again before relying on `mav go`.
+When navigating to a new screen, first make sure the destination exposes
+`mav.screen.<screen-id>` or `screen.<screen-id>` in `mav ui tree`. If the next
+tree reports `screen_source=identity_missing`, the map did not learn a route
+and the pending tap was discarded; add the screen id, repeat the tap, then run
+`mav ui tree` again before relying on `mav go`.
 
 Prefer target selectors in this order:
 
@@ -319,6 +348,7 @@ If the screen or route is unknown, MAV fails and does not explore:
 ```text
 fail code=screen_not_found screen=settings
 fail code=route_not_found screen=settings
+fail code=app_map_invalid error="app_map_screen_identity_missing screen=settings"
 ```
 
 The caller should then explore manually with `mav ui tree`, `mav ui tap`,
@@ -358,9 +388,12 @@ operations.
 
 For `mav ui tree` and semantic `mav ui tap`, `--prefer-driver auto` is the
 default. In auto mode MAV tries AXe first, then falls back to Appium/WDA when
-the AXe tree is empty, unmatched, or pending a map update, or when an AXe tap by
-id/text fails. Use `--prefer-driver axe` to debug AXe-only behavior and
-`--prefer-driver appium` for WDA-only inspection. Use `mav ui tree
+the AXe tree is empty, has no usable elements, or is pending a map update, or
+when an AXe tap by id/text fails. Use `--prefer-driver axe` to debug AXe-only behavior and
+`--prefer-driver appium` for WDA-only inspection. A tree with
+`screen_source=identity_missing` is not mapped by fallback; expose a stable
+`mav.screen.<screen-id>` or `screen.<screen-id>` id in the app before expecting
+routes to be recorded. Use `mav ui tree
 --include-system` when a system process or cross-app surface is in front, such
 as PHPicker, App Tracking Transparency, permission prompts, SpringBoard, or an
 iOS 26 service process. MAV asks Appium for the active foreground bundle and
