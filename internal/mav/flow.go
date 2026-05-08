@@ -66,6 +66,9 @@ type flowStepPayload struct {
 	Degrees      string          `yaml:"degrees"`
 	File         string          `yaml:"file"`
 	PreferDriver string          `yaml:"prefer-driver"`
+	ClearState   bool            `yaml:"clearState"`
+	Focused      string          `yaml:"focused"`
+	Optional     bool            `yaml:"optional"`
 	Any          []FlowCondition `yaml:"any"`
 }
 
@@ -138,6 +141,9 @@ func parseFlowStepNode(node yaml.Node) (FlowStep, error) {
 	if whenNode, ok := mappingValue(node, "when"); ok {
 		return parseWhenFlowStepNode(node, whenNode)
 	}
+	if loopNode, ok := mappingValue(node, "whileNotVisible"); ok {
+		return parseLoopFlowStepNode(node, loopNode)
+	}
 	if len(node.Content) != 2 {
 		return FlowStep{}, fmt.Errorf("step_action_missing")
 	}
@@ -193,15 +199,24 @@ func parseFlowStepNode(node yaml.Node) (FlowStep, error) {
 	put("degrees", payload.Degrees)
 	put("file", payload.File)
 	put("prefer-driver", payload.PreferDriver)
+	if payload.ClearState {
+		params["clearState"] = "true"
+	}
+	if payload.Optional {
+		params["optional"] = "true"
+	}
+	put("focused", payload.Focused)
 	return FlowStep{Action: action, Params: params, Any: payload.Any}, nil
 }
 
 type flowWhenPayload struct {
-	Visible FlowCondition   `yaml:"visible"`
-	Text    string          `yaml:"text"`
-	ID      string          `yaml:"id"`
-	Value   string          `yaml:"value"`
-	Any     []FlowCondition `yaml:"any"`
+	Visible      FlowCondition   `yaml:"visible"`
+	Text         string          `yaml:"text"`
+	ID           string          `yaml:"id"`
+	Value        string          `yaml:"value"`
+	Timeout      string          `yaml:"timeout"`
+	PreferDriver string          `yaml:"prefer-driver"`
+	Any          []FlowCondition `yaml:"any"`
 }
 
 func parseWhenFlowStepNode(node yaml.Node, whenNode *yaml.Node) (FlowStep, error) {
@@ -230,6 +245,7 @@ func parseWhenFlowStepNode(node yaml.Node, whenNode *yaml.Node) (FlowStep, error
 	if len(params) == 0 && len(payload.Any) == 0 {
 		return FlowStep{}, fmt.Errorf("when_condition_missing")
 	}
+	putParam(params, "prefer-driver", payload.PreferDriver)
 	if doNode.Kind != yaml.SequenceNode || len(doNode.Content) == 0 {
 		return FlowStep{}, fmt.Errorf("when_do_missing")
 	}
@@ -245,6 +261,56 @@ func parseWhenFlowStepNode(node yaml.Node, whenNode *yaml.Node) (FlowStep, error
 		steps = append(steps, step)
 	}
 	return FlowStep{Action: "when", Params: params, Any: payload.Any, Do: steps}, nil
+}
+
+func parseLoopFlowStepNode(node yaml.Node, loopNode *yaml.Node) (FlowStep, error) {
+	var doNode *yaml.Node
+	if nestedDo, ok := mappingValue(*loopNode, "do"); ok {
+		doNode = nestedDo
+	} else if topLevelDo, ok := mappingValue(node, "do"); ok {
+		doNode = topLevelDo
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key := node.Content[i].Value
+		if key != "whileNotVisible" && key != "do" {
+			return FlowStep{}, fmt.Errorf("while_field_unknown field=%s", key)
+		}
+	}
+	if doNode == nil {
+		return FlowStep{}, fmt.Errorf("while_do_missing")
+	}
+	var payload flowWhenPayload
+	if err := loopNode.Decode(&payload); err != nil {
+		return FlowStep{}, err
+	}
+	params := map[string]string{}
+	condition := payload.Visible
+	if condition.Text == "" && condition.ID == "" && condition.Value == "" {
+		condition = FlowCondition{Text: payload.Text, ID: payload.ID, Value: payload.Value}
+	}
+	putParam(params, "text", condition.Text)
+	putParam(params, "id", condition.ID)
+	putParam(params, "value", condition.Value)
+	if len(params) == 0 && len(payload.Any) == 0 {
+		return FlowStep{}, fmt.Errorf("while_condition_missing")
+	}
+	putParam(params, "timeout", payload.Timeout)
+	putParam(params, "prefer-driver", payload.PreferDriver)
+	if doNode.Kind != yaml.SequenceNode || len(doNode.Content) == 0 {
+		return FlowStep{}, fmt.Errorf("while_do_missing")
+	}
+	steps := make([]FlowStep, 0, len(doNode.Content))
+	for _, child := range doNode.Content {
+		step, err := parseFlowStepNode(*child)
+		if err != nil {
+			return FlowStep{}, err
+		}
+		if step.Action == "open" || step.Action == "exec" {
+			return FlowStep{}, fmt.Errorf("while_child_unsupported action=%s", step.Action)
+		}
+		steps = append(steps, step)
+	}
+	return FlowStep{Action: "whileNotVisible", Params: params, Any: payload.Any, Do: steps}, nil
 }
 
 type flowIncludePayload struct {
@@ -346,7 +412,7 @@ func validateFlowSteps(steps []FlowStep) error {
 
 func isSupportedFlowAction(action string) bool {
 	switch action {
-	case "open", "when", "go", "tree", "tap", "type", "swipe", "pinch", "rotate", "twoFingerPan", "actions",
+	case "open", "when", "whileNotVisible", "go", "tree", "tap", "type", "erase", "hideKeyboard", "swipe", "pinch", "rotate", "twoFingerPan", "actions",
 		"delay", "sleep", "wait", "assert", "waitUntil", "scrollUntil", "capture",
 		"evidence.start", "video.start", "evidence.step", "evidence.stop", "video.stop",
 		"logs", "exec", "crashes", "report":

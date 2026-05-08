@@ -60,6 +60,19 @@ func TestValidateAllowsCoordinateEdge(t *testing.T) {
 	}
 }
 
+func TestValidateAllowsValueEdge(t *testing.T) {
+	m := AppMap{
+		Start: "home",
+		Screens: map[string]Screen{
+			"home":     {ID: "home", Edges: []Edge{{To: "settings", Value: "Email"}}},
+			"settings": {ID: "settings"},
+		},
+	}
+	if err := ValidateAppMap(m); err != nil {
+		t.Fatalf("value edge should be valid: %v", err)
+	}
+}
+
 func TestSaveAppMapWritesJSONIndexAndScreens(t *testing.T) {
 	root := t.TempDir()
 	m := AppMap{
@@ -182,6 +195,37 @@ func TestObserveScreenPersistsDriverOnScreenAndEdge(t *testing.T) {
 	}
 	edges := loaded.Screens["home"].Edges
 	if len(edges) != 1 || edges[0].Driver != "appium" {
+		t.Fatalf("edges=%+v", edges)
+	}
+}
+
+func TestObserveScreenPersistsValueTapEdge(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.app"
+	run := RunState{ID: "run-value", Dir: filepath.Join(os.TempDir(), "mav", "run-value")}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := SaveAppMap(root, AppMap{
+		AppID: "com.example.app",
+		Start: "home",
+		Screens: map[string]Screen{
+			"home":     {ID: "home", AssertText: "Home"},
+			"settings": {ID: "settings", AssertText: "Settings"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	SetCurrentScreen(root, "home", run.ID)
+	SetPendingMapAction(root, pendingMapAction{From: "home", Value: "Email", Driver: "appium"})
+	if _, err := ObserveScreenDetailedWithDriver(root, cfg, run, `[{"AXLabel":"Settings","role":"heading"}]`, "appium"); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadAppMap(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edges := loaded.Screens["home"].Edges
+	if len(edges) != 1 || edges[0].Value != "Email" || edges[0].Driver != "appium" {
 		t.Fatalf("edges=%+v", edges)
 	}
 }

@@ -26,8 +26,9 @@ does not explore or repair routes by itself. The agent decides the next action.
 3. If the validation needs a specific simulator, runtime, or locale, use
    `mav sim list`, then `mav sim select --device ... --ios ... --locale ... --language ...`.
    You can also pass the same target flags to `mav open`.
-4. Start the app with `mav open`. Use `mav open --warm-appium` when the session
-   is likely to need Appium-backed tree or tap fallback. This creates
+4. Start the app with `mav open`. Use `mav open --clear-state` for a fresh
+   install, and `mav open --warm-appium` when the session is likely to need
+   Appium-backed tree or tap fallback. This creates
    `/tmp/mav/<run-id>/` and starts `logs.txt`. MAV captures a filtered unified
    log stream for MAV probes.
 5. Prefer `mav ui tree` to understand the current screen. It prints compact
@@ -42,17 +43,25 @@ does not explore or repair routes by itself. The agent decides the next action.
    an empty or unmatched tree. Use `mav ui tree --include-system` when
    inspecting system UI, PHPicker, permission prompts, SpringBoard, or cross-app
    service processes; MAV asks Appium for the active foreground bundle and
-   temporarily targets that bundle for the source tree.
+   temporarily targets that bundle for the source tree. If the active app still
+   reports the host bundle, MAV also probes known system UI bundles including
+   SpringBoard, ATT (`com.apple.tccd`), PHPicker, SafariViewService, Mail
+   composition, and remote alerts.
 6. Use `mav capture --name <descriptive-name>` only when the tree is
    insufficient or visual evidence is needed. Captures are unique by default
    under `/tmp/mav/<run-id>/captures/`, and `--name` gives the client and report
    a stable, readable proof point such as `largest-videos-after-pinch`.
-7. Use `mav ui tap/type/swipe/wait/scrollUntil` for manual exploration. Prefer
+7. Use `mav ui tap/type/erase/hideKeyboard/swipe/wait/scrollUntil` for manual exploration. Prefer
    accessibility identifiers first (`--id`). Auto mode routes taps on wrappers
    that contain text fields/text views through Appium so the inner field gets
-   keyboard focus. Use `mav ui tap --prefer-driver appium` when `--text` must
-   match a field value/placeholder. If `mav ui type` reports
-   `type_no_focused_field`, tap the field with Appium and retry. Use coordinates
+   keyboard focus. Use `mav ui tap --value VALUE` for placeholders exposed as
+   AXValue, and `mav ui tap --prefer-driver appium` when `--text` must match a
+   field value/placeholder. Use `mav ui type TEXT --prefer-driver appium` for
+   emails, URLs, and text with shifted keyboard characters such as `@`. If
+   `mav ui type` reports `type_no_focused_field`, tap the field with Appium and
+   retry. Use `mav ui erase --focused --prefer-driver appium` to clear a focused
+   field and `mav ui hideKeyboard` before tapping controls hidden by the
+   keyboard. Use coordinates
    only when the tree is
    insufficient and the screenshot makes the target unambiguous. Use text as
    the last option because labels change with localization and copy edits. Use
@@ -181,12 +190,30 @@ steps; they are not valid inside `do` blocks.
     - tap: { text: Continue }
 ```
 
+Use `whileNotVisible` for chained onboarding or permission prompts. MAV repeats
+the `do` block until the target `id`, `text`, `value`, or `any` condition is
+visible, or until `timeout` expires. Mark dismiss taps as `optional: true` when
+only some prompts appear:
+
+```yaml
+- whileNotVisible:
+    text: "You"
+    timeout: 30s
+    do:
+      - tap: { id: onboarding_dismiss, optional: true }
+      - delay: 500ms
+```
+
 `mav run --prefer-driver appium flow.yaml` sets the default semantic UI driver
 for flow steps. Use a per-step `prefer-driver` override when a flow mixes fast
 AXe interactions with Appium-only rows, sheets, dropdowns, or system UI:
 
 ```yaml
 - tap: { text: "Deporte y ocio", prefer-driver: appium }
+- tap: { value: "Dirección de email", prefer-driver: appium }
+- type: { text: "user@example.com", prefer-driver: appium }
+- erase: { focused: true, prefer-driver: appium }
+- hideKeyboard: {}
 - swipe: { direction: up, prefer-driver: appium }
 - wait: { text: "Continuar", prefer-driver: appium, timeout: 5s }
 - scrollUntil: { text: "Estado*", direction: up, prefer-driver: appium }

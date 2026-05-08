@@ -61,6 +61,7 @@ type Edge struct {
 	To     string `json:"to"`
 	ID     string `json:"id,omitempty"`
 	Text   string `json:"text,omitempty"`
+	Value  string `json:"value,omitempty"`
 	X      string `json:"x,omitempty"`
 	Y      string `json:"y,omitempty"`
 	Wait   string `json:"wait,omitempty"`
@@ -83,6 +84,7 @@ type pendingMapAction struct {
 	From   string `json:"from"`
 	ID     string `json:"id,omitempty"`
 	Text   string `json:"text,omitempty"`
+	Value  string `json:"value,omitempty"`
 	X      string `json:"x,omitempty"`
 	Y      string `json:"y,omitempty"`
 	Driver string `json:"driver,omitempty"`
@@ -229,7 +231,7 @@ func ValidateAppMap(m AppMap) error {
 			if _, ok := m.Screens[edge.To]; !ok {
 				return fmt.Errorf("app_map_edge_target_not_found screen=%s target=%s", id, edge.To)
 			}
-			if edge.ID == "" && edge.Text == "" && (edge.X == "" || edge.Y == "") {
+			if edge.ID == "" && edge.Text == "" && edge.Value == "" && (edge.X == "" || edge.Y == "") {
 				return fmt.Errorf("app_map_edge_action_missing screen=%s target=%s", id, edge.To)
 			}
 		}
@@ -330,6 +332,8 @@ func loadYAMLAppMap(root string) (AppMap, error) {
 				currentEdge.ID = value
 			case "text":
 				currentEdge.Text = value
+			case "value":
+				currentEdge.Value = value
 			case "x":
 				currentEdge.X = value
 			case "y":
@@ -504,7 +508,7 @@ func ObserveScreenDetailedWithDriver(root string, cfg Config, run RunState, rawT
 	if pending, ok := consumePendingMapAction(root); ok && pending.From != screenID {
 		from := m.Screens[pending.From]
 		from.ID = pending.From
-		from.Edges = upsertEdge(from.Edges, Edge{To: screenID, ID: pending.ID, Text: pending.Text, X: pending.X, Y: pending.Y, Wait: "1s", Driver: pending.Driver, Source: "observed"})
+		from.Edges = upsertEdge(from.Edges, Edge{To: screenID, ID: pending.ID, Text: pending.Text, Value: pending.Value, X: pending.X, Y: pending.Y, Wait: "1s", Driver: pending.Driver, Source: "observed"})
 		m.Screens[pending.From] = from
 	}
 	if err := SaveAppMap(root, m); err != nil {
@@ -776,7 +780,7 @@ func isScreenTitle(value string) bool {
 
 func upsertEdge(edges []Edge, edge Edge) []Edge {
 	for i, existing := range edges {
-		if existing.To == edge.To && existing.ID == edge.ID && existing.Text == edge.Text && existing.X == edge.X && existing.Y == edge.Y {
+		if existing.To == edge.To && existing.ID == edge.ID && existing.Text == edge.Text && existing.Value == edge.Value && existing.X == edge.X && existing.Y == edge.Y {
 			if existing.Driver == "appium" && edge.Driver != "appium" {
 				edge.Driver = existing.Driver
 			}

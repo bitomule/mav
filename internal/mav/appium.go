@@ -508,11 +508,33 @@ func (c CLI) appiumSourceTree(ctx context.Context, cfg Config, includeSystem boo
 			return appiumSourceResult{Raw: raw, ActiveBundle: activeBundle, SystemSource: true}, nil
 		}
 	}
+	if includeSystem && cfg.BundleID != "" && activeBundle != cfg.BundleID {
+		for _, bundleID := range knownSystemUIBundles() {
+			if bundleID == activeBundle || bundleID == cfg.BundleID {
+				continue
+			}
+			raw, sourceErr := appiumSourceForActiveBundle(ctx, session, bundleID)
+			if sourceErr == nil && !isEmptyAXTree(raw) && len(ExtractElements(raw)) > 0 {
+				return appiumSourceResult{Raw: raw, ActiveBundle: bundleID, SystemSource: true}, nil
+			}
+		}
+	}
 	raw, err := appiumDefaultSourceTree(ctx, session)
 	if err != nil {
 		return appiumSourceResult{}, err
 	}
 	return appiumSourceResult{Raw: raw, ActiveBundle: activeBundle}, nil
+}
+
+func knownSystemUIBundles() []string {
+	return []string{
+		"com.apple.springboard",
+		"com.apple.tccd",
+		"com.apple.PhotosUIService",
+		"com.apple.SafariViewService",
+		"com.apple.MailCompositionService",
+		"com.apple.UIKit.RemoteAlertViewController",
+	}
 }
 
 type appiumActiveApp struct {
@@ -596,6 +618,90 @@ func (c CLI) appiumClickByPredicate(ctx context.Context, cfg Config, predicate s
 		return err
 	}
 	return c.appiumFindElementAndClick(ctx, cfg, "-ios class chain", appiumPredicateClassChain(predicate))
+}
+
+func (c CLI) appiumActiveElement(ctx context.Context, cfg Config) (appiumSessionState, string, func(), error) {
+	session, cleanup, err := c.appiumSessionForCommand(ctx, cfg)
+	if err != nil {
+		return appiumSessionState{}, "", func() {}, err
+	}
+	var response map[string]any
+	if err := appiumGetJSON(ctx, session.BaseURL+"/session/"+session.SessionID+"/element/active", &response); err != nil {
+		cleanup()
+		return appiumSessionState{}, "", func() {}, appiumError{Code: "active_element_failed", Message: err.Error()}
+	}
+	elementID := appiumElementID(response)
+	if elementID == "" {
+		cleanup()
+		return appiumSessionState{}, "", func() {}, appiumError{Code: "type_no_focused_field", Message: "appium active element missing"}
+	}
+	return session, elementID, cleanup, nil
+}
+
+func (c CLI) appiumTypeActiveElement(ctx context.Context, cfg Config, text string) error {
+	session, elementID, cleanup, err := c.appiumActiveElement(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	target := session.BaseURL + "/session/" + session.SessionID + "/element/" + url.PathEscape(elementID) + "/value"
+	if err := appiumPostJSON(ctx, target, map[string]any{"value": []string{text}}, nil); err != nil {
+		return appiumError{Code: "ui_type_failed", Message: err.Error()}
+	}
+	return nil
+}
+
+func (c CLI) appiumClearElement(ctx context.Context, cfg Config, id, text, value string, focused bool) error {
+	var session appiumSessionState
+	elementID := ""
+	cleanup := func() {}
+	var err error
+	if focused || id == "" && text == "" && value == "" {
+		session, elementID, cleanup, err = c.appiumActiveElement(ctx, cfg)
+		if err != nil {
+			return err
+		}
+	} else {
+		session, cleanup, err = c.appiumSessionForCommand(ctx, cfg)
+		if err != nil {
+			return err
+		}
+		var response map[string]any
+		using := "accessibility id"
+		target := id
+		if target == "" {
+			using = "predicate string"
+			target = appiumTargetPredicate(text, value)
+		}
+		if err := appiumPostJSON(ctx, session.BaseURL+"/session/"+session.SessionID+"/element", map[string]any{"using": using, "value": target}, &response); err != nil {
+			cleanup()
+			return appiumError{Code: "ui_erase_failed", Message: err.Error()}
+		}
+		elementID = appiumElementID(response)
+		if elementID == "" {
+			cleanup()
+			return appiumError{Code: "ui_erase_failed", Message: "appium element id missing"}
+		}
+	}
+	defer cleanup()
+	clearURL := session.BaseURL + "/session/" + session.SessionID + "/element/" + url.PathEscape(elementID) + "/clear"
+	if err := appiumPostJSON(ctx, clearURL, map[string]any{}, nil); err != nil {
+		return appiumError{Code: "ui_erase_failed", Message: err.Error()}
+	}
+	return nil
+}
+
+func (c CLI) appiumHideKeyboard(ctx context.Context, cfg Config) error {
+	session, cleanup, err := c.appiumSessionForCommand(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	var response map[string]any
+	if err := appiumExecuteScript(ctx, session, "mobile: hideKeyboard", []any{}, &response); err != nil {
+		return appiumError{Code: "ui_hide_keyboard_failed", Message: err.Error()}
+	}
+	return nil
 }
 
 func (c CLI) appiumFindElementAndClick(ctx context.Context, cfg Config, using, value string) error {

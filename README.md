@@ -156,7 +156,11 @@ Launch recipe detection is intentionally conservative: MAV recognizes explicit
 `scripts/mav-app-path`, and standard Bazel/Tuist/Xcode project shapes.
 
 `mav open` executes the configured launch recipe. It creates a run directory
-under `/tmp/mav/<run-id>/` and starts `logs.txt` for MAV probes.
+under `/tmp/mav/<run-id>/` and starts `logs.txt` for MAV probes. Use
+`mav open --clear-state` to uninstall the configured bundle before install and
+launch. If a Bazel app bundle from `bazel-out` fails simulator install with a
+permission error, MAV copies the `.app` into the run directory with writable
+permissions and retries the install.
 
 Example compact output:
 
@@ -329,7 +333,11 @@ mav ui tree --include-system
 mav ui tap --id element_id
 mav ui tap --x 120 --y 400
 mav ui tap --text "Daily Reminder"
+mav ui tap --value "Email"
 mav ui type "hello"
+mav ui type "user@example.com" --prefer-driver appium
+mav ui erase --focused --prefer-driver appium
+mav ui hideKeyboard
 mav ui swipe --direction up
 mav ui swipe --start-x 220 --start-y 760 --end-x 220 --end-y 260
 mav ui pinch --x 200 --y 450 --scale 0.5
@@ -363,6 +371,8 @@ not as a label, MAV reports `ui_tap_text_no_label_match` with `matched_value`
 and suggests Appium text matching. Prefer stable ids when possible. With
 `appium-xcuitest-driver@8`, MAV automatically retries text matching with
 `-ios class chain` when the session rejects `predicate string` selectors.
+Use `mav ui tap --value X` for text fields whose placeholder is exposed as
+`AXValue`; MAV routes that selector through Appium.
 
 When `mav ui tap --id X` detects that `X` is a wrapper containing a descendant
 text field or text view, auto mode routes the tap through Appium so the inner
@@ -370,6 +380,10 @@ field receives keyboard focus. `mav ui type TEXT` also checks Appium focus
 metadata when available: if no text input is focused it fails with
 `type_no_focused_field`; when it can compare before/after values it reports
 `chars_sent` and `chars_received` in addition to the legacy `chars` field.
+Use `mav ui type TEXT --prefer-driver appium` for text that must be entered
+through XCUITest, such as emails, URLs, and other strings with shifted keyboard
+characters. `mav ui erase` clears a focused or selected text field through
+Appium, and `mav ui hideKeyboard` dismisses the keyboard through WDA.
 
 When you expect to need Appium, run `mav open --warm-appium` to create the WDA
 session after the launch recipe finishes so the first Appium-backed tree or tap
@@ -417,10 +431,19 @@ steps:
   - evidence.step: { name: before-toggle, note: Daily Reminder before tap }
   - tap: { text: Daily Reminder }
   - type: "Search text"
+  - type: { text: "user@example.com", prefer-driver: appium }
+  - erase: { focused: true, prefer-driver: appium }
+  - hideKeyboard: {}
   - delay: 500ms
   - when: { visible: { text: Continue } }
     do:
       - tap: { text: Continue }
+  - whileNotVisible:
+      text: "You"
+      timeout: 30s
+      do:
+        - tap: { id: onboarding_dismiss, optional: true }
+        - delay: 500ms
   - waitUntil:
       any:
         - text: "Don't Allow"
@@ -446,9 +469,9 @@ interaction needs a specific backend:
 ```
 
 This applies to `tree`, `tap`, `swipe`, `wait`, `assert`, `waitUntil`, and
-`scrollUntil`. In `auto` mode, MAV also routes taps inside table, collection, or
-sheet containers through Appium when AXe can match the text but may not activate
-the row.
+`scrollUntil`; `type` and `erase` can also force Appium for form fields. In
+`auto` mode, MAV also routes taps inside table, collection, or sheet containers
+through Appium when AXe can match the text but may not activate the row.
 
 Supported step types:
 
@@ -458,6 +481,8 @@ go
 tree
 tap
 type
+erase
+hideKeyboard
 swipe
 pinch
 rotate
@@ -466,6 +491,7 @@ actions
 wait
 waitUntil
 when
+whileNotVisible
 include
 assert
 capture
@@ -510,6 +536,19 @@ blocks are for UI/evidence steps and cannot contain `open` or `exec`:
 - when: { visible: { id: ToggleX } }
   do:
     - tap: { id: ToggleX }
+```
+
+Use `whileNotVisible` for chained onboarding or permission surfaces. MAV repeats
+the `do` block until the target `id`, `text`, `value`, or `any` condition is
+visible, or until `timeout` expires:
+
+```yaml
+- whileNotVisible:
+    text: "You"
+    timeout: 30s
+    do:
+      - tap: { id: dismiss_button, optional: true }
+      - delay: 500ms
 ```
 
 Use `include` to compose reusable sub-flows. The included file path is resolved
@@ -669,6 +708,11 @@ Each command runs from `MAV_ROOT` with stable environment variables:
 `MAV_DEVICE_NAME`, `MAV_RUNTIME`, and `MAV_PLATFORM`. `app_path` must print one
 `.app` path. If the app is already installed, configure only `launch`.
 
+`mav open --clear-state` runs `xcrun simctl uninstall "$MAV_UDID"
+"$MAV_BUNDLE_ID" || true` before the launch recipe. When the configured install
+step fails with a permission error for a `bazel-out` `.app`, MAV retries with a
+writable copy at `/tmp/mav/<run-id>/app.tmp/<App>.app`.
+
 ## Cleanup
 
 Ad-hoc `mav open` sessions keep log capture running for the current run. Stop
@@ -691,12 +735,15 @@ mav sim list
 mav sim select --device NAME --ios VERSION [--locale LOCALE] [--language LANG]
 mav sim select --udid UDID
 mav sim boot
-mav open [--device NAME] [--ios VERSION] [--udid UDID] [--locale LOCALE] [--language LANG] [--warm-appium]
+mav open [--device NAME] [--ios VERSION] [--udid UDID] [--locale LOCALE] [--language LANG] [--clear-state] [--warm-appium]
 mav ui tree [--prefer-driver auto|axe|appium] [--include-system]
 mav ui tap --id ID [--prefer-driver auto|axe|appium]
 mav ui tap --x X --y Y
 mav ui tap --text TEXT [--prefer-driver auto|axe|appium]
-mav ui type TEXT
+mav ui tap --value VALUE [--prefer-driver auto|appium]
+mav ui type TEXT [--prefer-driver auto|axe|appium]
+mav ui erase [--id ID | --text TEXT | --value VALUE | --focused true] [--prefer-driver appium]
+mav ui hideKeyboard
 mav ui swipe [--direction up|down|left|right]
 mav ui pinch --x X --y Y --scale SCALE [--pan-x DX] [--pan-y DY] [--distance D] [--angle DEG] [--rotate DEG] [--duration 800ms] [--hold DURATION]
 mav ui rotate --x X --y Y --degrees DEG [--distance D] [--duration 800ms] [--hold DURATION]
