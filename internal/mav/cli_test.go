@@ -675,6 +675,53 @@ func TestUITreePreferAppiumUsesSource(t *testing.T) {
 	}
 }
 
+func TestUITreeAutoFallsBackToAppiumForScreenIdentity(t *testing.T) {
+	root, cfg, server, calls := setupAppiumSemanticTest(t)
+	defer server.Close()
+	cfg.Tools = map[string]bool{"axe": true, "appium": true, "node": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveAppMap(root, AppMap{
+		AppID: "com.example.app",
+		Start: "start",
+		Screens: map[string]Screen{
+			"start": testExplicitScreen("start"),
+			"home":  testExplicitScreen("home"),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	axeRaw := `[{"AXLabel":"Home","role":"heading"},{"AXLabel":"Email","role":"textField"}]`
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{
+		tools: cfg.Tools,
+		out: map[string]string{
+			"axe describe-ui":                axeRaw,
+			"appium driver list --installed": "xcuitest@7.0.0\n",
+		},
+	}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "tree"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{"driver=appium", "recognized_screen=home", "screen_source=recognized", "id=mav.screen.home"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in %q", want, got)
+		}
+	}
+	home, err := LoadScreen(root, "home")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if home.Driver != "appium" {
+		t.Fatalf("home driver=%q", home.Driver)
+	}
+	if !containsCall(*calls, "/wd/hub/session/s1/source") {
+		t.Fatalf("source not requested: %v", *calls)
+	}
+}
+
 func TestTextInputWrapperDetection(t *testing.T) {
 	raw := `[{"identifier":"TextAreaView.textAreaView","role":"group","children":[{"identifier":"inner","role":"XCUIElementTypeTextView"}]}]`
 	if !treeNodeWithIDHasTextInputDescendant(raw, "TextAreaView.textAreaView") {
@@ -1292,12 +1339,126 @@ func TestWaitForTreeReadyFallsBackToAppiumForUnmatchedTree(t *testing.T) {
 			"appium driver list --installed": "xcuitest@7.0.0\n",
 		},
 	}, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
-	raw, err := cli.waitForTreeReady(context.Background(), cfg, 2*time.Second)
+	tree, err := cli.waitForTreeReady(context.Background(), cfg, 2*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(raw, "EmailField") || !containsCall(*calls, "/wd/hub/session/s1/source") {
-		t.Fatalf("raw=%q calls=%v", raw, *calls)
+	if !strings.Contains(tree.Raw, "EmailField") || tree.Driver != "appium" || !containsCall(*calls, "/wd/hub/session/s1/source") {
+		t.Fatalf("tree=%+v calls=%v", tree, *calls)
+	}
+}
+
+func TestWaitForTreeReadyReturnsAppiumDriverForScreenIdentityFallback(t *testing.T) {
+	root, cfg, server, _ := setupAppiumSemanticTest(t)
+	defer server.Close()
+	cfg.Tools["axe"] = true
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveAppMap(root, AppMap{
+		AppID: "com.example.app",
+		Start: "start",
+		Screens: map[string]Screen{
+			"start": testExplicitScreen("start"),
+			"home":  testExplicitScreen("home"),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cli := CLI{Runner: fakeRunner{
+		tools: cfg.Tools,
+		out: map[string]string{
+			"axe describe-ui --udid SIM":     `[{"AXLabel":"Home","role":"heading"}]`,
+			"appium driver list --installed": "xcuitest@7.0.0\n",
+		},
+	}, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	tree, err := cli.waitForTreeReady(context.Background(), cfg, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tree.Driver != "appium" || !strings.Contains(tree.Raw, "mav.screen.home") {
+		t.Fatalf("tree=%+v", tree)
+	}
+	run, err := LoadRun(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ObserveScreenDetailedWithDriver(root, cfg, run, tree.Raw, tree.Driver); err != nil {
+		t.Fatal(err)
+	}
+	home, err := LoadScreen(root, "home")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if home.Driver != "appium" {
+		t.Fatalf("home driver=%q", home.Driver)
+	}
+}
+
+func TestWaitForTreeReadyKeepsAxeDriverWhenAxeRecognizesWithWarmAppium(t *testing.T) {
+	root, cfg, server, calls := setupAppiumSemanticTest(t)
+	defer server.Close()
+	cfg.Tools["axe"] = true
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveAppMap(root, AppMap{
+		AppID: "com.example.app",
+		Start: "start",
+		Screens: map[string]Screen{
+			"start": testExplicitScreen("start"),
+			"home":  testExplicitScreen("home"),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cli := CLI{Runner: fakeRunner{
+		tools: cfg.Tools,
+		out: map[string]string{
+			"axe describe-ui --udid SIM":     `[{"AXIdentifier":"mav.screen.home","role":"group","children":[{"AXLabel":"Home","role":"heading"}]}]`,
+			"appium driver list --installed": "xcuitest@7.0.0\n",
+		},
+	}, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	tree, err := cli.waitForTreeReady(context.Background(), cfg, 350*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tree.Driver != "axe" || !strings.Contains(tree.Raw, "mav.screen.home") {
+		t.Fatalf("tree=%+v", tree)
+	}
+	if containsCall(*calls, "/wd/hub/session/s1/source") {
+		t.Fatalf("appium source should not be requested: %v", *calls)
+	}
+}
+
+func TestWaitForTreeReadyUsesAppiumWhenItIsOnlyTreeTool(t *testing.T) {
+	root, cfg, server, calls := setupAppiumSemanticTest(t)
+	defer server.Close()
+	if err := SaveAppMap(root, AppMap{
+		AppID: "com.example.app",
+		Start: "start",
+		Screens: map[string]Screen{
+			"start": testExplicitScreen("start"),
+			"home":  testExplicitScreen("home"),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cli := CLI{Runner: fakeRunner{
+		tools: cfg.Tools,
+		out: map[string]string{
+			"appium driver list --installed": "xcuitest@7.0.0\n",
+		},
+	}, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	tree, err := cli.waitForTreeReady(context.Background(), cfg, 350*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tree.Driver != "appium" || !strings.Contains(tree.Raw, "mav.screen.home") {
+		t.Fatalf("tree=%+v", tree)
+	}
+	if !containsCall(*calls, "/wd/hub/session/s1/source") {
+		t.Fatalf("appium source not requested: %v", *calls)
 	}
 }
 
@@ -1327,12 +1488,12 @@ func TestWaitForTreeReadyAcceptsExplicitUnmappedScreen(t *testing.T) {
 			"axe describe-ui --udid SIM": `[{"AXIdentifier":"mav.screen.settings","role":"group","children":[{"AXLabel":"Settings","role":"heading"}]}]`,
 		},
 	}, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
-	raw, err := cli.waitForTreeReady(context.Background(), cfg, 350*time.Millisecond)
+	tree, err := cli.waitForTreeReady(context.Background(), cfg, 350*time.Millisecond)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(raw, "mav.screen.settings") {
-		t.Fatalf("raw=%q", raw)
+	if !strings.Contains(tree.Raw, "mav.screen.settings") || tree.Driver != "axe" {
+		t.Fatalf("tree=%+v", tree)
 	}
 }
 
@@ -1381,9 +1542,9 @@ func TestWaitForTreeReadyDoesNotAcceptUnmatchedTreeWhenAppiumFails(t *testing.T)
 			"appium driver list --installed": "xcuitest@7.0.0\n",
 		},
 	}, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
-	raw, err := cli.waitForTreeReady(context.Background(), cfg, 350*time.Millisecond)
+	tree, err := cli.waitForTreeReady(context.Background(), cfg, 350*time.Millisecond)
 	if err == nil {
-		t.Fatalf("expected tree_not_ready, got raw=%q", raw)
+		t.Fatalf("expected tree_not_ready, got tree=%+v", tree)
 	}
 	if !strings.Contains(err.Error(), "tree_not_ready") {
 		t.Fatalf("err=%v", err)
