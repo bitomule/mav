@@ -75,13 +75,15 @@ mav setup --install axe idb appium
 
 `mav setup --install idb` prefers pipx with Python 3.12/3.13 for `fb-idb` and
 uses Homebrew for `idb-companion`. AXe uses Homebrew. For Appium it uses npm,
-installs Appium globally, then installs and verifies the `xcuitest` driver. If Appium was
-installed through a Node version manager, `mav doctor` also checks that the
-active `node` matches the Node path used by the `appium` executable; put that
-Node bin directory first in `PATH` if it reports a `multitouch_issue` related
-to Node. If Appium reports that its home is not writable, MAV retries the driver
-check with a temporary writable `APPIUM_HOME`; if that still fails, rerun MAV
-outside the sandbox or set `APPIUM_HOME` to a writable directory.
+installs Appium globally, then installs and verifies the `xcuitest` driver. If
+the default `xcuitest` driver requires a newer Appium server than the installed
+one, MAV retries with `xcuitest@8`, which is compatible with Appium 2.x. If
+Appium was installed through a Node version manager, `mav doctor` also checks
+that the active `node` matches the Node path used by the `appium` executable;
+put that Node bin directory first in `PATH` if it reports a `multitouch_issue`
+related to Node. If Appium reports that its home is not writable, MAV retries
+the driver check with a temporary writable `APPIUM_HOME`; if that still fails,
+rerun MAV outside the sandbox or set `APPIUM_HOME` to a writable directory.
 
 ## Install
 
@@ -353,7 +355,9 @@ accessibility elements.
 
 If `mav ui tap --text X` fails because AXe sees `X` as a value/placeholder but
 not as a label, MAV reports `ui_tap_text_no_label_match` with `matched_value`
-and suggests Appium predicate matching. Prefer stable ids when possible.
+and suggests Appium text matching. Prefer stable ids when possible. With
+`appium-xcuitest-driver@8`, MAV automatically retries text matching with
+`-ios class chain` when the session rejects `predicate string` selectors.
 
 When you expect to need Appium, run `mav open --warm-appium` to create the WDA
 session after the launch recipe finishes so the first Appium-backed tree or tap

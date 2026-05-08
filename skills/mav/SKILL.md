@@ -293,6 +293,8 @@ or tap target.
 If `mav ui tap --text X` returns `ui_tap_text_no_label_match`, AXe found `X` as
 a value/placeholder but not as a label. Prefer a stable id, retry with
 `--prefer-driver appium`, or use coordinates only after capture inspection.
+With `appium-xcuitest-driver@8`, MAV automatically retries text matching with
+`-ios class chain` when the session rejects `predicate string` selectors.
 
 MAV persists driver hints in `.mav/map/**`: screens and route edges can carry
 `driver: appium`. When `mav go <screen-id>` sees an Appium-required route, it
