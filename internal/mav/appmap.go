@@ -94,6 +94,12 @@ type pendingMapAction struct {
 	Driver string `json:"driver,omitempty"`
 }
 
+type screenIdentity struct {
+	ID         string
+	ElementID  string
+	Recognizer Recognizer
+}
+
 type ScreenObservation struct {
 	Screen         string
 	Source         string
@@ -105,7 +111,7 @@ func DefaultAppMap(bundleID string) AppMap {
 	return AppMap{
 		AppID:   bundleID,
 		Start:   "start",
-		Screens: map[string]Screen{"start": {ID: "start", Title: "Start"}},
+		Screens: map[string]Screen{"start": {ID: "start", Title: "Start", Recognizers: []Recognizer{{Kind: "id", Value: "mav.screen.start"}}}},
 	}
 }
 
@@ -144,6 +150,7 @@ func loadJSONAppMap(root string) (AppMap, error) {
 	for _, id := range idx.Screens {
 		screen, err := LoadScreen(root, id)
 		if err == nil {
+			screen = screenWithLegacyExplicitAssertID(screen)
 			m.Screens[screen.ID] = screen
 		}
 	}
@@ -165,7 +172,7 @@ func LoadScreen(root, id string) (Screen, error) {
 	if screen.ID == "" {
 		screen.ID = id
 	}
-	return screen, nil
+	return screenWithLegacyExplicitAssertID(screen), nil
 }
 
 func SaveAppMap(root string, m AppMap) error {
@@ -228,6 +235,9 @@ func ValidateAppMap(m AppMap) error {
 		return fmt.Errorf("app_map_start_not_found start=%s", m.Start)
 	}
 	for id, screen := range m.Screens {
+		if !screenHasExplicitScreenIdentity(screen) {
+			return fmt.Errorf("app_map_screen_identity_missing screen=%s", id)
+		}
 		for _, edge := range screen.Edges {
 			if edge.To == "" {
 				return fmt.Errorf("app_map_edge_target_missing screen=%s", id)
@@ -370,6 +380,7 @@ func loadYAMLAppMap(root string) (AppMap, error) {
 				current.Driver = value
 			case "assert_id":
 				current.AssertID = value
+				*current = screenWithLegacyExplicitAssertID(*current)
 			case "assert_text":
 				current.AssertText = value
 				current.Recognizers = append(current.Recognizers, Recognizer{Kind: "text", Value: value})
@@ -480,40 +491,27 @@ func ObserveScreenDetailedWithDriver(root string, cfg Config, run RunState, rawT
 			source = "recognized"
 		}
 	}
-	if screenID == "" {
-		screenID = inferScreenID(elements)
-		if screenID != "" {
-			source = "inferred"
-		}
-	}
-	if screenID == "" && len(elements) == 0 {
-		screenID = current
-		if screenID != "" {
-			source = "current"
-		}
+	identity, hasIdentity := explicitScreenIdentity(elements)
+	if screenID == "" && hasIdentity {
+		screenID = identity.ID
+		source = "explicit_id"
 	}
 	if screenID == "" {
-		return ScreenObservation{Screen: "unknown", Source: "unmatched", PreviousScreen: current, Elements: elements}, nil
+		ClearPendingMapAction(root)
+		SetCurrentScreen(root, "", run.ID)
+		return ScreenObservation{Screen: "unknown", Source: "identity_missing", PreviousScreen: current, Elements: elements}, nil
 	}
 	screen := m.Screens[screenID]
 	screen.ID = screenID
+	if hasIdentity && !screenHasExplicitScreenIdentity(screen) {
+		screen.Recognizers = append(screen.Recognizers, identity.Recognizer)
+	}
 	if driver == "appium" || (driver != "" && screen.Driver != "appium") {
 		screen.Driver = driver
 	}
 	screen.Elements = elements
 	if screen.Title == "" {
-		screen.Title = inferScreenTitle(elements, screenID)
-	}
-	if screen.AssertText == "" && screen.Title != "" && screen.ID != m.Start {
-		screen.AssertText = screen.Title
-	}
-	if len(screen.Recognizers) == 0 && screen.AssertText != "" {
-		screen.Recognizers = append(screen.Recognizers, Recognizer{Kind: "text", Value: screen.AssertText})
-	}
-	if len(screen.Recognizers) == 0 {
-		if id := firstStableElementID(elements); id != "" {
-			screen.Recognizers = append(screen.Recognizers, Recognizer{Kind: "id", Value: id})
-		}
+		screen.Title = strings.Title(strings.ReplaceAll(screenID, "-", " "))
 	}
 	if run.ID != "" {
 		treeFile := filepath.Join(run.Dir, "trees", safeFileName(screenID)+".json")
@@ -551,25 +549,24 @@ func ObserveExpectedScreenWithDriver(root string, cfg Config, run RunState, rawT
 		m.AppID = cfg.BundleID
 	}
 	elements := ExtractElements(rawTree)
+	identity, hasIdentity := explicitScreenIdentity(elements)
+	if !hasIdentity {
+		return fmt.Errorf("screen_identity_missing")
+	}
+	if identity.ID != screenID {
+		return fmt.Errorf("screen_identity_mismatch expected=%s actual=%s", screenID, identity.ID)
+	}
 	screen := m.Screens[screenID]
 	screen.ID = screenID
+	if !screenHasExplicitScreenIdentity(screen) {
+		screen.Recognizers = append(screen.Recognizers, identity.Recognizer)
+	}
 	if driver == "appium" || (driver != "" && screen.Driver != "appium") {
 		screen.Driver = driver
 	}
 	screen.Elements = elements
 	if screen.Title == "" {
-		screen.Title = inferScreenTitle(elements, screenID)
-	}
-	if screen.AssertText == "" && screen.Title != "" && screen.ID != m.Start {
-		screen.AssertText = screen.Title
-	}
-	if len(screen.Recognizers) == 0 && screen.AssertText != "" {
-		screen.Recognizers = append(screen.Recognizers, Recognizer{Kind: "text", Value: screen.AssertText})
-	}
-	if len(screen.Recognizers) == 0 {
-		if id := firstStableElementID(elements); id != "" {
-			screen.Recognizers = append(screen.Recognizers, Recognizer{Kind: "id", Value: id})
-		}
+		screen.Title = strings.Title(strings.ReplaceAll(screenID, "-", " "))
 	}
 	if run.ID != "" {
 		treeFile := filepath.Join(run.Dir, "trees", safeFileName(screenID)+".json")
@@ -713,32 +710,95 @@ func recognizeScreenAvoiding(m AppMap, raw string, elements []Element, avoid str
 
 func screenMatches(screen Screen, raw string, elements []Element) bool {
 	_ = raw
+	if !screenHasExplicitScreenIdentity(screen) {
+		return false
+	}
+	identity, ok := explicitScreenIdentity(elements)
+	return ok && identity.ID == screen.ID
+}
+
+func screenHasExplicitScreenIdentity(screen Screen) bool {
 	for _, rec := range screen.Recognizers {
-		if rec.Value == "" {
+		if rec.Kind != "id" {
 			continue
 		}
-		if rec.Kind == "text" && hasScreenText(elements, rec.Value) {
+		if id, ok := screenIDFromElementID(rec.Value); ok && id == screen.ID {
 			return true
-		}
-		if rec.Kind == "id" {
-			for _, el := range elements {
-				if el.ID == rec.Value && !isApplicationRootElement(el) {
-					return true
-				}
-			}
-		}
-	}
-	if screen.AssertText != "" && hasScreenText(elements, screen.AssertText) {
-		return true
-	}
-	if screen.AssertID != "" {
-		for _, el := range elements {
-			if el.ID == screen.AssertID && !isApplicationRootElement(el) {
-				return true
-			}
 		}
 	}
 	return false
+}
+
+func explicitScreenIdentity(elements []Element) (screenIdentity, bool) {
+	for _, el := range elements {
+		id, ok := screenIDFromElementID(el.ID)
+		if !ok {
+			continue
+		}
+		return screenIdentity{
+			ID:        id,
+			ElementID: strings.TrimSpace(el.ID),
+			Recognizer: Recognizer{
+				Kind:  "id",
+				Value: strings.TrimSpace(el.ID),
+			},
+		}, true
+	}
+	return screenIdentity{}, false
+}
+
+func screenIDFromElementID(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	for _, prefix := range screenIdentityPrefixes() {
+		if !strings.HasPrefix(value, prefix) {
+			continue
+		}
+		suffix := strings.TrimSpace(strings.TrimPrefix(value, prefix))
+		if suffix == "" {
+			return "", false
+		}
+		id := screenIdentityIDFromSuffix(suffix)
+		if id == "" || id == "step" {
+			return "", false
+		}
+		return id, true
+	}
+	return "", false
+}
+
+func screenIdentityIDFromSuffix(value string) string {
+	value = strings.TrimSpace(transliterateLatin(strings.ToLower(value)))
+	if value == "" {
+		return ""
+	}
+	var b strings.Builder
+	lastDash := false
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+func screenIdentityPrefixes() []string {
+	return []string{"mav.screen.", "screen."}
+}
+
+func screenWithLegacyExplicitAssertID(screen Screen) Screen {
+	if screenHasExplicitScreenIdentity(screen) || screen.AssertID == "" {
+		return screen
+	}
+	if id, ok := screenIDFromElementID(screen.AssertID); ok && id == screen.ID {
+		screen.Recognizers = append(screen.Recognizers, Recognizer{Kind: "id", Value: strings.TrimSpace(screen.AssertID)})
+	}
+	return screen
 }
 
 func screenMatchSpecificity(screen Screen, elements []Element, isStart bool) int {
@@ -794,116 +854,6 @@ func hasScreenText(elements []Element, label string) bool {
 		}
 		if el.Label == label {
 			return true
-		}
-	}
-	return false
-}
-
-func firstStableElementID(elements []Element) string {
-	for _, el := range elements {
-		id := strings.TrimSpace(el.ID)
-		if id == "" || strings.Contains(id, ".") {
-			continue
-		}
-		if strings.EqualFold(el.Role, "image") {
-			continue
-		}
-		return id
-	}
-	return ""
-}
-
-func inferScreenID(elements []Element) string {
-	title := inferScreenTitle(elements, "")
-	if title == "" {
-		return inferStableTabScreenID(elements)
-	}
-	return safeFileName(title)
-}
-
-func inferStableTabScreenID(elements []Element) string {
-	for _, el := range elements {
-		role := strings.ToLower(el.Role)
-		if !strings.Contains(role, "tab") && !strings.Contains(role, "button") && !strings.Contains(role, "control") {
-			continue
-		}
-		if !isSelectedTabValue(el.Value) {
-			continue
-		}
-		name := strings.ToLower(strings.TrimSpace(firstNonEmpty(el.ID, el.Label, el.Title)))
-		switch name {
-		case "inicio", "home":
-			return "home"
-		}
-	}
-	return ""
-}
-
-func isSelectedTabValue(value string) bool {
-	value = strings.ToLower(strings.TrimSpace(value))
-	return value == "1" || value == "true" || value == "selected"
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
-}
-
-func inferScreenTitle(elements []Element, fallback string) string {
-	for _, el := range elements {
-		role := strings.ToLower(el.Role)
-		if role == "application" || role == "group" || strings.Contains(role, "button") || role == "switch" || strings.Contains(role, "tab") || role == "image" {
-			continue
-		}
-		if isScreenTitle(el.Label) {
-			return el.Label
-		}
-	}
-	if fallback != "" {
-		return strings.Title(strings.ReplaceAll(fallback, "-", " "))
-	}
-	return ""
-}
-
-func isScreenTitle(value string) bool {
-	value = strings.TrimSpace(value)
-	if len(value) < 3 || len(value) > 40 {
-		return false
-	}
-	if looksPersonalizedHeading(value) {
-		return false
-	}
-	if strings.ContainsAny(value, "\n0123456789") {
-		return false
-	}
-	reject := map[string]bool{"photos": true, "videos": true, "analysis": true, "suggestions": true, "tab bar": true}
-	return !reject[strings.ToLower(value)]
-}
-
-func looksPersonalizedHeading(value string) bool {
-	words := strings.Fields(strings.ToLower(value))
-	if len(words) < 3 || len(words) > 6 {
-		return false
-	}
-	personalizedPrefixes := map[string]bool{
-		"elegidos":     true,
-		"recomendados": true,
-		"picked":       true,
-		"recommended":  true,
-		"suggested":    true,
-	}
-	if !personalizedPrefixes[words[0]] {
-		return false
-	}
-	for _, connector := range []string{"para", "for", "to", "de"} {
-		for i, word := range words {
-			if word == connector && i > 0 && i < len(words)-1 {
-				return true
-			}
 		}
 	}
 	return false

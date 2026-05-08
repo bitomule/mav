@@ -534,8 +534,8 @@ func TestUITreeReportsRecognizedScreenSeparately(t *testing.T) {
 		AppID: "com.example.demo",
 		Start: "start",
 		Screens: map[string]Screen{
-			"start":          {ID: "start", AssertText: "Home"},
-			"largest-videos": {ID: "largest-videos", Recognizers: []Recognizer{{Kind: "text", Value: "Largest Videos"}}},
+			"start":          testExplicitScreen("start"),
+			"largest-videos": testExplicitScreen("largest-videos"),
 		},
 	}
 	if err := SaveAppMap(root, m); err != nil {
@@ -549,7 +549,7 @@ func TestUITreeReportsRecognizedScreenSeparately(t *testing.T) {
 	if err := SaveCurrentRun(root, run); err != nil {
 		t.Fatal(err)
 	}
-	raw := `[{"AXLabel":"Largest Videos","role":"heading","children":[{"AXLabel":"Delete","role":"button"}]}]`
+	raw := `[{"AXIdentifier":"mav.screen.largest-videos","role":"group","children":[{"AXLabel":"Largest Videos","role":"heading"},{"AXLabel":"Delete","role":"button"}]}]`
 	var out bytes.Buffer
 	cli := CLI{Runner: fakeRunner{tools: cfg.Tools, out: map[string]string{"axe describe-ui": raw}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
 	if err := cli.Run(context.Background(), []string{"ui", "tree"}); err != nil {
@@ -575,8 +575,8 @@ func TestUITreeRecognitionIsStableForSameCurrentScreen(t *testing.T) {
 		AppID: "com.example.demo",
 		Start: "start",
 		Screens: map[string]Screen{
-			"alpha": {ID: "alpha", Recognizers: []Recognizer{{Kind: "text", Value: "Shared"}}},
-			"beta":  {ID: "beta", Recognizers: []Recognizer{{Kind: "text", Value: "Shared"}}},
+			"alpha": testExplicitScreen("alpha"),
+			"beta":  testExplicitScreen("beta"),
 		},
 	}
 	if err := SaveAppMap(root, m); err != nil {
@@ -591,7 +591,7 @@ func TestUITreeRecognitionIsStableForSameCurrentScreen(t *testing.T) {
 		t.Fatal(err)
 	}
 	SetCurrentScreen(root, "beta", run.ID)
-	raw := `[{"AXLabel":"Shared","role":"heading"}]`
+	raw := `[{"AXIdentifier":"mav.screen.beta","role":"group","children":[{"AXLabel":"Shared","role":"heading"}]}]`
 	cli := CLI{Runner: fakeRunner{tools: cfg.Tools, out: map[string]string{"axe describe-ui": raw}}, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
 	for i := 0; i < 2; i++ {
 		var out bytes.Buffer
@@ -617,8 +617,8 @@ func TestUITreePendingTapPrefersScreenOtherThanPendingFrom(t *testing.T) {
 		AppID: "com.example.demo",
 		Start: "start",
 		Screens: map[string]Screen{
-			"alpha": {ID: "alpha", Recognizers: []Recognizer{{Kind: "text", Value: "Shared"}}},
-			"beta":  {ID: "beta", Recognizers: []Recognizer{{Kind: "text", Value: "Beta"}}},
+			"alpha": testExplicitScreen("alpha"),
+			"beta":  testExplicitScreen("beta"),
 		},
 	}
 	if err := SaveAppMap(root, m); err != nil {
@@ -634,7 +634,7 @@ func TestUITreePendingTapPrefersScreenOtherThanPendingFrom(t *testing.T) {
 	}
 	SetCurrentScreen(root, "alpha", run.ID)
 	SetPendingMapAction(root, pendingMapAction{From: "alpha", ID: "next_button", Driver: "axe"})
-	raw := `[{"AXLabel":"Shared","role":"heading"},{"AXLabel":"Beta","role":"heading"}]`
+	raw := `[{"AXIdentifier":"mav.screen.beta","role":"group","children":[{"AXLabel":"Shared","role":"heading"},{"AXLabel":"Beta","role":"heading"}]}]`
 	var out bytes.Buffer
 	cli := CLI{Runner: fakeRunner{tools: cfg.Tools, out: map[string]string{"axe describe-ui": raw}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
 	if err := cli.Run(context.Background(), []string{"ui", "tree"}); err != nil {
@@ -1278,7 +1278,7 @@ func TestWaitForTreeReadyFallsBackToAppiumForUnmatchedTree(t *testing.T) {
 		AppID: "com.example.app",
 		Start: "home",
 		Screens: map[string]Screen{
-			"home": {ID: "home", AssertText: "Home"},
+			"home": testExplicitScreen("home"),
 		},
 	}
 	if err := SaveAppMap(root, m); err != nil {
@@ -1298,6 +1298,41 @@ func TestWaitForTreeReadyFallsBackToAppiumForUnmatchedTree(t *testing.T) {
 	}
 	if !strings.Contains(raw, "EmailField") || !containsCall(*calls, "/wd/hub/session/s1/source") {
 		t.Fatalf("raw=%q calls=%v", raw, *calls)
+	}
+}
+
+func TestWaitForTreeReadyAcceptsExplicitUnmappedScreen(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.BundleID = "com.example.app"
+	cfg.Tools = map[string]bool{"axe": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	m := AppMap{
+		AppID: "com.example.app",
+		Start: "home",
+		Screens: map[string]Screen{
+			"home": testExplicitScreen("home"),
+		},
+	}
+	if err := SaveAppMap(root, m); err != nil {
+		t.Fatal(err)
+	}
+	SetCurrentScreen(root, "home", "run-axe")
+	cli := CLI{Runner: fakeRunner{
+		tools: cfg.Tools,
+		out: map[string]string{
+			"axe describe-ui --udid SIM": `[{"AXIdentifier":"mav.screen.settings","role":"group","children":[{"AXLabel":"Settings","role":"heading"}]}]`,
+		},
+	}, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	raw, err := cli.waitForTreeReady(context.Background(), cfg, 350*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(raw, "mav.screen.settings") {
+		t.Fatalf("raw=%q", raw)
 	}
 }
 
@@ -1321,7 +1356,7 @@ func TestWaitForTreeReadyDoesNotAcceptUnmatchedTreeWhenAppiumFails(t *testing.T)
 		AppID: "com.example.app",
 		Start: "home",
 		Screens: map[string]Screen{
-			"home": {ID: "home", AssertText: "Home"},
+			"home": testExplicitScreen("home"),
 		},
 	}
 	if err := SaveAppMap(root, m); err != nil {
@@ -1371,8 +1406,8 @@ func TestGoFailsEarlyWhenRequiredAppiumWarmupFails(t *testing.T) {
 		AppID: "com.example.demo",
 		Start: "home",
 		Screens: map[string]Screen{
-			"home":     {ID: "home", Edges: []Edge{{To: "settings", ID: "settings_button", Driver: "appium"}}},
-			"settings": {ID: "settings", AssertText: "Settings"},
+			"home":     testExplicitScreenWithEdges("home", Edge{To: "settings", ID: "settings_button", Driver: "appium"}),
+			"settings": testExplicitScreen("settings"),
 		},
 	}
 	if err := SaveAppMap(root, m); err != nil {
@@ -1425,7 +1460,7 @@ func setupAppiumSemanticTest(t *testing.T) (string, Config, *httptest.Server, *[
 		calls = append(calls, r.Method+" "+r.URL.Path+" "+string(body))
 		switch {
 		case r.URL.Path == "/wd/hub/session/s1/source":
-			_, _ = io.WriteString(w, `{"value":"<AppiumAUT type=\"XCUIElementTypeApplication\" name=\"Demo\"><XCUIElementTypeTextField name=\"EmailField\" label=\"\" value=\"Email\" enabled=\"true\" title=\"Email\" pid=\"321\" x=\"10\" y=\"20\" width=\"100\" height=\"40\"/></AppiumAUT>"}`)
+			_, _ = io.WriteString(w, `{"value":"<AppiumAUT type=\"XCUIElementTypeApplication\" name=\"Demo\"><XCUIElementTypeOther name=\"mav.screen.home\"><XCUIElementTypeTextField name=\"EmailField\" label=\"\" value=\"Email\" enabled=\"true\" title=\"Email\" pid=\"321\" x=\"10\" y=\"20\" width=\"100\" height=\"40\"/></XCUIElementTypeOther></AppiumAUT>"}`)
 		case r.URL.Path == "/wd/hub/session/s1/element":
 			_, _ = io.WriteString(w, `{"value":{"element-6066-11e4-a52e-4f735466cecf":"el1"}}`)
 		case r.URL.Path == "/wd/hub/session/s1/element/el1/click":
@@ -1779,8 +1814,8 @@ func TestGoUsesNativeMAVActions(t *testing.T) {
 		AppID: "com.example.demo",
 		Start: "home",
 		Screens: map[string]Screen{
-			"home":     {ID: "home", Edges: []Edge{{To: "settings", Text: "Settings", Wait: "1"}}},
-			"settings": {ID: "settings", AssertText: "Settings"},
+			"home":     testExplicitScreenWithEdges("home", Edge{To: "settings", Text: "Settings", Wait: "1"}),
+			"settings": testExplicitScreen("settings"),
 		},
 	}
 	if err := SaveAppMap(root, m); err != nil {
@@ -1790,10 +1825,10 @@ func TestGoUsesNativeMAVActions(t *testing.T) {
 	runner := fakeRunner{
 		tools: map[string]bool{"axe": true, "xcrun": true},
 		seq: map[string][]string{"axe describe-ui": {
-			`{"AXLabel":"Home","children":[{"AXLabel":"Settings"}]}`,
-			`{"AXLabel":"Home","children":[{"AXLabel":"Settings"}]}`,
-			`{"AXLabel":"Settings","children":[{"AXLabel":"Daily Reminder"}]}`,
-			`{"AXLabel":"Settings","children":[{"AXLabel":"Daily Reminder"}]}`,
+			`{"AXIdentifier":"mav.screen.home","children":[{"AXLabel":"Settings"}]}`,
+			`{"AXIdentifier":"mav.screen.home","children":[{"AXLabel":"Settings"}]}`,
+			`{"AXIdentifier":"mav.screen.settings","children":[{"AXLabel":"Settings"},{"AXLabel":"Daily Reminder"}]}`,
+			`{"AXIdentifier":"mav.screen.settings","children":[{"AXLabel":"Settings"},{"AXLabel":"Daily Reminder"}]}`,
 		}},
 		calls: map[string]int{},
 	}
@@ -1818,8 +1853,8 @@ func TestGoAlreadyAtTargetAfterLaunchIsNoop(t *testing.T) {
 		AppID: "com.example.demo",
 		Start: "start",
 		Screens: map[string]Screen{
-			"start":    {ID: "start"},
-			"settings": {ID: "settings", AssertText: "Settings"},
+			"start":    testExplicitScreen("start"),
+			"settings": testExplicitScreen("settings"),
 		},
 	}
 	if err := SaveAppMap(root, m); err != nil {
@@ -1829,8 +1864,8 @@ func TestGoAlreadyAtTargetAfterLaunchIsNoop(t *testing.T) {
 	runner := fakeRunner{
 		tools: map[string]bool{"axe": true, "xcrun": true},
 		seq: map[string][]string{"axe describe-ui": {
-			`{"AXLabel":"Settings","role":"heading","children":[{"AXLabel":"Daily Reminder","role":"static text"}]}`,
-			`{"AXLabel":"Settings","role":"heading","children":[{"AXLabel":"Daily Reminder","role":"static text"}]}`,
+			`{"AXIdentifier":"mav.screen.settings","role":"group","children":[{"AXLabel":"Settings","role":"heading"},{"AXLabel":"Daily Reminder","role":"static text"}]}`,
+			`{"AXIdentifier":"mav.screen.settings","role":"group","children":[{"AXLabel":"Settings","role":"heading"},{"AXLabel":"Daily Reminder","role":"static text"}]}`,
 		}},
 		calls: map[string]int{},
 	}
@@ -1856,9 +1891,9 @@ func TestNavigateFailsWhenChangedTreeIsNotTarget(t *testing.T) {
 		AppID: "com.example.demo",
 		Start: "home",
 		Screens: map[string]Screen{
-			"home":     {ID: "home", AssertText: "Home", Edges: []Edge{{From: "home", To: "settings", ID: "settings_button", Driver: "axe"}}},
-			"profile":  {ID: "profile", AssertText: "Profile"},
-			"settings": {ID: "settings", AssertText: "Settings"},
+			"home":     testExplicitScreenWithEdges("home", Edge{From: "home", To: "settings", ID: "settings_button", Driver: "axe"}),
+			"profile":  testExplicitScreen("profile"),
+			"settings": testExplicitScreen("settings"),
 		},
 	}
 	if err := SaveAppMap(root, m); err != nil {
@@ -1875,8 +1910,8 @@ func TestNavigateFailsWhenChangedTreeIsNotTarget(t *testing.T) {
 	runner := fakeRunner{
 		tools: map[string]bool{"axe": true},
 		seq: map[string][]string{"axe describe-ui": {
-			`{"AXLabel":"Home","role":"heading","children":[{"AXIdentifier":"settings_button","AXLabel":"Settings","role":"button"}]}`,
-			`{"AXLabel":"Profile","role":"heading","children":[{"AXLabel":"Name","role":"static text"}]}`,
+			`{"AXIdentifier":"mav.screen.home","role":"group","children":[{"AXIdentifier":"settings_button","AXLabel":"Settings","role":"button"}]}`,
+			`{"AXIdentifier":"mav.screen.profile","role":"group","children":[{"AXLabel":"Profile","role":"heading"},{"AXLabel":"Name","role":"static text"}]}`,
 		}},
 		calls: map[string]int{},
 	}
@@ -1912,10 +1947,10 @@ func TestGoDoesNotReuseStartRouteWhenLaunchScreenDiffers(t *testing.T) {
 		AppID: "com.example.demo",
 		Start: "start",
 		Screens: map[string]Screen{
-			"start":      {ID: "start", Edges: []Edge{{From: "start", To: "onboarding", ID: "next_button"}}},
-			"onboarding": {ID: "onboarding", AssertText: "Onboarding", Edges: []Edge{{From: "onboarding", To: "settings", ID: "settings_button"}}},
-			"home":       {ID: "home", AssertText: "Home"},
-			"settings":   {ID: "settings", AssertText: "Settings"},
+			"start":      testExplicitScreenWithEdges("start", Edge{From: "start", To: "onboarding", ID: "next_button"}),
+			"onboarding": testExplicitScreenWithEdges("onboarding", Edge{From: "onboarding", To: "settings", ID: "settings_button"}),
+			"home":       testExplicitScreen("home"),
+			"settings":   testExplicitScreen("settings"),
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -1923,7 +1958,7 @@ func TestGoDoesNotReuseStartRouteWhenLaunchScreenDiffers(t *testing.T) {
 	runner := &sequenceRecordingRunner{
 		tools: map[string]bool{"axe": true, "xcrun": true},
 		out: map[string]string{
-			"axe describe-ui": `{"AXLabel":"Home","role":"heading","children":[{"AXLabel":"Settings","role":"button"}]}`,
+			"axe describe-ui": `{"AXIdentifier":"mav.screen.home","role":"group","children":[{"AXLabel":"Home","role":"heading"},{"AXLabel":"Settings","role":"button"}]}`,
 		},
 	}
 	var out bytes.Buffer
@@ -1954,8 +1989,8 @@ func TestGoStartDoesNotSucceedWhenLaunchRecognizesDifferentScreen(t *testing.T) 
 		AppID: "com.example.demo",
 		Start: "start",
 		Screens: map[string]Screen{
-			"start": {ID: "start"},
-			"home":  {ID: "home", AssertText: "Home"},
+			"start": testExplicitScreen("start"),
+			"home":  testExplicitScreen("home"),
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -1964,7 +1999,7 @@ func TestGoStartDoesNotSucceedWhenLaunchRecognizesDifferentScreen(t *testing.T) 
 	cli := CLI{Runner: fakeRunner{
 		tools: map[string]bool{"axe": true, "xcrun": true},
 		out: map[string]string{
-			"axe describe-ui": `{"AXLabel":"Home","role":"heading","children":[{"AXLabel":"Settings","role":"button"}]}`,
+			"axe describe-ui": `{"AXIdentifier":"mav.screen.home","role":"group","children":[{"AXLabel":"Home","role":"heading"},{"AXLabel":"Settings","role":"button"}]}`,
 		},
 	}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
 	if err := cli.Run(context.Background(), []string{"go", "start"}); err != nil {
@@ -1988,8 +2023,8 @@ func TestLegacyCoordinateRouteStillExecutesIDBTap(t *testing.T) {
 		AppID: "com.example.demo",
 		Start: "home",
 		Screens: map[string]Screen{
-			"home":     {ID: "home", AssertText: "Home", Edges: []Edge{{From: "home", To: "settings", X: "10", Y: "20", Driver: "idb"}}},
-			"settings": {ID: "settings", AssertText: "Settings"},
+			"home":     testExplicitScreenWithEdges("home", Edge{From: "home", To: "settings", X: "10", Y: "20", Driver: "idb"}),
+			"settings": testExplicitScreen("settings"),
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -2005,8 +2040,8 @@ func TestLegacyCoordinateRouteStillExecutesIDBTap(t *testing.T) {
 	runner := &sequenceRecordingRunner{
 		tools: map[string]bool{"axe": true, "idb": true},
 		seq: map[string][]string{"axe describe-ui": {
-			`{"AXLabel":"Home","role":"heading","children":[{"AXLabel":"Settings","role":"button"}]}`,
-			`{"AXLabel":"Settings","role":"heading","children":[{"AXLabel":"Daily Reminder","role":"static text"}]}`,
+			`{"AXIdentifier":"mav.screen.home","role":"group","children":[{"AXLabel":"Home","role":"heading"},{"AXLabel":"Settings","role":"button"}]}`,
+			`{"AXIdentifier":"mav.screen.settings","role":"group","children":[{"AXLabel":"Settings","role":"heading"},{"AXLabel":"Daily Reminder","role":"static text"}]}`,
 		}},
 		calls: map[string]int{},
 	}
@@ -2046,8 +2081,8 @@ func TestRoutePlaybackReportsTapFailureAndClearsPending(t *testing.T) {
 		AppID: "com.example.demo",
 		Start: "home",
 		Screens: map[string]Screen{
-			"home":     {ID: "home", AssertText: "Home", Edges: []Edge{{From: "home", To: "settings", X: "10", Y: "20", Driver: "idb"}}},
-			"settings": {ID: "settings", AssertText: "Settings"},
+			"home":     testExplicitScreenWithEdges("home", Edge{From: "home", To: "settings", X: "10", Y: "20", Driver: "idb"}),
+			"settings": testExplicitScreen("settings"),
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -2063,7 +2098,7 @@ func TestRoutePlaybackReportsTapFailureAndClearsPending(t *testing.T) {
 	cli := CLI{Runner: fakeRunner{
 		tools: cfg.Tools,
 		out: map[string]string{
-			"axe describe-ui": `{"AXLabel":"Home","role":"heading","children":[{"AXLabel":"Settings","role":"button"}]}`,
+			"axe describe-ui": `{"AXIdentifier":"mav.screen.home","role":"group","children":[{"AXLabel":"Home","role":"heading"},{"AXLabel":"Settings","role":"button"}]}`,
 		},
 	}, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
 	fields, err := cli.navigateToScreen(context.Background(), "settings")
@@ -2097,7 +2132,7 @@ func TestCoordinateTapDoesNotCreatePendingMapAction(t *testing.T) {
 		AppID: "com.example.demo",
 		Start: "home",
 		Screens: map[string]Screen{
-			"home": {ID: "home", AssertText: "Home"},
+			"home": testExplicitScreen("home"),
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -2123,15 +2158,15 @@ func TestMapVerifyWarnsAboutCoordinateAndDuplicateEdges(t *testing.T) {
 		AppID: "com.example.demo",
 		Start: "home",
 		Screens: map[string]Screen{
-			"home": {ID: "home", Edges: []Edge{
-				{To: "settings", ID: "open"},
-				{To: "profile", ID: "open"},
-				{To: "picker", X: "10", Y: "20"},
-				{From: "start", To: "settings", ID: "wrong_from"},
-			}},
-			"settings": {ID: "settings"},
-			"profile":  {ID: "profile"},
-			"picker":   {ID: "picker"},
+			"home": testExplicitScreenWithEdges("home",
+				Edge{To: "settings", ID: "open"},
+				Edge{To: "profile", ID: "open"},
+				Edge{To: "picker", X: "10", Y: "20"},
+				Edge{From: "start", To: "settings", ID: "wrong_from"},
+			),
+			"settings": testExplicitScreen("settings"),
+			"profile":  testExplicitScreen("profile"),
+			"picker":   testExplicitScreen("picker"),
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -2162,8 +2197,8 @@ func TestGoWarmsAndForcesAppiumForMappedAppiumEdge(t *testing.T) {
 		AppID: "com.example.demo",
 		Start: "home",
 		Screens: map[string]Screen{
-			"home":     {ID: "home", Edges: []Edge{{To: "settings", ID: "settings_button", Wait: "1", Driver: "appium"}}},
-			"settings": {ID: "settings", AssertText: "Settings"},
+			"home":     testExplicitScreenWithEdges("home", Edge{To: "settings", ID: "settings_button", Wait: "1", Driver: "appium"}),
+			"settings": testExplicitScreen("settings"),
 		},
 	}
 	if err := SaveAppMap(root, m); err != nil {
@@ -2196,10 +2231,10 @@ func TestGoWarmsAndForcesAppiumForMappedAppiumEdge(t *testing.T) {
 		tools: cfg.Tools,
 		out:   map[string]string{"appium driver list --installed": "xcuitest@7.0.0\n"},
 		seq: map[string][]string{"axe describe-ui --udid SIM": {
-			`{"AXLabel":"Home","role":"heading","children":[{"AXLabel":"Settings","role":"button"}]}`,
-			`{"AXLabel":"Home","role":"heading","children":[{"AXLabel":"Settings","role":"button"}]}`,
-			`{"AXLabel":"Settings","role":"heading","children":[{"AXLabel":"Daily Reminder","role":"static text"}]}`,
-			`{"AXLabel":"Settings","role":"heading","children":[{"AXLabel":"Daily Reminder","role":"static text"}]}`,
+			`{"AXIdentifier":"mav.screen.home","role":"group","children":[{"AXLabel":"Home","role":"heading"},{"AXLabel":"Settings","role":"button"}]}`,
+			`{"AXIdentifier":"mav.screen.home","role":"group","children":[{"AXLabel":"Home","role":"heading"},{"AXLabel":"Settings","role":"button"}]}`,
+			`{"AXIdentifier":"mav.screen.settings","role":"group","children":[{"AXLabel":"Settings","role":"heading"},{"AXLabel":"Daily Reminder","role":"static text"}]}`,
+			`{"AXIdentifier":"mav.screen.settings","role":"group","children":[{"AXLabel":"Settings","role":"heading"},{"AXLabel":"Daily Reminder","role":"static text"}]}`,
 		}},
 		calls: map[string]int{},
 	}
@@ -2359,8 +2394,8 @@ func TestUITreeReportsPendingMapActionForUnknownScreen(t *testing.T) {
 		AppID: "com.example.demo",
 		Start: "start",
 		Screens: map[string]Screen{
-			"start":            {ID: "start", AssertText: "Home"},
-			"photos-to-delete": {ID: "photos-to-delete", AssertText: "Photos to Delete"},
+			"start":            testExplicitScreen("start"),
+			"photos-to-delete": testExplicitScreen("photos-to-delete"),
 		},
 	}
 	if err := SaveAppMap(root, m); err != nil {
@@ -2384,10 +2419,13 @@ func TestUITreeReportsPendingMapActionForUnknownScreen(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := out.String()
-	for _, want := range []string{"screen=unknown", "map_pending=true", "previous_screen=photos-to-delete", `next="add accessibility ids or capture/inspect before mapping"`} {
+	for _, want := range []string{"screen=unknown", "previous_screen=photos-to-delete", `next="add a stable screen accessibility identifier such as mav.screen.\u003cid\u003e before mapping"`} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in %q", want, got)
 		}
+	}
+	if strings.Contains(got, "map_pending=true") {
+		t.Fatalf("identity-missing tree should discard pending map action: %q", got)
 	}
 }
 
@@ -3796,18 +3834,15 @@ func TestMapPruneApplyWarningsRemovesCoordinateAndDuplicateEdges(t *testing.T) {
 		AppID: "com.example.app",
 		Start: "home",
 		Screens: map[string]Screen{
-			"home": {
-				ID: "home",
-				Edges: []Edge{
-					{To: "details", X: "100", Y: "200"},
-					{To: "settings", ID: "settings_button"},
-					{To: "profile", ID: "settings_button"},
-					{From: "other", To: "details", ID: "details_button"},
-				},
-			},
-			"details":  {ID: "details"},
-			"settings": {ID: "settings"},
-			"profile":  {ID: "profile"},
+			"home": testExplicitScreenWithEdges("home",
+				Edge{To: "details", X: "100", Y: "200"},
+				Edge{To: "settings", ID: "settings_button"},
+				Edge{To: "profile", ID: "settings_button"},
+				Edge{From: "other", To: "details", ID: "details_button"},
+			),
+			"details":  testExplicitScreen("details"),
+			"settings": testExplicitScreen("settings"),
+			"profile":  testExplicitScreen("profile"),
 		},
 	}
 	if err := SaveAppMap(root, m); err != nil {

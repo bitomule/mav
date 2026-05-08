@@ -40,7 +40,7 @@ does not explore or repair routes by itself. The agent decides the next action.
    `AXApplication` tree, MAV attempts recovery internally; do not work around it
    with screenshots unless `mav ui tree` fails after recovery. In the default
    `--prefer-driver auto` mode, MAV may fall back to Appium/WDA when AXe returns
-   an empty or unmatched tree. Use `mav ui tree --include-system` when
+   an empty tree, has no usable elements, or is pending a map update. Use `mav ui tree --include-system` when
    inspecting system UI, PHPicker, permission prompts, SpringBoard, or cross-app
    service processes; MAV asks Appium for the active foreground bundle and
    temporarily targets that bundle for the source tree. If the active app still
@@ -67,11 +67,12 @@ does not explore or repair routes by itself. The agent decides the next action.
    the last option because labels change with localization and copy edits. Use
    `mav ui wait --id`, `--text`, or `--value` for readiness checks.
 8. Before navigating to a new screen, verify with `mav ui tree` that the target
-   screen has stable accessibility ids or a visible title that MAV can observe.
-   The mapping loop is `mav open`, `mav ui tree`, `mav ui tap --id ...`,
-   `mav ui tree`, then inspect `.mav/map/**`. If the next tree reports
-   `screen=unknown map_pending=true`, the tap was recorded but no reliable route
-   was learned; add/expose accessibility ids or capture/inspect before mapping.
+   screen exposes an explicit screen accessibility id: `mav.screen.<screen-id>`
+   or `screen.<screen-id>`. The mapping loop is `mav open`, `mav ui tree`,
+   `mav ui tap --id ...`, `mav ui tree`, then inspect `.mav/map/**`. If the
+   next tree reports `screen_source=identity_missing`, no route was learned and
+   the pending tap was discarded; add the explicit screen id, repeat the tap,
+   then run `mav ui tree` again.
 9. Use `mav go <screen-id>` only after `.mav/map/index.json` and
    `.mav/map/screens/*.json` contain that screen and a route from app launch.
    `mav go` opens the app, records evidence from the start screen to the target,
@@ -320,19 +321,19 @@ Output is intentionally compact and agent-friendly by default:
 
 ```text
 ok cmd=open run=7fd logs=/tmp/mav/7fd/logs.txt
-ok cmd=ui.tree driver=axe nodes=42 screen=settings screen_source=recognized
+ok cmd=ui.tree driver=axe nodes=42 screen=unknown recognized_screen=settings screen_source=recognized
 node index=1 id=settings_button label=Settings role=button enabled=true frame="{{20, 120}, {180, 44}}"
 ok cmd=capture file=/tmp/mav/7fd/captures/largest-videos-after-pinch.png run=7fd
 fail code=screen_not_found screen=settings
 ```
 
-If `mav ui tree` reports `screen=unknown` with `screen_source=unmatched`, trust
-the live node lines over stale map state and continue exploring with tree/tap or
-capture named evidence before updating routes.
-
-If it also reports `map_pending=true`, the previous tap has not produced a
-mapped screen yet. Do not use `mav go` for that destination until `.mav/map/**`
-contains the screen and route.
+If `mav ui tree` reports `screen=unknown` with
+`screen_source=identity_missing`, the current screen has no explicit screen id.
+UI commands still work, but MAV will not create/update map screens and clears
+any pending route edge. Add `mav.screen.<screen-id>` or `screen.<screen-id>` to
+the app, repeat the tap that navigates to that screen, then run `mav ui tree`
+again. Do not use `mav go` for that destination until `.mav/map/**` contains the
+screen and route.
 
 AXe is the fast semantic driver, but it can miss system-process UI, PHPicker,
 permission alerts, non-accessibility wrapper views, and text-field placeholders.
