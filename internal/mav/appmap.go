@@ -54,6 +54,7 @@ type Element struct {
 	Subrole string `json:"subrole,omitempty"`
 	Title   string `json:"title,omitempty"`
 	PID     string `json:"pid,omitempty"`
+	Focused string `json:"focused,omitempty"`
 }
 
 type Edge struct {
@@ -435,14 +436,25 @@ func ObserveScreenDetailedWithDriver(root string, cfg Config, run RunState, rawT
 	}
 	elements := ExtractElements(rawTree)
 	current := CurrentScreen(root)
+	pending, hasPending := peekPendingMapAction(root)
 	screenID := ""
 	source := ""
 	if current == m.Start && blankScreen(m.Screens[m.Start]) {
 		screenID = m.Start
 		source = "start"
 	}
+	if screenID == "" && current != "" && !hasPending {
+		if screen, ok := m.Screens[current]; ok && screenMatches(screen, rawTree, elements) {
+			screenID = current
+			source = "current"
+		}
+	}
 	if screenID == "" {
-		screenID = recognizeScreen(m, rawTree, elements)
+		avoid := ""
+		if hasPending {
+			avoid = pending.From
+		}
+		screenID = recognizeScreenAvoiding(m, rawTree, elements, avoid)
 		if screenID != "" {
 			source = "recognized"
 		}
@@ -583,6 +595,7 @@ func walkAX(value any, out *[]Element) {
 			Subrole: stringField(node, "AXSubrole", "subrole"),
 			Title:   stringField(node, "AXTitle", "title"),
 			PID:     stringField(node, "AXPid", "AXPID", "pid"),
+			Focused: boolStringField(node, "AXFocused", "focused", "hasFocus"),
 		}
 		if el.ID != "" || el.Label != "" || el.Role != "" || el.Value != "" || el.Frame != "" || el.Enabled != "" || el.Subrole != "" || el.Title != "" || el.PID != "" {
 			*out = append(*out, el)
@@ -636,8 +649,8 @@ func compactElements(elements []Element) []Element {
 	seen := map[string]bool{}
 	out := []Element{}
 	for _, el := range elements {
-		key := el.ID + "\x00" + el.Label + "\x00" + el.Role + "\x00" + el.Value + "\x00" + el.Frame + "\x00" + el.Enabled + "\x00" + el.Subrole + "\x00" + el.Title + "\x00" + el.PID
-		if key == "\x00\x00\x00\x00\x00\x00\x00\x00\x00" || seen[key] {
+		key := el.ID + "\x00" + el.Label + "\x00" + el.Role + "\x00" + el.Value + "\x00" + el.Frame + "\x00" + el.Enabled + "\x00" + el.Subrole + "\x00" + el.Title + "\x00" + el.PID + "\x00" + el.Focused
+		if key == "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" || seen[key] {
 			continue
 		}
 		seen[key] = true
@@ -650,12 +663,22 @@ func compactElements(elements []Element) []Element {
 }
 
 func recognizeScreen(m AppMap, raw string, elements []Element) string {
-	for id, screen := range m.Screens {
+	return recognizeScreenAvoiding(m, raw, elements, "")
+}
+
+func recognizeScreenAvoiding(m AppMap, raw string, elements []Element, avoid string) string {
+	fallback := ""
+	for _, id := range sortedScreenKeys(m.Screens) {
+		screen := m.Screens[id]
 		if screenMatches(screen, raw, elements) {
+			if avoid != "" && id == avoid {
+				fallback = id
+				continue
+			}
 			return id
 		}
 	}
-	return ""
+	return fallback
 }
 
 func screenMatches(screen Screen, raw string, elements []Element) bool {
