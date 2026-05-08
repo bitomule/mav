@@ -7,6 +7,16 @@ import (
 	"testing"
 )
 
+func testExplicitScreen(id string) Screen {
+	return Screen{ID: id, Recognizers: []Recognizer{{Kind: "id", Value: "mav.screen." + id}}}
+}
+
+func testExplicitScreenWithEdges(id string, edges ...Edge) Screen {
+	screen := testExplicitScreen(id)
+	screen.Edges = edges
+	return screen
+}
+
 func TestRoute(t *testing.T) {
 	m := AppMap{
 		AppID: "com.example.demo",
@@ -16,7 +26,7 @@ func TestRoute(t *testing.T) {
 				ID:    "home",
 				Edges: []Edge{{To: "settings", ID: "settings_button", Wait: "1000"}},
 			},
-			"settings": {ID: "settings", AssertID: "settings_view"},
+			"settings": testExplicitScreen("settings"),
 		},
 	}
 	route, err := Route(m, "settings")
@@ -33,10 +43,10 @@ func TestRouteFromUsesObservedStartAndSkipsLowConfidenceEdges(t *testing.T) {
 		AppID: "com.example.demo",
 		Start: "start",
 		Screens: map[string]Screen{
-			"start":    {ID: "start", Edges: []Edge{{To: "wrong", ID: "buy", Confidence: "low"}}},
+			"start":    testExplicitScreenWithEdges("start", Edge{To: "wrong", ID: "buy", Confidence: "low"}),
 			"home":     {ID: "home", Edges: []Edge{{To: "settings", ID: "settings_button"}}},
 			"wrong":    {ID: "wrong"},
-			"settings": {ID: "settings", AssertID: "settings_view"},
+			"settings": testExplicitScreen("settings"),
 		},
 	}
 	if _, err := RouteFrom(m, "start", "wrong"); err == nil || err.Error() != "route_not_found" {
@@ -74,8 +84,8 @@ func TestValidateAllowsCoordinateEdge(t *testing.T) {
 	m := AppMap{
 		Start: "home",
 		Screens: map[string]Screen{
-			"home":     {ID: "home", Edges: []Edge{{To: "settings", X: "400", Y: "90"}}},
-			"settings": {ID: "settings"},
+			"home":     testExplicitScreenWithEdges("home", Edge{To: "settings", X: "400", Y: "90"}),
+			"settings": testExplicitScreen("settings"),
 		},
 	}
 	if err := ValidateAppMap(m); err != nil {
@@ -87,8 +97,8 @@ func TestValidateAllowsValueEdge(t *testing.T) {
 	m := AppMap{
 		Start: "home",
 		Screens: map[string]Screen{
-			"home":     {ID: "home", Edges: []Edge{{To: "settings", Value: "Email"}}},
-			"settings": {ID: "settings"},
+			"home":     testExplicitScreenWithEdges("home", Edge{To: "settings", Value: "Email"}),
+			"settings": testExplicitScreen("settings"),
 		},
 	}
 	if err := ValidateAppMap(m); err != nil {
@@ -135,19 +145,37 @@ func TestEmptyAXTreeDetection(t *testing.T) {
 	}
 }
 
-func TestScreenTextRecognizerIgnoresButtonsAndGroups(t *testing.T) {
-	screen := Screen{ID: "settings", AssertText: "Settings", Recognizers: []Recognizer{{Kind: "text", Value: "Settings"}}}
+func TestScreenRecognizerRequiresExplicitScreenID(t *testing.T) {
+	screen := Screen{ID: "settings", Recognizers: []Recognizer{{Kind: "text", Value: "Settings"}}}
 	elements := []Element{
 		{Label: "uUndolly", Role: "application"},
 		{ID: "home_settings_button", Label: "Settings", Role: "button"},
 		{Label: "Tab Bar", Role: "group"},
 	}
 	if screenMatches(screen, "", elements) {
-		t.Fatalf("home settings button should not match settings screen")
+		t.Fatalf("text recognizer should not match a mappable screen")
 	}
-	elements = append(elements, Element{Label: "Settings", Role: "heading"})
+	screen = testExplicitScreen("settings")
+	elements = append(elements, Element{ID: "mav.screen.settings", Role: "group"})
 	if !screenMatches(screen, "", elements) {
-		t.Fatalf("settings heading should match settings screen")
+		t.Fatalf("explicit screen id should match settings screen")
+	}
+	screen.AssertText = "Settings"
+	if screenMatches(screen, "", []Element{{Label: "Settings", Role: "heading"}}) {
+		t.Fatalf("live tree without explicit screen id should not match")
+	}
+}
+
+func TestValidateRequiresExplicitStartScreenID(t *testing.T) {
+	m := AppMap{
+		Start: "start",
+		Screens: map[string]Screen{
+			"start": {ID: "start"},
+		},
+	}
+	err := ValidateAppMap(m)
+	if err == nil || !strings.Contains(err.Error(), "app_map_screen_identity_missing screen=start") {
+		t.Fatalf("err=%v", err)
 	}
 }
 
@@ -157,8 +185,8 @@ func TestObserveScreenDoesNotReuseStaleCurrentForUnmatchedTree(t *testing.T) {
 		AppID: "com.example.demo",
 		Start: "start",
 		Screens: map[string]Screen{
-			"start":            {ID: "start", AssertText: "Home"},
-			"photos-to-delete": {ID: "photos-to-delete", AssertText: "Photos to Delete"},
+			"start":            testExplicitScreen("start"),
+			"photos-to-delete": testExplicitScreen("photos-to-delete"),
 		},
 	}
 	if err := SaveAppMap(root, m); err != nil {
@@ -171,7 +199,7 @@ func TestObserveScreenDoesNotReuseStaleCurrentForUnmatchedTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if observed.Screen != "unknown" || observed.Source != "unmatched" || observed.PreviousScreen != "photos-to-delete" {
+	if observed.Screen != "unknown" || observed.Source != "identity_missing" || observed.PreviousScreen != "photos-to-delete" {
 		t.Fatalf("observed=%+v", observed)
 	}
 	loaded, err := LoadAppMap(root)
@@ -181,8 +209,35 @@ func TestObserveScreenDoesNotReuseStaleCurrentForUnmatchedTree(t *testing.T) {
 	if len(loaded.Screens["photos-to-delete"].Edges) != 0 {
 		t.Fatalf("unexpected edge=%+v", loaded.Screens["photos-to-delete"].Edges)
 	}
-	if _, ok := consumePendingMapAction(root); !ok {
-		t.Fatalf("pending action should remain for a confident observation")
+	if _, ok := peekPendingMapAction(root); ok {
+		t.Fatalf("pending action should be discarded when destination has no screen identity")
+	}
+}
+
+func TestObserveScreenIdentityMissingClearsCurrentAndPending(t *testing.T) {
+	root := t.TempDir()
+	m := AppMap{
+		AppID: "com.example.demo",
+		Start: "start",
+		Screens: map[string]Screen{
+			"start": testExplicitScreen("start"),
+			"home":  testExplicitScreen("home"),
+		},
+	}
+	if err := SaveAppMap(root, m); err != nil {
+		t.Fatal(err)
+	}
+	SetCurrentScreen(root, "home", "run1")
+	SetPendingMapAction(root, pendingMapAction{From: "home", ID: "details_button"})
+	observed, err := ObserveScreenDetailed(root, Config{BundleID: "com.example.demo"}, RunState{ID: "run1", Dir: t.TempDir()}, `[{"AXLabel":"Dynamic","role":"heading"}]`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed.Source != "identity_missing" || CurrentScreen(root) != "" {
+		t.Fatalf("observed=%+v current=%q", observed, CurrentScreen(root))
+	}
+	if _, ok := peekPendingMapAction(root); ok {
+		t.Fatalf("pending action should be discarded when destination has no screen identity")
 	}
 }
 
@@ -201,46 +256,72 @@ func TestObserveScreenDoesNotTreatBlankStartAsCatchAll(t *testing.T) {
 	if observed.Screen == "start" || observed.Source == "start" {
 		t.Fatalf("blank start should not catch all trees: %+v", observed)
 	}
-	if observed.Screen != "welcome" || observed.Source != "inferred" {
+	if observed.Screen != "unknown" || observed.Source != "identity_missing" {
 		t.Fatalf("observed=%+v", observed)
 	}
 }
 
-func TestRecognizeScreenPrefersSpecificTextOverApplicationRootStart(t *testing.T) {
+func TestRecognizeScreenUsesExplicitScreenIDOverApplicationRoot(t *testing.T) {
 	m := AppMap{
 		AppID: "com.example.demo",
 		Start: "start",
 		Screens: map[string]Screen{
-			"start": {ID: "start", Recognizers: []Recognizer{{Kind: "id", Value: "SampleApp"}}},
-			"home":  {ID: "home", Recognizers: []Recognizer{{Kind: "text", Value: "Home"}}},
+			"start": testExplicitScreen("start"),
+			"home":  testExplicitScreen("home"),
 		},
 	}
 	elements := []Element{
 		{ID: "SampleApp", Role: "XCUIElementTypeApplication"},
-		{Label: "Home", Role: "heading"},
+		{ID: "mav.screen.home", Role: "group"},
 	}
 	if got := recognizeScreen(m, "", elements); got != "home" {
 		t.Fatalf("screen=%q", got)
 	}
 }
 
-func TestInferScreenTitleRejectsPersonalizedFeedHeading(t *testing.T) {
+func TestExplicitScreenIdentityIgnoresPersonalizedFeedHeading(t *testing.T) {
 	elements := []Element{
 		{Label: "Elegidos para conchita", Role: "heading"},
-		{ID: "Inicio", Label: "Inicio", Role: "tab", Value: "1"},
+		{ID: "mav.screen.inicio", Label: "Inicio", Role: "tab", Value: "1"},
 	}
-	if got := inferScreenTitle(elements, "home"); got != "Home" {
-		t.Fatalf("title=%q", got)
+	identity, ok := explicitScreenIdentity(elements)
+	if !ok || identity.ID != "inicio" || identity.Recognizer.Value != "mav.screen.inicio" {
+		t.Fatalf("identity=%+v ok=%v", identity, ok)
 	}
-	if got := inferScreenID(elements); got != "home" {
-		t.Fatalf("screen id=%q", got)
+}
+
+func TestExplicitScreenIdentityRejectsInvalidSuffix(t *testing.T) {
+	for _, value := range []string{"mav.screen.", "mav.screen.!!!", "screen.   ", "mav.screen.step", "screen.step"} {
+		if id, ok := screenIDFromElementID(value); ok {
+			t.Fatalf("value=%q id=%q should be rejected", value, id)
+		}
 	}
-	elements[1].Role = "XCUIElementTypeButton"
-	if got := inferScreenID(elements); got != "home" {
-		t.Fatalf("appium button tab screen id=%q", got)
+	if id, ok := screenIDFromElementID("mav.screen.Fóo Bar"); !ok || id != "foo-bar" {
+		t.Fatalf("id=%q ok=%v", id, ok)
 	}
-	if !isScreenTitle("Sign in to continue") {
-		t.Fatalf("stable connector title should be accepted")
+}
+
+func TestLoadAppMapMigratesExplicitAssertIDRecognizer(t *testing.T) {
+	root := t.TempDir()
+	if err := SaveAppMap(root, AppMap{
+		AppID: "com.example.demo",
+		Start: "start",
+		Screens: map[string]Screen{
+			"start":    testExplicitScreen("start"),
+			"settings": {ID: "settings", AssertID: "mav.screen.settings"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadAppMap(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateAppMap(loaded); err != nil {
+		t.Fatalf("legacy assert_id should satisfy explicit screen identity: %v", err)
+	}
+	if !screenHasExplicitScreenIdentity(loaded.Screens["settings"]) {
+		t.Fatalf("screen=%+v", loaded.Screens["settings"])
 	}
 }
 
@@ -250,8 +331,8 @@ func TestObserveScreenPersistsDriverOnScreenAndEdge(t *testing.T) {
 		AppID: "com.example.demo",
 		Start: "home",
 		Screens: map[string]Screen{
-			"home":     {ID: "home", AssertText: "Home"},
-			"settings": {ID: "settings", AssertText: "Settings"},
+			"home":     testExplicitScreen("home"),
+			"settings": testExplicitScreen("settings"),
 		},
 	}
 	if err := SaveAppMap(root, m); err != nil {
@@ -259,7 +340,7 @@ func TestObserveScreenPersistsDriverOnScreenAndEdge(t *testing.T) {
 	}
 	SetCurrentScreen(root, "home", "run1")
 	SetPendingMapAction(root, pendingMapAction{From: "home", ID: "settings_button", Driver: "appium"})
-	raw := `[{"AXLabel":"Settings","role":"heading"}]`
+	raw := `[{"AXIdentifier":"mav.screen.settings","role":"group","children":[{"AXLabel":"Settings","role":"heading"}]}]`
 	observed, err := ObserveScreenDetailedWithDriver(root, Config{BundleID: "com.example.demo"}, RunState{ID: "run1", Dir: t.TempDir()}, raw, "appium")
 	if err != nil {
 		t.Fatal(err)
@@ -280,6 +361,39 @@ func TestObserveScreenPersistsDriverOnScreenAndEdge(t *testing.T) {
 	}
 }
 
+func TestObserveScreenAddsExplicitIdentityToLegacyScreen(t *testing.T) {
+	root := t.TempDir()
+	m := AppMap{
+		AppID: "com.example.demo",
+		Start: "start",
+		Screens: map[string]Screen{
+			"start":    testExplicitScreen("start"),
+			"settings": {ID: "settings", Recognizers: []Recognizer{{Kind: "text", Value: "Settings"}}},
+		},
+	}
+	if err := SaveAppMap(root, m); err != nil {
+		t.Fatal(err)
+	}
+	raw := `[{"AXIdentifier":"mav.screen.settings","role":"group","children":[{"AXLabel":"Settings","role":"heading"}]}]`
+	observed, err := ObserveScreenDetailed(root, Config{BundleID: "com.example.demo"}, RunState{ID: "run1", Dir: t.TempDir()}, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed.Screen != "settings" || observed.Source != "explicit_id" {
+		t.Fatalf("observed=%+v", observed)
+	}
+	loaded, err := LoadAppMap(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateAppMap(loaded); err != nil {
+		t.Fatalf("migrated map should validate: %v", err)
+	}
+	if !screenHasExplicitScreenIdentity(loaded.Screens["settings"]) {
+		t.Fatalf("screen=%+v", loaded.Screens["settings"])
+	}
+}
+
 func TestObserveScreenPersistsValueTapEdge(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
@@ -290,15 +404,15 @@ func TestObserveScreenPersistsValueTapEdge(t *testing.T) {
 		AppID: "com.example.app",
 		Start: "home",
 		Screens: map[string]Screen{
-			"home":     {ID: "home", AssertText: "Home"},
-			"settings": {ID: "settings", AssertText: "Settings"},
+			"home":     testExplicitScreen("home"),
+			"settings": testExplicitScreen("settings"),
 		},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	SetCurrentScreen(root, "home", run.ID)
 	SetPendingMapAction(root, pendingMapAction{From: "home", Value: "Email", Driver: "appium"})
-	if _, err := ObserveScreenDetailedWithDriver(root, cfg, run, `[{"AXLabel":"Settings","role":"heading"}]`, "appium"); err != nil {
+	if _, err := ObserveScreenDetailedWithDriver(root, cfg, run, `[{"AXIdentifier":"mav.screen.settings","role":"group","children":[{"AXLabel":"Settings","role":"heading"}]}]`, "appium"); err != nil {
 		t.Fatal(err)
 	}
 	loaded, err := LoadAppMap(root)
@@ -317,15 +431,15 @@ func TestObserveScreenPreservesAppiumDriverHint(t *testing.T) {
 		AppID: "com.example.demo",
 		Start: "home",
 		Screens: map[string]Screen{
-			"home":     {ID: "home", AssertText: "Home"},
-			"settings": {ID: "settings", AssertText: "Settings", Driver: "appium"},
+			"home":     testExplicitScreen("home"),
+			"settings": {ID: "settings", Driver: "appium", Recognizers: []Recognizer{{Kind: "id", Value: "mav.screen.settings"}}},
 		},
 	}
 	if err := SaveAppMap(root, m); err != nil {
 		t.Fatal(err)
 	}
 	SetCurrentScreen(root, "home", "run1")
-	raw := `[{"AXLabel":"Settings","role":"heading"}]`
+	raw := `[{"AXIdentifier":"mav.screen.settings","role":"group","children":[{"AXLabel":"Settings","role":"heading"}]}]`
 	if _, err := ObserveScreenDetailedWithDriver(root, Config{BundleID: "com.example.demo"}, RunState{ID: "run1", Dir: t.TempDir()}, raw, "axe"); err != nil {
 		t.Fatal(err)
 	}
