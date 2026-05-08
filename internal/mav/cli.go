@@ -1320,6 +1320,19 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 				return OK("ui.tap", fields).Write(c.Stdout)
 			}
 		}
+		if prefer == "auto" && c.shouldRouteContainerTapToAppium(ctx, cfg, id, text) {
+			if err := c.uiTapAppium(ctx, cfg, id, text); err == nil {
+				fields["driver"] = "appium"
+				fields["attempted"] = "axe,appium"
+				fields["fallback"] = "axe"
+				fields["fallback_reason"] = "container_tap"
+				c.appendCurrentCommand(command+" --prefer-driver appium", CommandResult{})
+				c.recordPendingTap(id, text, "", "", "appium")
+				return OK("ui.tap", fields).Write(c.Stdout)
+			} else {
+				return c.writeAppiumTapErrorWithFields(err, map[string]string{"attempted": "axe,appium", "fallback": "axe", "fallback_reason": "container_tap"})
+			}
+		}
 		axeArgs := axeTargetArgs(cfg, "tap")
 		if id != "" {
 			axeArgs = append(axeArgs, "--id", id)
@@ -1388,6 +1401,76 @@ func treeNodeWithIDHasTextInputDescendant(raw, id string) bool {
 		return false
 	}
 	return nodeWithIDHasTextInputDescendant(parsed, id)
+}
+
+func (c CLI) shouldRouteContainerTapToAppium(ctx context.Context, cfg Config, id, text string) bool {
+	if id == "" && text == "" {
+		return false
+	}
+	result := c.Runner.Run(ctx, "axe", axeTargetArgs(cfg, "describe-ui")...)
+	if result.Err != nil {
+		return false
+	}
+	var parsed any
+	if err := json.Unmarshal([]byte(result.Stdout), &parsed); err != nil {
+		return false
+	}
+	return nodeMatchingTargetHasInteractiveContainerAncestor(parsed, id, text, nil)
+}
+
+func nodeMatchingTargetHasInteractiveContainerAncestor(value any, id, text string, ancestors []map[string]any) bool {
+	switch node := value.(type) {
+	case []any:
+		for _, child := range node {
+			if nodeMatchingTargetHasInteractiveContainerAncestor(child, id, text, ancestors) {
+				return true
+			}
+		}
+	case map[string]any:
+		if nodeMatchesTapTarget(node, id, text) && (isInteractiveTapContainer(nodeRole(node)) || isInteractiveTapContainer(nodeSubrole(node)) || hasInteractiveContainerAncestor(ancestors)) {
+			return true
+		}
+		nextAncestors := append(append([]map[string]any{}, ancestors...), node)
+		for _, child := range nodeChildren(node) {
+			if nodeMatchingTargetHasInteractiveContainerAncestor(child, id, text, nextAncestors) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func nodeMatchesTapTarget(node map[string]any, id, text string) bool {
+	if id != "" && nodeIdentifier(node) == id {
+		return true
+	}
+	if text == "" {
+		return false
+	}
+	return stringField(node, "AXLabel", "label", "name") == text ||
+		stringField(node, "AXTitle", "title") == text ||
+		stringField(node, "AXValue", "value") == text
+}
+
+func hasInteractiveContainerAncestor(ancestors []map[string]any) bool {
+	for _, ancestor := range ancestors {
+		if isInteractiveTapContainer(nodeRole(ancestor)) || isInteractiveTapContainer(nodeSubrole(ancestor)) {
+			return true
+		}
+	}
+	return false
+}
+
+func nodeSubrole(node map[string]any) string {
+	return stringField(node, "AXSubrole", "subrole")
+}
+
+func isInteractiveTapContainer(role string) bool {
+	role = strings.ToLower(strings.TrimSpace(role))
+	return strings.Contains(role, "cell") ||
+		strings.Contains(role, "table") ||
+		strings.Contains(role, "collection") ||
+		strings.Contains(role, "sheet")
 }
 
 func nodeWithIDHasTextInputDescendant(value any, id string) bool {
@@ -1611,6 +1694,10 @@ func receivedCharDelta(before, after, typed string) int {
 }
 
 func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
+	prefer, err := normalizePreferDriver(opts.PreferDriver)
+	if err != nil {
+		return Fail("prefer_driver_invalid", map[string]string{"usage": "--prefer-driver auto|axe|appium"}).Write(c.Stdout)
+	}
 	direction := flagValue(args, "--direction")
 	if direction == "" && len(args) > 0 && isSwipeDirection(args[0]) {
 		direction = args[0]
@@ -1639,12 +1726,35 @@ func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args [
 		endY = value
 		customCoordinates = true
 	}
+	if prefer == "appium" {
+		actions, fields, err := buildSwipeActions(startX, startY, endX, endY)
+		if err != nil {
+			return Fail("gesture_invalid", map[string]string{"error": err.Error()}).Write(c.Stdout)
+		}
+		if err := c.performAppiumActions(ctx, cfg, actions); err != nil {
+			return c.writeAppiumGestureError(err)
+		}
+		waitForGestureCompletion(fields)
+		fields["direction"] = direction
+		fields["driver"] = "appium"
+		if customCoordinates {
+			fields["direction"] = "custom"
+			fields["start_x"] = startX
+			fields["start_y"] = startY
+			fields["end_x"] = endX
+			fields["end_y"] = endY
+		}
+		return OK("ui.swipe", fields).Write(c.Stdout)
+	}
 	driver := "axe"
 	var result CommandResult
 	if hasTool(cfg, "axe") {
 		axeArgs := axeTargetArgs(cfg, "swipe", "--start-x", startX, "--start-y", startY, "--end-x", endX, "--end-y", endY)
 		result = c.Runner.Run(ctx, "axe", axeArgs...)
 	} else if hasTool(cfg, "idb") {
+		if prefer == "axe" {
+			return Fail("tool_missing", map[string]string{"tool": "axe", "next": "install AXe or use --prefer-driver auto|appium"}).Write(c.Stdout)
+		}
 		driver = "idb"
 		result = c.Runner.Run(ctx, "idb", idbTargetArgs(cfg, "ui", "swipe", startX, startY, endX, endY)...)
 	} else {
@@ -1743,8 +1853,11 @@ func (c CLI) writeAppiumGestureError(err error) error {
 }
 
 func (c CLI) uiWait(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
-	_ = opts
 	_ = cfg
+	prefer, err := normalizePreferDriver(opts.PreferDriver)
+	if err != nil {
+		return Fail("prefer_driver_invalid", map[string]string{"usage": "--prefer-driver auto|axe|appium"}).Write(c.Stdout)
+	}
 	id := flagValue(args, "--id")
 	text := flagValue(args, "--text")
 	value := flagValue(args, "--value")
@@ -1758,7 +1871,7 @@ func (c CLI) uiWait(ctx context.Context, opts GlobalOptions, cfg Config, args []
 		}
 	}
 	params := map[string]string{"id": id, "text": text, "value": value, "timeout": timeout.String()}
-	if err := c.waitForFlowCondition(ctx, params, nil); err != nil {
+	if err := c.waitForFlowConditionWithPrefer(ctx, params, nil, prefer); err != nil {
 		fields := map[string]string{}
 		for key, raw := range params {
 			if raw != "" {
@@ -1777,6 +1890,10 @@ func (c CLI) uiWait(ctx context.Context, opts GlobalOptions, cfg Config, args []
 }
 
 func (c CLI) uiScrollUntil(ctx context.Context, opts GlobalOptions, args []string) error {
+	prefer, err := normalizePreferDriver(opts.PreferDriver)
+	if err != nil {
+		return Fail("prefer_driver_invalid", map[string]string{"usage": "--prefer-driver auto|axe|appium"}).Write(c.Stdout)
+	}
 	params := map[string]string{
 		"id":        flagValue(args, "--id"),
 		"text":      flagValue(args, "--text"),
@@ -1784,7 +1901,7 @@ func (c CLI) uiScrollUntil(ctx context.Context, opts GlobalOptions, args []strin
 		"direction": flagValue(args, "--direction"),
 		"maxSwipes": flagValue(args, "--max-swipes"),
 	}
-	fields, err := c.scrollUntilFlowCondition(ctx, params)
+	fields, err := c.scrollUntilFlowConditionWithPrefer(ctx, params, prefer)
 	if err != nil {
 		if fields == nil {
 			fields = map[string]string{}
@@ -1885,7 +2002,7 @@ func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) err
 	start := time.Now()
 	for index, step := range flow.Steps {
 		stepStart := time.Now()
-		fields, err := c.executeFlowStepBound(ctx, run, index+1, step, bindings)
+		fields, err := c.executeFlowStepBoundWithOptions(ctx, opts, run, index+1, step, bindings)
 		elapsed := time.Since(stepStart)
 		if err != nil {
 			failFields := map[string]string{
@@ -2103,12 +2220,24 @@ func validExecBindingName(name string) bool {
 }
 
 func (c CLI) executeFlowStepBound(ctx context.Context, run RunState, index int, step FlowStep, bindings flowExecBindings) (map[string]string, error) {
+	return c.executeFlowStepBoundWithOptions(ctx, GlobalOptions{}, run, index, step, bindings)
+}
+
+func flowStepPreferDriver(opts GlobalOptions, step FlowStep) (string, error) {
+	prefer := opts.PreferDriver
+	if step.Params != nil && step.Params["prefer-driver"] != "" {
+		prefer = step.Params["prefer-driver"]
+	}
+	return normalizePreferDriver(prefer)
+}
+
+func (c CLI) executeFlowStepBoundWithOptions(ctx context.Context, opts GlobalOptions, run RunState, index int, step FlowStep, bindings flowExecBindings) (map[string]string, error) {
 	if step.Action == "when" {
 		prepared, err := substituteExecBindingsInStepHeader(step, bindings)
 		if err != nil {
 			return nil, err
 		}
-		return c.executeWhenFlowStepBound(ctx, run, index, prepared, bindings)
+		return c.executeWhenFlowStepBoundWithOptions(ctx, opts, run, index, prepared, bindings)
 	}
 	prepared, err := substituteExecBindingsInStep(step, bindings)
 	if err != nil {
@@ -2133,17 +2262,25 @@ func (c CLI) executeFlowStepBound(ctx context.Context, run RunState, index int, 
 		}
 		return fields, nil
 	default:
-		return c.executeFlowStep(ctx, run, index, prepared)
+		return c.executeFlowStepWithOptions(ctx, opts, run, index, prepared)
 	}
 }
 
 func (c CLI) executeFlowStep(ctx context.Context, run RunState, index int, step FlowStep) (map[string]string, error) {
+	return c.executeFlowStepWithOptions(ctx, GlobalOptions{}, run, index, step)
+}
+
+func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions, run RunState, index int, step FlowStep) (map[string]string, error) {
+	prefer, preferErr := flowStepPreferDriver(opts, step)
+	if preferErr != nil {
+		return copyParams(step.Params), preferErr
+	}
 	switch step.Action {
 	case "open":
 		err := c.withStdout(io.Discard).open(ctx, GlobalOptions{}, flowArgs(step.Params, "--device", "device", "--ios", "ios", "--udid", "udid", "--locale", "locale", "--language", "language"))
 		return map[string]string{"run": run.ID}, outputErr(err, "open_failed")
 	case "when":
-		return c.executeWhenFlowStep(ctx, run, index, step)
+		return c.executeWhenFlowStepWithOptions(ctx, opts, run, index, step)
 	case "go":
 		screen := step.Params["screen"]
 		if screen == "" {
@@ -2152,11 +2289,11 @@ func (c CLI) executeFlowStep(ctx context.Context, run RunState, index int, step 
 		fields, err := c.navigateToScreen(ctx, screen)
 		return fields, err
 	case "tree":
-		err := c.withStdout(io.Discard).ui(ctx, GlobalOptions{}, []string{"tree"})
-		return map[string]string{"driver": "axe"}, outputErr(err, "tree_failed")
+		err := c.withStdout(io.Discard).ui(ctx, GlobalOptions{PreferDriver: prefer}, []string{"tree"})
+		return map[string]string{"driver": prefer}, outputErr(err, "tree_failed")
 	case "tap":
 		args := flowArgs(step.Params, "--id", "id", "--text", "text", "--value", "value", "--x", "x", "--y", "y")
-		err := c.withStdout(io.Discard).uiTap(ctx, GlobalOptions{}, mustLoadConfig(c.Root), args)
+		err := c.withStdout(io.Discard).uiTap(ctx, GlobalOptions{PreferDriver: prefer}, mustLoadConfig(c.Root), args)
 		return copyParams(step.Params), outputErr(err, "tap_failed")
 	case "type":
 		text := step.Params["text"]
@@ -2164,7 +2301,7 @@ func (c CLI) executeFlowStep(ctx context.Context, run RunState, index int, step 
 		return map[string]string{"chars": strconv.Itoa(len(text))}, outputErr(err, "type_failed")
 	case "swipe":
 		args := flowArgs(step.Params, "--direction", "direction")
-		err := c.withStdout(io.Discard).uiSwipe(ctx, GlobalOptions{}, mustLoadConfig(c.Root), args)
+		err := c.withStdout(io.Discard).uiSwipe(ctx, GlobalOptions{PreferDriver: prefer}, mustLoadConfig(c.Root), args)
 		return copyParams(step.Params), outputErr(err, "swipe_failed")
 	case "pinch":
 		args := gestureFlowArgs(step.Params)
@@ -2190,13 +2327,13 @@ func (c CLI) executeFlowStep(ctx context.Context, run RunState, index int, step 
 		time.Sleep(duration)
 		return map[string]string{"duration": duration.String()}, nil
 	case "wait", "assert":
-		err := c.waitForFlowCondition(ctx, step.Params, nil)
+		err := c.waitForFlowConditionWithPrefer(ctx, step.Params, nil, prefer)
 		return copyParams(step.Params), err
 	case "waitUntil":
-		err := c.waitForFlowCondition(ctx, step.Params, step.Any)
+		err := c.waitForFlowConditionWithPrefer(ctx, step.Params, step.Any, prefer)
 		return map[string]string{"conditions": strconv.Itoa(len(step.Any))}, err
 	case "scrollUntil":
-		return c.scrollUntilFlowCondition(ctx, step.Params)
+		return c.scrollUntilFlowConditionWithPrefer(ctx, step.Params, prefer)
 	case "capture":
 		name := step.Params["name"]
 		if name != "" {
@@ -2249,10 +2386,18 @@ func (c CLI) executeFlowStep(ctx context.Context, run RunState, index int, step 
 }
 
 func (c CLI) executeWhenFlowStep(ctx context.Context, run RunState, index int, step FlowStep) (map[string]string, error) {
+	return c.executeWhenFlowStepWithOptions(ctx, GlobalOptions{}, run, index, step)
+}
+
+func (c CLI) executeWhenFlowStepWithOptions(ctx context.Context, opts GlobalOptions, run RunState, index int, step FlowStep) (map[string]string, error) {
 	if len(step.Do) == 0 {
 		return nil, fmt.Errorf("when_do_missing")
 	}
-	matched, err := c.evaluateFlowCondition(ctx, step.Params, step.Any)
+	prefer, preferErr := flowStepPreferDriver(opts, step)
+	if preferErr != nil {
+		return copyParams(step.Params), preferErr
+	}
+	matched, err := c.evaluateFlowConditionWithPrefer(ctx, step.Params, step.Any, prefer)
 	if err != nil {
 		return copyParams(step.Params), err
 	}
@@ -2265,7 +2410,7 @@ func (c CLI) executeWhenFlowStep(ctx context.Context, run RunState, index int, s
 	}
 	for childIndex, child := range step.Do {
 		childStart := time.Now()
-		childFields, err := c.executeFlowStep(ctx, run, childIndex+1, child)
+		childFields, err := c.executeFlowStepWithOptions(ctx, opts, run, childIndex+1, child)
 		elapsed := time.Since(childStart)
 		if err != nil {
 			fields["child_step"] = strconv.Itoa(childIndex + 1)
@@ -2283,10 +2428,18 @@ func (c CLI) executeWhenFlowStep(ctx context.Context, run RunState, index int, s
 }
 
 func (c CLI) executeWhenFlowStepBound(ctx context.Context, run RunState, index int, step FlowStep, bindings flowExecBindings) (map[string]string, error) {
+	return c.executeWhenFlowStepBoundWithOptions(ctx, GlobalOptions{}, run, index, step, bindings)
+}
+
+func (c CLI) executeWhenFlowStepBoundWithOptions(ctx context.Context, opts GlobalOptions, run RunState, index int, step FlowStep, bindings flowExecBindings) (map[string]string, error) {
 	if len(step.Do) == 0 {
 		return nil, fmt.Errorf("when_do_missing")
 	}
-	matched, err := c.evaluateFlowCondition(ctx, step.Params, step.Any)
+	prefer, preferErr := flowStepPreferDriver(opts, step)
+	if preferErr != nil {
+		return copyParams(step.Params), preferErr
+	}
+	matched, err := c.evaluateFlowConditionWithPrefer(ctx, step.Params, step.Any, prefer)
 	if err != nil {
 		return copyParams(step.Params), err
 	}
@@ -2299,7 +2452,7 @@ func (c CLI) executeWhenFlowStepBound(ctx context.Context, run RunState, index i
 	}
 	for childIndex, child := range step.Do {
 		childStart := time.Now()
-		childFields, err := c.executeFlowStepBound(ctx, run, childIndex+1, child, bindings)
+		childFields, err := c.executeFlowStepBoundWithOptions(ctx, opts, run, childIndex+1, child, bindings)
 		elapsed := time.Since(childStart)
 		if err != nil {
 			fields["child_step"] = strconv.Itoa(childIndex + 1)
@@ -2698,13 +2851,17 @@ func (c CLI) captureEvidenceStep(ctx context.Context, run RunState, name, note s
 }
 
 func (c CLI) waitForFlowCondition(ctx context.Context, params map[string]string, any []FlowCondition) error {
+	return c.waitForFlowConditionWithPrefer(ctx, params, any, "auto")
+}
+
+func (c CLI) waitForFlowConditionWithPrefer(ctx context.Context, params map[string]string, any []FlowCondition, prefer string) error {
 	timeout := parseFlowDuration(params["timeout"], 5*time.Second)
 	if timeout <= 0 {
 		timeout = time.Millisecond
 	}
 	deadline := time.Now().Add(timeout)
 	for {
-		ok, err := c.evaluateFlowCondition(ctx, params, any)
+		ok, err := c.evaluateFlowConditionWithPrefer(ctx, params, any, prefer)
 		if err != nil {
 			return err
 		}
@@ -2719,6 +2876,10 @@ func (c CLI) waitForFlowCondition(ctx context.Context, params map[string]string,
 }
 
 func (c CLI) scrollUntilFlowCondition(ctx context.Context, params map[string]string) (map[string]string, error) {
+	return c.scrollUntilFlowConditionWithPrefer(ctx, params, "auto")
+}
+
+func (c CLI) scrollUntilFlowConditionWithPrefer(ctx context.Context, params map[string]string, prefer string) (map[string]string, error) {
 	maxSwipes := 5
 	if raw := params["maxSwipes"]; raw != "" {
 		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
@@ -2730,7 +2891,7 @@ func (c CLI) scrollUntilFlowCondition(ctx context.Context, params map[string]str
 		direction = "up"
 	}
 	for i := 0; i <= maxSwipes; i++ {
-		ok, err := c.evaluateSingleCondition(ctx, FlowCondition{Text: params["text"], ID: params["id"], Value: params["value"]})
+		ok, err := c.evaluateSingleConditionWithPrefer(ctx, FlowCondition{Text: params["text"], ID: params["id"], Value: params["value"]}, prefer)
 		if err != nil {
 			return nil, err
 		}
@@ -2740,7 +2901,7 @@ func (c CLI) scrollUntilFlowCondition(ctx context.Context, params map[string]str
 		if i == maxSwipes {
 			break
 		}
-		if err := c.withStdout(io.Discard).uiSwipe(ctx, GlobalOptions{}, mustLoadConfig(c.Root), []string{"--direction", direction}); err != nil {
+		if err := c.withStdout(io.Discard).uiSwipe(ctx, GlobalOptions{PreferDriver: prefer}, mustLoadConfig(c.Root), []string{"--direction", direction}); err != nil {
 			return nil, fmt.Errorf("swipe_failed")
 		}
 		time.Sleep(500 * time.Millisecond)
@@ -2818,9 +2979,13 @@ func (c CLI) execFlowShellOutput(ctx context.Context, run RunState, index int, p
 }
 
 func (c CLI) evaluateFlowCondition(ctx context.Context, params map[string]string, any []FlowCondition) (bool, error) {
+	return c.evaluateFlowConditionWithPrefer(ctx, params, any, "auto")
+}
+
+func (c CLI) evaluateFlowConditionWithPrefer(ctx context.Context, params map[string]string, any []FlowCondition, prefer string) (bool, error) {
 	if len(any) > 0 {
 		for _, condition := range any {
-			ok, err := c.evaluateSingleCondition(ctx, condition)
+			ok, err := c.evaluateSingleConditionWithPrefer(ctx, condition, prefer)
 			if err != nil {
 				return false, err
 			}
@@ -2830,10 +2995,14 @@ func (c CLI) evaluateFlowCondition(ctx context.Context, params map[string]string
 		}
 		return false, nil
 	}
-	return c.evaluateSingleCondition(ctx, FlowCondition{Text: params["text"], ID: params["id"], Value: params["value"], ChangedFrom: params["changedFrom"]})
+	return c.evaluateSingleConditionWithPrefer(ctx, FlowCondition{Text: params["text"], ID: params["id"], Value: params["value"], ChangedFrom: params["changedFrom"]}, prefer)
 }
 
 func (c CLI) evaluateSingleCondition(ctx context.Context, condition FlowCondition) (bool, error) {
+	return c.evaluateSingleConditionWithPrefer(ctx, condition, "auto")
+}
+
+func (c CLI) evaluateSingleConditionWithPrefer(ctx context.Context, condition FlowCondition, prefer string) (bool, error) {
 	if condition.ChangedFrom != "" {
 		return c.screenshotChangedFrom(ctx, condition.ChangedFrom)
 	}
@@ -2841,7 +3010,11 @@ func (c CLI) evaluateSingleCondition(ctx context.Context, condition FlowConditio
 	if err != nil {
 		return false, fmt.Errorf("config_not_found")
 	}
-	result := c.Runner.Run(ctx, "axe", axeTargetArgs(cfg, "describe-ui")...)
+	described, err := c.describeUITree(ctx, cfg, prefer, false)
+	if err != nil {
+		return false, fmt.Errorf("tree_failed")
+	}
+	result := described.Result
 	if result.Err != nil {
 		return false, fmt.Errorf("tree_failed")
 	}
@@ -3417,6 +3590,31 @@ func swipeCoordinates(direction string) (string, string, string, string) {
 	default:
 		return "220", "760", "220", "260"
 	}
+}
+
+func buildSwipeActions(startX, startY, endX, endY string) ([]map[string]any, map[string]string, error) {
+	sx, err := parseRequiredFloat(startX, "start_x")
+	if err != nil {
+		return nil, nil, err
+	}
+	sy, err := parseRequiredFloat(startY, "start_y")
+	if err != nil {
+		return nil, nil, err
+	}
+	ex, err := parseRequiredFloat(endX, "end_x")
+	if err != nil {
+		return nil, nil, err
+	}
+	ey, err := parseRequiredFloat(endY, "end_y")
+	if err != nil {
+		return nil, nil, err
+	}
+	duration := 500 * time.Millisecond
+	durationMS := int(duration / time.Millisecond)
+	fields := map[string]string{"duration": duration.String()}
+	return []map[string]any{
+		touchPointerActions("finger1", point{X: sx, Y: sy}, point{X: ex, Y: ey}, durationMS, 0),
+	}, fields, nil
 }
 
 func isSwipeDirection(direction string) bool {

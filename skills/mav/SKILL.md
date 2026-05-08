@@ -181,6 +181,17 @@ steps; they are not valid inside `do` blocks.
     - tap: { text: Continue }
 ```
 
+`mav run --prefer-driver appium flow.yaml` sets the default semantic UI driver
+for flow steps. Use a per-step `prefer-driver` override when a flow mixes fast
+AXe interactions with Appium-only rows, sheets, dropdowns, or system UI:
+
+```yaml
+- tap: { text: "Deporte y ocio", prefer-driver: appium }
+- swipe: { direction: up, prefer-driver: appium }
+- wait: { text: "Continuar", prefer-driver: appium, timeout: 5s }
+- scrollUntil: { text: "Estado*", direction: up, prefer-driver: appium }
+```
+
 Use `include` to compose reusable flow fragments. Resolve paths relative to the
 including YAML file and pass values through `env`; included steps can reference
 them with `${env.NAME}`. The `file` field can reference values from the same

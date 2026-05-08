@@ -435,6 +435,21 @@ steps:
   - report: {}
 ```
 
+Semantic flow steps inherit the process-level `--prefer-driver auto|axe|appium`
+setting from `mav run`. A step can override it with `prefer-driver` when one
+interaction needs a specific backend:
+
+```yaml
+- tap: { text: "Deporte y ocio", prefer-driver: appium }
+- wait: { text: "Continuar", prefer-driver: appium, timeout: 5s }
+- scrollUntil: { text: "Estado*", direction: up, prefer-driver: appium }
+```
+
+This applies to `tree`, `tap`, `swipe`, `wait`, `assert`, `waitUntil`, and
+`scrollUntil`. In `auto` mode, MAV also routes taps inside table, collection, or
+sheet containers through Appium when AXe can match the text but may not activate
+the row.
+
 Supported step types:
 
 ```text

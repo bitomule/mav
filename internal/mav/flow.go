@@ -33,39 +33,40 @@ type FlowCondition struct {
 }
 
 type flowStepPayload struct {
-	Screen      string          `yaml:"screen"`
-	Text        string          `yaml:"text"`
-	ID          string          `yaml:"id"`
-	Value       string          `yaml:"value"`
-	X           string          `yaml:"x"`
-	Y           string          `yaml:"y"`
-	Cmd         string          `yaml:"cmd"`
-	Out         string          `yaml:"out"`
-	Name        string          `yaml:"name"`
-	Note        string          `yaml:"note"`
-	Timeout     string          `yaml:"timeout"`
-	Duration    string          `yaml:"duration"`
-	Hold        string          `yaml:"hold"`
-	Direction   string          `yaml:"direction"`
-	Contains    string          `yaml:"contains"`
-	Key         string          `yaml:"key"`
-	Level       string          `yaml:"level"`
-	Device      string          `yaml:"device"`
-	IOS         string          `yaml:"ios"`
-	UDID        string          `yaml:"udid"`
-	Locale      string          `yaml:"locale"`
-	Language    string          `yaml:"language"`
-	ChangedFrom string          `yaml:"changedFrom"`
-	MaxSwipes   string          `yaml:"maxSwipes"`
-	Scale       string          `yaml:"scale"`
-	PanX        string          `yaml:"panX"`
-	PanY        string          `yaml:"panY"`
-	Distance    string          `yaml:"distance"`
-	Angle       string          `yaml:"angle"`
-	Rotate      string          `yaml:"rotate"`
-	Degrees     string          `yaml:"degrees"`
-	File        string          `yaml:"file"`
-	Any         []FlowCondition `yaml:"any"`
+	Screen       string          `yaml:"screen"`
+	Text         string          `yaml:"text"`
+	ID           string          `yaml:"id"`
+	Value        string          `yaml:"value"`
+	X            string          `yaml:"x"`
+	Y            string          `yaml:"y"`
+	Cmd          string          `yaml:"cmd"`
+	Out          string          `yaml:"out"`
+	Name         string          `yaml:"name"`
+	Note         string          `yaml:"note"`
+	Timeout      string          `yaml:"timeout"`
+	Duration     string          `yaml:"duration"`
+	Hold         string          `yaml:"hold"`
+	Direction    string          `yaml:"direction"`
+	Contains     string          `yaml:"contains"`
+	Key          string          `yaml:"key"`
+	Level        string          `yaml:"level"`
+	Device       string          `yaml:"device"`
+	IOS          string          `yaml:"ios"`
+	UDID         string          `yaml:"udid"`
+	Locale       string          `yaml:"locale"`
+	Language     string          `yaml:"language"`
+	ChangedFrom  string          `yaml:"changedFrom"`
+	MaxSwipes    string          `yaml:"maxSwipes"`
+	Scale        string          `yaml:"scale"`
+	PanX         string          `yaml:"panX"`
+	PanY         string          `yaml:"panY"`
+	Distance     string          `yaml:"distance"`
+	Angle        string          `yaml:"angle"`
+	Rotate       string          `yaml:"rotate"`
+	Degrees      string          `yaml:"degrees"`
+	File         string          `yaml:"file"`
+	PreferDriver string          `yaml:"prefer-driver"`
+	Any          []FlowCondition `yaml:"any"`
 }
 
 func LoadFlow(path string) (Flow, error) {
@@ -191,6 +192,7 @@ func parseFlowStepNode(node yaml.Node) (FlowStep, error) {
 	put("rotate", payload.Rotate)
 	put("degrees", payload.Degrees)
 	put("file", payload.File)
+	put("prefer-driver", payload.PreferDriver)
 	return FlowStep{Action: action, Params: params, Any: payload.Any}, nil
 }
 
