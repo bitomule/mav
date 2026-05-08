@@ -192,8 +192,9 @@ steps; they are not valid inside `do` blocks.
 
 Use `whileNotVisible` for chained onboarding or permission prompts. MAV repeats
 the `do` block until the target `id`, `text`, `value`, or `any` condition is
-visible, or until `timeout` expires. Mark dismiss taps as `optional: true` when
-only some prompts appear:
+visible, or until `timeout` expires. In `--prefer-driver auto`, conditions retry
+with Appium when AXe misses the target, which helps for tab bars and system-like
+wrappers. Mark dismiss taps as `optional: true` when only some prompts appear:
 
 ```yaml
 - whileNotVisible:
@@ -218,6 +219,11 @@ AXe interactions with Appium-only rows, sheets, dropdowns, or system UI:
 - wait: { text: "Continuar", prefer-driver: appium, timeout: 5s }
 - scrollUntil: { text: "Estado*", direction: up, prefer-driver: appium }
 ```
+
+`open: { clearState: true }` and `open: { clear-state: true }` are both valid
+flow spellings. `mav ui hideKeyboard` verifies that the keyboard disappeared;
+if WDA reports success but the keyboard remains visible, MAV retries alternate
+Appium strategies and then fails with a clear `keyboard_still_visible` reason.
 
 Use `include` to compose reusable flow fragments. Resolve paths relative to the
 including YAML file and pass values through `env`; included steps can reference

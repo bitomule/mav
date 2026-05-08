@@ -508,8 +508,12 @@ func (c CLI) appiumSourceTree(ctx context.Context, cfg Config, includeSystem boo
 			return appiumSourceResult{Raw: raw, ActiveBundle: activeBundle, SystemSource: true}, nil
 		}
 	}
-	if includeSystem && cfg.BundleID != "" && activeBundle != cfg.BundleID {
-		for _, bundleID := range knownSystemUIBundles() {
+	if includeSystem && cfg.BundleID != "" {
+		bundleIDs := knownSystemUIBundles()
+		if activeBundle == cfg.BundleID {
+			bundleIDs = knownPrivacyUIBundles()
+		}
+		for _, bundleID := range bundleIDs {
 			if bundleID == activeBundle || bundleID == cfg.BundleID {
 				continue
 			}
@@ -530,10 +534,22 @@ func knownSystemUIBundles() []string {
 	return []string{
 		"com.apple.springboard",
 		"com.apple.tccd",
+		"com.apple.PrivacyKitUI",
+		"com.apple.PrivacyKitAccountAuthorization",
+		"com.apple.PrivacyAttribution",
 		"com.apple.PhotosUIService",
 		"com.apple.SafariViewService",
 		"com.apple.MailCompositionService",
 		"com.apple.UIKit.RemoteAlertViewController",
+	}
+}
+
+func knownPrivacyUIBundles() []string {
+	return []string{
+		"com.apple.tccd",
+		"com.apple.PrivacyKitUI",
+		"com.apple.PrivacyKitAccountAuthorization",
+		"com.apple.PrivacyAttribution",
 	}
 }
 
@@ -700,6 +716,32 @@ func (c CLI) appiumHideKeyboard(ctx context.Context, cfg Config) error {
 	var response map[string]any
 	if err := appiumExecuteScript(ctx, session, "mobile: hideKeyboard", []any{}, &response); err != nil {
 		return appiumError{Code: "ui_hide_keyboard_failed", Message: err.Error()}
+	}
+	return nil
+}
+
+func (c CLI) appiumHideKeyboardWithArgs(ctx context.Context, cfg Config, args []any) error {
+	session, cleanup, err := c.appiumSessionForCommand(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	var response map[string]any
+	if err := appiumExecuteScript(ctx, session, "mobile: hideKeyboard", args, &response); err != nil {
+		return appiumError{Code: "ui_hide_keyboard_failed", Message: err.Error()}
+	}
+	return nil
+}
+
+func (c CLI) appiumMobileTap(ctx context.Context, cfg Config, x, y int) error {
+	session, cleanup, err := c.appiumSessionForCommand(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	var response map[string]any
+	if err := appiumExecuteScript(ctx, session, "mobile: tap", []any{map[string]any{"x": x, "y": y}}, &response); err != nil {
+		return appiumError{Code: "ui_tap_failed", Message: err.Error()}
 	}
 	return nil
 }

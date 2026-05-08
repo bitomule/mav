@@ -235,7 +235,7 @@ Global flags:
   mav map show <screen-id>
   mav map graph
   mav map verify
-  mav map prune
+  mav map prune [--filter coordinate-edges|duplicate-selectors|low-confidence] [--apply-warnings] [--dry-run]
 `
 	case "logs":
 		return "Usage: mav logs [--run RUN_ID] [--key KEY] [--contains TEXT] [--level LEVEL] [--raw]\n"
@@ -1506,7 +1506,8 @@ func isInteractiveTapContainer(role string) bool {
 	return strings.Contains(role, "cell") ||
 		strings.Contains(role, "table") ||
 		strings.Contains(role, "collection") ||
-		strings.Contains(role, "sheet")
+		strings.Contains(role, "sheet") ||
+		strings.Contains(role, "tab")
 }
 
 func nodeWithIDHasTextInputDescendant(value any, id string) bool {
@@ -1613,6 +1614,9 @@ func (c CLI) diagnoseTextTapFailure(ctx context.Context, cfg Config, text, stder
 }
 
 func (c CLI) uiTapAppium(ctx context.Context, cfg Config, id, text, value string) error {
+	if tapped, err := c.uiTapAppiumTabBarByCenter(ctx, cfg, id, text, value); tapped || err != nil {
+		return err
+	}
 	if id != "" {
 		return c.appiumClickByAccessibilityID(ctx, cfg, id)
 	}
@@ -1620,6 +1624,72 @@ func (c CLI) uiTapAppium(ctx context.Context, cfg Config, id, text, value string
 		return c.appiumClickByPredicate(ctx, cfg, appiumTargetPredicate(text, value))
 	}
 	return appiumError{Code: "tap_target_missing", Message: "tap target missing"}
+}
+
+func (c CLI) uiTapAppiumTabBarByCenter(ctx context.Context, cfg Config, id, text, value string) (bool, error) {
+	if id == "" && text == "" && value == "" {
+		return false, nil
+	}
+	source, err := c.appiumSourceTree(ctx, cfg, true)
+	if err != nil {
+		return false, nil
+	}
+	var parsed any
+	if err := json.Unmarshal([]byte(source.Raw), &parsed); err != nil {
+		return false, nil
+	}
+	frame, ok := findTabBarTargetFrame(parsed, id, text, value, false)
+	if !ok {
+		return false, nil
+	}
+	x, y, w, h, ok := parseElementFrame(frame)
+	if !ok {
+		return false, nil
+	}
+	if err := c.appiumMobileTap(ctx, cfg, int(x+w/2), int(y+h/2)); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
+func findTabBarTargetFrame(value any, id, text, targetValue string, inTabBar bool) (string, bool) {
+	switch node := value.(type) {
+	case []any:
+		for _, child := range node {
+			if frame, ok := findTabBarTargetFrame(child, id, text, targetValue, inTabBar); ok {
+				return frame, true
+			}
+		}
+	case map[string]any:
+		role := strings.ToLower(nodeRole(node))
+		currentInTabBar := inTabBar || strings.Contains(role, "tabbar") || strings.Contains(role, "tab bar")
+		if currentInTabBar && nodeMatchesAppiumTarget(node, id, text, targetValue) {
+			if frame := stringField(node, "AXFrame", "frame"); frame != "" {
+				return frame, true
+			}
+		}
+		for _, child := range nodeChildren(node) {
+			if frame, ok := findTabBarTargetFrame(child, id, text, targetValue, currentInTabBar); ok {
+				return frame, true
+			}
+		}
+	}
+	return "", false
+}
+
+func nodeMatchesAppiumTarget(node map[string]any, id, text, targetValue string) bool {
+	if id != "" && nodeIdentifier(node) == id {
+		return true
+	}
+	if text != "" {
+		return stringField(node, "AXLabel", "label", "name") == text ||
+			stringField(node, "AXTitle", "title") == text ||
+			stringField(node, "AXValue", "value") == text
+	}
+	if targetValue != "" {
+		return stringField(node, "AXValue", "value") == targetValue
+	}
+	return false
 }
 
 func appiumTargetPredicate(text, value string) string {
@@ -1764,10 +1834,75 @@ func (c CLI) uiErase(ctx context.Context, opts GlobalOptions, cfg Config, args [
 func (c CLI) uiHideKeyboard(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
 	_ = opts
 	_ = args
+	beforeVisible, beforeKnown := c.keyboardVisible(ctx, cfg)
 	if err := c.appiumHideKeyboard(ctx, cfg); err != nil {
 		return Fail("ui_hide_keyboard_failed", map[string]string{"tool": "appium", "stderr": err.Error()}).Write(c.Stdout)
 	}
-	return OK("ui.hideKeyboard", map[string]string{"driver": "appium"}).Write(c.Stdout)
+	if !beforeKnown || !beforeVisible {
+		return OK("ui.hideKeyboard", map[string]string{"driver": "appium", "verified": strconv.FormatBool(beforeKnown)}).Write(c.Stdout)
+	}
+	for _, retry := range []struct {
+		name string
+		fn   func() error
+	}{
+		{name: "tapOutside", fn: func() error {
+			return c.appiumHideKeyboardWithArgs(ctx, cfg, []any{map[string]any{"strategy": "tapOutside"}})
+		}},
+		{name: "tap_top_center", fn: func() error {
+			x, y := c.keyboardDismissTapPoint(ctx, cfg)
+			return c.appiumMobileTap(ctx, cfg, x, y)
+		}},
+	} {
+		time.Sleep(250 * time.Millisecond)
+		if visible, ok := c.keyboardVisible(ctx, cfg); ok && !visible {
+			return OK("ui.hideKeyboard", map[string]string{"driver": "appium", "verified": "true"}).Write(c.Stdout)
+		}
+		_ = retry.fn()
+		time.Sleep(250 * time.Millisecond)
+		if visible, ok := c.keyboardVisible(ctx, cfg); ok && !visible {
+			return OK("ui.hideKeyboard", map[string]string{"driver": "appium", "verified": "true", "retry": retry.name}).Write(c.Stdout)
+		}
+	}
+	return Fail("ui_hide_keyboard_failed", map[string]string{
+		"tool":   "appium",
+		"reason": "keyboard_still_visible",
+		"next":   "tap an empty area above the keyboard or use a downward swipe before tapping controls hidden by the keyboard",
+	}).Write(c.Stdout)
+}
+
+func (c CLI) keyboardVisible(ctx context.Context, cfg Config) (bool, bool) {
+	source, err := c.appiumSourceTree(ctx, cfg, true)
+	if err != nil {
+		return false, false
+	}
+	return elementsContainKeyboard(ExtractElements(source.Raw)), true
+}
+
+func elementsContainKeyboard(elements []Element) bool {
+	for _, el := range elements {
+		text := strings.ToLower(strings.Join([]string{el.ID, el.Label, el.Role, el.Value, el.Title}, " "))
+		if strings.Contains(text, "keyboard") || strings.Contains(text, "xcuiuielementtypekeyboard") {
+			return true
+		}
+	}
+	return false
+}
+
+func (c CLI) keyboardDismissTapPoint(ctx context.Context, cfg Config) (int, int) {
+	source, err := c.appiumSourceTree(ctx, cfg, true)
+	if err != nil {
+		return 200, 80
+	}
+	width := 0.0
+	for _, el := range ExtractElements(source.Raw) {
+		if x, _, w, _, ok := parseElementFrame(el.Frame); ok && x == 0 && w > width {
+			width = w
+		}
+	}
+	if width <= 0 {
+		return 200, 80
+	}
+	return int(width / 2), 80
 }
 
 func (c CLI) focusedTextInput(ctx context.Context, cfg Config) (*Element, bool) {
@@ -2912,25 +3047,70 @@ func (c CLI) mapCommand(args []string) error {
 		return OK("map.verify", fields).Write(c.Stdout)
 	case "prune":
 		pruned := 0
+		filter := flagValue(args[1:], "--filter")
+		applyWarnings := hasFlag(args[1:], "--apply-warnings") || hasFlag(args[1:], "--all")
+		dryRun := hasFlag(args[1:], "--dry-run")
+		if filter == "" && applyWarnings {
+			filter = "warnings"
+		}
 		for id, screen := range m.Screens {
 			kept := screen.Edges[:0]
+			seenSelectors := map[string]bool{}
 			for _, edge := range screen.Edges {
-				if edge.Confidence == "low" {
+				if shouldPruneMapEdge(id, edge, filter, seenSelectors) {
 					pruned++
 					continue
+				}
+				if edge.ID != "" || edge.Text != "" || edge.Value != "" {
+					seenSelectors[edge.ID+"\x00"+edge.Text+"\x00"+edge.Value] = true
 				}
 				kept = append(kept, edge)
 			}
 			screen.Edges = kept
 			m.Screens[id] = screen
 		}
-		if err := SaveAppMap(c.Root, m); err != nil {
-			return Fail("map_prune_failed", map[string]string{"error": err.Error()}).Write(c.Stdout)
+		if !dryRun {
+			if err := SaveAppMap(c.Root, m); err != nil {
+				return Fail("map_prune_failed", map[string]string{"error": err.Error()}).Write(c.Stdout)
+			}
 		}
-		return OK("map.prune", map[string]string{"pruned": strconv.Itoa(pruned)}).Write(c.Stdout)
+		fields := map[string]string{"pruned": strconv.Itoa(pruned)}
+		if filter != "" {
+			fields["filter"] = filter
+		}
+		if dryRun {
+			fields["dry_run"] = "true"
+		}
+		return OK("map.prune", fields).Write(c.Stdout)
 	default:
 		return Fail("map_unknown_command", map[string]string{"command": args[0], "usage": "mav map list|show|graph|verify|prune"}).Write(c.Stdout)
 	}
+}
+
+func shouldPruneMapEdge(from string, edge Edge, filter string, seenSelectors map[string]bool) bool {
+	if filter == "" {
+		return edge.Confidence == "low"
+	}
+	switch filter {
+	case "warnings", "all":
+		return edge.Confidence == "low" || edge.X != "" || edge.Y != "" || edge.From != "" && edge.From != from || duplicateEdgeSelector(edge, seenSelectors)
+	case "coordinate-edges", "coordinate_edges":
+		return edge.X != "" || edge.Y != ""
+	case "duplicate-selectors", "duplicate_selectors":
+		return duplicateEdgeSelector(edge, seenSelectors)
+	case "low-confidence", "low_confidence":
+		return edge.Confidence == "low"
+	default:
+		return edge.Confidence == "low"
+	}
+}
+
+func duplicateEdgeSelector(edge Edge, seenSelectors map[string]bool) bool {
+	if edge.ID == "" && edge.Text == "" && edge.Value == "" {
+		return false
+	}
+	key := edge.ID + "\x00" + edge.Text + "\x00" + edge.Value
+	return seenSelectors[key]
 }
 
 func edgeFrom(defaultFrom string, edge Edge) string {
@@ -3537,7 +3717,16 @@ func (c CLI) evaluateSingleConditionWithPrefer(ctx context.Context, condition Fl
 		return false, fmt.Errorf("tree_failed")
 	}
 	raw := result.Stdout
-	return flowConditionMatchesElements(ExtractElements(raw), condition), nil
+	if flowConditionMatchesElements(ExtractElements(raw), condition) {
+		return true, nil
+	}
+	if prefer == "auto" && described.Driver != "appium" {
+		appium, appiumErr := c.describeUITree(ctx, cfg, "appium", true)
+		if appiumErr == nil && appium.Result.Err == nil {
+			return flowConditionMatchesElements(ExtractElements(appium.Result.Stdout), condition), nil
+		}
+	}
+	return false, nil
 }
 
 func flowConditionMatchesElements(elements []Element, condition FlowCondition) bool {
@@ -3557,6 +3746,18 @@ func flowConditionMatchesElements(elements []Element, condition FlowCondition) b
 		return true
 	}
 	return false
+}
+
+func parseElementFrame(frame string) (float64, float64, float64, float64, bool) {
+	frame = strings.TrimSpace(frame)
+	var x, y, width, height float64
+	if _, err := fmt.Sscanf(frame, "{{%f, %f}, {%f, %f}}", &x, &y, &width, &height); err == nil {
+		return x, y, width, height, true
+	}
+	if _, err := fmt.Sscanf(frame, "{{%f,%f},{%f,%f}}", &x, &y, &width, &height); err == nil {
+		return x, y, width, height, true
+	}
+	return 0, 0, 0, 0, false
 }
 
 func (c CLI) screenshotChangedFrom(ctx context.Context, name string) (bool, error) {
