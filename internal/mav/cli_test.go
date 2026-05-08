@@ -508,6 +508,95 @@ func TestUITreeReportsRecognizedScreenSeparately(t *testing.T) {
 	}
 }
 
+func TestUITreeRecognitionIsStableForSameCurrentScreen(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.demo"
+	cfg.Tools = map[string]bool{"axe": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	m := AppMap{
+		AppID: "com.example.demo",
+		Start: "start",
+		Screens: map[string]Screen{
+			"alpha": {ID: "alpha", Recognizers: []Recognizer{{Kind: "text", Value: "Shared"}}},
+			"beta":  {ID: "beta", Recognizers: []Recognizer{{Kind: "text", Value: "Shared"}}},
+		},
+	}
+	if err := SaveAppMap(root, m); err != nil {
+		t.Fatal(err)
+	}
+	run := RunState{ID: "run-tree", Dir: filepath.Join(os.TempDir(), "mav", "run-tree-stable")}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := os.MkdirAll(run.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	SetCurrentScreen(root, "beta", run.ID)
+	raw := `[{"AXLabel":"Shared","role":"heading"}]`
+	cli := CLI{Runner: fakeRunner{tools: cfg.Tools, out: map[string]string{"axe describe-ui": raw}}, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	for i := 0; i < 2; i++ {
+		var out bytes.Buffer
+		cli.Stdout = &out
+		if err := cli.Run(context.Background(), []string{"ui", "tree"}); err != nil {
+			t.Fatal(err)
+		}
+		if got := out.String(); !strings.Contains(got, "screen=beta") || strings.Contains(got, "recognized_screen=alpha") {
+			t.Fatalf("unstable recognition on call %d: %q", i, got)
+		}
+	}
+}
+
+func TestUITreePendingTapPrefersScreenOtherThanPendingFrom(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.demo"
+	cfg.Tools = map[string]bool{"axe": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	m := AppMap{
+		AppID: "com.example.demo",
+		Start: "start",
+		Screens: map[string]Screen{
+			"alpha": {ID: "alpha", Recognizers: []Recognizer{{Kind: "text", Value: "Shared"}}},
+			"beta":  {ID: "beta", Recognizers: []Recognizer{{Kind: "text", Value: "Beta"}}},
+		},
+	}
+	if err := SaveAppMap(root, m); err != nil {
+		t.Fatal(err)
+	}
+	run := RunState{ID: "run-tree", Dir: filepath.Join(os.TempDir(), "mav", "run-tree-pending")}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := os.MkdirAll(run.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	SetCurrentScreen(root, "alpha", run.ID)
+	SetPendingMapAction(root, pendingMapAction{From: "alpha", ID: "next_button", Driver: "axe"})
+	raw := `[{"AXLabel":"Shared","role":"heading"},{"AXLabel":"Beta","role":"heading"}]`
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{tools: cfg.Tools, out: map[string]string{"axe describe-ui": raw}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "tree"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.Contains(got, "recognized_screen=beta") {
+		t.Fatalf("got %q", got)
+	}
+	updated, err := LoadScreen(root, "alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updated.Edges) != 1 || updated.Edges[0].To != "beta" || updated.Edges[0].ID != "next_button" {
+		t.Fatalf("edges=%+v", updated.Edges)
+	}
+}
+
 func TestUITreePreferAppiumUsesSource(t *testing.T) {
 	root, cfg, server, calls := setupAppiumSemanticTest(t)
 	defer server.Close()
@@ -528,6 +617,102 @@ func TestUITreePreferAppiumUsesSource(t *testing.T) {
 	}
 	if !containsCall(*calls, "/wd/hub/session/s1/source") {
 		t.Fatalf("source not requested: %v", *calls)
+	}
+}
+
+func TestTextInputWrapperDetection(t *testing.T) {
+	raw := `[{"identifier":"TextAreaView.textAreaView","role":"group","children":[{"identifier":"inner","role":"XCUIElementTypeTextView"}]}]`
+	if !treeNodeWithIDHasTextInputDescendant(raw, "TextAreaView.textAreaView") {
+		t.Fatal("expected wrapper to be detected")
+	}
+	if treeNodeWithIDHasTextInputDescendant(raw, "inner") {
+		t.Fatal("inner text input should not be treated as wrapper")
+	}
+}
+
+func TestUITypeFailsWhenFocusMetadataShowsNoFocusedField(t *testing.T) {
+	root, cfg, server, _ := setupAppiumTypeFocusTest(t, false)
+	defer server.Close()
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{
+		tools: cfg.Tools,
+		out:   map[string]string{"appium driver list --installed": "xcuitest@7.0.0\n", "axe type hello": ""},
+	}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "type", "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.Contains(got, "fail code=type_no_focused_field") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestUITypeReportsReceivedCharsWhenFocusedFieldChanges(t *testing.T) {
+	root, cfg, server, _ := setupAppiumTypeFocusTest(t, true)
+	defer server.Close()
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{
+		tools: cfg.Tools,
+		out:   map[string]string{"appium driver list --installed": "xcuitest@7.0.0\n", "axe type hello": ""},
+	}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "type", "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.Contains(got, "chars_sent=5") || !strings.Contains(got, "chars_received=5") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestUITreeIncludeSystemUsesActiveAppSource(t *testing.T) {
+	root, cfg, server, calls := setupAppiumSystemSourceTest(t)
+	defer server.Close()
+
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{
+		tools: cfg.Tools,
+		out:   map[string]string{"appium driver list --installed": "xcuitest@7.0.0\n"},
+	}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "tree", "--prefer-driver", "appium", "--include-system"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{"driver=appium", "active_bundle=com.apple.PhotosUIService", "system_source=true", "id=PickerSearchField"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in %q", want, got)
+		}
+	}
+	if !containsCall(*calls, `POST /wd/hub/session/s1/execute/sync {"args":[],"script":"mobile: activeAppInfo"}`) {
+		t.Fatalf("active app info not requested: %v", *calls)
+	}
+	if !containsCall(*calls, `POST /wd/hub/session/s1/appium/settings {"settings":{"defaultActiveApplication":"com.apple.PhotosUIService"}}`) {
+		t.Fatalf("active app setting not updated: %v", *calls)
+	}
+}
+
+func TestUITreeIncludeSystemAutoUsesAppiumBeforeAxe(t *testing.T) {
+	root, cfg, server, calls := setupAppiumSystemSourceTest(t)
+	defer server.Close()
+	cfg.Tools["axe"] = true
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{
+		tools: cfg.Tools,
+		out: map[string]string{
+			"appium driver list --installed": "xcuitest@7.0.0\n",
+			"axe describe-ui":                `[{"AXLabel":"Target App","role":"heading"}]`,
+		},
+	}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "tree", "--include-system"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "driver=appium") || !strings.Contains(got, "active_bundle=com.apple.PhotosUIService") {
+		t.Fatalf("got %q", got)
+	}
+	if !containsCall(*calls, "mobile: activeAppInfo") {
+		t.Fatalf("active app info not requested: %v", *calls)
 	}
 }
 
@@ -980,6 +1165,110 @@ func setupAppiumSemanticTest(t *testing.T) (string, Config, *httptest.Server, *[
 	cfg.SimulatorUDID = "SIM"
 	cfg.BundleID = "com.example.app"
 	cfg.Tools = map[string]bool{"appium": true, "node": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := os.MkdirAll(run.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAppiumSession(run, appiumSessionState{PID: 123, BaseURL: server.URL + appiumBasePath, SessionID: "s1", UDID: "SIM", BundleID: "com.example.app"}); err != nil {
+		t.Fatal(err)
+	}
+	return root, cfg, server, &calls
+}
+
+func setupAppiumSystemSourceTest(t *testing.T) (string, Config, *httptest.Server, *[]string) {
+	t.Helper()
+	calls := []string{}
+	activeApplication := "com.example.app"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		calls = append(calls, r.Method+" "+r.URL.Path+" "+string(body))
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/wd/hub/session/s1/execute/sync":
+			_, _ = io.WriteString(w, `{"value":{"bundleId":"com.apple.PhotosUIService","name":"Photos","pid":42}}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/wd/hub/session/s1/appium/settings":
+			_, _ = io.WriteString(w, `{"value":{"defaultActiveApplication":"auto"}}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/wd/hub/session/s1/appium/settings":
+			if strings.Contains(string(body), "PhotosUIService") {
+				activeApplication = "com.apple.PhotosUIService"
+			} else {
+				activeApplication = "com.example.app"
+			}
+			_, _ = io.WriteString(w, `{"value":null}`)
+		case r.URL.Path == "/wd/hub/session/s1/source":
+			if activeApplication == "com.apple.PhotosUIService" {
+				_, _ = io.WriteString(w, `{"value":"<AppiumAUT type=\"XCUIElementTypeApplication\" name=\"Photos\"><XCUIElementTypeTextField name=\"PickerSearchField\" label=\"Search\" value=\"\" focused=\"true\"/></AppiumAUT>"}`)
+			} else {
+				_, _ = io.WriteString(w, `{"value":"<AppiumAUT type=\"XCUIElementTypeApplication\" name=\"Demo\"><XCUIElementTypeButton name=\"Upload\" label=\"Upload\"/></AppiumAUT>"}`)
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.BundleID = "com.example.app"
+	cfg.Tools = map[string]bool{"appium": true, "node": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := os.MkdirAll(run.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAppiumSession(run, appiumSessionState{PID: 123, BaseURL: server.URL + appiumBasePath, SessionID: "s1", UDID: "SIM", BundleID: "com.example.app"}); err != nil {
+		t.Fatal(err)
+	}
+	return root, cfg, server, &calls
+}
+
+func setupAppiumTypeFocusTest(t *testing.T, focused bool) (string, Config, *httptest.Server, *[]string) {
+	t.Helper()
+	calls := []string{}
+	sourceCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		calls = append(calls, r.Method+" "+r.URL.Path+" "+string(body))
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/wd/hub/session/s1/execute/sync":
+			_, _ = io.WriteString(w, `{"value":{"bundleId":"com.example.app","name":"Demo","pid":42}}`)
+		case r.URL.Path == "/wd/hub/session/s1/source":
+			sourceCalls++
+			focusedValue := "false"
+			value := ""
+			if focused {
+				focusedValue = "true"
+				if sourceCalls > 1 {
+					value = "hello"
+				}
+			}
+			_, _ = io.WriteString(w, `{"value":"<AppiumAUT type=\"XCUIElementTypeApplication\" name=\"Demo\"><XCUIElementTypeTextView name=\"Description\" value=\"`+value+`\" focused=\"`+focusedValue+`\"/></AppiumAUT>"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.BundleID = "com.example.app"
+	cfg.Tools = map[string]bool{"appium": true, "node": true, "axe": true}
 	if err := SaveConfig(root, cfg); err != nil {
 		t.Fatal(err)
 	}

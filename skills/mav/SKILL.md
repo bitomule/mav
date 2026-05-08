@@ -32,22 +32,28 @@ does not explore or repair routes by itself. The agent decides the next action.
    log stream for MAV probes.
 5. Prefer `mav ui tree` to understand the current screen. It prints compact
    screen metadata followed by bounded `node ...` lines with ids, labels, roles,
-   values, enabled state, subroles, titles, pids, and frames when available.
+   values, enabled state, subroles, titles, pids, focus state, and frames when
+   available.
    Treat this as the primary structured UI source for agents; do not ask for
    `--json`. If the simulator accessibility service returns an empty
    `AXApplication` tree, MAV attempts recovery internally; do not work around it
    with screenshots unless `mav ui tree` fails after recovery. In the default
    `--prefer-driver auto` mode, MAV may fall back to Appium/WDA when AXe returns
-   an empty or unmatched tree. Use `mav ui tree --prefer-driver appium` when
-   inspecting system UI, PHPicker, or permission prompts.
+   an empty or unmatched tree. Use `mav ui tree --include-system` when
+   inspecting system UI, PHPicker, permission prompts, SpringBoard, or cross-app
+   service processes; MAV asks Appium for the active foreground bundle and
+   temporarily targets that bundle for the source tree.
 6. Use `mav capture --name <descriptive-name>` only when the tree is
    insufficient or visual evidence is needed. Captures are unique by default
    under `/tmp/mav/<run-id>/captures/`, and `--name` gives the client and report
    a stable, readable proof point such as `largest-videos-after-pinch`.
 7. Use `mav ui tap/type/swipe/wait/scrollUntil` for manual exploration. Prefer
-   accessibility identifiers first (`--id`). Use `mav ui tap --prefer-driver
-   appium` when the id is on a non-accessible wrapper or when `--text` must
-   match a field value/placeholder. Use coordinates only when the tree is
+   accessibility identifiers first (`--id`). Auto mode routes taps on wrappers
+   that contain text fields/text views through Appium so the inner field gets
+   keyboard focus. Use `mav ui tap --prefer-driver appium` when `--text` must
+   match a field value/placeholder. If `mav ui type` reports
+   `type_no_focused_field`, tap the field with Appium and retry. Use coordinates
+   only when the tree is
    insufficient and the screenshot makes the target unambiguous. Use text as
    the last option because labels change with localization and copy edits. Use
    `mav ui wait --id`, `--text`, or `--value` for readiness checks.
@@ -286,9 +292,10 @@ contains the screen and route.
 
 AXe is the fast semantic driver, but it can miss system-process UI, PHPicker,
 permission alerts, non-accessibility wrapper views, and text-field placeholders.
-Use `--prefer-driver appium` to force WDA/XCUITest for those cases, or leave the
-default `auto` mode to let MAV fall back when AXe cannot provide a usable tree
-or tap target.
+Use `mav ui tree --include-system` for system-process UI and
+`--prefer-driver appium` to force WDA/XCUITest for a specific tree or tap, or
+leave the default `auto` mode to let MAV fall back when AXe cannot provide a
+usable tree or tap target.
 
 If `mav ui tap --text X` returns `ui_tap_text_no_label_match`, AXe found `X` as
 a value/placeholder but not as a label. Prefer a stable id, retry with

@@ -191,7 +191,7 @@ Global flags:
 `
 	case "ui":
 		return `Usage:
-  mav ui tree [--prefer-driver auto|axe|appium]
+  mav ui tree [--prefer-driver auto|axe|appium] [--include-system]
   mav ui tap --id ID [--prefer-driver auto|axe|appium]
   mav ui tap --x X --y Y
   mav ui tap --text TEXT [--prefer-driver auto|axe|appium]
@@ -209,7 +209,7 @@ Global flags:
 	case "capture":
 		return "Usage: mav capture [--name NAME] [--run RUN_ID]\n"
 	case "ui tree":
-		return "Usage: mav ui tree [--prefer-driver auto|axe|appium]\n\nPrints compact screen metadata followed by bounded node lines with id, label, role, value, enabled, subrole, title, pid, and frame when available.\n"
+		return "Usage: mav ui tree [--prefer-driver auto|axe|appium] [--include-system]\n\nPrints compact screen metadata followed by bounded node lines with id, label, role, value, enabled, subrole, title, pid, focused, and frame when available. --include-system lets Appium query the active foreground app when a system service, permission prompt, or cross-app view is in front.\n"
 	case "ui swipe":
 		return "Usage: mav ui swipe [--direction up|down|left|right] [--start-x X --start-y Y --end-x X --end-y Y]\n"
 	case "ui pinch":
@@ -945,7 +945,7 @@ func (c CLI) ui(ctx context.Context, opts GlobalOptions, args []string) error {
 	}
 	switch args[0] {
 	case "tree":
-		return c.uiTree(ctx, opts, cfg)
+		return c.uiTree(ctx, opts, cfg, args[1:])
 	case "tap":
 		return c.uiTap(ctx, opts, cfg, args[1:])
 	case "type":
@@ -969,21 +969,25 @@ func (c CLI) ui(ctx context.Context, opts GlobalOptions, args []string) error {
 	}
 }
 
-func (c CLI) uiTree(ctx context.Context, opts GlobalOptions, cfg Config) error {
+func (c CLI) uiTree(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
 	prefer, err := normalizePreferDriver(opts.PreferDriver)
 	if err != nil {
 		return Fail("prefer_driver_invalid", map[string]string{"usage": "--prefer-driver auto|axe|appium"}).Write(c.Stdout)
 	}
-	driver, result, err := c.describeUITree(ctx, cfg, prefer)
+	includeSystem := hasFlag(args, "--include-system")
+	described, err := c.describeUITree(ctx, cfg, prefer, includeSystem)
 	if err != nil {
 		return c.writeUITreeToolError(err)
 	}
+	driver := described.Driver
+	result := described.Result
 	recovered := false
 	if driver == "axe" && result.Err == nil && isEmptyAXTree(result.Stdout) {
 		if err := c.recoverEmptyAXTree(ctx, cfg); err == nil {
-			if retryDriver, retryResult, retryErr := c.describeUITree(ctx, cfg, prefer); retryErr == nil {
-				driver = retryDriver
-				result = retryResult
+			if retry, retryErr := c.describeUITree(ctx, cfg, prefer, includeSystem); retryErr == nil {
+				described = retry
+				driver = retry.Driver
+				result = retry.Result
 				recovered = true
 			}
 		}
@@ -995,9 +999,10 @@ func (c CLI) uiTree(ctx context.Context, opts GlobalOptions, cfg Config) error {
 	}
 	state := c.observeUITree(cfg, result.Stdout, driver, false)
 	if prefer == "auto" && driver != "appium" && shouldFallbackToAppiumTree(result.Stdout, state) {
-		if appiumDriver, appiumResult, appiumErr := c.describeUITree(ctx, cfg, "appium"); appiumErr == nil && appiumResult.Err == nil && !isEmptyAXTree(appiumResult.Stdout) {
-			driver = appiumDriver
-			result = appiumResult
+		if appium, appiumErr := c.describeUITree(ctx, cfg, "appium", true); appiumErr == nil && appium.Result.Err == nil && !isEmptyAXTree(appium.Result.Stdout) {
+			described = appium
+			driver = appium.Driver
+			result = appium.Result
 			state = c.observeUITree(cfg, result.Stdout, driver, false)
 		}
 	}
@@ -1030,6 +1035,10 @@ func (c CLI) uiTree(ctx context.Context, opts GlobalOptions, cfg Config) error {
 	}
 	if recovered {
 		fields["recovered"] = "true"
+	}
+	if described.ActiveBundle != "" && described.ActiveBundle != cfg.BundleID {
+		fields["active_bundle"] = described.ActiveBundle
+		fields["system_source"] = strconv.FormatBool(described.SystemSource)
 	}
 	if err := OK("ui.tree", fields).Write(c.Stdout); err != nil {
 		return err
@@ -1147,24 +1156,36 @@ func screenConfidence(source string) string {
 	}
 }
 
-func (c CLI) describeUITree(ctx context.Context, cfg Config, prefer string) (string, CommandResult, error) {
+type describedUITree struct {
+	Driver       string
+	Result       CommandResult
+	ActiveBundle string
+	SystemSource bool
+}
+
+func (c CLI) describeUITree(ctx context.Context, cfg Config, prefer string, includeSystem bool) (describedUITree, error) {
 	if prefer == "appium" {
-		raw, err := c.appiumSourceTree(ctx, cfg)
+		source, err := c.appiumSourceTree(ctx, cfg, includeSystem)
 		if err != nil {
-			return "", CommandResult{}, err
+			return describedUITree{}, err
 		}
-		return "appium", CommandResult{Stdout: raw}, nil
+		return describedUITree{Driver: "appium", Result: CommandResult{Stdout: source.Raw}, ActiveBundle: source.ActiveBundle, SystemSource: source.SystemSource}, nil
+	}
+	if includeSystem && prefer == "auto" {
+		if source, err := c.appiumSourceTree(ctx, cfg, true); err == nil {
+			return describedUITree{Driver: "appium", Result: CommandResult{Stdout: source.Raw}, ActiveBundle: source.ActiveBundle, SystemSource: source.SystemSource}, nil
+		}
 	}
 	if hasTool(cfg, "axe") {
-		return "axe", c.Runner.Run(ctx, "axe", axeTargetArgs(cfg, "describe-ui")...), nil
+		return describedUITree{Driver: "axe", Result: c.Runner.Run(ctx, "axe", axeTargetArgs(cfg, "describe-ui")...)}, nil
 	}
 	if prefer == "axe" {
-		return "", CommandResult{}, fmt.Errorf("tree_tool_missing")
+		return describedUITree{}, fmt.Errorf("tree_tool_missing")
 	}
 	if hasTool(cfg, "idb") {
-		return "idb", c.Runner.Run(ctx, "idb", idbTargetArgs(cfg, "ui", "describe-all", "--json", "--nested")...), nil
+		return describedUITree{Driver: "idb", Result: c.Runner.Run(ctx, "idb", idbTargetArgs(cfg, "ui", "describe-all", "--json", "--nested")...)}, nil
 	}
-	return "", CommandResult{}, fmt.Errorf("tree_tool_missing")
+	return describedUITree{}, fmt.Errorf("tree_tool_missing")
 }
 
 func (c CLI) recoverEmptyAXTree(ctx context.Context, cfg Config) error {
@@ -1214,10 +1235,12 @@ func (c CLI) waitForTreeReady(ctx context.Context, cfg Config, timeout time.Dura
 	deadline := time.Now().Add(timeout)
 	recovered := false
 	for time.Now().Before(deadline) {
-		driver, result, err := c.describeUITree(ctx, cfg, "auto")
+		described, err := c.describeUITree(ctx, cfg, "auto", true)
 		if err != nil {
 			return "", err
 		}
+		driver := described.Driver
+		result := described.Result
 		if result.Err == nil && isEmptyAXTree(result.Stdout) && !recovered {
 			_ = c.recoverEmptyAXTree(ctx, cfg)
 			recovered = true
@@ -1227,8 +1250,8 @@ func (c CLI) waitForTreeReady(ctx context.Context, cfg Config, timeout time.Dura
 		if result.Err == nil && driver != "appium" {
 			state := c.observeUITree(cfg, result.Stdout, driver, false)
 			if shouldFallbackToAppiumTree(result.Stdout, state) {
-				if _, appiumResult, appiumErr := c.describeUITree(ctx, cfg, "appium"); appiumErr == nil && appiumResult.Err == nil && !isEmptyAXTree(appiumResult.Stdout) && countTreeNodes(appiumResult.Stdout) > 1 && len(ExtractElements(appiumResult.Stdout)) > 0 {
-					result = appiumResult
+				if appium, appiumErr := c.describeUITree(ctx, cfg, "appium", true); appiumErr == nil && appium.Result.Err == nil && !isEmptyAXTree(appium.Result.Stdout) && countTreeNodes(appium.Result.Stdout) > 1 && len(ExtractElements(appium.Result.Stdout)) > 0 {
+					result = appium.Result
 				} else {
 					time.Sleep(300 * time.Millisecond)
 					continue
@@ -1286,6 +1309,17 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			}
 			return Fail("tool_missing", map[string]string{"tool": "axe", "next": "use mav ui tap --x X --y Y when AXe is unavailable"}).Write(c.Stdout)
 		}
+		if prefer == "auto" && id != "" && c.shouldRouteTextInputWrapperTapToAppium(ctx, cfg, id) {
+			if err := c.uiTapAppium(ctx, cfg, id, text); err == nil {
+				fields["driver"] = "appium"
+				fields["attempted"] = "axe,appium"
+				fields["fallback"] = "axe"
+				fields["fallback_reason"] = "text_input_wrapper"
+				c.appendCurrentCommand(command+" --prefer-driver appium", CommandResult{})
+				c.recordPendingTap(id, text, "", "", "appium")
+				return OK("ui.tap", fields).Write(c.Stdout)
+			}
+		}
 		axeArgs := axeTargetArgs(cfg, "tap")
 		if id != "" {
 			axeArgs = append(axeArgs, "--id", id)
@@ -1338,6 +1372,92 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		return OK("ui.tap", map[string]string{"x": x, "y": y}).Write(c.Stdout)
 	}
 	return Fail("tap_target_missing", map[string]string{"usage": "mav ui tap --id ID | --x X --y Y | --text TEXT"}).Write(c.Stdout)
+}
+
+func (c CLI) shouldRouteTextInputWrapperTapToAppium(ctx context.Context, cfg Config, id string) bool {
+	result := c.Runner.Run(ctx, "axe", axeTargetArgs(cfg, "describe-ui")...)
+	if result.Err != nil {
+		return false
+	}
+	return treeNodeWithIDHasTextInputDescendant(result.Stdout, id)
+}
+
+func treeNodeWithIDHasTextInputDescendant(raw, id string) bool {
+	var parsed any
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return false
+	}
+	return nodeWithIDHasTextInputDescendant(parsed, id)
+}
+
+func nodeWithIDHasTextInputDescendant(value any, id string) bool {
+	switch node := value.(type) {
+	case []any:
+		for _, child := range node {
+			if nodeWithIDHasTextInputDescendant(child, id) {
+				return true
+			}
+		}
+	case map[string]any:
+		if nodeIdentifier(node) == id {
+			return !isTextInputRole(nodeRole(node)) && hasTextInputDescendant(node)
+		}
+		for _, child := range nodeChildren(node) {
+			if nodeWithIDHasTextInputDescendant(child, id) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasTextInputDescendant(node map[string]any) bool {
+	for _, child := range nodeChildren(node) {
+		childMap, ok := child.(map[string]any)
+		if !ok {
+			continue
+		}
+		if isTextInputRole(nodeRole(childMap)) || hasTextInputDescendant(childMap) {
+			return true
+		}
+	}
+	return false
+}
+
+func nodeChildren(node map[string]any) []any {
+	for _, key := range []string{"children", "Children", "AXChildren"} {
+		if value, ok := node[key]; ok {
+			switch children := value.(type) {
+			case []any:
+				return children
+			case []map[string]any:
+				out := make([]any, 0, len(children))
+				for _, child := range children {
+					out = append(out, child)
+				}
+				return out
+			}
+		}
+	}
+	return nil
+}
+
+func nodeIdentifier(node map[string]any) string {
+	return stringField(node, "AXIdentifier", "identifier", "AXUniqueId", "name")
+}
+
+func nodeRole(node map[string]any) string {
+	return stringField(node, "role_description", "role", "type")
+}
+
+func isTextInputRole(role string) bool {
+	role = strings.ToLower(strings.TrimSpace(role))
+	return strings.Contains(role, "textfield") ||
+		strings.Contains(role, "text field") ||
+		strings.Contains(role, "textview") ||
+		strings.Contains(role, "text view") ||
+		strings.Contains(role, "textarea") ||
+		strings.Contains(role, "securetext")
 }
 
 func (c CLI) diagnoseTextTapFailure(ctx context.Context, cfg Config, text, stderr string) (map[string]string, bool) {
@@ -1432,13 +1552,62 @@ func (c CLI) uiType(ctx context.Context, opts GlobalOptions, cfg Config, args []
 	if len(args) == 0 {
 		return Fail("type_text_missing", nil).Write(c.Stdout)
 	}
+	before, focusKnown := c.focusedTextInput(ctx, cfg)
+	if focusKnown && before == nil {
+		return Fail("type_no_focused_field", map[string]string{"next": "No text input has keyboard focus. Use 'mav ui tap --prefer-driver appium' on the field, then retry type."}).Write(c.Stdout)
+	}
+	text := strings.Join(args, " ")
 	axeArgs := axeTargetArgs(cfg, "type")
-	axeArgs = append(axeArgs, strings.Join(args, " "))
+	axeArgs = append(axeArgs, text)
 	result := c.Runner.Run(ctx, "axe", axeArgs...)
 	if result.Err != nil {
 		return Fail("ui_type_failed", map[string]string{"stderr": firstLine(result.Stderr)}).Write(c.Stdout)
 	}
-	return OK("ui.type", map[string]string{"chars": strconv.Itoa(len(strings.Join(args, " ")))}).Write(c.Stdout)
+	fields := map[string]string{
+		"chars":      strconv.Itoa(len(text)),
+		"chars_sent": strconv.Itoa(len(text)),
+	}
+	if before != nil {
+		if after, ok := c.focusedTextInput(ctx, cfg); ok && after != nil {
+			fields["chars_received"] = strconv.Itoa(receivedCharDelta(before.Value, after.Value, text))
+		}
+	}
+	return OK("ui.type", fields).Write(c.Stdout)
+}
+
+func (c CLI) focusedTextInput(ctx context.Context, cfg Config) (*Element, bool) {
+	source, err := c.appiumSourceTree(ctx, cfg, true)
+	if err != nil {
+		return nil, false
+	}
+	elements := ExtractElements(source.Raw)
+	hasFocusMetadata := false
+	for _, el := range elements {
+		if el.Focused != "" || strings.Contains(strings.ToLower(el.Value), "keyboardfocused") {
+			hasFocusMetadata = true
+		}
+		if isTextInputRole(el.Role) && (el.Focused == "true" || strings.Contains(strings.ToLower(el.Value), "keyboardfocused")) {
+			copy := el
+			return &copy, true
+		}
+	}
+	if !hasFocusMetadata {
+		return nil, false
+	}
+	return nil, true
+}
+
+func receivedCharDelta(before, after, typed string) int {
+	if after == before {
+		return 0
+	}
+	if strings.HasSuffix(after, typed) && len(after) >= len(before)+len(typed) {
+		return len(typed)
+	}
+	if strings.HasPrefix(after, before) && len(after) >= len(before) {
+		return len(after) - len(before)
+	}
+	return len([]rune(after))
 }
 
 func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
@@ -2396,10 +2565,11 @@ func writeElementLines(w io.Writer, elements []Element) error {
 			"subrole": el.Subrole,
 			"title":   el.Title,
 			"pid":     el.PID,
+			"focused": el.Focused,
 			"frame":   el.Frame,
 		}
 		parts := []string{"node"}
-		keys := []string{"index", "id", "label", "role", "value", "enabled", "subrole", "title", "pid", "frame"}
+		keys := []string{"index", "id", "label", "role", "value", "enabled", "subrole", "title", "pid", "focused", "frame"}
 		for _, key := range keys {
 			if fields[key] != "" {
 				parts = append(parts, key+"="+quoteIfNeeded(fields[key]))
