@@ -58,15 +58,19 @@ type Element struct {
 }
 
 type Edge struct {
-	To     string `json:"to"`
-	ID     string `json:"id,omitempty"`
-	Text   string `json:"text,omitempty"`
-	Value  string `json:"value,omitempty"`
-	X      string `json:"x,omitempty"`
-	Y      string `json:"y,omitempty"`
-	Wait   string `json:"wait,omitempty"`
-	Driver string `json:"driver,omitempty"`
-	Source string `json:"source,omitempty"`
+	From         string `json:"from,omitempty"`
+	To           string `json:"to"`
+	ID           string `json:"id,omitempty"`
+	Text         string `json:"text,omitempty"`
+	Value        string `json:"value,omitempty"`
+	X            string `json:"x,omitempty"`
+	Y            string `json:"y,omitempty"`
+	Wait         string `json:"wait,omitempty"`
+	Driver       string `json:"driver,omitempty"`
+	Source       string `json:"source,omitempty"`
+	Confidence   string `json:"confidence,omitempty"`
+	LastFailure  string `json:"last_failure,omitempty"`
+	FailureCount int    `json:"failure_count,omitempty"`
 }
 
 type mapIndex struct {
@@ -240,25 +244,42 @@ func ValidateAppMap(m AppMap) error {
 }
 
 func Route(m AppMap, target string) ([]Edge, error) {
+	return RouteFrom(m, m.Start, target)
+}
+
+func RouteFrom(m AppMap, start, target string) ([]Edge, error) {
 	if _, ok := m.Screens[target]; !ok {
 		return nil, fmt.Errorf("screen_not_found")
 	}
-	if target == m.Start {
+	if start == "" {
+		start = m.Start
+	}
+	if _, ok := m.Screens[start]; !ok {
+		return nil, fmt.Errorf("route_start_not_found")
+	}
+	if target == start {
 		return nil, nil
 	}
 	type node struct {
 		id    string
 		route []Edge
 	}
-	queue := []node{{id: m.Start}}
-	seen := map[string]bool{m.Start: true}
+	queue := []node{{id: start}}
+	seen := map[string]bool{start: true}
 	for len(queue) > 0 {
 		cur := queue[0]
 		queue = queue[1:]
 		for _, edge := range m.Screens[cur.id].Edges {
+			if edge.Confidence == "low" {
+				continue
+			}
 			if seen[edge.To] {
 				continue
 			}
+			if edge.From != "" && edge.From != cur.id {
+				continue
+			}
+			edge.From = cur.id
 			nextRoute := append(append([]Edge{}, cur.route...), edge)
 			if edge.To == target {
 				return nextRoute, nil
@@ -443,10 +464,6 @@ func ObserveScreenDetailedWithDriver(root string, cfg Config, run RunState, rawT
 	pending, hasPending := peekPendingMapAction(root)
 	screenID := ""
 	source := ""
-	if current == m.Start && blankScreen(m.Screens[m.Start]) {
-		screenID = m.Start
-		source = "start"
-	}
 	if screenID == "" && current != "" && !hasPending {
 		if screen, ok := m.Screens[current]; ok && screenMatches(screen, rawTree, elements) {
 			screenID = current
@@ -508,7 +525,7 @@ func ObserveScreenDetailedWithDriver(root string, cfg Config, run RunState, rawT
 	if pending, ok := consumePendingMapAction(root); ok && pending.From != screenID {
 		from := m.Screens[pending.From]
 		from.ID = pending.From
-		from.Edges = upsertEdge(from.Edges, Edge{To: screenID, ID: pending.ID, Text: pending.Text, Value: pending.Value, X: pending.X, Y: pending.Y, Wait: "1s", Driver: pending.Driver, Source: "observed"})
+		from.Edges = upsertEdge(from.Edges, Edge{From: pending.From, To: screenID, ID: pending.ID, Text: pending.Text, Value: pending.Value, X: pending.X, Y: pending.Y, Wait: "1s", Driver: pending.Driver, Source: "observed", Confidence: "high"})
 		m.Screens[pending.From] = from
 	}
 	if err := SaveAppMap(root, m); err != nil {
@@ -672,6 +689,8 @@ func recognizeScreen(m AppMap, raw string, elements []Element) string {
 
 func recognizeScreenAvoiding(m AppMap, raw string, elements []Element, avoid string) string {
 	fallback := ""
+	best := ""
+	bestScore := -1
 	for _, id := range sortedScreenKeys(m.Screens) {
 		screen := m.Screens[id]
 		if screenMatches(screen, raw, elements) {
@@ -679,8 +698,15 @@ func recognizeScreenAvoiding(m AppMap, raw string, elements []Element, avoid str
 				fallback = id
 				continue
 			}
-			return id
+			score := screenMatchSpecificity(screen, elements, id == m.Start)
+			if score > bestScore {
+				best = id
+				bestScore = score
+			}
 		}
+	}
+	if best != "" && bestScore > 0 {
+		return best
 	}
 	return fallback
 }
@@ -696,7 +722,7 @@ func screenMatches(screen Screen, raw string, elements []Element) bool {
 		}
 		if rec.Kind == "id" {
 			for _, el := range elements {
-				if el.ID == rec.Value {
+				if el.ID == rec.Value && !isApplicationRootElement(el) {
 					return true
 				}
 			}
@@ -707,12 +733,57 @@ func screenMatches(screen Screen, raw string, elements []Element) bool {
 	}
 	if screen.AssertID != "" {
 		for _, el := range elements {
-			if el.ID == screen.AssertID {
+			if el.ID == screen.AssertID && !isApplicationRootElement(el) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+func screenMatchSpecificity(screen Screen, elements []Element, isStart bool) int {
+	score := 0
+	for _, rec := range screen.Recognizers {
+		switch rec.Kind {
+		case "text":
+			if hasScreenText(elements, rec.Value) {
+				score = max(score, 30)
+			}
+		case "id":
+			for _, el := range elements {
+				if el.ID == rec.Value {
+					if isApplicationRootElement(el) {
+						score = max(score, 1)
+					} else {
+						score = max(score, 20)
+					}
+				}
+			}
+		}
+	}
+	if screen.AssertText != "" && hasScreenText(elements, screen.AssertText) {
+		score = max(score, 35)
+	}
+	if screen.AssertID != "" {
+		for _, el := range elements {
+			if el.ID == screen.AssertID {
+				if isApplicationRootElement(el) {
+					score = max(score, 1)
+				} else {
+					score = max(score, 25)
+				}
+			}
+		}
+	}
+	if isStart && score <= 1 {
+		return 0
+	}
+	return score
+}
+
+func isApplicationRootElement(el Element) bool {
+	role := strings.ToLower(strings.TrimSpace(el.Role))
+	return role == "application" || role == "axapplication"
 }
 
 func hasScreenText(elements []Element, label string) bool {
@@ -783,6 +854,16 @@ func upsertEdge(edges []Edge, edge Edge) []Edge {
 		if existing.To == edge.To && existing.ID == edge.ID && existing.Text == edge.Text && existing.Value == edge.Value && existing.X == edge.X && existing.Y == edge.Y {
 			if existing.Driver == "appium" && edge.Driver != "appium" {
 				edge.Driver = existing.Driver
+			}
+			if edge.From == "" {
+				edge.From = existing.From
+			}
+			if edge.Confidence == "" {
+				edge.Confidence = existing.Confidence
+			}
+			if existing.FailureCount > 0 && edge.FailureCount == 0 {
+				edge.FailureCount = existing.FailureCount
+				edge.LastFailure = existing.LastFailure
 			}
 			edges[i] = edge
 			return edges
