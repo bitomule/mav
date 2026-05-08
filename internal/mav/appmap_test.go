@@ -206,6 +206,44 @@ func TestObserveScreenDoesNotTreatBlankStartAsCatchAll(t *testing.T) {
 	}
 }
 
+func TestRecognizeScreenPrefersSpecificTextOverApplicationRootStart(t *testing.T) {
+	m := AppMap{
+		AppID: "com.example.demo",
+		Start: "start",
+		Screens: map[string]Screen{
+			"start": {ID: "start", Recognizers: []Recognizer{{Kind: "id", Value: "SampleApp"}}},
+			"home":  {ID: "home", Recognizers: []Recognizer{{Kind: "text", Value: "Home"}}},
+		},
+	}
+	elements := []Element{
+		{ID: "SampleApp", Role: "XCUIElementTypeApplication"},
+		{Label: "Home", Role: "heading"},
+	}
+	if got := recognizeScreen(m, "", elements); got != "home" {
+		t.Fatalf("screen=%q", got)
+	}
+}
+
+func TestInferScreenTitleRejectsPersonalizedFeedHeading(t *testing.T) {
+	elements := []Element{
+		{Label: "Elegidos para conchita", Role: "heading"},
+		{ID: "Inicio", Label: "Inicio", Role: "tab", Value: "1"},
+	}
+	if got := inferScreenTitle(elements, "home"); got != "Home" {
+		t.Fatalf("title=%q", got)
+	}
+	if got := inferScreenID(elements); got != "home" {
+		t.Fatalf("screen id=%q", got)
+	}
+	elements[1].Role = "XCUIElementTypeButton"
+	if got := inferScreenID(elements); got != "home" {
+		t.Fatalf("appium button tab screen id=%q", got)
+	}
+	if !isScreenTitle("Sign in to continue") {
+		t.Fatalf("stable connector title should be accepted")
+	}
+}
+
 func TestObserveScreenPersistsDriverOnScreenAndEdge(t *testing.T) {
 	root := t.TempDir()
 	m := AppMap{
