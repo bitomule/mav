@@ -1017,12 +1017,15 @@ func (c CLI) uiTree(ctx context.Context, opts GlobalOptions, cfg Config, args []
 		return Fail("ui_tree_failed", fields).Write(c.Stdout)
 	}
 	state := c.observeUITree(cfg, result.Stdout, driver, false)
-	if prefer == "auto" && driver != "appium" && shouldFallbackToAppiumTree(result.Stdout, state) {
+	if prefer == "auto" && driver != "appium" && shouldTryAppiumTreeFallback(result.Stdout, state) {
 		if appium, appiumErr := c.describeUITree(ctx, cfg, "appium", true); appiumErr == nil && appium.Result.Err == nil && !isEmptyAXTree(appium.Result.Stdout) {
-			described = appium
-			driver = appium.Driver
-			result = appium.Result
-			state = c.observeUITree(cfg, result.Stdout, driver, false)
+			appiumState := c.observeUITree(cfg, appium.Result.Stdout, appium.Driver, false)
+			if shouldUseAppiumTreeFallback(result.Stdout, state, appiumState) {
+				described = appium
+				driver = appium.Driver
+				result = appium.Result
+				state = appiumState
+			}
 		}
 	}
 	if opts.Raw {
@@ -1141,6 +1144,25 @@ func shouldFallbackToAppiumTree(raw string, state uiTreeState) bool {
 	return isEmptyAXTree(raw) || state.Nodes <= 1 || len(state.Elements) == 0 || state.ScreenSource == "unmatched" || state.MapPending
 }
 
+func shouldTryAppiumTreeFallback(raw string, state uiTreeState) bool {
+	return shouldFallbackToAppiumTree(raw, state) || state.ScreenSource == "identity_missing"
+}
+
+func shouldUseAppiumTreeFallback(raw string, state, appiumState uiTreeState) bool {
+	if shouldFallbackToAppiumTree(raw, state) {
+		return true
+	}
+	return state.ScreenSource == "identity_missing" && appiumStateHasExplicitScreenIdentity(appiumState)
+}
+
+func appiumStateHasExplicitScreenIdentity(state uiTreeState) bool {
+	if state.Screen == "" || state.Screen == "unknown" || state.ScreenSource == "identity_missing" {
+		return false
+	}
+	identity, ok := explicitScreenIdentity(state.Elements)
+	return ok && identity.ID == state.Screen
+}
+
 func (c CLI) writeUITreeToolError(err error) error {
 	if appErr, ok := err.(appiumError); ok {
 		fields := map[string]string{"tool": "appium"}
@@ -1175,6 +1197,11 @@ type describedUITree struct {
 	SystemSource bool
 }
 
+type readyUITree struct {
+	Raw    string
+	Driver string
+}
+
 func (c CLI) describeUITree(ctx context.Context, cfg Config, prefer string, includeSystem bool) (describedUITree, error) {
 	if prefer == "appium" {
 		source, err := c.appiumSourceTree(ctx, cfg, includeSystem)
@@ -1196,6 +1223,13 @@ func (c CLI) describeUITree(ctx context.Context, cfg Config, prefer string, incl
 	}
 	if hasTool(cfg, "idb") {
 		return describedUITree{Driver: "idb", Result: c.Runner.Run(ctx, "idb", idbTargetArgs(cfg, "ui", "describe-all", "--json", "--nested")...)}, nil
+	}
+	if prefer == "auto" && hasTool(cfg, "appium") {
+		source, err := c.appiumSourceTree(ctx, cfg, includeSystem)
+		if err != nil {
+			return describedUITree{}, err
+		}
+		return describedUITree{Driver: "appium", Result: CommandResult{Stdout: source.Raw}, ActiveBundle: source.ActiveBundle, SystemSource: source.SystemSource}, nil
 	}
 	return describedUITree{}, fmt.Errorf("tree_tool_missing")
 }
@@ -1243,13 +1277,13 @@ func (c CLI) recoverEmptyAXTree(ctx context.Context, cfg Config) error {
 	return nil
 }
 
-func (c CLI) waitForTreeReady(ctx context.Context, cfg Config, timeout time.Duration) (string, error) {
+func (c CLI) waitForTreeReady(ctx context.Context, cfg Config, timeout time.Duration) (readyUITree, error) {
 	deadline := time.Now().Add(timeout)
 	recovered := false
 	for time.Now().Before(deadline) {
-		described, err := c.describeUITree(ctx, cfg, "auto", true)
+		described, err := c.describeUITree(ctx, cfg, "auto", false)
 		if err != nil {
-			return "", err
+			return readyUITree{}, err
 		}
 		driver := described.Driver
 		result := described.Result
@@ -1261,8 +1295,13 @@ func (c CLI) waitForTreeReady(ctx context.Context, cfg Config, timeout time.Dura
 		}
 		if result.Err == nil && driver != "appium" {
 			state := c.observeUITree(cfg, result.Stdout, driver, false)
-			if shouldFallbackToAppiumTree(result.Stdout, state) {
+			if shouldTryAppiumTreeFallback(result.Stdout, state) {
 				if appium, appiumErr := c.describeUITree(ctx, cfg, "appium", true); appiumErr == nil && appium.Result.Err == nil && !isEmptyAXTree(appium.Result.Stdout) && countTreeNodes(appium.Result.Stdout) > 1 && len(ExtractElements(appium.Result.Stdout)) > 0 {
+					appiumState := c.observeUITree(cfg, appium.Result.Stdout, appium.Driver, false)
+					if !shouldUseAppiumTreeFallback(result.Stdout, state, appiumState) {
+						time.Sleep(300 * time.Millisecond)
+						continue
+					}
 					result = appium.Result
 					driver = appium.Driver
 				} else {
@@ -1279,11 +1318,11 @@ func (c CLI) waitForTreeReady(ctx context.Context, cfg Config, timeout time.Dura
 					continue
 				}
 			}
-			return result.Stdout, nil
+			return readyUITree{Raw: result.Stdout, Driver: driver}, nil
 		}
 		time.Sleep(300 * time.Millisecond)
 	}
-	return "", fmt.Errorf("tree_not_ready")
+	return readyUITree{}, fmt.Errorf("tree_not_ready")
 }
 
 func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
@@ -2890,8 +2929,8 @@ func (c CLI) goScreen(ctx context.Context, opts GlobalOptions, args []string) er
 	if err := c.withStdout(io.Discard).evidenceStart(ctx, GlobalOptions{}, []string{"--run", run.ID}); err != nil {
 		return Fail("evidence_start_failed", map[string]string{"run": run.ID, "screen": screenID}).Write(c.Stdout)
 	}
-	if raw, err := c.waitForTreeReady(ctx, cfg, 8*time.Second); err == nil {
-		observed, _ := ObserveScreenDetailed(c.Root, cfg, run, raw)
+	if tree, err := c.waitForTreeReady(ctx, cfg, 8*time.Second); err == nil {
+		observed, _ := ObserveScreenDetailedWithDriver(c.Root, cfg, run, tree.Raw, tree.Driver)
 		if refreshed, err := LoadAppMap(c.Root); err == nil {
 			m = refreshed
 		}
@@ -3210,7 +3249,7 @@ func (c CLI) navigateToScreen(ctx context.Context, screenID string, routeOverrid
 		if beforeErr != nil {
 			return map[string]string{"requested": screenID, "stuck_at": from, "edge_target": edge.To}, fmt.Errorf("tree_not_ready")
 		}
-		afterTree, usedDriver, retry, err := c.executeRouteEdge(ctx, cfg, edge, beforeTree)
+		afterTree, usedDriver, retry, err := c.executeRouteEdge(ctx, cfg, edge, beforeTree.Raw)
 		if err != nil {
 			markRouteEdgeFailure(c.Root, from, edge)
 			fields := map[string]string{"requested": screenID, "stuck_at": from, "edge_target": edge.To}
@@ -3222,7 +3261,7 @@ func (c CLI) navigateToScreen(ctx context.Context, screenID string, routeOverrid
 			}
 			return fields, err
 		}
-		observed, observeErr := ObserveScreenDetailedWithDriver(c.Root, cfg, run, afterTree, usedDriver)
+		observed, observeErr := ObserveScreenDetailedWithDriver(c.Root, cfg, run, afterTree.Raw, afterTree.Driver)
 		if observeErr != nil {
 			return map[string]string{"requested": screenID, "stuck_at": from, "edge_target": edge.To}, fmt.Errorf("map_observe_failed")
 		}
@@ -3252,7 +3291,7 @@ func (c CLI) navigateToScreen(ctx context.Context, screenID string, routeOverrid
 	return fields, nil
 }
 
-func (c CLI) executeRouteEdge(ctx context.Context, cfg Config, edge Edge, beforeTree string) (string, string, bool, error) {
+func (c CLI) executeRouteEdge(ctx context.Context, cfg Config, edge Edge, beforeTree string) (readyUITree, string, bool, error) {
 	drivers := routeEdgeDrivers(edge)
 	var lastDriver string
 	var lastTapErr error
@@ -3274,18 +3313,18 @@ func (c CLI) executeRouteEdge(ctx context.Context, cfg Config, edge Edge, before
 		}
 		afterTree, afterErr := c.waitForTreeReady(ctx, cfg, 5*time.Second)
 		if afterErr != nil {
-			return "", lastDriver, retried, fmt.Errorf("tree_not_ready")
+			return readyUITree{}, lastDriver, retried, fmt.Errorf("tree_not_ready")
 		}
-		if sameTreeForRoute(beforeTree, afterTree) {
+		if sameTreeForRoute(beforeTree, afterTree.Raw) {
 			continue
 		}
 		return afterTree, lastDriver, retried, nil
 	}
 	ClearPendingMapAction(c.Root)
 	if !tapSucceeded && lastTapErr != nil {
-		return "", lastDriver, retried, fmt.Errorf("tap_failed")
+		return readyUITree{}, lastDriver, retried, fmt.Errorf("tap_failed")
 	}
-	return "", lastDriver, retried, fmt.Errorf("route_no_screen_change")
+	return readyUITree{}, lastDriver, retried, fmt.Errorf("route_no_screen_change")
 }
 
 func (c CLI) tapRouteEdge(ctx context.Context, cfg Config, edge Edge, driver string) error {
