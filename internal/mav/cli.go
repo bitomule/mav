@@ -1,6 +1,7 @@
 package mav
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/binary"
@@ -18,6 +19,7 @@ import (
 
 type CLI struct {
 	Runner Runner
+	Stdin  io.Reader
 	Stdout io.Writer
 	Stderr io.Writer
 	Root   string
@@ -35,7 +37,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	cli := CLI{Runner: ExecRunner{}, Stdout: stdout, Stderr: stderr, Root: root}
+	cli := CLI{Runner: ExecRunner{}, Stdin: os.Stdin, Stdout: stdout, Stderr: stderr, Root: root}
 	return cli.Run(ctx, args)
 }
 
@@ -173,7 +175,7 @@ Global flags:
   --help,-h   Show help.
 `
 	case "setup":
-		return "Usage:\n  mav setup\n  mav setup --install axe idb appium\n"
+		return "Usage:\n  mav setup [--non-interactive]\n  mav setup --install axe idb appium\n"
 	case "install-skills":
 		return "Usage: mav install-skills\n"
 	case "sim":
@@ -294,7 +296,7 @@ func (c CLI) doctor(ctx context.Context, opts GlobalOptions) error {
 func (c CLI) setup(ctx context.Context, opts GlobalOptions, args []string) error {
 	install := flagValue(args, "--install")
 	if install == "" {
-		return c.setupProject(opts)
+		return c.setupProject(opts, args)
 	}
 	tools := strings.Fields(install)
 	if len(tools) == 0 {
@@ -434,10 +436,18 @@ func (c CLI) installSkills(ctx context.Context) error {
 	return OK("install-skills", map[string]string{"skill": "mav", "scope": "global"}).Write(c.Stdout)
 }
 
-func (c CLI) setupProject(opts GlobalOptions) error {
+func (c CLI) setupProject(opts GlobalOptions, args []string) error {
 	cfg, err := SetupConfig(c.Root, c.Runner)
 	if existing, loadErr := LoadConfig(c.Root); loadErr == nil {
 		cfg = mergeSetupConfig(existing, cfg)
+	}
+	interactive := !hasFlag(args, "--non-interactive")
+	if interactive {
+		prompted, promptErr := c.promptSetupConfig(cfg)
+		if promptErr != nil {
+			return Fail("setup_interrupted", map[string]string{"error": promptErr.Error()}).Write(c.Stdout)
+		}
+		cfg = prompted
 	}
 	if saveErr := SaveConfig(c.Root, cfg); saveErr != nil {
 		return saveErr
@@ -461,11 +471,148 @@ func (c CLI) setupProject(opts GlobalOptions) error {
 	if err != nil {
 		fields["warning"] = err.Error()
 	}
+	if interactive {
+		fields["interactive"] = "true"
+	}
 	if _, appiumErr := c.Runner.LookPath("appium"); appiumErr != nil {
 		fields["multitouch"] = "missing"
 		fields["multitouch_next"] = "mav setup --install appium"
 	}
 	return OK("setup", fields).Write(c.Stdout)
+}
+
+func (c CLI) promptSetupConfig(cfg Config) (Config, error) {
+	reader := bufio.NewReader(c.setupInput())
+	prompts := c.setupPromptWriter()
+	fmt.Fprintln(prompts, "MAV setup interactive. Press Enter to accept the detected/current value, type a custom value, or type '-' to clear an optional value.")
+	var err error
+	if cfg.ProjectName, err = c.promptString(prompts, reader, "project_name", cfg.ProjectName); err != nil {
+		return cfg, err
+	}
+	if cfg.AppTarget, err = c.promptString(prompts, reader, "app_target", cfg.AppTarget); err != nil {
+		return cfg, err
+	}
+	if cfg.DeviceTarget, err = c.promptString(prompts, reader, "device_target", cfg.DeviceTarget); err != nil {
+		return cfg, err
+	}
+	if cfg.BundleID, err = c.promptString(prompts, reader, "bundle_id", cfg.BundleID); err != nil {
+		return cfg, err
+	}
+	if cfg.ProcessName, err = c.promptString(prompts, reader, "process_name", cfg.ProcessName); err != nil {
+		return cfg, err
+	}
+	if cfg.SimulatorUDID, err = c.promptString(prompts, reader, "simulator_udid", cfg.SimulatorUDID); err != nil {
+		return cfg, err
+	}
+	if cfg.Locale, err = c.promptString(prompts, reader, "locale", cfg.Locale); err != nil {
+		return cfg, err
+	}
+	if cfg.Language, err = c.promptString(prompts, reader, "language", cfg.Language); err != nil {
+		return cfg, err
+	}
+	if cfg.LogSubsystem, err = c.promptString(prompts, reader, "log_subsystem", cfg.LogSubsystem); err != nil {
+		return cfg, err
+	}
+	if cfg.LogCategory, err = c.promptString(prompts, reader, "log_category", cfg.LogCategory); err != nil {
+		return cfg, err
+	}
+	if cfg.PreferredUIDriver, err = c.promptString(prompts, reader, "preferred_ui_driver", cfg.PreferredUIDriver); err != nil {
+		return cfg, err
+	}
+	cfg.AllowShell, err = c.promptBool(prompts, reader, "allow_shell", cfg.AllowShell)
+	if err != nil {
+		return cfg, err
+	}
+	if cfg.Launch.Mode, err = c.promptString(prompts, reader, "launch.mode", cfg.Launch.Mode); err != nil {
+		return cfg, err
+	}
+	if cfg.Launch.Commands.Healthcheck, err = c.promptString(prompts, reader, "launch.commands.healthcheck", cfg.Launch.Commands.Healthcheck); err != nil {
+		return cfg, err
+	}
+	if cfg.Launch.Commands.Build, err = c.promptString(prompts, reader, "launch.commands.build", cfg.Launch.Commands.Build); err != nil {
+		return cfg, err
+	}
+	if cfg.Launch.Commands.AppPath, err = c.promptString(prompts, reader, "launch.commands.app_path", cfg.Launch.Commands.AppPath); err != nil {
+		return cfg, err
+	}
+	if cfg.Launch.Commands.Install, err = c.promptString(prompts, reader, "launch.commands.install", cfg.Launch.Commands.Install); err != nil {
+		return cfg, err
+	}
+	if cfg.Launch.Commands.Launch, err = c.promptString(prompts, reader, "launch.commands.launch", cfg.Launch.Commands.Launch); err != nil {
+		return cfg, err
+	}
+	if cfg.Launch.Commands.Cleanup, err = c.promptString(prompts, reader, "launch.commands.cleanup", cfg.Launch.Commands.Cleanup); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+func (c CLI) setupInput() io.Reader {
+	if c.Stdin != nil {
+		return c.Stdin
+	}
+	return strings.NewReader("")
+}
+
+func (c CLI) setupPromptWriter() io.Writer {
+	if c.Stderr != nil {
+		return c.Stderr
+	}
+	return io.Discard
+}
+
+func (c CLI) promptString(prompts io.Writer, reader *bufio.Reader, label, current string) (string, error) {
+	fmt.Fprintf(prompts, "%s [%s]: ", label, displayPromptDefault(current))
+	line, err := reader.ReadString('\n')
+	if err != nil && len(line) == 0 {
+		if err == io.EOF {
+			fmt.Fprintln(prompts)
+			return current, nil
+		}
+		return "", err
+	}
+	answer := strings.TrimSpace(line)
+	if answer == "" {
+		return current, nil
+	}
+	if answer == "-" {
+		return "", nil
+	}
+	return answer, nil
+}
+
+func (c CLI) promptBool(prompts io.Writer, reader *bufio.Reader, label string, current bool) (bool, error) {
+	defaultValue := "n"
+	if current {
+		defaultValue = "y"
+	}
+	fmt.Fprintf(prompts, "%s [y/N, current=%s]: ", label, defaultValue)
+	line, err := reader.ReadString('\n')
+	if err != nil && len(line) == 0 {
+		if err == io.EOF {
+			fmt.Fprintln(prompts)
+			return current, nil
+		}
+		return false, err
+	}
+	answer := strings.ToLower(strings.TrimSpace(line))
+	switch answer {
+	case "":
+		return current, nil
+	case "y", "yes", "true", "1":
+		return true, nil
+	case "n", "no", "false", "0", "-":
+		return false, nil
+	default:
+		return false, fmt.Errorf("invalid_bool field=%s", label)
+	}
+}
+
+func displayPromptDefault(value string) string {
+	if value == "" {
+		return "empty"
+	}
+	return value
 }
 
 func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {

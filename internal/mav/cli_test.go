@@ -371,6 +371,49 @@ func TestSetupScaffoldsProjectIdempotently(t *testing.T) {
 	}
 }
 
+func TestSetupNonInteractiveSkipsPrompts(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "Info.plist"), `<plist><dict><key>CFBundleIdentifier</key><string>com.example.detected</string></dict></plist>`)
+	var out bytes.Buffer
+	var stderr bytes.Buffer
+	cli := CLI{Runner: fakeRunner{tools: map[string]bool{"xcrun": true}}, Stdin: strings.NewReader("com.custom\n"), Root: root, Stdout: &out, Stderr: &stderr}
+	if err := cli.Run(context.Background(), []string{"setup", "--non-interactive"}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stderr.String(), "project_name") || strings.Contains(out.String(), "interactive=true") {
+		t.Fatalf("out=%q stderr=%q", out.String(), stderr.String())
+	}
+	loaded, err := LoadConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.BundleID != "com.example.detected" {
+		t.Fatalf("loaded=%+v", loaded)
+	}
+}
+
+func TestSetupInteractiveAcceptsCustomValues(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "BUILD.bazel"), `ios_application(name = "DemoApp", bundle_id = "com.example.demo")`)
+	input := "\n\n\ncom.custom.bundle\n" + strings.Repeat("\n", 10) + "make custom-build\n"
+	var out bytes.Buffer
+	var stderr bytes.Buffer
+	cli := CLI{Runner: fakeRunner{tools: map[string]bool{"bazelisk": true}}, Stdin: strings.NewReader(input), Root: root, Stdout: &out, Stderr: &stderr}
+	if err := cli.Run(context.Background(), []string{"setup"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "interactive=true") || !strings.Contains(stderr.String(), "launch.commands.build") {
+		t.Fatalf("out=%q stderr=%q", out.String(), stderr.String())
+	}
+	loaded, err := LoadConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.BundleID != "com.custom.bundle" || loaded.Launch.Commands.Build != "make custom-build" {
+		t.Fatalf("loaded=%+v", loaded)
+	}
+}
+
 func TestUIHelpShowsSpecificPinchFlags(t *testing.T) {
 	var out bytes.Buffer
 	cli := CLI{Runner: fakeRunner{}, Root: t.TempDir(), Stdout: &out, Stderr: &bytes.Buffer{}}
