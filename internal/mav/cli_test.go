@@ -2292,6 +2292,495 @@ func TestFlowWhenSkipsDoBlockWhenNotVisible(t *testing.T) {
 	}
 }
 
+func TestFlowStepInheritsGlobalPreferDriver(t *testing.T) {
+	calls := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		calls = append(calls, r.Method+" "+r.URL.Path+" "+string(body))
+		switch {
+		case r.URL.Path == "/wd/hub/session/s1/element":
+			_, _ = io.WriteString(w, `{"value":{"element-6066-11e4-a52e-4f735466cecf":"el1"}}`)
+		case r.URL.Path == "/wd/hub/session/s1/element/el1/click":
+			_, _ = io.WriteString(w, `{"value":null}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.BundleID = "com.example.app"
+	cfg.Tools = map[string]bool{"axe": true, "appium": true, "node": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAppiumSession(run, appiumSessionState{PID: 123, BaseURL: server.URL + appiumBasePath, SessionID: "s1", UDID: "SIM", BundleID: "com.example.app"}); err != nil {
+		t.Fatal(err)
+	}
+	flowPath := filepath.Join(root, "flow.yaml")
+	writeTestFlow(t, flowPath, `
+steps:
+  - tap: { text: Continue }
+`)
+	runner := &sequenceRecordingRunner{
+		tools: cfg.Tools,
+		out:   map[string]string{"appium driver list --installed": "xcuitest@8.4.3\n"},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"--prefer-driver", "appium", "run", flowPath}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "ok cmd=run") || !containsCall(calls, "/wd/hub/session/s1/element/el1/click") {
+		t.Fatalf("output=%q calls=%v", out.String(), calls)
+	}
+	if containsCall(runner.commands, "axe tap --label Continue") {
+		t.Fatalf("global appium should bypass axe tap: %v", runner.commands)
+	}
+}
+
+func TestFlowStepCanOverridePreferDriver(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.Tools = map[string]bool{"axe": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	flowPath := filepath.Join(root, "flow.yaml")
+	writeTestFlow(t, flowPath, `
+steps:
+  - tap: { text: Continue, prefer-driver: axe }
+`)
+	runner := &sequenceRecordingRunner{tools: cfg.Tools}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"--prefer-driver", "appium", "run", flowPath}); err != nil {
+		t.Fatal(err)
+	}
+	if !containsCall(runner.commands, "axe tap --label Continue") {
+		t.Fatalf("step override should force axe: commands=%v output=%q", runner.commands, out.String())
+	}
+}
+
+func TestFlowWaitUsesPreferredDriver(t *testing.T) {
+	calls := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		calls = append(calls, r.Method+" "+r.URL.Path+" "+string(body))
+		if r.URL.Path == "/wd/hub/session/s1/source" {
+			_, _ = io.WriteString(w, `{"value":"<App><XCUIElementTypeButton label=\"Continuar\" enabled=\"true\"/></App>"}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.BundleID = "com.example.app"
+	cfg.Tools = map[string]bool{"axe": true, "appium": true, "node": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAppiumSession(run, appiumSessionState{PID: 123, BaseURL: server.URL + appiumBasePath, SessionID: "s1", UDID: "SIM", BundleID: "com.example.app"}); err != nil {
+		t.Fatal(err)
+	}
+	runner := &sequenceRecordingRunner{
+		tools: cfg.Tools,
+		out:   map[string]string{"appium driver list --installed": "xcuitest@8.4.3\n"},
+	}
+	cli := CLI{Runner: runner, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	_, err = cli.executeFlowStepWithOptions(context.Background(), GlobalOptions{PreferDriver: "appium"}, run, 1, FlowStep{
+		Action: "wait",
+		Params: map[string]string{"text": "Continuar", "timeout": "1ms"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsCall(calls, "/wd/hub/session/s1/source") {
+		t.Fatalf("appium source not used: calls=%v", calls)
+	}
+	if containsCall(runner.commands, "axe describe-ui") {
+		t.Fatalf("wait should not use axe when appium is preferred: %v", runner.commands)
+	}
+}
+
+func TestUIWaitUsesGlobalPreferDriver(t *testing.T) {
+	calls := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		calls = append(calls, r.Method+" "+r.URL.Path+" "+string(body))
+		if r.URL.Path == "/wd/hub/session/s1/source" {
+			_, _ = io.WriteString(w, `{"value":"<App><XCUIElementTypeButton label=\"Continuar\" enabled=\"true\"/></App>"}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.BundleID = "com.example.app"
+	cfg.Tools = map[string]bool{"axe": true, "appium": true, "node": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAppiumSession(run, appiumSessionState{PID: 123, BaseURL: server.URL + appiumBasePath, SessionID: "s1", UDID: "SIM", BundleID: "com.example.app"}); err != nil {
+		t.Fatal(err)
+	}
+	runner := &sequenceRecordingRunner{
+		tools: cfg.Tools,
+		out:   map[string]string{"appium driver list --installed": "xcuitest@8.4.3\n"},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"--prefer-driver", "appium", "ui", "wait", "--text", "Continuar", "--timeout", "1ms"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "ok cmd=ui.wait") || !containsCall(calls, "/wd/hub/session/s1/source") {
+		t.Fatalf("output=%q calls=%v", out.String(), calls)
+	}
+	if containsCall(runner.commands, "axe describe-ui") {
+		t.Fatalf("manual wait should not use axe when appium is preferred: %v", runner.commands)
+	}
+}
+
+func TestFlowScrollUntilUsesPreferredDriverForSwipe(t *testing.T) {
+	calls := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		calls = append(calls, r.Method+" "+r.URL.Path+" "+string(body))
+		switch {
+		case r.URL.Path == "/wd/hub/session/s1/source":
+			_, _ = io.WriteString(w, `{"value":"<App><XCUIElementTypeStaticText label=\"Other\" enabled=\"true\"/></App>"}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/wd/hub/session/s1/actions":
+			_, _ = io.WriteString(w, `{"value":null}`)
+		case r.Method == http.MethodDelete && r.URL.Path == "/wd/hub/session/s1/actions":
+			_, _ = io.WriteString(w, `{"value":null}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.BundleID = "com.example.app"
+	cfg.Tools = map[string]bool{"axe": true, "appium": true, "node": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAppiumSession(run, appiumSessionState{PID: 123, BaseURL: server.URL + appiumBasePath, SessionID: "s1", UDID: "SIM", BundleID: "com.example.app"}); err != nil {
+		t.Fatal(err)
+	}
+	runner := &sequenceRecordingRunner{
+		tools: cfg.Tools,
+		out:   map[string]string{"appium driver list --installed": "xcuitest@8.4.3\n"},
+	}
+	cli := CLI{Runner: runner, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	_, err = cli.executeFlowStepWithOptions(context.Background(), GlobalOptions{PreferDriver: "appium"}, run, 1, FlowStep{
+		Action: "scrollUntil",
+		Params: map[string]string{"text": "Missing", "maxSwipes": "1"},
+	})
+	if err == nil || err.Error() != "scroll_until_timeout" {
+		t.Fatalf("err=%v", err)
+	}
+	if !containsCall(calls, "POST /wd/hub/session/s1/actions") {
+		t.Fatalf("appium swipe actions not used: calls=%v", calls)
+	}
+	if containsCall(runner.commands, "axe swipe") {
+		t.Fatalf("scrollUntil should not use axe swipe when appium is preferred: %v", runner.commands)
+	}
+}
+
+func TestFlowSwipeUsesPreferredDriver(t *testing.T) {
+	calls := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		calls = append(calls, r.Method+" "+r.URL.Path+" "+string(body))
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/wd/hub/session/s1/actions":
+			_, _ = io.WriteString(w, `{"value":null}`)
+		case r.Method == http.MethodDelete && r.URL.Path == "/wd/hub/session/s1/actions":
+			_, _ = io.WriteString(w, `{"value":null}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.BundleID = "com.example.app"
+	cfg.Tools = map[string]bool{"axe": true, "appium": true, "node": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAppiumSession(run, appiumSessionState{PID: 123, BaseURL: server.URL + appiumBasePath, SessionID: "s1", UDID: "SIM", BundleID: "com.example.app"}); err != nil {
+		t.Fatal(err)
+	}
+	runner := &sequenceRecordingRunner{
+		tools: cfg.Tools,
+		out:   map[string]string{"appium driver list --installed": "xcuitest@8.4.3\n"},
+	}
+	cli := CLI{Runner: runner, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	_, err = cli.executeFlowStepWithOptions(context.Background(), GlobalOptions{PreferDriver: "appium"}, run, 1, FlowStep{
+		Action: "swipe",
+		Params: map[string]string{"direction": "up"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsCall(calls, "POST /wd/hub/session/s1/actions") {
+		t.Fatalf("appium swipe actions not used: calls=%v", calls)
+	}
+	if containsCall(runner.commands, "axe swipe") {
+		t.Fatalf("flow swipe should not use axe when appium is preferred: %v", runner.commands)
+	}
+}
+
+func TestUITapAutoRoutesContainerTextTapToAppium(t *testing.T) {
+	calls := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		calls = append(calls, r.Method+" "+r.URL.Path+" "+string(body))
+		switch {
+		case r.URL.Path == "/wd/hub/session/s1/element":
+			_, _ = io.WriteString(w, `{"value":{"element-6066-11e4-a52e-4f735466cecf":"el1"}}`)
+		case r.URL.Path == "/wd/hub/session/s1/element/el1/click":
+			_, _ = io.WriteString(w, `{"value":null}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.BundleID = "com.example.app"
+	cfg.Tools = map[string]bool{"axe": true, "appium": true, "node": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAppiumSession(run, appiumSessionState{PID: 123, BaseURL: server.URL + appiumBasePath, SessionID: "s1", UDID: "SIM", BundleID: "com.example.app"}); err != nil {
+		t.Fatal(err)
+	}
+	raw := `[{"role":"AXTable","children":[{"role":"AXCell","children":[{"AXLabel":"Deporte y ocio","role":"button"}]}]}]`
+	runner := &sequenceRecordingRunner{
+		tools: cfg.Tools,
+		out: map[string]string{
+			"axe describe-ui --udid SIM":     raw,
+			"appium driver list --installed": "xcuitest@8.4.3\n",
+		},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "tap", "--text", "Deporte y ocio"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "driver=appium") || !strings.Contains(got, "fallback_reason=container_tap") {
+		t.Fatalf("got %q", got)
+	}
+	if containsCall(runner.commands, "axe tap --label Deporte y ocio") {
+		t.Fatalf("container tap should route before axe tap: %v", runner.commands)
+	}
+	if !containsCall(calls, "/wd/hub/session/s1/element/el1/click") {
+		t.Fatalf("calls=%v", calls)
+	}
+}
+
+func TestUITapAutoRoutesSelfCellTapToAppium(t *testing.T) {
+	calls := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		calls = append(calls, r.Method+" "+r.URL.Path+" "+string(body))
+		switch {
+		case r.URL.Path == "/wd/hub/session/s1/element":
+			_, _ = io.WriteString(w, `{"value":{"element-6066-11e4-a52e-4f735466cecf":"el1"}}`)
+		case r.URL.Path == "/wd/hub/session/s1/element/el1/click":
+			_, _ = io.WriteString(w, `{"value":null}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.BundleID = "com.example.app"
+	cfg.Tools = map[string]bool{"axe": true, "appium": true, "node": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAppiumSession(run, appiumSessionState{PID: 123, BaseURL: server.URL + appiumBasePath, SessionID: "s1", UDID: "SIM", BundleID: "com.example.app"}); err != nil {
+		t.Fatal(err)
+	}
+	raw := `[{"AXLabel":"Deporte y ocio","role":"AXCell"}]`
+	runner := &sequenceRecordingRunner{
+		tools: cfg.Tools,
+		out: map[string]string{
+			"axe describe-ui --udid SIM":     raw,
+			"appium driver list --installed": "xcuitest@8.4.3\n",
+		},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "tap", "--text", "Deporte y ocio"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "driver=appium") || !strings.Contains(got, "fallback_reason=container_tap") {
+		t.Fatalf("got %q", got)
+	}
+	if containsCall(runner.commands, "axe tap --label Deporte y ocio") {
+		t.Fatalf("self cell tap should route before axe tap: %v", runner.commands)
+	}
+	if !containsCall(calls, "/wd/hub/session/s1/element/el1/click") {
+		t.Fatalf("calls=%v", calls)
+	}
+}
+
+func TestUITapContainerRouteFailsWhenAppiumFails(t *testing.T) {
+	calls := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		calls = append(calls, r.Method+" "+r.URL.Path+" "+string(body))
+		http.Error(w, "element not found", http.StatusNotFound)
+	}))
+	defer server.Close()
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.BundleID = "com.example.app"
+	cfg.Tools = map[string]bool{"axe": true, "appium": true, "node": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAppiumSession(run, appiumSessionState{PID: 123, BaseURL: server.URL + appiumBasePath, SessionID: "s1", UDID: "SIM", BundleID: "com.example.app"}); err != nil {
+		t.Fatal(err)
+	}
+	raw := `[{"AXLabel":"Deporte y ocio","role":"AXCell"}]`
+	runner := &sequenceRecordingRunner{
+		tools: cfg.Tools,
+		out: map[string]string{
+			"axe describe-ui --udid SIM":     raw,
+			"appium driver list --installed": "xcuitest@8.4.3\n",
+		},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "tap", "--text", "Deporte y ocio"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "fail code=ui_tap_failed") || !strings.Contains(got, "fallback_reason=container_tap") {
+		t.Fatalf("got %q", got)
+	}
+	if containsCall(runner.commands, "axe tap --label Deporte y ocio") {
+		t.Fatalf("container tap should not fall back to silent axe success: %v", runner.commands)
+	}
+	if !containsCall(calls, "/wd/hub/session/s1/element") {
+		t.Fatalf("calls=%v", calls)
+	}
+}
+
+func TestUISwipePreferAxeDoesNotFallbackToIDB(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.Tools = map[string]bool{"idb": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runner := &sequenceRecordingRunner{tools: cfg.Tools}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"--prefer-driver", "axe", "ui", "swipe", "--direction", "up"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "fail code=tool_missing") || !strings.Contains(got, "tool=axe") {
+		t.Fatalf("got %q", got)
+	}
+	if containsCall(runner.commands, "idb ui swipe") {
+		t.Fatalf("prefer axe should not run idb: %v", runner.commands)
+	}
+}
+
 func TestUIPinchRecordsHighLevelCommand(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
