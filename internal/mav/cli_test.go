@@ -936,7 +936,7 @@ func TestUITreeIncludeSystemUsesActiveAppSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := out.String()
-	for _, want := range []string{"driver=appium", "active_bundle=com.apple.PhotosUIService", "system_source=true", "id=PickerSearchField"} {
+	for _, want := range []string{"driver=appium", "active_bundle=com.apple.PhotosUIService", "system_source=true", "system_overlay=true", "id=PickerSearchField"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in %q", want, got)
 		}
@@ -1999,6 +1999,162 @@ func TestGoUsesNativeMAVActions(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "ok cmd=go") {
 		t.Fatalf("got %q", out.String())
+	}
+}
+
+func TestRunFlowPersistsAppiumScreenFallbackAfterTap(t *testing.T) {
+	root, cfg, server, _ := setupAppiumSemanticTest(t)
+	defer server.Close()
+	cfg.Tools["axe"] = true
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveAppMap(root, AppMap{
+		AppID: "com.example.app",
+		Start: "start",
+		Screens: map[string]Screen{
+			"start": testExplicitScreen("start"),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	SetCurrentScreen(root, "start", "run-flow")
+	flowPath := filepath.Join(root, "flow.yaml")
+	writeTestFlow(t, flowPath, `
+name: fallback-map
+steps:
+  - tap: { id: upload_button }
+`)
+	runner := fakeRunner{
+		tools: cfg.Tools,
+		out: map[string]string{
+			"axe tap --id upload_button --udid SIM": "",
+			"axe describe-ui --udid SIM":            `[{"AXLabel":"Home","role":"heading"}]`,
+			"appium driver list --installed":        "xcuitest@7.0.0\n",
+		},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"run", flowPath}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "ok cmd=run") {
+		t.Fatalf("got %q", out.String())
+	}
+	home, err := LoadScreen(root, "home")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if home.Driver != "appium" || !screenHasExplicitScreenIdentity(home) {
+		t.Fatalf("home=%+v", home)
+	}
+	start, err := LoadScreen(root, "start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(start.Edges) != 1 || start.Edges[0].To != "home" || start.Edges[0].Driver != "axe" {
+		t.Fatalf("edges=%+v", start.Edges)
+	}
+}
+
+func TestRunFlowPersistsAppiumScreenFallbackAfterEmptyAXTree(t *testing.T) {
+	root, cfg, server, _ := setupAppiumSemanticTest(t)
+	defer server.Close()
+	cfg.Tools["axe"] = true
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveAppMap(root, AppMap{
+		AppID: "com.example.app",
+		Start: "start",
+		Screens: map[string]Screen{
+			"start": testExplicitScreen("start"),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	SetCurrentScreen(root, "start", "run-flow")
+	flowPath := filepath.Join(root, "flow.yaml")
+	writeTestFlow(t, flowPath, `
+name: fallback-map-empty
+steps:
+  - tap: { id: upload_button }
+`)
+	runner := fakeRunner{
+		tools: cfg.Tools,
+		out: map[string]string{
+			"axe tap --id upload_button --udid SIM": "",
+			"axe describe-ui --udid SIM":            `[{"role":"AXApplication","AXFrame":"{{0, 0}, {0, 0}}","children":[]}]`,
+			"appium driver list --installed":        "xcuitest@7.0.0\n",
+		},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"run", flowPath}); err != nil {
+		t.Fatal(err)
+	}
+	home, err := LoadScreen(root, "home")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if home.Driver != "appium" || !screenHasExplicitScreenIdentity(home) {
+		t.Fatalf("home=%+v output=%q", home, out.String())
+	}
+}
+
+func TestRunFlowPersistsChildStepScreenWithChildPreferDriver(t *testing.T) {
+	root, cfg, server, _ := setupAppiumSemanticTest(t)
+	defer server.Close()
+	cfg.Tools["axe"] = true
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveAppMap(root, AppMap{
+		AppID: "com.example.app",
+		Start: "start",
+		Screens: map[string]Screen{
+			"start": testExplicitScreen("start"),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	SetCurrentScreen(root, "start", "run-flow")
+	flowPath := filepath.Join(root, "flow.yaml")
+	writeTestFlow(t, flowPath, `
+name: child-driver-map
+steps:
+  - when: { id: gate_button, prefer-driver: axe }
+    do:
+      - tap: { id: upload_button, prefer-driver: appium }
+`)
+	runner := fakeRunner{
+		tools: cfg.Tools,
+		out: map[string]string{
+			"axe describe-ui --udid SIM":     `[{"AXUniqueId":"gate_button","AXLabel":"Gate"}]`,
+			"appium driver list --installed": "xcuitest@7.0.0\n",
+		},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"run", flowPath}); err != nil {
+		t.Fatal(err)
+	}
+	home, err := LoadScreen(root, "home")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if home.Driver != "appium" || !screenHasExplicitScreenIdentity(home) {
+		t.Fatalf("home=%+v output=%q", home, out.String())
+	}
+	start, err := LoadScreen(root, "start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(start.Edges) != 1 || start.Edges[0].To != "home" || start.Edges[0].Driver != "appium" {
+		t.Fatalf("edges=%+v", start.Edges)
+	}
+	if CurrentScreen(root) != "home" {
+		t.Fatalf("current=%q", CurrentScreen(root))
 	}
 }
 
