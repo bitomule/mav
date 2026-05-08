@@ -252,6 +252,8 @@ func TestSaveLoadConfig(t *testing.T) {
 	cfg.AppTarget = "//Demo:DemoApp"
 	cfg.BundleID = "com.example.demo"
 	cfg.Launch = LaunchConfig{Mode: "custom", Commands: LaunchCommands{Build: "make build-ios", AppPath: "make app-path", Launch: `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`}}
+	cfg.ScreenIdentifiers["home"] = "WallView"
+	cfg.ScreenIdentifiers["upload-form"] = "UploadFormView"
 	cfg.Tools["axe"] = true
 	if err := SaveConfig(root, cfg); err != nil {
 		t.Fatal(err)
@@ -260,7 +262,8 @@ func TestSaveLoadConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.AppTarget != cfg.AppTarget || !loaded.Tools["axe"] || loaded.Launch.Commands.AppPath != "make app-path" {
+	if loaded.AppTarget != cfg.AppTarget || !loaded.Tools["axe"] || loaded.Launch.Commands.AppPath != "make app-path" ||
+		loaded.ScreenIdentifiers["home"] != "WallView" || loaded.ScreenIdentifiers["upload-form"] != "UploadFormView" {
 		t.Fatalf("loaded=%+v", loaded)
 	}
 }

@@ -111,7 +111,7 @@ func DefaultAppMap(bundleID string) AppMap {
 	return AppMap{
 		AppID:   bundleID,
 		Start:   "start",
-		Screens: map[string]Screen{"start": {ID: "start", Title: "Start", Recognizers: []Recognizer{{Kind: "id", Value: "mav.screen.start"}}}},
+		Screens: map[string]Screen{"start": {ID: "start", Title: "Start", Recognizers: []Recognizer{{Kind: "launch"}}}},
 	}
 }
 
@@ -150,7 +150,6 @@ func loadJSONAppMap(root string) (AppMap, error) {
 	for _, id := range idx.Screens {
 		screen, err := LoadScreen(root, id)
 		if err == nil {
-			screen = screenWithLegacyExplicitAssertID(screen)
 			m.Screens[screen.ID] = screen
 		}
 	}
@@ -172,7 +171,7 @@ func LoadScreen(root, id string) (Screen, error) {
 	if screen.ID == "" {
 		screen.ID = id
 	}
-	return screenWithLegacyExplicitAssertID(screen), nil
+	return screen, nil
 }
 
 func SaveAppMap(root string, m AppMap) error {
@@ -380,7 +379,6 @@ func loadYAMLAppMap(root string) (AppMap, error) {
 				current.Driver = value
 			case "assert_id":
 				current.AssertID = value
-				*current = screenWithLegacyExplicitAssertID(*current)
 			case "assert_text":
 				current.AssertText = value
 				current.Recognizers = append(current.Recognizers, Recognizer{Kind: "text", Value: value})
@@ -476,10 +474,19 @@ func ObserveScreenDetailedWithDriver(root string, cfg Config, run RunState, rawT
 	screenID := ""
 	source := ""
 	if screenID == "" && current != "" && !hasPending {
-		if screen, ok := m.Screens[current]; ok && screenMatches(screen, rawTree, elements) {
+		if screen, ok := m.Screens[current]; ok && currentScreenMatches(screen, rawTree, elements) {
 			screenID = current
 			source = "current"
 		}
+	}
+	identity, hasIdentity := explicitScreenIdentity(elements, cfg)
+	if screenID != "" && hasIdentity && identity.ID != screenID {
+		screenID = ""
+		source = ""
+	}
+	if screenID == "" && hasIdentity {
+		screenID = identity.ID
+		source = identityScreenSource(m, identity.ID, elements)
 	}
 	if screenID == "" {
 		avoid := ""
@@ -491,11 +498,6 @@ func ObserveScreenDetailedWithDriver(root string, cfg Config, run RunState, rawT
 			source = "recognized"
 		}
 	}
-	identity, hasIdentity := explicitScreenIdentity(elements)
-	if screenID == "" && hasIdentity {
-		screenID = identity.ID
-		source = "explicit_id"
-	}
 	if screenID == "" {
 		ClearPendingMapAction(root)
 		SetCurrentScreen(root, "", run.ID)
@@ -503,7 +505,7 @@ func ObserveScreenDetailedWithDriver(root string, cfg Config, run RunState, rawT
 	}
 	screen := m.Screens[screenID]
 	screen.ID = screenID
-	if hasIdentity && !screenHasExplicitScreenIdentity(screen) {
+	if hasIdentity && !screenHasExplicitScreenIdentity(screen) && blankScreen(screen) {
 		screen.Recognizers = append(screen.Recognizers, identity.Recognizer)
 	}
 	if driver == "appium" || (driver != "" && screen.Driver != "appium") {
@@ -549,7 +551,7 @@ func ObserveExpectedScreenWithDriver(root string, cfg Config, run RunState, rawT
 		m.AppID = cfg.BundleID
 	}
 	elements := ExtractElements(rawTree)
-	identity, hasIdentity := explicitScreenIdentity(elements)
+	identity, hasIdentity := explicitScreenIdentity(elements, cfg)
 	if !hasIdentity {
 		return fmt.Errorf("screen_identity_missing")
 	}
@@ -558,7 +560,7 @@ func ObserveExpectedScreenWithDriver(root string, cfg Config, run RunState, rawT
 	}
 	screen := m.Screens[screenID]
 	screen.ID = screenID
-	if !screenHasExplicitScreenIdentity(screen) {
+	if !screenHasExplicitScreenIdentity(screen) && blankScreen(screen) {
 		screen.Recognizers = append(screen.Recognizers, identity.Recognizer)
 	}
 	if driver == "appium" || (driver != "" && screen.Driver != "appium") {
@@ -710,26 +712,88 @@ func recognizeScreenAvoiding(m AppMap, raw string, elements []Element, avoid str
 
 func screenMatches(screen Screen, raw string, elements []Element) bool {
 	_ = raw
-	if !screenHasExplicitScreenIdentity(screen) {
+	if conflictsWithExplicitPrefixedIdentity(screen.ID, elements) {
 		return false
 	}
-	identity, ok := explicitScreenIdentity(elements)
-	return ok && identity.ID == screen.ID
-}
-
-func screenHasExplicitScreenIdentity(screen Screen) bool {
 	for _, rec := range screen.Recognizers {
 		if rec.Kind != "id" {
 			continue
 		}
-		if id, ok := screenIDFromElementID(rec.Value); ok && id == screen.ID {
+		value := strings.TrimSpace(rec.Value)
+		if !recognizerValidForScreen(screen, rec) {
+			continue
+		}
+		for _, el := range elements {
+			if el.ID == value {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func currentScreenMatches(screen Screen, raw string, elements []Element) bool {
+	if screenMatches(screen, raw, elements) {
+		return true
+	}
+	return screenHasLaunchRecognizer(screen) && len(elements) > 0
+}
+
+func screenHasExplicitScreenIdentity(screen Screen) bool {
+	for _, rec := range screen.Recognizers {
+		switch rec.Kind {
+		case "launch":
+			if screen.ID == "start" {
+				return true
+			}
+		case "id":
+			if recognizerValidForScreen(screen, rec) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func screenHasLaunchRecognizer(screen Screen) bool {
+	if screen.ID != "start" {
+		return false
+	}
+	for _, rec := range screen.Recognizers {
+		if rec.Kind == "launch" {
 			return true
 		}
 	}
 	return false
 }
 
-func explicitScreenIdentity(elements []Element) (screenIdentity, bool) {
+func explicitScreenIdentity(elements []Element, cfg Config) (screenIdentity, bool) {
+	if identity, ok := prefixedScreenIdentity(elements); ok {
+		return identity, true
+	}
+	for _, screenID := range sortedConfigScreenIDs(cfg.ScreenIdentifiers) {
+		elementID := strings.TrimSpace(cfg.ScreenIdentifiers[screenID])
+		if elementID == "" {
+			continue
+		}
+		for _, el := range elements {
+			if el.ID != elementID {
+				continue
+			}
+			return screenIdentity{
+				ID:        screenID,
+				ElementID: elementID,
+				Recognizer: Recognizer{
+					Kind:  "id",
+					Value: elementID,
+				},
+			}, true
+		}
+	}
+	return screenIdentity{}, false
+}
+
+func prefixedScreenIdentity(elements []Element) (screenIdentity, bool) {
 	for _, el := range elements {
 		id, ok := screenIDFromElementID(el.ID)
 		if !ok {
@@ -745,6 +809,28 @@ func explicitScreenIdentity(elements []Element) (screenIdentity, bool) {
 		}, true
 	}
 	return screenIdentity{}, false
+}
+
+func conflictsWithExplicitPrefixedIdentity(screenID string, elements []Element) bool {
+	identity, ok := prefixedScreenIdentity(elements)
+	return ok && identity.ID != screenID
+}
+
+func sortedConfigScreenIDs(ids map[string]string) []string {
+	keys := make([]string, 0, len(ids))
+	for key := range ids {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func identityScreenSource(m AppMap, screenID string, elements []Element) string {
+	screen, ok := m.Screens[screenID]
+	if ok && screenMatches(screen, "", elements) {
+		return "recognized"
+	}
+	return "explicit_id"
 }
 
 func screenIDFromElementID(value string) (string, bool) {
@@ -791,20 +877,28 @@ func screenIdentityPrefixes() []string {
 	return []string{"mav.screen.", "screen."}
 }
 
-func screenWithLegacyExplicitAssertID(screen Screen) Screen {
-	if screenHasExplicitScreenIdentity(screen) || screen.AssertID == "" {
-		return screen
+func recognizerValidForScreen(screen Screen, rec Recognizer) bool {
+	if rec.Kind != "id" {
+		return false
 	}
-	if id, ok := screenIDFromElementID(screen.AssertID); ok && id == screen.ID {
-		screen.Recognizers = append(screen.Recognizers, Recognizer{Kind: "id", Value: strings.TrimSpace(screen.AssertID)})
+	value := strings.TrimSpace(rec.Value)
+	if value == "" {
+		return false
 	}
-	return screen
+	if id, ok := screenIDFromElementID(value); ok {
+		return id == screen.ID
+	}
+	return true
 }
 
 func screenMatchSpecificity(screen Screen, elements []Element, isStart bool) int {
 	score := 0
 	for _, rec := range screen.Recognizers {
 		switch rec.Kind {
+		case "launch":
+			if isStart && len(elements) > 0 {
+				score = max(score, 5)
+			}
 		case "text":
 			if hasScreenText(elements, rec.Value) {
 				score = max(score, 30+min(len([]rune(rec.Value)), 60))
