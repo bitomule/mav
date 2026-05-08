@@ -183,52 +183,13 @@ func TestSetupConfigDoesNotGuessUnrelatedJustfile(t *testing.T) {
 	}
 }
 
-func TestSetupConfigUsesExplicitFastlaneMAVLanes(t *testing.T) {
+func TestSetupConfigDoesNotDetectFastlane(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "BUILD.bazel"), `ios_application(name = "DemoApp", bundle_id = "com.example.demo")`)
 	mustWrite(t, filepath.Join(root, "fastlane", "Fastfile"), `
-default_platform(:ios)
-platform :ios do
-  lane :mav_build do
-  end
-  private_lane :mav_app_path do
-  end
+lane :mav_build do
 end
-`)
-	cfg, err := SetupConfig(root, fakeRunner{tools: map[string]bool{"bazelisk": true}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Launch.Commands.Build != "bundle exec fastlane mav_build" || cfg.Launch.Commands.AppPath != "bundle exec fastlane mav_app_path" {
-		t.Fatalf("launch=%+v", cfg.Launch.Commands)
-	}
-}
-
-func TestSetupConfigDoesNotUseCommentedFastlaneMAVLanes(t *testing.T) {
-	root := t.TempDir()
-	mustWrite(t, filepath.Join(root, "BUILD.bazel"), `ios_application(name = "DemoApp", bundle_id = "com.example.demo")`)
-	mustWrite(t, filepath.Join(root, "fastlane", "Fastfile"), `
-# lane :mav_build do
-# end
-# private_lane :mav_app_path do
-# end
-`)
-	cfg, err := SetupConfig(root, fakeRunner{tools: map[string]bool{"bazelisk": true}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(cfg.Launch.Commands.Build, "fastlane") {
-		t.Fatalf("launch=%+v", cfg.Launch.Commands)
-	}
-}
-
-func TestSetupConfigDoesNotUseFastlanePrefixLaneNames(t *testing.T) {
-	root := t.TempDir()
-	mustWrite(t, filepath.Join(root, "BUILD.bazel"), `ios_application(name = "DemoApp", bundle_id = "com.example.demo")`)
-	mustWrite(t, filepath.Join(root, "fastlane", "Fastfile"), `
-lane :mav_build_debug do
-end
-private_lane :mav_app_path_extra do
+private_lane :mav_app_path do
 end
 `)
 	cfg, err := SetupConfig(root, fakeRunner{tools: map[string]bool{"bazelisk": true}})

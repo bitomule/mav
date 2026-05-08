@@ -17,12 +17,12 @@ does not explore or repair routes by itself. The agent decides the next action.
    `appium_home_not_writable`, rerun outside the sandbox or set `APPIUM_HOME`
    to a writable directory.
 2. If the project lacks `.mav/config.yaml`, run `mav setup` and review the
-   generated config. Setup is idempotent: it detects app identity, simulator
-   defaults, UI tools, and an editable `launch.commands` recipe while
-   preserving existing explicit choices. MAV uses that recipe to run the app.
-   Detection is conservative: explicit MAV Make/Just targets, explicit
-   `scripts/mav-build` + `scripts/mav-app-path`, explicit Fastlane
-   `mav_build` + `mav_app_path`, and standard Bazel/Xcode/Tuist shapes.
+   prompts. Setup is idempotent and interactive by default: it detects app
+   identity, simulator defaults, UI tools, and an editable `launch.commands`
+   recipe, then lets the user accept or replace each value. Use
+   `mav setup --non-interactive` for CI/scripts. Detection is conservative:
+   explicit MAV Make/Just targets, explicit `scripts/mav-build` +
+   `scripts/mav-app-path`, and standard Bazel/Xcode/Tuist shapes.
 3. If the validation needs a specific simulator, runtime, or locale, use
    `mav sim list`, then `mav sim select --device ... --ios ... --locale ... --language ...`.
    You can also pass the same target flags to `mav open`.
