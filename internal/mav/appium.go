@@ -43,6 +43,12 @@ type appiumSessionState struct {
 	BundleID  string `json:"bundle_id"`
 }
 
+type appiumSourceResult struct {
+	Raw          string
+	ActiveBundle string
+	SystemSource bool
+}
+
 type gestureParams struct {
 	Kind     string
 	X        string
@@ -483,12 +489,73 @@ func (c CLI) appiumSessionForCommand(ctx context.Context, cfg Config) (appiumSes
 	return session, cleanup, nil
 }
 
-func (c CLI) appiumSourceTree(ctx context.Context, cfg Config) (string, error) {
+func (c CLI) appiumSourceTree(ctx context.Context, cfg Config, includeSystem bool) (appiumSourceResult, error) {
 	session, cleanup, err := c.appiumSessionForCommand(ctx, cfg)
+	if err != nil {
+		return appiumSourceResult{}, err
+	}
+	defer cleanup()
+	activeBundle := ""
+	if includeSystem {
+		active, activeErr := appiumActiveAppInfo(ctx, session)
+		if activeErr == nil {
+			activeBundle = active.BundleID
+		}
+	}
+	if activeBundle != "" && cfg.BundleID != "" && activeBundle != cfg.BundleID {
+		raw, sourceErr := appiumSourceForActiveBundle(ctx, session, activeBundle)
+		if sourceErr == nil && !isEmptyAXTree(raw) {
+			return appiumSourceResult{Raw: raw, ActiveBundle: activeBundle, SystemSource: true}, nil
+		}
+	}
+	raw, err := appiumDefaultSourceTree(ctx, session)
+	if err != nil {
+		return appiumSourceResult{}, err
+	}
+	return appiumSourceResult{Raw: raw, ActiveBundle: activeBundle}, nil
+}
+
+type appiumActiveApp struct {
+	BundleID string
+	Name     string
+	PID      string
+}
+
+func appiumActiveAppInfo(ctx context.Context, session appiumSessionState) (appiumActiveApp, error) {
+	var response map[string]any
+	if err := appiumExecuteScript(ctx, session, "mobile: activeAppInfo", []any{}, &response); err != nil {
+		return appiumActiveApp{}, err
+	}
+	value, _ := response["value"].(map[string]any)
+	return appiumActiveApp{
+		BundleID: stringField(value, "bundleId", "bundleID"),
+		Name:     stringField(value, "name"),
+		PID:      stringField(value, "pid"),
+	}, nil
+}
+
+func appiumSourceForActiveBundle(ctx context.Context, session appiumSessionState, bundleID string) (string, error) {
+	if bundleID == "" {
+		return "", fmt.Errorf("active_bundle_missing")
+	}
+	oldSettings, err := appiumGetSettings(ctx, session)
 	if err != nil {
 		return "", err
 	}
-	defer cleanup()
+	restore := map[string]any{"defaultActiveApplication": "auto"}
+	if oldValue, ok := oldSettings["defaultActiveApplication"]; ok {
+		restore["defaultActiveApplication"] = oldValue
+	}
+	if err := appiumUpdateSettings(ctx, session, map[string]any{"defaultActiveApplication": bundleID}); err != nil {
+		return "", err
+	}
+	defer func() {
+		_ = appiumUpdateSettings(context.Background(), session, restore)
+	}()
+	return appiumDefaultSourceTree(ctx, session)
+}
+
+func appiumDefaultSourceTree(ctx context.Context, session appiumSessionState) (string, error) {
 	var response map[string]any
 	if err := appiumGetJSON(ctx, session.BaseURL+"/session/"+session.SessionID+"/source", &response); err != nil {
 		return "", appiumError{Code: "ui_tree_failed", Message: err.Error()}
@@ -502,6 +569,21 @@ func (c CLI) appiumSourceTree(ctx context.Context, cfg Config) (string, error) {
 		return "", appiumError{Code: "ui_tree_failed", Message: err.Error()}
 	}
 	return raw, nil
+}
+
+func appiumGetSettings(ctx context.Context, session appiumSessionState) (map[string]any, error) {
+	var response map[string]any
+	if err := appiumGetJSON(ctx, session.BaseURL+"/session/"+session.SessionID+"/appium/settings", &response); err != nil {
+		return nil, err
+	}
+	if value, ok := response["value"].(map[string]any); ok {
+		return value, nil
+	}
+	return map[string]any{}, nil
+}
+
+func appiumUpdateSettings(ctx context.Context, session appiumSessionState, settings map[string]any) error {
+	return appiumPostJSON(ctx, session.BaseURL+"/session/"+session.SessionID+"/appium/settings", map[string]any{"settings": settings}, nil)
 }
 
 func (c CLI) appiumClickByAccessibilityID(ctx context.Context, cfg Config, id string) error {
@@ -578,6 +660,10 @@ func appiumGetJSON(ctx context.Context, target string, out any) error {
 	return nil
 }
 
+func appiumExecuteScript(ctx context.Context, session appiumSessionState, script string, args []any, out any) error {
+	return appiumPostJSON(ctx, session.BaseURL+"/session/"+session.SessionID+"/execute/sync", map[string]any{"script": script, "args": args}, out)
+}
+
 type appiumXMLNode struct {
 	Data     map[string]any
 	Children []*appiumXMLNode
@@ -642,6 +728,7 @@ func appiumNodeFromStart(start xml.StartElement) *appiumXMLNode {
 	put("subrole", attrs["subrole"])
 	put("title", attrs["title"])
 	put("pid", attrs["pid"])
+	put("focused", attrs["focused"])
 	put("frame", appiumFrame(attrs))
 	return &appiumXMLNode{Data: data}
 }

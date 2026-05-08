@@ -31,7 +31,8 @@ MAV is early and evolving. The current stable pieces are:
 - Simulator selection, boot, install, launch, screenshot, and video.
 - AXe-first accessibility tree inspection and semantic interactions.
 - idb coordinate taps and fallback capabilities.
-- Appium-backed W3C Actions for optional multitouch gestures.
+- Appium-backed WDA fallback for system-process trees, form wrappers, and
+  optional multitouch gestures.
 - Native MAV YAML flows through `mav run`.
 - JSON app map storage in `.mav/map/**`.
 - HTML evidence reports in `/tmp/mav/<run-id>/report.html`.
@@ -44,8 +45,9 @@ MAV is early and evolving. The current stable pieces are:
 - Go, for development builds.
 - AXe, for accessibility tree and semantic UI actions.
 - idb, for coordinate taps and device/simulator fallback operations.
-- Appium 2 with the XCUITest driver, optional, for true multitouch gestures
-  such as pinch, rotate, and two-finger pan.
+- Appium 2 with the XCUITest driver, optional, for WDA-backed tree/tap
+  fallback, system UI such as PHPicker and permission prompts, and true
+  multitouch gestures such as pinch, rotate, and two-finger pan.
 
 Check the local environment:
 
@@ -55,7 +57,7 @@ mav doctor
 
 `mav doctor` reports capability availability. MAV routes commands by
 capability: accessibility and semantic actions use AXe, coordinate taps and
-device fallback use idb, and multitouch uses Appium.
+device fallback use idb, and WDA-backed fallback or multitouch uses Appium.
 
 Configure the project or install supported helper tools:
 
@@ -323,6 +325,7 @@ The caller should then explore manually with `mav ui tree`, `mav ui tap`,
 ```bash
 mav ui tree
 mav ui tree --prefer-driver appium
+mav ui tree --include-system
 mav ui tap --id element_id
 mav ui tap --x 120 --y 400
 mav ui tap --text "Daily Reminder"
@@ -349,15 +352,24 @@ For `mav ui tree` and semantic `mav ui tap`, `--prefer-driver auto` is the
 default. In auto mode MAV tries AXe first, then falls back to Appium/WDA when
 the AXe tree is empty, unmatched, or pending a map update, or when an AXe tap by
 id/text fails. Use `--prefer-driver axe` to debug AXe-only behavior and
-`--prefer-driver appium` for system UI, PHPicker, permission prompts, form
-placeholders, and wrappers that carry an accessibility identifier but are not
-accessibility elements.
+`--prefer-driver appium` for WDA-only inspection. Use `mav ui tree
+--include-system` when a system process or cross-app surface is in front, such
+as PHPicker, App Tracking Transparency, permission prompts, SpringBoard, or an
+iOS 26 service process. MAV asks Appium for the active foreground bundle and
+temporarily targets that bundle for the source tree.
 
 If `mav ui tap --text X` fails because AXe sees `X` as a value/placeholder but
 not as a label, MAV reports `ui_tap_text_no_label_match` with `matched_value`
 and suggests Appium text matching. Prefer stable ids when possible. With
 `appium-xcuitest-driver@8`, MAV automatically retries text matching with
 `-ios class chain` when the session rejects `predicate string` selectors.
+
+When `mav ui tap --id X` detects that `X` is a wrapper containing a descendant
+text field or text view, auto mode routes the tap through Appium so the inner
+field receives keyboard focus. `mav ui type TEXT` also checks Appium focus
+metadata when available: if no text input is focused it fails with
+`type_no_focused_field`; when it can compare before/after values it reports
+`chars_sent` and `chars_received` in addition to the legacy `chars` field.
 
 When you expect to need Appium, run `mav open --warm-appium` to create the WDA
 session after the launch recipe finishes so the first Appium-backed tree or tap
@@ -665,7 +677,7 @@ mav sim select --device NAME --ios VERSION [--locale LOCALE] [--language LANG]
 mav sim select --udid UDID
 mav sim boot
 mav open [--device NAME] [--ios VERSION] [--udid UDID] [--locale LOCALE] [--language LANG] [--warm-appium]
-mav ui tree [--prefer-driver auto|axe|appium]
+mav ui tree [--prefer-driver auto|axe|appium] [--include-system]
 mav ui tap --id ID [--prefer-driver auto|axe|appium]
 mav ui tap --x X --y Y
 mav ui tap --text TEXT [--prefer-driver auto|axe|appium]
