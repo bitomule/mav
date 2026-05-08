@@ -1053,9 +1053,9 @@ func (c CLI) uiTree(ctx context.Context, opts GlobalOptions, cfg Config, args []
 		if state.PendingFrom != "" {
 			fields["previous_screen"] = state.PendingFrom
 		}
-		fields["next"] = "add a stable screen accessibility identifier such as mav.screen.<id> before mapping"
+		addIdentityMissingNext(fields, described)
 	} else if state.ScreenSource == "identity_missing" {
-		fields["next"] = "add a stable screen accessibility identifier such as mav.screen.<id> before mapping"
+		addIdentityMissingNext(fields, described)
 	}
 	if recovered {
 		fields["recovered"] = "true"
@@ -1161,6 +1161,15 @@ func appiumStateHasExplicitScreenIdentity(state uiTreeState) bool {
 	}
 	identity, ok := explicitScreenIdentity(state.Elements)
 	return ok && identity.ID == state.Screen
+}
+
+func addIdentityMissingNext(fields map[string]string, described describedUITree) {
+	if described.SystemSource {
+		fields["system_overlay"] = "true"
+		fields["next"] = "this looks like a system overlay. Cannot add accessibility id from app code. Use --include-system or coordinate taps."
+		return
+	}
+	fields["next"] = "add a stable screen accessibility identifier such as mav.screen.<id> before mapping"
 }
 
 func (c CLI) writeUITreeToolError(err error) error {
@@ -2311,10 +2320,56 @@ func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) err
 				fields["run"] = run.ID
 			}
 		}
+		c.observeFlowStepScreen(ctx, opts, run, step)
 		appendFlowStep(run, index+1, step.Action, elapsed, "ok", fields)
 	}
 	_ = c.withStdout(io.Discard).stop(ctx, GlobalOptions{}, []string{"--run", run.ID})
 	return OK("run", map[string]string{"name": flow.Name, "run": run.ID, "steps": strconv.Itoa(len(flow.Steps)), "elapsed": time.Since(start).String()}).Write(c.Stdout)
+}
+
+func (c CLI) observeFlowStepScreen(ctx context.Context, opts GlobalOptions, run RunState, step FlowStep) {
+	if !flowStepCanChangeOrConfirmScreen(step.Action) || run.ID == "" {
+		return
+	}
+	cfg, err := LoadConfig(c.Root)
+	if err != nil {
+		return
+	}
+	prefer, err := flowStepPreferDriver(opts, step)
+	if err != nil {
+		return
+	}
+	described, err := c.describeUITree(ctx, cfg, prefer, false)
+	if err != nil || described.Result.Err != nil {
+		return
+	}
+	driver := described.Driver
+	raw := described.Result.Stdout
+	if prefer == "auto" && driver != "appium" {
+		state := c.observeUITree(cfg, raw, driver, false)
+		if shouldTryAppiumTreeFallback(raw, state) {
+			if appium, appiumErr := c.describeUITree(ctx, cfg, "appium", true); appiumErr == nil && appium.Result.Err == nil && !isEmptyAXTree(appium.Result.Stdout) {
+				appiumState := c.observeUITree(cfg, appium.Result.Stdout, appium.Driver, false)
+				if shouldUseAppiumTreeFallback(raw, state, appiumState) {
+					driver = appium.Driver
+					raw = appium.Result.Stdout
+				}
+			}
+		}
+	}
+	if isEmptyAXTree(raw) {
+		return
+	}
+	_, _ = ObserveScreenDetailedWithDriver(c.Root, cfg, run, raw, driver)
+}
+
+func flowStepCanChangeOrConfirmScreen(action string) bool {
+	switch action {
+	case "tap", "wait", "assert", "waitUntil", "scrollUntil", "tree", "go":
+		return true
+	default:
+		return false
+	}
 }
 
 type flowExecBinding struct {
@@ -2743,6 +2798,7 @@ func (c CLI) executeWhenFlowStepWithOptions(ctx context.Context, opts GlobalOpti
 			}
 			return fields, err
 		}
+		c.observeFlowStepScreen(ctx, opts, run, child)
 		appendFlowStep(run, index, "when."+child.Action, elapsed, "ok", childFields)
 	}
 	fields["executed"] = strconv.Itoa(len(step.Do))
@@ -2785,6 +2841,7 @@ func (c CLI) executeWhenFlowStepBoundWithOptions(ctx context.Context, opts Globa
 			}
 			return fields, err
 		}
+		c.observeFlowStepScreen(ctx, opts, run, child)
 		appendFlowStep(run, index, "when."+child.Action, elapsed, "ok", childFields)
 	}
 	fields["executed"] = strconv.Itoa(len(step.Do))
@@ -2845,6 +2902,7 @@ func (c CLI) executeWhileNotVisibleFlowStepBoundWithOptions(ctx context.Context,
 				return fields, err
 			}
 			executed++
+			c.observeFlowStepScreen(ctx, opts, run, child)
 			appendFlowStep(run, index, "whileNotVisible."+child.Action, elapsed, "ok", childFields)
 			if time.Since(start) >= timeout {
 				break
