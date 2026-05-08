@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -81,6 +82,8 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 		return c.runFlow(ctx, opts, rest[1:])
 	case "go":
 		return c.goScreen(ctx, opts, rest[1:])
+	case "map":
+		return c.mapCommand(rest[1:])
 	case "logs":
 		return c.logs(opts, rest[1:])
 	case "stop":
@@ -162,6 +165,7 @@ Commands:
   capture     Capture the current screen.
   run         Execute a native MAV YAML flow.
   go          Navigate from app launch to a mapped screen with evidence.
+  map         Inspect and validate the learned app map.
   logs        Read captured run logs.
   stop        Stop run-owned background processes.
   crashes     List crashes for the configured app.
@@ -225,6 +229,14 @@ Global flags:
 		return "Usage: mav run flow.yaml\n"
 	case "go":
 		return "Usage: mav go <screen-id>\n"
+	case "map":
+		return `Usage:
+  mav map list
+  mav map show <screen-id>
+  mav map graph
+  mav map verify
+  mav map prune
+`
 	case "logs":
 		return "Usage: mav logs [--run RUN_ID] [--key KEY] [--contains TEXT] [--level LEVEL] [--raw]\n"
 	case "stop":
@@ -1406,7 +1418,7 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		}
 		c.appendCurrentCommand("mav ui tap --x "+x+" --y "+y, result)
 		c.recordPendingTap("", "", "", x, y, "idb")
-		return OK("ui.tap", map[string]string{"x": x, "y": y}).Write(c.Stdout)
+		return OK("ui.tap", map[string]string{"x": x, "y": y, "driver": "idb", "route_recorded": "false"}).Write(c.Stdout)
 	}
 	return Fail("tap_target_missing", map[string]string{"usage": "mav ui tap --id ID | --x X --y Y | --text TEXT | --value VALUE"}).Write(c.Stdout)
 }
@@ -1647,6 +1659,10 @@ func (c CLI) writeAppiumTapErrorWithFields(err error, extra map[string]string) e
 func (c CLI) recordPendingTap(id, text, value, x, y, driver string) {
 	from := CurrentScreen(c.Root)
 	if from == "" {
+		return
+	}
+	if id == "" && text == "" && value == "" {
+		ClearPendingMapAction(c.Root)
 		return
 	}
 	SetPendingMapAction(c.Root, pendingMapAction{From: from, ID: id, Text: text, Value: value, X: x, Y: y, Driver: driver})
@@ -2682,21 +2698,22 @@ func (c CLI) goScreen(ctx context.Context, opts GlobalOptions, args []string) er
 	if err := ValidateAppMap(m); err != nil {
 		return Fail("app_map_invalid", map[string]string{"error": err.Error()}).Write(c.Stdout)
 	}
-	route, routeErr := Route(m, screenID)
-	if routeErr != nil {
-		fields := map[string]string{"screen": screenID}
-		code := routeErr.Error()
-		if code == "screen_not_found" || code == "route_not_found" {
-			fields["next"] = "explore with mav ui tree/tap; map updates when the next screen is observed"
-		}
-		return Fail(code, fields).Write(c.Stdout)
+	if _, ok := m.Screens[screenID]; !ok {
+		return Fail("screen_not_found", map[string]string{
+			"screen": screenID,
+			"next":   "explore with mav ui tree/tap; map updates when the next screen is observed",
+		}).Write(c.Stdout)
 	}
+	route, routeErr := Route(m, screenID)
 	cfg, cfgErr := LoadConfig(c.Root)
 	if cfgErr != nil {
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
 	openArgs := []string{}
-	needsDriver := routeRequiredDriver(m, screenID, route)
+	needsDriver := ""
+	if routeErr == nil {
+		needsDriver = routeRequiredDriver(m, screenID, route)
+	}
 	if needsDriver == "appium" {
 		if err := c.ensureAppiumAvailable(ctx); err != nil {
 			fields := map[string]string{"screen": screenID, "required_driver": "appium"}
@@ -2738,13 +2755,47 @@ func (c CLI) goScreen(ctx context.Context, opts GlobalOptions, args []string) er
 		return Fail("evidence_start_failed", map[string]string{"run": run.ID, "screen": screenID}).Write(c.Stdout)
 	}
 	if raw, err := c.waitForTreeReady(ctx, cfg, 8*time.Second); err == nil {
-		_ = ObserveExpectedScreen(c.Root, cfg, run, raw, m.Start)
+		observed, _ := ObserveScreenDetailed(c.Root, cfg, run, raw)
+		if refreshed, err := LoadAppMap(c.Root); err == nil {
+			m = refreshed
+		}
+		if observed.Screen == screenID {
+			route = nil
+			routeErr = nil
+		} else if observed.Screen != "" && observed.Screen != "unknown" {
+			if observedRoute, err := RouteFrom(m, observed.Screen, screenID); err == nil {
+				route = observedRoute
+				routeErr = nil
+				if required := routeRequiredDriver(m, screenID, route); required != "" {
+					needsDriver = required
+				}
+			} else {
+				route = nil
+				routeErr = err
+			}
+		} else {
+			route = nil
+			routeErr = fmt.Errorf("route_not_found")
+		}
 	} else {
 		_, _ = c.captureEvidenceStep(ctx, run, "launch-not-ready", "App did not expose a ready accessibility tree after launch")
 		_ = c.withStdout(io.Discard).evidenceStop(ctx, GlobalOptions{}, []string{"--run", run.ID, "--note", "Launch tree was not ready"})
 		_ = c.withStdout(io.Discard).evidenceReport(GlobalOptions{}, []string{"--run", run.ID})
 		_ = c.withStdout(io.Discard).stop(ctx, GlobalOptions{}, []string{"--run", run.ID})
 		return Fail("launch_tree_not_ready", map[string]string{"run": run.ID, "screen": screenID, "report": filepath.Join(run.Dir, "report.html")}).Write(c.Stdout)
+	}
+	if routeErr != nil {
+		fields := map[string]string{"screen": screenID}
+		code := routeErr.Error()
+		if code == "screen_not_found" || code == "route_not_found" || code == "route_start_not_found" {
+			fields["next"] = "explore with mav ui tree/tap; map updates when the next screen is observed"
+		}
+		_ = c.withStdout(io.Discard).evidenceStop(ctx, GlobalOptions{}, []string{"--run", run.ID, "--note", "No route to " + screenID})
+		_ = c.withStdout(io.Discard).evidenceReport(GlobalOptions{}, []string{"--run", run.ID})
+		_ = c.withStdout(io.Discard).stop(ctx, GlobalOptions{}, []string{"--run", run.ID})
+		fields["run"] = run.ID
+		fields["report"] = filepath.Join(run.Dir, "report.html")
+		return Fail(code, fields).Write(c.Stdout)
 	}
 	_, _ = c.captureEvidenceStep(ctx, run, "start", "Start screen before navigation")
 	fields, err := c.navigateToScreen(ctx, screenID, route)
@@ -2792,6 +2843,144 @@ func routeRequiredDriver(m AppMap, target string, route []Edge) string {
 	return ""
 }
 
+func (c CLI) mapCommand(args []string) error {
+	if len(args) == 0 {
+		return Fail("map_command_missing", map[string]string{"usage": "mav map list|show|graph|verify|prune"}).Write(c.Stdout)
+	}
+	m, err := LoadAppMap(c.Root)
+	if err != nil {
+		return Fail("app_map_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
+	}
+	switch args[0] {
+	case "list":
+		if err := OK("map.list", map[string]string{"screens": strconv.Itoa(len(m.Screens)), "start": m.Start, "current": CurrentScreen(c.Root)}).Write(c.Stdout); err != nil {
+			return err
+		}
+		for _, id := range sortedScreenKeys(m.Screens) {
+			screen := m.Screens[id]
+			fmt.Fprintf(c.Stdout, "screen id=%s title=%s edges=%d recognizers=%d\n", id, quoteIfNeeded(screen.Title), len(screen.Edges), len(screen.Recognizers))
+		}
+		return nil
+	case "show":
+		if len(args) < 2 {
+			return Fail("screen_missing", map[string]string{"usage": "mav map show SCREEN_ID"}).Write(c.Stdout)
+		}
+		screen, ok := m.Screens[args[1]]
+		if !ok {
+			return Fail("screen_not_found", map[string]string{"screen": args[1]}).Write(c.Stdout)
+		}
+		if err := OK("map.show", map[string]string{"screen": screen.ID, "edges": strconv.Itoa(len(screen.Edges)), "recognizers": strconv.Itoa(len(screen.Recognizers))}).Write(c.Stdout); err != nil {
+			return err
+		}
+		for _, edge := range screen.Edges {
+			fmt.Fprintf(c.Stdout, "edge from=%s to=%s id=%s text=%s value=%s driver=%s confidence=%s failures=%d\n",
+				quoteIfNeeded(edgeFrom(screen.ID, edge)), quoteIfNeeded(edge.To), quoteIfNeeded(edge.ID), quoteIfNeeded(edge.Text), quoteIfNeeded(edge.Value), quoteIfNeeded(edge.Driver), quoteIfNeeded(edge.Confidence), edge.FailureCount)
+		}
+		return nil
+	case "graph":
+		fmt.Fprintln(c.Stdout, "digraph mav_map {")
+		for _, id := range sortedScreenKeys(m.Screens) {
+			screen := m.Screens[id]
+			if len(screen.Edges) == 0 {
+				fmt.Fprintf(c.Stdout, "  %q;\n", id)
+			}
+			for _, edge := range screen.Edges {
+				label := edge.ID
+				if label == "" {
+					label = edge.Text
+				}
+				if label == "" {
+					label = edge.Value
+				}
+				if label == "" && edge.X != "" && edge.Y != "" {
+					label = edge.X + "," + edge.Y
+				}
+				fmt.Fprintf(c.Stdout, "  %q -> %q [label=%q];\n", edgeFrom(id, edge), edge.To, label)
+			}
+		}
+		fmt.Fprintln(c.Stdout, "}")
+		return nil
+	case "verify":
+		fields := verifyMapFields(m)
+		if err := ValidateAppMap(m); err != nil {
+			fields["error"] = err.Error()
+			return Fail("app_map_invalid", fields).Write(c.Stdout)
+		}
+		if fields["warnings"] != "" && fields["warnings"] != "0" {
+			return Fail("app_map_warnings", fields).Write(c.Stdout)
+		}
+		return OK("map.verify", fields).Write(c.Stdout)
+	case "prune":
+		pruned := 0
+		for id, screen := range m.Screens {
+			kept := screen.Edges[:0]
+			for _, edge := range screen.Edges {
+				if edge.Confidence == "low" {
+					pruned++
+					continue
+				}
+				kept = append(kept, edge)
+			}
+			screen.Edges = kept
+			m.Screens[id] = screen
+		}
+		if err := SaveAppMap(c.Root, m); err != nil {
+			return Fail("map_prune_failed", map[string]string{"error": err.Error()}).Write(c.Stdout)
+		}
+		return OK("map.prune", map[string]string{"pruned": strconv.Itoa(pruned)}).Write(c.Stdout)
+	default:
+		return Fail("map_unknown_command", map[string]string{"command": args[0], "usage": "mav map list|show|graph|verify|prune"}).Write(c.Stdout)
+	}
+}
+
+func edgeFrom(defaultFrom string, edge Edge) string {
+	if edge.From != "" {
+		return edge.From
+	}
+	return defaultFrom
+}
+
+func verifyMapFields(m AppMap) map[string]string {
+	warnings := 0
+	coordinateEdges := 0
+	lowConfidence := 0
+	duplicateSelectors := 0
+	fromMismatches := 0
+	seenSelectors := map[string]string{}
+	for from, screen := range m.Screens {
+		for _, edge := range screen.Edges {
+			if edge.From != "" && edge.From != from {
+				fromMismatches++
+				warnings++
+			}
+			if edge.X != "" || edge.Y != "" {
+				coordinateEdges++
+				warnings++
+			}
+			if edge.Confidence == "low" {
+				lowConfidence++
+				warnings++
+			}
+			key := from + "\x00" + edge.ID + "\x00" + edge.Text + "\x00" + edge.Value
+			if edge.ID != "" || edge.Text != "" || edge.Value != "" {
+				if prev, ok := seenSelectors[key]; ok && prev != edge.To {
+					duplicateSelectors++
+					warnings++
+				}
+				seenSelectors[key] = edge.To
+			}
+		}
+	}
+	return map[string]string{
+		"screens":             strconv.Itoa(len(m.Screens)),
+		"warnings":            strconv.Itoa(warnings),
+		"coordinate_edges":    strconv.Itoa(coordinateEdges),
+		"low_confidence":      strconv.Itoa(lowConfidence),
+		"duplicate_selectors": strconv.Itoa(duplicateSelectors),
+		"from_mismatches":     strconv.Itoa(fromMismatches),
+	}
+}
+
 func (c CLI) navigateToScreen(ctx context.Context, screenID string, routeOverride ...[]Edge) (map[string]string, error) {
 	m, err := LoadAppMap(c.Root)
 	if err != nil {
@@ -2814,48 +3003,49 @@ func (c CLI) navigateToScreen(ctx context.Context, screenID string, routeOverrid
 		return map[string]string{"next": "mav setup"}, fmt.Errorf("config_not_found")
 	}
 	run, _ := LoadRun(c.Root, "")
-	SetCurrentScreen(c.Root, m.Start, run.ID)
+	if CurrentScreen(c.Root) == screenID {
+		return map[string]string{"screen": screenID, "steps": "0", "already_at_target": "true"}, nil
+	}
+	if len(routeOverride) == 0 {
+		SetCurrentScreen(c.Root, m.Start, run.ID)
+	}
 	ClearPendingMapAction(c.Root)
+	currentFrom := CurrentScreen(c.Root)
+	if currentFrom == "" {
+		currentFrom = m.Start
+	}
 	for _, edge := range route {
+		from := edge.From
+		if from == "" {
+			from = currentFrom
+		}
 		beforeTree, beforeErr := c.waitForTreeReady(ctx, cfg, 5*time.Second)
 		if beforeErr != nil {
-			return map[string]string{"screen": screenID, "target": edge.To}, fmt.Errorf("tree_not_ready")
+			return map[string]string{"requested": screenID, "stuck_at": from, "edge_target": edge.To}, fmt.Errorf("tree_not_ready")
 		}
-		args := []string{}
-		if edge.ID != "" {
-			args = append(args, "--id", edge.ID)
+		afterTree, usedDriver, retry, err := c.executeRouteEdge(ctx, cfg, edge, beforeTree)
+		if err != nil {
+			markRouteEdgeFailure(c.Root, from, edge)
+			fields := map[string]string{"requested": screenID, "stuck_at": from, "edge_target": edge.To}
+			if usedDriver != "" {
+				fields["driver"] = usedDriver
+			}
+			if retry {
+				fields["retried_driver"] = "true"
+			}
+			return fields, err
 		}
-		if edge.Text != "" {
-			args = append(args, "--text", edge.Text)
+		observed, observeErr := ObserveScreenDetailedWithDriver(c.Root, cfg, run, afterTree, usedDriver)
+		if observeErr != nil {
+			return map[string]string{"requested": screenID, "stuck_at": from, "edge_target": edge.To}, fmt.Errorf("map_observe_failed")
 		}
-		if edge.Value != "" {
-			args = append(args, "--value", edge.Value)
+		if observed.Screen != edge.To {
+			markRouteEdgeFailure(c.Root, from, edge)
+			return map[string]string{"requested": screenID, "stuck_at": observed.Screen, "edge_target": edge.To, "driver": usedDriver}, fmt.Errorf("route_target_not_observed")
 		}
-		if edge.X != "" && edge.Y != "" {
-			args = append(args, "--x", edge.X, "--y", edge.Y)
-		}
-		tapOpts := GlobalOptions{}
-		if edge.Driver == "appium" {
-			tapOpts.PreferDriver = "appium"
-		} else if edge.Driver == "axe" {
-			tapOpts.PreferDriver = "axe"
-		}
-		if err := c.withStdout(io.Discard).uiTap(ctx, tapOpts, cfg, args); err != nil {
-			return map[string]string{"screen": screenID, "target": edge.To}, fmt.Errorf("tap_failed")
-		}
-		if edge.Wait != "" {
-			time.Sleep(parseFlowDuration(edge.Wait, 0))
-		}
-		afterTree, afterErr := c.waitForTreeReady(ctx, cfg, 5*time.Second)
-		if afterErr != nil {
-			return map[string]string{"screen": screenID, "target": edge.To}, fmt.Errorf("tree_not_ready")
-		}
-		if sameTreeForRoute(beforeTree, afterTree) {
-			return map[string]string{"screen": screenID, "target": edge.To}, fmt.Errorf("route_no_screen_change")
-		}
-		_ = ObserveExpectedScreenWithDriver(c.Root, cfg, run, afterTree, edge.To, edge.Driver)
 		SetCurrentScreen(c.Root, edge.To, run.ID)
 		ClearPendingMapAction(c.Root)
+		currentFrom = edge.To
 	}
 	screen := m.Screens[screenID]
 	params := map[string]string{}
@@ -2871,7 +3061,128 @@ func (c CLI) navigateToScreen(ctx context.Context, screenID string, routeOverrid
 			return map[string]string{"screen": screenID}, err
 		}
 	}
-	return map[string]string{"screen": screenID, "steps": strconv.Itoa(len(route))}, nil
+	fields := map[string]string{"screen": screenID, "steps": strconv.Itoa(len(route))}
+	return fields, nil
+}
+
+func (c CLI) executeRouteEdge(ctx context.Context, cfg Config, edge Edge, beforeTree string) (string, string, bool, error) {
+	drivers := routeEdgeDrivers(edge)
+	var lastDriver string
+	var lastTapErr error
+	tapSucceeded := false
+	retried := false
+	for i, driver := range drivers {
+		lastDriver = driver
+		if i > 0 {
+			retried = true
+		}
+		if err := c.tapRouteEdge(ctx, cfg, edge, driver); err != nil {
+			lastTapErr = err
+			continue
+		}
+		tapSucceeded = true
+		ClearPendingMapAction(c.Root)
+		if edge.Wait != "" {
+			time.Sleep(parseFlowDuration(edge.Wait, 0))
+		}
+		afterTree, afterErr := c.waitForTreeReady(ctx, cfg, 5*time.Second)
+		if afterErr != nil {
+			return "", lastDriver, retried, fmt.Errorf("tree_not_ready")
+		}
+		if sameTreeForRoute(beforeTree, afterTree) {
+			continue
+		}
+		return afterTree, lastDriver, retried, nil
+	}
+	ClearPendingMapAction(c.Root)
+	if !tapSucceeded && lastTapErr != nil {
+		return "", lastDriver, retried, fmt.Errorf("tap_failed")
+	}
+	return "", lastDriver, retried, fmt.Errorf("route_no_screen_change")
+}
+
+func (c CLI) tapRouteEdge(ctx context.Context, cfg Config, edge Edge, driver string) error {
+	args := []string{}
+	if edge.ID != "" {
+		args = append(args, "--id", edge.ID)
+	}
+	if edge.Text != "" {
+		args = append(args, "--text", edge.Text)
+	}
+	if edge.Value != "" {
+		args = append(args, "--value", edge.Value)
+	}
+	if edge.X != "" && edge.Y != "" {
+		args = append(args, "--x", edge.X, "--y", edge.Y)
+	}
+	if edge.ID == "" && edge.Text == "" && edge.Value == "" {
+		driver = ""
+	}
+	tapOpts := GlobalOptions{PreferDriver: driver}
+	var out bytes.Buffer
+	if err := c.withStdout(&out).uiTap(ctx, tapOpts, cfg, args); err != nil {
+		return err
+	}
+	if code, ok := outputFailureCode(out.String()); ok {
+		return errors.New(code)
+	}
+	return nil
+}
+
+func outputFailureCode(output string) (string, bool) {
+	fields := strings.Fields(output)
+	if len(fields) == 0 || fields[0] != "fail" {
+		return "", false
+	}
+	for _, field := range fields[1:] {
+		if strings.HasPrefix(field, "code=") {
+			return strings.TrimPrefix(field, "code="), true
+		}
+	}
+	return "command_failed", true
+}
+
+func routeEdgeDrivers(edge Edge) []string {
+	driver := edge.Driver
+	if edge.ID == "" && edge.Text == "" && edge.Value == "" {
+		return []string{""}
+	}
+	if driver == "" || driver == "auto" {
+		return []string{"", "appium"}
+	}
+	drivers := []string{driver}
+	switch driver {
+	case "axe":
+		drivers = append(drivers, "appium")
+	case "appium":
+		drivers = append(drivers, "axe")
+	}
+	return uniqueStrings(drivers)
+}
+
+func markRouteEdgeFailure(root, from string, edge Edge) {
+	if from == "" {
+		return
+	}
+	screen, err := LoadScreen(root, from)
+	if err != nil {
+		return
+	}
+	for i := range screen.Edges {
+		if sameRouteEdge(screen.Edges[i], edge) {
+			screen.Edges[i].FailureCount++
+			screen.Edges[i].LastFailure = time.Now().Format(time.RFC3339)
+			if screen.Edges[i].FailureCount >= 2 {
+				screen.Edges[i].Confidence = "low"
+			}
+			_ = SaveScreen(root, screen)
+			return
+		}
+	}
+}
+
+func sameRouteEdge(a, b Edge) bool {
+	return a.To == b.To && a.ID == b.ID && a.Text == b.Text && a.Value == b.Value && a.X == b.X && a.Y == b.Y
 }
 
 func (c CLI) currentOrNewRun() (RunState, error) {
