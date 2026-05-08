@@ -197,6 +197,47 @@ func (r *launchRecipeRunner) Start(ctx context.Context, logPath string, name str
 	return 123, nil
 }
 
+type launchRetryRunner struct {
+	tools        map[string]bool
+	commands     []string
+	appPath      string
+	installCalls int
+}
+
+func (r *launchRetryRunner) LookPath(file string) (string, error) {
+	if r.tools[file] {
+		return "/usr/bin/" + file, nil
+	}
+	return "", os.ErrNotExist
+}
+
+func (r *launchRetryRunner) Run(ctx context.Context, name string, args ...string) CommandResult {
+	_ = ctx
+	command := name + " " + strings.Join(args, " ")
+	r.commands = append(r.commands, command)
+	if name == "/bin/sh" && len(args) == 2 {
+		script := args[1]
+		if strings.Contains(script, "make ios-app-path") {
+			return CommandResult{Stdout: r.appPath + "\n"}
+		}
+		if strings.Contains(script, "simctl install") {
+			r.installCalls++
+			if r.installCalls == 1 {
+				return CommandResult{Stderr: "Permission denied", Err: os.ErrPermission, Code: 1}
+			}
+		}
+	}
+	return CommandResult{}
+}
+
+func (r *launchRetryRunner) Start(ctx context.Context, logPath string, name string, args ...string) (int, error) {
+	_ = ctx
+	_ = logPath
+	_ = name
+	_ = args
+	return 123, nil
+}
+
 func TestGoUnknownScreenFailsDeterministically(t *testing.T) {
 	root := t.TempDir()
 	if err := SaveAppMap(root, DefaultAppMap("com.example.demo")); err != nil {
@@ -662,6 +703,76 @@ func TestUITypeReportsReceivedCharsWhenFocusedFieldChanges(t *testing.T) {
 	}
 }
 
+func TestUITypePreferAppiumUsesActiveElementValueEndpoint(t *testing.T) {
+	root, cfg, server, calls := setupAppiumTypeFocusTest(t, true)
+	defer server.Close()
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{
+		tools: cfg.Tools,
+		out:   map[string]string{"appium driver list --installed": "xcuitest@7.0.0\n"},
+	}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"--prefer-driver", "appium", "ui", "type", "user@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "driver=appium") || !strings.Contains(got, "chars_sent=16") {
+		t.Fatalf("got %q", got)
+	}
+	if !containsCall(*calls, "GET /wd/hub/session/s1/element/active") ||
+		!containsCall(*calls, `POST /wd/hub/session/s1/element/el1/value {"value":["user@example.com"]}`) {
+		t.Fatalf("calls=%v", *calls)
+	}
+}
+
+func TestUITapValueUsesAppiumPredicate(t *testing.T) {
+	root, cfg, server, calls := setupAppiumSemanticTest(t)
+	defer server.Close()
+	cfg.Tools["axe"] = true
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{
+		tools: cfg.Tools,
+		out:   map[string]string{"appium driver list --installed": "xcuitest@7.0.0\n"},
+	}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "tap", "--value", "Dirección de email"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.Contains(got, "driver=appium") || !strings.Contains(got, `value="Dirección de email"`) {
+		t.Fatalf("got %q", got)
+	}
+	if !containsCall(*calls, `"using":"predicate string"`) ||
+		!containsCall(*calls, `value == 'Dirección de email'`) ||
+		!containsCall(*calls, "/click") {
+		t.Fatalf("calls=%v", *calls)
+	}
+}
+
+func TestUIEraseAndHideKeyboardUseAppium(t *testing.T) {
+	root, cfg, server, calls := setupAppiumTypeFocusTest(t, true)
+	defer server.Close()
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{
+		tools: cfg.Tools,
+		out:   map[string]string{"appium driver list --installed": "xcuitest@7.0.0\n"},
+	}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "erase", "--focused"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.Run(context.Background(), []string{"ui", "hideKeyboard"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "ok cmd=ui.erase") || !strings.Contains(got, "ok cmd=ui.hideKeyboard") {
+		t.Fatalf("got %q", got)
+	}
+	if !containsCall(*calls, "POST /wd/hub/session/s1/element/el1/clear {}") ||
+		!containsCall(*calls, `POST /wd/hub/session/s1/execute/sync {"args":[],"script":"mobile: hideKeyboard"}`) {
+		t.Fatalf("calls=%v", *calls)
+	}
+}
+
 func TestUITreeIncludeSystemUsesActiveAppSource(t *testing.T) {
 	root, cfg, server, calls := setupAppiumSystemSourceTest(t)
 	defer server.Close()
@@ -713,6 +824,66 @@ func TestUITreeIncludeSystemAutoUsesAppiumBeforeAxe(t *testing.T) {
 	}
 	if !containsCall(*calls, "mobile: activeAppInfo") {
 		t.Fatalf("active app info not requested: %v", *calls)
+	}
+}
+
+func TestUITreeIncludeSystemKeepsForegroundAppWhenActiveBundleMatches(t *testing.T) {
+	calls := []string{}
+	activeApplication := "com.example.app"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		calls = append(calls, r.Method+" "+r.URL.Path+" "+string(body))
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/wd/hub/session/s1/execute/sync":
+			_, _ = io.WriteString(w, `{"value":{"bundleId":"com.example.app","name":"Demo","pid":42}}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/wd/hub/session/s1/appium/settings":
+			_, _ = io.WriteString(w, `{"value":{"defaultActiveApplication":"auto"}}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/wd/hub/session/s1/appium/settings":
+			if strings.Contains(string(body), "springboard") {
+				activeApplication = "com.apple.springboard"
+			}
+			_, _ = io.WriteString(w, `{"value":null}`)
+		case r.URL.Path == "/wd/hub/session/s1/source":
+			if activeApplication == "com.apple.springboard" {
+				_, _ = io.WriteString(w, `{"value":"<AppiumAUT type=\"XCUIElementTypeApplication\" name=\"SpringBoard\"><XCUIElementTypeButton name=\"Home\" label=\"Home\"/></AppiumAUT>"}`)
+			} else {
+				_, _ = io.WriteString(w, `{"value":"<AppiumAUT type=\"XCUIElementTypeApplication\" name=\"Demo\"><XCUIElementTypeButton name=\"Upload\" label=\"Upload\"/></AppiumAUT>"}`)
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.BundleID = "com.example.app"
+	cfg.Tools = map[string]bool{"appium": true, "node": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := os.MkdirAll(run.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAppiumSession(run, appiumSessionState{PID: 123, BaseURL: server.URL + appiumBasePath, SessionID: "s1", UDID: "SIM", BundleID: "com.example.app"}); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{tools: cfg.Tools, out: map[string]string{"appium driver list --installed": "xcuitest@7.0.0\n"}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "tree", "--prefer-driver", "appium", "--include-system"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "label=Upload") || strings.Contains(got, "SpringBoard") || containsCall(calls, "springboard") {
+		t.Fatalf("got=%q calls=%v", got, calls)
 	}
 }
 
@@ -1248,7 +1419,17 @@ func setupAppiumTypeFocusTest(t *testing.T, focused bool) (string, Config, *http
 		calls = append(calls, r.Method+" "+r.URL.Path+" "+string(body))
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/wd/hub/session/s1/execute/sync":
-			_, _ = io.WriteString(w, `{"value":{"bundleId":"com.example.app","name":"Demo","pid":42}}`)
+			if strings.Contains(string(body), "hideKeyboard") {
+				_, _ = io.WriteString(w, `{"value":null}`)
+			} else {
+				_, _ = io.WriteString(w, `{"value":{"bundleId":"com.example.app","name":"Demo","pid":42}}`)
+			}
+		case r.Method == http.MethodGet && r.URL.Path == "/wd/hub/session/s1/element/active":
+			_, _ = io.WriteString(w, `{"value":{"element-6066-11e4-a52e-4f735466cecf":"el1"}}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/wd/hub/session/s1/element/el1/value":
+			_, _ = io.WriteString(w, `{"value":null}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/wd/hub/session/s1/element/el1/clear":
+			_, _ = io.WriteString(w, `{"value":null}`)
 		case r.URL.Path == "/wd/hub/session/s1/source":
 			sourceCalls++
 			focusedValue := "false"
@@ -2886,6 +3067,191 @@ func TestOpenRunsConfiguredLaunchRecipe(t *testing.T) {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("commands missing %q:\n%s", want, joined)
 		}
+	}
+}
+
+func TestOpenClearStateRunsUninstallBeforeInstall(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.app"
+	cfg.SimulatorUDID = "SIM"
+	cfg.Launch = LaunchConfig{Mode: "custom", Commands: LaunchCommands{
+		AppPath: "make ios-app-path",
+		Install: `xcrun simctl install "$MAV_UDID" "$MAV_APP_PATH"`,
+		Launch:  `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`,
+	}}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runner := &launchRecipeRunner{
+		tools: map[string]bool{"xcrun": true},
+		results: map[string]CommandResult{
+			"make ios-app-path": {Stdout: "/tmp/App.app\n"},
+		},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"open", "--clear-state"}); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(runner.commands, "\n")
+	uninstall := strings.Index(joined, "simctl uninstall")
+	install := strings.Index(joined, "simctl install")
+	if uninstall < 0 || install < 0 || uninstall > install {
+		t.Fatalf("commands=%s", joined)
+	}
+}
+
+func TestOpenClearStateRequiresInstallCommand(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.app"
+	cfg.SimulatorUDID = "SIM"
+	cfg.Launch = LaunchConfig{Mode: "custom", Commands: LaunchCommands{
+		Launch: `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`,
+	}}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: &launchRecipeRunner{tools: map[string]bool{"xcrun": true}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"open", "--clear-state"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "fail code=launch_step_failed") || !strings.Contains(got, "step=clear_state") || !strings.Contains(got, "clearState requires an install command") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestRunFlowFailsWhenOpenClearStateCannotInstall(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.app"
+	cfg.SimulatorUDID = "SIM"
+	cfg.Launch = LaunchConfig{Mode: "custom", Commands: LaunchCommands{
+		Launch: `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`,
+	}}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	flowPath := filepath.Join(root, "flow.yaml")
+	if err := os.WriteFile(flowPath, []byte("steps:\n  - open: { clearState: true }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: &launchRecipeRunner{tools: map[string]bool{"xcrun": true}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"run", flowPath}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "fail code=open_failed") || !strings.Contains(got, "action=open") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestRunFlowFailsWhenEraseOrHideKeyboardFail(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "erase", body: "steps:\n  - erase: { focused: true }\n", want: "fail code=erase_failed"},
+		{name: "hide", body: "steps:\n  - hideKeyboard: {}\n", want: "fail code=hide_keyboard_failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			cfg := DefaultConfig(root)
+			cfg.BundleID = "com.example.app"
+			cfg.SimulatorUDID = "SIM"
+			cfg.Tools = map[string]bool{}
+			if err := SaveConfig(root, cfg); err != nil {
+				t.Fatal(err)
+			}
+			flowPath := filepath.Join(root, "flow.yaml")
+			if err := os.WriteFile(flowPath, []byte(tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			var out bytes.Buffer
+			cli := CLI{Runner: fakeRunner{tools: cfg.Tools}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+			if err := cli.Run(context.Background(), []string{"run", flowPath}); err != nil {
+				t.Fatal(err)
+			}
+			if got := out.String(); !strings.Contains(got, tc.want) {
+				t.Fatalf("got %q", got)
+			}
+		})
+	}
+}
+
+func TestRunFlowOptionalTapSkipsCommandFailure(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.app"
+	cfg.SimulatorUDID = "SIM"
+	cfg.Tools = map[string]bool{}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	flowPath := filepath.Join(root, "flow.yaml")
+	if err := os.WriteFile(flowPath, []byte("name: optional_tap\nsteps:\n  - tap: { id: missing, optional: true }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{tools: cfg.Tools}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"run", flowPath}); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.Contains(got, "ok cmd=run") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestOpenRetriesBazelOutInstallFromWritableCopy(t *testing.T) {
+	root := t.TempDir()
+	appPath := filepath.Join(root, "bazel-out", "ios", "bin", "Demo.app")
+	if err := os.MkdirAll(appPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(appPath, "Info.plist"), []byte("plist"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(appPath, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(appPath, 0o755)
+		_ = os.Chmod(filepath.Join(appPath, "Info.plist"), 0o644)
+	})
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.app"
+	cfg.SimulatorUDID = "SIM"
+	cfg.Launch = LaunchConfig{Mode: "custom", Commands: LaunchCommands{
+		AppPath: "make ios-app-path",
+		Install: `xcrun simctl install "$MAV_UDID" "$MAV_APP_PATH"`,
+		Launch:  `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`,
+	}}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runner := &launchRetryRunner{tools: map[string]bool{"xcrun": true}, appPath: appPath}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"open"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.Contains(got, "ok cmd=open") || !strings.Contains(got, "app.tmp") {
+		t.Fatalf("got %q", got)
+	}
+	if runner.installCalls != 2 {
+		t.Fatalf("installCalls=%d commands=%v", runner.installCalls, runner.commands)
+	}
+	run, err := LoadRun(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(run.Dir, "app.tmp", "Demo.app", "Info.plist")); err != nil {
+		t.Fatalf("copied app missing: %v", err)
 	}
 }
 

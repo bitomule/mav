@@ -32,11 +32,21 @@ steps:
   - rotate: { x: 200, y: 450, degrees: 30 }
   - twoFingerPan: { x: 200, y: 450, panX: 20, panY: 10 }
   - actions: { file: .mav/actions/map-zoom.json }
+  - open: { clearState: true }
+  - erase: { value: "Email", focused: true, prefer-driver: appium }
+  - hideKeyboard: {}
+  - whileNotVisible:
+      text: "You"
+      timeout: 30s
+      prefer-driver: appium
+      do:
+        - tap: { id: dismiss_button, optional: true }
+        - delay: 500ms
 `))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if flow.Name != "verify_daily_reminder" || len(flow.Steps) != 14 {
+	if flow.Name != "verify_daily_reminder" || len(flow.Steps) != 18 {
 		t.Fatalf("flow=%+v", flow)
 	}
 	if flow.Steps[1].Action != "go" || flow.Steps[1].Params["screen"] != "settings" {
@@ -71,6 +81,18 @@ steps:
 	}
 	if flow.Steps[13].Action != "actions" || flow.Steps[13].Params["file"] != ".mav/actions/map-zoom.json" {
 		t.Fatalf("actions=%+v", flow.Steps[13])
+	}
+	if flow.Steps[14].Action != "open" || flow.Steps[14].Params["clearState"] != "true" {
+		t.Fatalf("open clearState=%+v", flow.Steps[14])
+	}
+	if flow.Steps[15].Action != "erase" || flow.Steps[15].Params["value"] != "Email" || flow.Steps[15].Params["focused"] != "true" {
+		t.Fatalf("erase=%+v", flow.Steps[15])
+	}
+	if flow.Steps[16].Action != "hideKeyboard" {
+		t.Fatalf("hideKeyboard=%+v", flow.Steps[16])
+	}
+	if flow.Steps[17].Action != "whileNotVisible" || flow.Steps[17].Params["text"] != "You" || flow.Steps[17].Params["timeout"] != "30s" || len(flow.Steps[17].Do) != 2 || flow.Steps[17].Do[0].Params["optional"] != "true" {
+		t.Fatalf("while=%+v", flow.Steps[17])
 	}
 }
 

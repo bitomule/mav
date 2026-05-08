@@ -3,6 +3,7 @@ package mav
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -13,7 +14,7 @@ type launchStep struct {
 	Command string
 }
 
-func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState) (string, *launchStep, CommandResult) {
+func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clearState bool) (string, *launchStep, CommandResult) {
 	commands := cfg.Launch.Commands
 	if !hasLaunchCommands(commands) && cfg.BundleID != "" {
 		commands.Launch = `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`
@@ -29,13 +30,29 @@ func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState) (str
 	if strings.TrimSpace(commands.Launch) == "" {
 		return appPath, &launchStep{Name: "launch"}, CommandResult{Stderr: "launch command missing", Err: fmt.Errorf("launch command missing")}
 	}
+	if clearState && strings.TrimSpace(commands.Install) == "" {
+		return appPath, &launchStep{Name: "clear_state"}, CommandResult{Stderr: "clearState requires an install command in the launch recipe", Err: fmt.Errorf("clear_state_install_missing")}
+	}
 	env := launchEnv(cfg, run, appPath)
+	if clearState && cfg.BundleID != "" {
+		step := launchStep{Name: "clear_state", Command: `xcrun simctl uninstall "$MAV_UDID" "$MAV_BUNDLE_ID" || true`}
+		_ = c.runLaunchCommand(ctx, cfg, run, step, env)
+	}
 	for _, step := range steps {
 		if strings.TrimSpace(step.Command) == "" {
 			continue
 		}
 		result := c.runLaunchCommand(ctx, cfg, run, step, env)
 		if result.Err != nil {
+			if step.Name == "install" && shouldRetryInstallFromWritableCopy(result, appPath) {
+				if retryResult, retryPath := c.retryInstallFromWritableCopy(ctx, cfg, run, appPath); retryResult.Err == nil {
+					appPath = retryPath
+					env = launchEnv(cfg, run, appPath)
+					continue
+				} else {
+					return appPath, &step, retryResult
+				}
+			}
 			return appPath, &step, result
 		}
 		if step.Name == "app_path" {
@@ -81,6 +98,66 @@ func launchEnv(cfg Config, run RunState, appPath string) map[string]string {
 		"MAV_RUNTIME":     cfg.SimulatorRuntime,
 		"MAV_PLATFORM":    "ios",
 	}
+}
+
+func shouldRetryInstallFromWritableCopy(result CommandResult, appPath string) bool {
+	if strings.TrimSpace(appPath) == "" || result.Err == nil {
+		return false
+	}
+	lower := strings.ToLower(result.Stderr + "\n" + result.Stdout + "\n" + result.Err.Error())
+	return strings.Contains(lower, "permission denied") &&
+		strings.Contains(filepath.ToSlash(appPath), "bazel-out/") &&
+		filepath.Ext(appPath) == ".app"
+}
+
+func (c CLI) retryInstallFromWritableCopy(ctx context.Context, cfg Config, run RunState, appPath string) (CommandResult, string) {
+	target := filepath.Join(run.Dir, "app.tmp", filepath.Base(appPath))
+	_ = os.RemoveAll(target)
+	if err := copyDirWritable(appPath, target); err != nil {
+		return CommandResult{Stderr: err.Error(), Err: err}, appPath
+	}
+	env := launchEnv(cfg, run, target)
+	result := c.runLaunchCommand(ctx, cfg, run, launchStep{Name: "install_retry", Command: `xcrun simctl install "$MAV_UDID" "$MAV_APP_PATH"`}, env)
+	return result, target
+}
+
+func copyDirWritable(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		mode := info.Mode()
+		if d.IsDir() {
+			return os.MkdirAll(target, mode.Perm()|0o700)
+		}
+		if mode&os.ModeSymlink != 0 {
+			link, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return err
+			}
+			return os.Symlink(link, target)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, mode.Perm()|0o600)
+	})
 }
 
 func shellEnvPrefix(env map[string]string) string {
