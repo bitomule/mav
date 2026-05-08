@@ -199,7 +199,7 @@ func parseFlowStepNode(node yaml.Node) (FlowStep, error) {
 	put("degrees", payload.Degrees)
 	put("file", payload.File)
 	put("prefer-driver", payload.PreferDriver)
-	if payload.ClearState {
+	if payload.ClearState || mappingBoolValue(node.Content[1], "clear-state") {
 		params["clearState"] = "true"
 	}
 	if payload.Optional {
@@ -207,6 +207,23 @@ func parseFlowStepNode(node yaml.Node) (FlowStep, error) {
 	}
 	put("focused", payload.Focused)
 	return FlowStep{Action: action, Params: params, Any: payload.Any}, nil
+}
+
+func mappingBoolValue(node *yaml.Node, key string) bool {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return false
+	}
+	value, ok := mappingValue(*node, key)
+	if !ok {
+		return false
+	}
+	switch value.Kind {
+	case yaml.ScalarNode:
+		parsed, err := strconv.ParseBool(value.Value)
+		return err == nil && parsed
+	default:
+		return false
+	}
 }
 
 type flowWhenPayload struct {
