@@ -61,6 +61,8 @@ type gestureParams struct {
 type appiumDriverStatus struct {
 	OK             bool
 	Message        string
+	Version        string
+	PredicateOK    bool
 	NodeMismatch   bool
 	HomePermission bool
 	Next           string
@@ -74,7 +76,12 @@ func checkAppiumXCUITestDriver(ctx context.Context, runner Runner) appiumDriverS
 	result := runner.Run(ctx, "appium", "driver", "list", "--installed")
 	output := result.Stdout + "\n" + result.Stderr
 	if result.Err == nil && strings.Contains(strings.ToLower(output), "xcuitest") {
-		return appiumDriverStatus{OK: true}
+		version := appiumXCUITestVersion(output)
+		return appiumDriverStatus{
+			OK:          true,
+			Version:     version,
+			PredicateOK: appiumXCUITestPredicateSupported(version),
+		}
 	}
 	if looksLikeAppiumHomePermissionFailure(output) {
 		if retry := retryAppiumDriverListWithWritableHome(ctx, runner); retry.OK {
@@ -97,6 +104,37 @@ func checkAppiumXCUITestDriver(ctx context.Context, runner Runner) appiumDriverS
 		return appiumDriverStatus{Message: firstLine(output), Next: "mav setup --install appium"}
 	}
 	return appiumDriverStatus{Message: "xcuitest driver missing", Next: "mav setup --install appium"}
+}
+
+func appiumXCUITestVersion(output string) string {
+	for _, field := range strings.Fields(output) {
+		lower := strings.ToLower(strings.Trim(field, ",;()[]{}"))
+		if strings.HasPrefix(lower, "xcuitest@") {
+			return strings.TrimPrefix(lower, "xcuitest@")
+		}
+	}
+	return ""
+}
+
+func appiumXCUITestPredicateSupported(version string) bool {
+	major, ok := majorVersion(version)
+	if !ok {
+		return true
+	}
+	return major >= 9
+}
+
+func majorVersion(version string) (int, bool) {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		return 0, false
+	}
+	head := version
+	if idx := strings.IndexAny(head, ".-+"); idx >= 0 {
+		head = head[:idx]
+	}
+	major, err := strconv.Atoi(head)
+	return major, err == nil
 }
 
 func looksLikeAppiumNodeRuntimeFailure(output string) bool {
@@ -471,7 +509,11 @@ func (c CLI) appiumClickByAccessibilityID(ctx context.Context, cfg Config, id st
 }
 
 func (c CLI) appiumClickByPredicate(ctx context.Context, cfg Config, predicate string) error {
-	return c.appiumFindElementAndClick(ctx, cfg, "predicate string", predicate)
+	err := c.appiumFindElementAndClick(ctx, cfg, "predicate string", predicate)
+	if err == nil || !appiumPredicateUnsupported(err) {
+		return err
+	}
+	return c.appiumFindElementAndClick(ctx, cfg, "-ios class chain", appiumPredicateClassChain(predicate))
 }
 
 func (c CLI) appiumFindElementAndClick(ctx context.Context, cfg Config, using, value string) error {
@@ -504,6 +546,16 @@ func appiumElementID(response map[string]any) string {
 		}
 	}
 	return ""
+}
+
+func appiumPredicateUnsupported(err error) bool {
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "predicate string") &&
+		(strings.Contains(message, "not supported") || strings.Contains(message, "invalid selector"))
+}
+
+func appiumPredicateClassChain(predicate string) string {
+	return "**/XCUIElementTypeAny[`" + strings.ReplaceAll(predicate, "`", "\\`") + "`]"
 }
 
 func appiumGetJSON(ctx context.Context, target string, out any) error {
@@ -635,7 +687,7 @@ func (c CLI) ensureAppiumSession(ctx context.Context, cfg Config, run RunState) 
 	appendProcess(run, "appium", pid, "appium "+strings.Join(args, " "))
 	state := appiumSessionState{PID: pid, Port: port, BaseURL: baseURL, UDID: cfg.SimulatorUDID, BundleID: cfg.BundleID}
 	if err := waitForAppiumStatus(ctx, baseURL, 10*time.Second); err != nil {
-		return state, appiumError{Code: "ui_gesture_failed", Message: err.Error()}
+		return state, appiumError{Code: "appium_status_failed", Message: err.Error()}
 	}
 	sessionID, err := createAppiumSession(ctx, baseURL, cfg)
 	if err != nil {
@@ -662,7 +714,7 @@ func createAppiumSession(ctx context.Context, baseURL string, cfg Config) (strin
 	body := map[string]any{"capabilities": map[string]any{"alwaysMatch": caps}}
 	var response map[string]any
 	if err := appiumPostJSON(ctx, baseURL+"/session", body, &response); err != nil {
-		return "", appiumError{Code: "ui_gesture_failed", Message: err.Error()}
+		return "", appiumError{Code: "session_create_failed", Message: err.Error()}
 	}
 	if value, ok := response["value"].(map[string]any); ok {
 		if id, ok := value["sessionId"].(string); ok && id != "" {
@@ -672,7 +724,7 @@ func createAppiumSession(ctx context.Context, baseURL string, cfg Config) (strin
 	if id, ok := response["sessionId"].(string); ok && id != "" {
 		return id, nil
 	}
-	return "", appiumError{Code: "ui_gesture_failed", Message: "appium session id missing"}
+	return "", appiumError{Code: "session_create_failed", Message: "appium session id missing"}
 }
 
 func waitForAppiumStatus(ctx context.Context, baseURL string, timeout time.Duration) error {

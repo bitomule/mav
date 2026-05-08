@@ -161,6 +161,19 @@ func TestAppiumHasXCUITestDriver(t *testing.T) {
 	}
 }
 
+func TestCheckAppiumXCUITestDriverReportsPredicateSupport(t *testing.T) {
+	runner := fakeRunner{out: map[string]string{"appium driver list --installed": "xcuitest@8.4.3\n"}}
+	status := checkAppiumXCUITestDriver(context.Background(), runner)
+	if !status.OK || status.Version != "8.4.3" || status.PredicateOK {
+		t.Fatalf("status=%+v", status)
+	}
+	runner = fakeRunner{out: map[string]string{"appium driver list --installed": "xcuitest@9.0.0\n"}}
+	status = checkAppiumXCUITestDriver(context.Background(), runner)
+	if !status.OK || status.Version != "9.0.0" || !status.PredicateOK {
+		t.Fatalf("status=%+v", status)
+	}
+}
+
 func TestCheckAppiumXCUITestDriverDetectsNodeRuntimeFailure(t *testing.T) {
 	runner := fakeRunner{out: map[string]string{"appium driver list --installed": "Error [ERR_REQUIRE_ESM]\nNode.js v20.16.0\n"}}
 	status := checkAppiumXCUITestDriver(context.Background(), runner)

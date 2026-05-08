@@ -627,6 +627,62 @@ func TestUITapAutoFallsBackToAppiumPredicateForText(t *testing.T) {
 	}
 }
 
+func TestUITapAppiumRetriesTextPredicateWithClassChain(t *testing.T) {
+	calls := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		calls = append(calls, r.Method+" "+r.URL.Path+" "+string(body))
+		switch {
+		case r.URL.Path == "/wd/hub/session/s1/element" && strings.Contains(string(body), `"using":"predicate string"`):
+			http.Error(w, `{"value":{"error":"invalid selector","message":"Locator Strategy 'predicate string' is not supported for this session"}}`, http.StatusBadRequest)
+		case r.URL.Path == "/wd/hub/session/s1/element" && strings.Contains(string(body), `"using":"-ios class chain"`):
+			_, _ = io.WriteString(w, `{"value":{"element-6066-11e4-a52e-4f735466cecf":"el1"}}`)
+		case r.URL.Path == "/wd/hub/session/s1/element/el1/click":
+			_, _ = io.WriteString(w, `{"value":null}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.BundleID = "com.example.app"
+	cfg.Tools = map[string]bool{"appium": true, "node": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAppiumSession(run, appiumSessionState{PID: 123, BaseURL: server.URL + appiumBasePath, SessionID: "s1", UDID: "SIM", BundleID: "com.example.app"}); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{
+		tools: cfg.Tools,
+		out:   map[string]string{"appium driver list --installed": "xcuitest@8.4.3\n"},
+	}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "tap", "--text", "Email", "--prefer-driver", "appium"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "ok cmd=ui.tap") || !strings.Contains(got, "driver=appium") {
+		t.Fatalf("got %q", got)
+	}
+	if !containsCall(calls, `"using":"predicate string"`) ||
+		!containsCall(calls, `"using":"-ios class chain"`) ||
+		!containsCall(calls, "**/XCUIElementTypeAny") ||
+		!containsCall(calls, "/click") {
+		t.Fatalf("calls=%v", calls)
+	}
+}
+
 func TestUITapAutoReportsAppiumErrorWhenAxeMissing(t *testing.T) {
 	calls := []string{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1033,6 +1089,41 @@ func TestSetupInstallsAndVerifiesAppium(t *testing.T) {
 	}
 }
 
+func TestSetupAppiumFallsBackToXCUITest8WhenServer2RejectsLatest(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	runner := &sequenceRecordingRunner{
+		tools: map[string]bool{"npm": true, "node": true, "appium": true},
+		out:   map[string]string{"appium driver list --installed": "xcuitest@8.4.3\n"},
+		err: map[string]CommandResult{
+			"appium driver install xcuitest": {
+				Stderr: "Error: 'xcuitest' cannot be installed because the server version it requires (^3.0.0-rc.2) does not meet the currently installed one (2.19.0). Please install a compatible server version first.",
+				Err:    os.ErrInvalid,
+			},
+		},
+	}
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"setup", "--install", "appium"}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"npm install -g appium",
+		"appium driver install xcuitest",
+		"appium driver install xcuitest@8",
+		"appium driver list --installed",
+	}
+	if strings.Join(runner.commands, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("commands=%q want=%q", runner.commands, want)
+	}
+	if !strings.Contains(out.String(), "ok cmd=setup") {
+		t.Fatalf("got %q", out.String())
+	}
+}
+
 func TestDoctorReportsAppiumHomePermissionInsteadOfNodeRuntime(t *testing.T) {
 	var out bytes.Buffer
 	cli := CLI{Runner: errorRunner{
@@ -1062,6 +1153,33 @@ func TestDoctorRetriesAppiumWithWritableHome(t *testing.T) {
 		!strings.Contains(got, "multitouch_driver=appium") ||
 		strings.Contains(got, "appium_home_not_writable") {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestDoctorReportsXCUITestVersionAndPredicateSupport(t *testing.T) {
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{
+		tools: map[string]bool{"go": true, "bazelisk": true, "xcrun": true, "axe": true, "idb": true, "node": true, "npm": true, "appium": true},
+		out:   map[string]string{"appium driver list --installed": "xcuitest@8.4.3\n"},
+	}, Root: t.TempDir(), Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"doctor"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "xcuitest_driver_version=8.4.3") ||
+		!strings.Contains(got, "predicate_supported=false") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestAppiumWarmupErrorResultUsesSpecificIssues(t *testing.T) {
+	missing := appiumWarmupErrorResult(appiumError{Code: "tool_missing", Message: "xcuitest driver missing", Next: "mav setup --install appium"})
+	if missing.Issue != "xcuitest_driver_missing" || missing.Next == "" {
+		t.Fatalf("missing=%+v", missing)
+	}
+	session := appiumWarmupErrorResult(appiumError{Code: "session_create_failed", Message: "session not created"})
+	if session.Issue != "session_create_failed" {
+		t.Fatalf("session=%+v", session)
 	}
 }
 

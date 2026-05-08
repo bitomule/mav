@@ -267,6 +267,10 @@ func (c CLI) doctor(ctx context.Context, opts GlobalOptions) error {
 			driverStatus = checkAppiumXCUITestDriver(ctx, c.Runner)
 			if driverStatus.OK {
 				appiumReady = true
+				if driverStatus.Version != "" {
+					fields["xcuitest_driver_version"] = driverStatus.Version
+					fields["predicate_supported"] = strconv.FormatBool(driverStatus.PredicateOK)
+				}
 			} else if driverStatus.NodeMismatch || driverStatus.HomePermission {
 				fields["multitouch_issue"] = driverStatus.Message
 				fields["multitouch_next"] = driverStatus.Next
@@ -386,7 +390,17 @@ func (c CLI) setupAppium(ctx context.Context, opts GlobalOptions) (bool, error) 
 		}
 		result := c.Runner.Run(ctx, cmd[0], cmd[1:]...)
 		if result.Err != nil {
-			return false, Fail("setup_failed", map[string]string{"tool": "appium", "stderr": firstLine(result.Stderr)}).Write(c.Stdout)
+			if isAppiumXCUITestServerVersionMismatch(result.Stdout+"\n"+result.Stderr) && strings.Join(cmd, " ") == "appium driver install xcuitest" {
+				fallback := []string{"appium", "driver", "install", "xcuitest@8"}
+				if opts.Verbose {
+					fmt.Fprintln(c.Stderr, strings.Join(fallback, " "))
+				}
+				result = c.Runner.Run(ctx, fallback[0], fallback[1:]...)
+				if result.Err == nil {
+					continue
+				}
+			}
+			return false, Fail("setup_failed", map[string]string{"tool": "appium", "stderr": compactCommandOutput(result)}).Write(c.Stdout)
 		}
 	}
 	nodeCheck := checkAppiumNodePath(c.Runner)
@@ -409,6 +423,28 @@ func (c CLI) setupAppium(ctx context.Context, opts GlobalOptions) (bool, error) 
 		_ = SaveConfig(c.Root, cfg)
 	}
 	return true, nil
+}
+
+func isAppiumXCUITestServerVersionMismatch(output string) bool {
+	lower := strings.ToLower(output)
+	return strings.Contains(lower, "xcuitest") &&
+		strings.Contains(lower, "server version") &&
+		strings.Contains(lower, "does not meet")
+}
+
+func compactCommandOutput(result CommandResult) string {
+	text := strings.TrimSpace(result.Stderr)
+	if text == "" {
+		text = strings.TrimSpace(result.Stdout)
+	}
+	if text == "" && result.Err != nil {
+		text = result.Err.Error()
+	}
+	text = strings.Join(strings.Fields(text), " ")
+	if len(text) > 500 {
+		return text[:500] + "..."
+	}
+	return text
 }
 
 func (c CLI) installSkills(ctx context.Context) error {
@@ -793,13 +829,30 @@ func (c CLI) startAppiumWarmup(ctx context.Context, cfg Config, run RunState, en
 func appiumWarmupErrorResult(err error) appiumWarmupResult {
 	result := appiumWarmupResult{Status: "failed", Issue: err.Error()}
 	if appErr, ok := err.(appiumError); ok {
-		result.Issue = appErr.Message
-		if result.Issue == "" {
-			result.Issue = appErr.Code
-		}
+		result.Issue = appiumWarmupIssue(appErr)
 		result.Next = appErr.Next
 	}
 	return result
+}
+
+func appiumWarmupIssue(err appiumError) string {
+	message := strings.ToLower(err.Message)
+	switch {
+	case strings.Contains(message, "appium missing"):
+		return "appium missing"
+	case strings.Contains(message, "xcuitest") && strings.Contains(message, "missing"):
+		return "xcuitest_driver_missing"
+	case strings.Contains(message, "xcuitest") && strings.Contains(message, "incompatible"):
+		return "xcuitest_driver_incompatible"
+	case err.Code == "session_create_failed":
+		return "session_create_failed"
+	case err.Code == "appium_status_failed":
+		return "appium_status_failed"
+	case err.Message != "":
+		return err.Message
+	default:
+		return err.Code
+	}
 }
 
 func (c CLI) applyOpenTargetOverrides(ctx context.Context, cfg *Config, args []string) error {
@@ -1223,6 +1276,7 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			if prefer == "auto" {
 				if err := c.uiTapAppium(ctx, cfg, id, text); err == nil {
 					fields["driver"] = "appium"
+					fields["attempted"] = "appium"
 					c.appendCurrentCommand(command+" --prefer-driver appium", CommandResult{})
 					c.recordPendingTap(id, text, "", "", "appium")
 					return OK("ui.tap", fields).Write(c.Stdout)
@@ -1244,7 +1298,9 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			if prefer == "auto" {
 				if err := c.uiTapAppium(ctx, cfg, id, text); err == nil {
 					fields["driver"] = "appium"
+					fields["attempted"] = "axe,appium"
 					fields["fallback"] = "axe"
+					fields["fallback_reason"] = "axe_no_match"
 					c.appendCurrentCommand(command+" --prefer-driver appium", CommandResult{})
 					c.recordPendingTap(id, text, "", "", "appium")
 					return OK("ui.tap", fields).Write(c.Stdout)
@@ -1252,7 +1308,7 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 					if hasTextDiagnostic {
 						return Fail("ui_tap_text_no_label_match", diagnosticFields).Write(c.Stdout)
 					}
-					return c.writeAppiumTapError(err)
+					return c.writeAppiumTapErrorWithFields(err, map[string]string{"attempted": "axe,appium", "fallback_reason": "axe_no_match"})
 				}
 			}
 			if hasTextDiagnostic {
@@ -1333,8 +1389,15 @@ func appiumTextPredicate(text string) string {
 }
 
 func (c CLI) writeAppiumTapError(err error) error {
+	return c.writeAppiumTapErrorWithFields(err, nil)
+}
+
+func (c CLI) writeAppiumTapErrorWithFields(err error, extra map[string]string) error {
 	if appErr, ok := err.(appiumError); ok {
 		fields := map[string]string{"tool": "appium"}
+		for key, value := range extra {
+			fields[key] = value
+		}
 		if appErr.Message != "" {
 			fields["stderr"] = appErr.Message
 		}
@@ -1343,7 +1406,11 @@ func (c CLI) writeAppiumTapError(err error) error {
 		}
 		return Fail(appErr.Code, fields).Write(c.Stdout)
 	}
-	return Fail("ui_tap_failed", map[string]string{"tool": "appium", "stderr": err.Error()}).Write(c.Stdout)
+	fields := map[string]string{"tool": "appium", "stderr": err.Error()}
+	for key, value := range extra {
+		fields[key] = value
+	}
+	return Fail("ui_tap_failed", fields).Write(c.Stdout)
 }
 
 func (c CLI) recordPendingTap(id, text, x, y, driver string) {
