@@ -55,6 +55,7 @@ type Element struct {
 	Title   string `json:"title,omitempty"`
 	PID     string `json:"pid,omitempty"`
 	Focused string `json:"focused,omitempty"`
+	Depth   int    `json:"depth,omitempty"`
 }
 
 type Edge struct {
@@ -479,7 +480,7 @@ func ObserveScreenDetailedWithDriver(root string, cfg Config, run RunState, rawT
 			source = "current"
 		}
 	}
-	identity, hasIdentity := explicitScreenIdentity(elements, cfg)
+	identity, hasIdentity := explicitScreenIdentity(elements)
 	if screenID != "" && hasIdentity && identity.ID != screenID {
 		screenID = ""
 		source = ""
@@ -551,7 +552,7 @@ func ObserveExpectedScreenWithDriver(root string, cfg Config, run RunState, rawT
 		m.AppID = cfg.BundleID
 	}
 	elements := ExtractElements(rawTree)
-	identity, hasIdentity := explicitScreenIdentity(elements, cfg)
+	identity, hasIdentity := explicitScreenIdentity(elements)
 	if !hasIdentity {
 		return fmt.Errorf("screen_identity_missing")
 	}
@@ -594,15 +595,15 @@ func ExtractElements(rawTree string) []Element {
 		return nil
 	}
 	out := []Element{}
-	walkAX(parsed, &out)
+	walkAX(parsed, &out, 0)
 	return compactElements(out)
 }
 
-func walkAX(value any, out *[]Element) {
+func walkAX(value any, out *[]Element, depth int) {
 	switch node := value.(type) {
 	case []any:
 		for _, child := range node {
-			walkAX(child, out)
+			walkAX(child, out, depth)
 		}
 	case map[string]any:
 		el := Element{
@@ -616,13 +617,14 @@ func walkAX(value any, out *[]Element) {
 			Title:   stringField(node, "AXTitle", "title"),
 			PID:     stringField(node, "AXPid", "AXPID", "pid"),
 			Focused: boolStringField(node, "AXFocused", "focused", "hasFocus"),
+			Depth:   depth,
 		}
 		if el.ID != "" || el.Label != "" || el.Role != "" || el.Value != "" || el.Frame != "" || el.Enabled != "" || el.Subrole != "" || el.Title != "" || el.PID != "" {
 			*out = append(*out, el)
 		}
 		for _, childKey := range []string{"children", "Children", "AXChildren"} {
 			if child, ok := node[childKey]; ok {
-				walkAX(child, out)
+				walkAX(child, out, depth+1)
 			}
 		}
 	}
@@ -669,8 +671,8 @@ func compactElements(elements []Element) []Element {
 	seen := map[string]bool{}
 	out := []Element{}
 	for _, el := range elements {
-		key := el.ID + "\x00" + el.Label + "\x00" + el.Role + "\x00" + el.Value + "\x00" + el.Frame + "\x00" + el.Enabled + "\x00" + el.Subrole + "\x00" + el.Title + "\x00" + el.PID + "\x00" + el.Focused
-		if key == "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" || seen[key] {
+		key := el.ID + "\x00" + el.Label + "\x00" + el.Role + "\x00" + el.Value + "\x00" + el.Frame + "\x00" + el.Enabled + "\x00" + el.Subrole + "\x00" + el.Title + "\x00" + el.PID + "\x00" + el.Focused + "\x00" + strconv.Itoa(el.Depth)
+		if elementEmpty(el) || seen[key] {
 			continue
 		}
 		seen[key] = true
@@ -680,6 +682,10 @@ func compactElements(elements []Element) []Element {
 		}
 	}
 	return out
+}
+
+func elementEmpty(el Element) bool {
+	return el.ID == "" && el.Label == "" && el.Role == "" && el.Value == "" && el.Frame == "" && el.Enabled == "" && el.Subrole == "" && el.Title == "" && el.PID == "" && el.Focused == ""
 }
 
 func recognizeScreen(m AppMap, raw string, elements []Element) string {
@@ -767,30 +773,41 @@ func screenHasLaunchRecognizer(screen Screen) bool {
 	return false
 }
 
-func explicitScreenIdentity(elements []Element, cfg Config) (screenIdentity, bool) {
+func explicitScreenIdentity(elements []Element) (screenIdentity, bool) {
 	if identity, ok := prefixedScreenIdentity(elements); ok {
 		return identity, true
 	}
-	for _, screenID := range sortedConfigScreenIDs(cfg.ScreenIdentifiers) {
-		elementID := strings.TrimSpace(cfg.ScreenIdentifiers[screenID])
-		if elementID == "" {
+	return naturalScreenIdentity(elements)
+}
+
+func naturalScreenIdentity(elements []Element) (screenIdentity, bool) {
+	best := Element{}
+	bestOK := false
+	for _, el := range elements {
+		if !isNaturalScreenIdentifierElement(el) {
 			continue
 		}
-		for _, el := range elements {
-			if el.ID != elementID {
-				continue
-			}
-			return screenIdentity{
-				ID:        screenID,
-				ElementID: elementID,
-				Recognizer: Recognizer{
-					Kind:  "id",
-					Value: elementID,
-				},
-			}, true
+		if !bestOK || el.Depth < best.Depth {
+			best = el
+			bestOK = true
 		}
 	}
-	return screenIdentity{}, false
+	if !bestOK {
+		return screenIdentity{}, false
+	}
+	elementID := strings.TrimSpace(best.ID)
+	id := screenIdentityIDFromSuffix(elementID)
+	if id == "" || id == "step" {
+		return screenIdentity{}, false
+	}
+	return screenIdentity{
+		ID:        id,
+		ElementID: elementID,
+		Recognizer: Recognizer{
+			Kind:  "id",
+			Value: elementID,
+		},
+	}, true
 }
 
 func prefixedScreenIdentity(elements []Element) (screenIdentity, bool) {
@@ -814,15 +831,6 @@ func prefixedScreenIdentity(elements []Element) (screenIdentity, bool) {
 func conflictsWithExplicitPrefixedIdentity(screenID string, elements []Element) bool {
 	identity, ok := prefixedScreenIdentity(elements)
 	return ok && identity.ID != screenID
-}
-
-func sortedConfigScreenIDs(ids map[string]string) []string {
-	keys := make([]string, 0, len(ids))
-	for key := range ids {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
 }
 
 func identityScreenSource(m AppMap, screenID string, elements []Element) string {
@@ -853,7 +861,8 @@ func screenIDFromElementID(value string) (string, bool) {
 }
 
 func screenIdentityIDFromSuffix(value string) string {
-	value = strings.TrimSpace(transliterateLatin(strings.ToLower(value)))
+	value = strings.TrimSpace(transliterateLatin(splitCamelIdentifier(value)))
+	value = strings.ToLower(value)
 	if value == "" {
 		return ""
 	}
@@ -873,8 +882,62 @@ func screenIdentityIDFromSuffix(value string) string {
 	return strings.Trim(b.String(), "-")
 }
 
+func splitCamelIdentifier(value string) string {
+	var b strings.Builder
+	runes := []rune(value)
+	for i, r := range runes {
+		if i > 0 && shouldSplitIdentifierRune(runes[i-1], r, nextRune(runes, i)) {
+			b.WriteByte('-')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func nextRune(runes []rune, index int) rune {
+	if index+1 >= len(runes) {
+		return 0
+	}
+	return runes[index+1]
+}
+
+func shouldSplitIdentifierRune(prev, cur, next rune) bool {
+	if cur < 'A' || cur > 'Z' {
+		return false
+	}
+	if (prev >= 'a' && prev <= 'z') || (prev >= '0' && prev <= '9') {
+		return true
+	}
+	return prev >= 'A' && prev <= 'Z' && next >= 'a' && next <= 'z'
+}
+
 func screenIdentityPrefixes() []string {
 	return []string{"mav.screen.", "screen."}
+}
+
+func isNaturalScreenIdentifierElement(el Element) bool {
+	id := strings.TrimSpace(el.ID)
+	if id == "" {
+		return false
+	}
+	if _, ok := screenIDFromElementID(id); ok {
+		return false
+	}
+	if isApplicationRootElement(el) {
+		return false
+	}
+	role := strings.ToLower(strings.TrimSpace(el.Role))
+	for _, blocked := range []string{"button", "textfield", "text field", "textview", "text view", "statictext", "static text", "switch", "tab", "cell", "image", "slider", "picker"} {
+		if strings.Contains(role, blocked) {
+			return false
+		}
+	}
+	return hasScreenIdentifierSuffix(id)
+}
+
+func hasScreenIdentifierSuffix(id string) bool {
+	id = strings.TrimSpace(id)
+	return strings.HasSuffix(id, "View") || strings.HasSuffix(id, "ViewController") || strings.HasSuffix(id, "Screen")
 }
 
 func recognizerValidForScreen(screen Screen, rec Recognizer) bool {

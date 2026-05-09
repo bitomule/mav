@@ -67,12 +67,13 @@ does not explore or repair routes by itself. The agent decides the next action.
    the last option because labels change with localization and copy edits. Use
    `mav ui wait --id`, `--text`, or `--value` for readiness checks.
 8. Before navigating to a new screen, verify with `mav ui tree` that the target
-   screen exposes an explicit screen accessibility id: `mav.screen.<screen-id>`
-   or `screen.<screen-id>`. The mapping loop is `mav open`, `mav ui tree`,
-   `mav ui tap --id ...`, `mav ui tree`, then inspect `.mav/map/**`. If the
-   next tree reports `screen_source=identity_missing`, no route was learned and
-   the pending tap was discarded; add the explicit screen id, repeat the tap,
-   then run `mav ui tree` again.
+   screen exposes an explicit screen accessibility id: a natural root-view
+   identifier such as `UploadFormView`, or a prefixed id such as
+   `mav.screen.<screen-id>` or `screen.<screen-id>`. The mapping loop is
+   `mav open`, `mav ui tree`, `mav ui tap --id ...`, `mav ui tree`, then inspect
+   `.mav/map/**`. If the next tree reports `screen_source=identity_missing`, no
+   route was learned and the pending tap was discarded; add the explicit screen
+   id, repeat the tap, then run `mav ui tree` again.
 9. Use `mav go <screen-id>` only after `.mav/map/index.json` and
    `.mav/map/screens/*.json` contain that screen and a route from app launch.
    `mav go` opens the app, records evidence from the start screen to the target,
@@ -330,10 +331,10 @@ fail code=screen_not_found screen=settings
 If `mav ui tree` reports `screen=unknown` with
 `screen_source=identity_missing`, the current screen has no explicit screen id.
 UI commands still work, but MAV will not create/update map screens and clears
-any pending route edge. Add `mav.screen.<screen-id>` or `screen.<screen-id>` to
-the app, repeat the tap that navigates to that screen, then run `mav ui tree`
-again. Do not use `mav go` for that destination until `.mav/map/**` contains the
-screen and route.
+any pending route edge. Add a natural root-view identifier or
+`mav.screen.<screen-id>`/`screen.<screen-id>` to the app, repeat the tap that
+navigates to that screen, then run `mav ui tree` again. Do not use `mav go` for
+that destination until `.mav/map/**` contains the screen and route.
 
 AXe is the fast semantic driver, but it can miss system-process UI, PHPicker,
 permission alerts, non-accessibility wrapper views, and text-field placeholders.

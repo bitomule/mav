@@ -686,12 +686,11 @@ func TestUITreePrefersExplicitIdentityOverCurrentLaunch(t *testing.T) {
 	}
 }
 
-func TestUITreeConfiguredNaturalIdentifierWinsOverExistingRecognizer(t *testing.T) {
+func TestUITreeNaturalIdentifierWinsOverExistingRecognizer(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
 	cfg.BundleID = "com.example.demo"
 	cfg.Tools = map[string]bool{"axe": true}
-	cfg.ScreenIdentifiers["upload-form"] = "UploadFormView"
 	if err := SaveConfig(root, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -699,14 +698,14 @@ func TestUITreeConfiguredNaturalIdentifierWinsOverExistingRecognizer(t *testing.
 		AppID: "com.example.demo",
 		Start: "start",
 		Screens: map[string]Screen{
-			"start":       DefaultAppMap("com.example.demo").Screens["start"],
-			"old-details": {ID: "old-details", Recognizers: []Recognizer{{Kind: "id", Value: "StaleDetailsView"}}},
-			"upload-form": {ID: "upload-form", Recognizers: []Recognizer{{Kind: "id", Value: "UploadFormView"}}},
+			"start":            DefaultAppMap("com.example.demo").Screens["start"],
+			"old-details":      {ID: "old-details", Recognizers: []Recognizer{{Kind: "id", Value: "StaleDetailsView"}}},
+			"upload-form-view": {ID: "upload-form-view", Recognizers: []Recognizer{{Kind: "id", Value: "UploadFormView"}}},
 		},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	run := RunState{ID: "run-tree", Dir: filepath.Join(os.TempDir(), "mav", "run-tree-configured-id")}
+	run := RunState{ID: "run-tree", Dir: filepath.Join(os.TempDir(), "mav", "run-tree-natural-id")}
 	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
 	if err := os.MkdirAll(run.Dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -721,7 +720,7 @@ func TestUITreeConfiguredNaturalIdentifierWinsOverExistingRecognizer(t *testing.
 		t.Fatal(err)
 	}
 	got := out.String()
-	if !strings.Contains(got, "recognized_screen=upload-form") || strings.Contains(got, "recognized_screen=old-details") {
+	if !strings.Contains(got, "recognized_screen=upload-form-view") || strings.Contains(got, "recognized_screen=old-details") {
 		t.Fatalf("got %q", got)
 	}
 }
@@ -2856,7 +2855,7 @@ func TestUITreeReportsPendingMapActionForUnknownScreen(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := out.String()
-	for _, want := range []string{"screen=unknown", "previous_screen=photos-to-delete", "screen_identifiers"} {
+	for _, want := range []string{"screen=unknown", "previous_screen=photos-to-delete", "screen root"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in %q", want, got)
 		}
