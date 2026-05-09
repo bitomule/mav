@@ -313,59 +313,95 @@ func TestExplicitScreenIdentityIgnoresPersonalizedFeedHeading(t *testing.T) {
 		{Label: "Elegidos para conchita", Role: "heading"},
 		{ID: "mav.screen.inicio", Label: "Inicio", Role: "tab", Value: "1"},
 	}
-	identity, ok := explicitScreenIdentity(elements, Config{})
+	identity, ok := explicitScreenIdentity(elements)
 	if !ok || identity.ID != "inicio" || identity.Recognizer.Value != "mav.screen.inicio" {
 		t.Fatalf("identity=%+v ok=%v", identity, ok)
 	}
 }
 
-func TestExplicitScreenIdentityUsesConfiguredNaturalIdentifier(t *testing.T) {
-	cfg := Config{ScreenIdentifiers: map[string]string{"upload-form": "UploadFormView"}}
+func TestExplicitScreenIdentityUsesNaturalIdentifier(t *testing.T) {
 	elements := []Element{
 		{ID: "UploadFormView", Role: "group"},
 	}
-	identity, ok := explicitScreenIdentity(elements, cfg)
-	if !ok || identity.ID != "upload-form" || identity.Recognizer.Value != "UploadFormView" {
+	identity, ok := explicitScreenIdentity(elements)
+	if !ok || identity.ID != "upload-form-view" || identity.Recognizer.Value != "UploadFormView" {
 		t.Fatalf("identity=%+v ok=%v", identity, ok)
 	}
-	screen := Screen{ID: "upload-form", Recognizers: []Recognizer{identity.Recognizer}}
+	screen := Screen{ID: "upload-form-view", Recognizers: []Recognizer{identity.Recognizer}}
 	if !screenMatches(screen, "", elements) {
-		t.Fatalf("configured natural id should match")
+		t.Fatalf("natural id should match")
 	}
-	if err := ValidateAppMap(AppMap{Start: "upload-form", Screens: map[string]Screen{"upload-form": screen}}); err != nil {
-		t.Fatalf("configured natural id should validate: %v", err)
+	if err := ValidateAppMap(AppMap{Start: "upload-form-view", Screens: map[string]Screen{"upload-form-view": screen}}); err != nil {
+		t.Fatalf("natural id should validate: %v", err)
 	}
 }
 
-func TestPrefixedScreenIdentityWinsOverConfiguredNaturalIdentifier(t *testing.T) {
-	cfg := Config{ScreenIdentifiers: map[string]string{"upload-form": "UploadFormView"}}
+func TestExplicitScreenIdentityIgnoresNestedNaturalWrapper(t *testing.T) {
+	elements := []Element{
+		{ID: "SettingsSection", Role: "group"},
+	}
+	if identity, ok := explicitScreenIdentity(elements); ok {
+		t.Fatalf("nested wrapper should not be a screen identity: %+v", identity)
+	}
+}
+
+func TestExplicitScreenIdentityIgnoresWordsEndingInView(t *testing.T) {
+	for _, id := range []string{"Preview", "Review", "Overview"} {
+		if identity, ok := explicitScreenIdentity([]Element{{ID: id, Role: "group"}}); ok {
+			t.Fatalf("%s should not be a screen identity: %+v", id, identity)
+		}
+	}
+}
+
+func TestNaturalScreenIdentityUsesShallowestScreenIdentifier(t *testing.T) {
+	elements := []Element{
+		{ID: "HeaderView", Role: "group", Depth: 2},
+		{ID: "UploadFormView", Role: "group", Depth: 1},
+	}
+	identity, ok := explicitScreenIdentity(elements)
+	if !ok || identity.ID != "upload-form-view" || identity.Recognizer.Value != "UploadFormView" {
+		t.Fatalf("identity=%+v ok=%v", identity, ok)
+	}
+}
+
+func TestScreenIdentitySlugSplitsAcronyms(t *testing.T) {
+	cases := map[string]string{
+		"URLImportView": "url-import-view",
+		"UploadURLView": "upload-url-view",
+		"HTTP2View":     "http2-view",
+	}
+	for input, want := range cases {
+		if got := screenIdentityIDFromSuffix(input); got != want {
+			t.Fatalf("%s -> %s, want %s", input, got, want)
+		}
+	}
+}
+
+func TestPrefixedScreenIdentityWinsOverNaturalIdentifier(t *testing.T) {
 	elements := []Element{
 		{ID: "UploadFormView", Role: "group"},
 		{ID: "mav.screen.home", Role: "group"},
 	}
-	identity, ok := explicitScreenIdentity(elements, cfg)
+	identity, ok := explicitScreenIdentity(elements)
 	if !ok || identity.ID != "home" {
 		t.Fatalf("identity=%+v ok=%v", identity, ok)
 	}
-	screen := Screen{ID: "upload-form", Recognizers: []Recognizer{{Kind: "id", Value: "UploadFormView"}}}
+	screen := Screen{ID: "upload-form-view", Recognizers: []Recognizer{{Kind: "id", Value: "UploadFormView"}}}
 	if screenMatches(screen, "", elements) {
 		t.Fatalf("natural id should not match when tree declares a different mav.screen id")
 	}
 }
 
-func TestConfiguredNaturalIdentifierWinsOverExistingRecognizer(t *testing.T) {
+func TestNaturalIdentifierWinsOverExistingRecognizer(t *testing.T) {
 	root := t.TempDir()
-	cfg := Config{
-		BundleID:          "com.example.demo",
-		ScreenIdentifiers: map[string]string{"upload-form": "UploadFormView"},
-	}
+	cfg := Config{BundleID: "com.example.demo"}
 	if err := SaveAppMap(root, AppMap{
 		AppID: "com.example.demo",
 		Start: "start",
 		Screens: map[string]Screen{
-			"start":       DefaultAppMap("com.example.demo").Screens["start"],
-			"old-details": {ID: "old-details", Recognizers: []Recognizer{{Kind: "id", Value: "StaleDetailsView"}}},
-			"upload-form": {ID: "upload-form", Recognizers: []Recognizer{{Kind: "id", Value: "UploadFormView"}}},
+			"start":            DefaultAppMap("com.example.demo").Screens["start"],
+			"old-details":      {ID: "old-details", Recognizers: []Recognizer{{Kind: "id", Value: "StaleDetailsView"}}},
+			"upload-form-view": {ID: "upload-form-view", Recognizers: []Recognizer{{Kind: "id", Value: "UploadFormView"}}},
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -375,7 +411,7 @@ func TestConfiguredNaturalIdentifierWinsOverExistingRecognizer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if observed.Screen != "upload-form" || observed.Source != "recognized" {
+	if observed.Screen != "upload-form-view" || observed.Source != "recognized" {
 		t.Fatalf("observed=%+v", observed)
 	}
 }

@@ -1108,7 +1108,7 @@ func (c CLI) observeUITree(cfg Config, raw, treeDriver string, persist bool) uiT
 				source = "current"
 			}
 		}
-		identity, hasIdentity := explicitScreenIdentity(state.Elements, cfg)
+		identity, hasIdentity := explicitScreenIdentity(state.Elements)
 		if screenID != "" && hasIdentity && identity.ID != screenID {
 			screenID = ""
 			source = ""
@@ -1163,7 +1163,7 @@ func appiumStateHasExplicitScreenIdentity(state uiTreeState, cfg Config) bool {
 	if state.Screen == "" || state.Screen == "unknown" || state.ScreenSource == "identity_missing" {
 		return false
 	}
-	identity, ok := explicitScreenIdentity(state.Elements, cfg)
+	identity, ok := explicitScreenIdentity(state.Elements)
 	return ok && identity.ID == state.Screen
 }
 
@@ -1173,7 +1173,7 @@ func addIdentityMissingNext(fields map[string]string, described describedUITree)
 		fields["next"] = "this looks like a system overlay. Cannot add accessibility id from app code. Use --include-system or coordinate taps."
 		return
 	}
-	fields["next"] = "add a stable screen accessibility identifier, or map a natural identifier under screen_identifiers in .mav/config.yaml"
+	fields["next"] = "add a stable screen accessibility identifier to the screen root before mapping"
 }
 
 func (c CLI) writeUITreeToolError(err error) error {

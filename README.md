@@ -258,7 +258,7 @@ Run state:
 The app map is JSON. It is updated by normal MAV commands, but only for screens
 that expose an explicit screen accessibility identifier. The built-in start
 screen is a launch state, so it does not require an app-owned identifier. For
-product screens, MAV recognizes these prefixes:
+product screens, MAV recognizes prefixed screen ids:
 
 ```text
 mav.screen.<screen-id>
@@ -266,22 +266,14 @@ screen.<screen-id>
 ```
 
 For example, a node with `id=mav.screen.settings` becomes map screen
-`settings`. If the current tree has no explicit screen id, MAV still prints the
-tree and UI commands still work, but the map is not updated and any pending
-route edge is discarded.
+`settings`. MAV also accepts natural root-view identifiers without MAV-specific
+prefixes and derives the map id from the identifier, for example
+`UploadFormView` becomes `upload-form-view`. In both cases the recognizer is
+persisted in `.mav/map/screens/<screen-id>.json`.
 
-If the app already has natural root-view identifiers, map them in
-`.mav/config.yaml` instead of adding MAV-specific prefixes to production code:
-
-```yaml
-screen_identifiers:
-  home: WallView
-  upload-title-input: UploadFormItemTitleInputView
-  upload-form: UploadFormView
-```
-
-With that config, a node with `id=UploadFormView` becomes map screen
-`upload-form`.
+If the current tree has no explicit screen id, MAV still prints the tree and UI
+commands still work, but the map is not updated and any pending route edge is
+discarded.
 
 SwiftUI:
 
@@ -300,8 +292,8 @@ Mapping flow:
 
 1. `mav open` resets the current screen to the configured start screen.
 2. `mav ui tree` records the current accessibility tree and screen elements if
-   the tree contains a configured `screen_identifiers` value,
-   `mav.screen.<screen-id>`, or `screen.<screen-id>`.
+   the tree contains a natural root-view identifier, `mav.screen.<screen-id>`,
+   or `screen.<screen-id>`.
 3. `mav ui tap ...` records a pending action from the current screen.
 4. The next `mav ui tree` observes the next explicit screen id and writes the
    route edge.
@@ -316,11 +308,11 @@ mav ui tree
 ```
 
 When navigating to a new screen, first make sure the destination exposes a
-configured natural identifier, `mav.screen.<screen-id>`, or
+natural root-view identifier, `mav.screen.<screen-id>`, or
 `screen.<screen-id>` in `mav ui tree`. If the next tree reports
 `screen_source=identity_missing`, the map did not learn a route and the pending
-tap was discarded; add or configure the screen id, repeat the tap, then run
-`mav ui tree` again before relying on `mav go`.
+tap was discarded; add the screen id, repeat the tap, then run `mav ui tree`
+again before relying on `mav go`.
 
 Prefer target selectors in this order:
 
@@ -408,8 +400,7 @@ the AXe tree is empty, has no usable elements, or is pending a map update, or
 when an AXe tap by id/text fails. Use `--prefer-driver axe` to debug AXe-only behavior and
 `--prefer-driver appium` for WDA-only inspection. A tree with
 `screen_source=identity_missing` is not mapped by fallback; expose a stable
-screen id or configure `screen_identifiers` before expecting routes to be
-recorded. Use `mav ui tree
+screen root identifier before expecting routes to be recorded. Use `mav ui tree
 --include-system` when a system process or cross-app surface is in front, such
 as PHPicker, App Tracking Transparency, permission prompts, SpringBoard, or an
 iOS 26 service process. MAV asks Appium for the active foreground bundle and
