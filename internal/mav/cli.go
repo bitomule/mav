@@ -1159,6 +1159,14 @@ func shouldUseAppiumTreeFallback(raw string, state, appiumState uiTreeState, cfg
 	return state.ScreenSource == "identity_missing" && appiumStateHasExplicitScreenIdentity(appiumState, cfg)
 }
 
+// isWeakLaunchMatch reports whether the screen was recognised through the
+// synthetic `start` screen's `kind: launch` recogniser (used as a permissive
+// catch-all). That match is intentionally low-confidence and should give way
+// to any explicit screen identity the Appium driver can surface.
+func isWeakLaunchMatch(state uiTreeState) bool {
+	return state.Screen == "start" && state.ScreenSource == "current"
+}
+
 func appiumStateHasExplicitScreenIdentity(state uiTreeState, cfg Config) bool {
 	if state.Screen == "" || state.Screen == "unknown" || state.ScreenSource == "identity_missing" {
 		return false
@@ -1308,6 +1316,26 @@ func (c CLI) waitForTreeReady(ctx context.Context, cfg Config, timeout time.Dura
 		}
 		if result.Err == nil && driver != "appium" {
 			state := c.observeUITree(cfg, result.Stdout, driver, false)
+			// AXe only exposes accessibility leaves, so it misses the
+			// `accessibilityIdentifier` developers set on the non-leaf
+			// container view of a screen. When that happens AXe falls all
+			// the way back to the synthetic `start` launch recogniser (its
+			// weakest signal). Probe Appium against the host app (NOT
+			// system overlays — those would re-target a privacy or
+			// SpringBoard bundle and lose the host tree) so the real
+			// screen identity surfaces. Without this nudge `mav go` keeps
+			// observing `start` and times out with `launch_tree_not_ready`
+			// even when the target screen is already on display.
+			if isWeakLaunchMatch(state) {
+				if appium, err := c.describeUITree(ctx, cfg, "appium", false); err == nil && appium.Result.Err == nil && !isEmptyAXTree(appium.Result.Stdout) && countTreeNodes(appium.Result.Stdout) > 1 && len(ExtractElements(appium.Result.Stdout)) > 0 {
+					appiumState := c.observeUITree(cfg, appium.Result.Stdout, appium.Driver, false)
+					if appiumState.Screen != "" && appiumState.Screen != "unknown" && appiumState.Screen != "start" && appiumState.ScreenSource != "identity_missing" && appiumState.ScreenSource != "unmatched" {
+						result = appium.Result
+						driver = appium.Driver
+						state = appiumState
+					}
+				}
+			}
 			if shouldTryAppiumTreeFallback(result.Stdout, state) {
 				if appium, appiumErr := c.describeUITree(ctx, cfg, "appium", true); appiumErr == nil && appium.Result.Err == nil && !isEmptyAXTree(appium.Result.Stdout) && countTreeNodes(appium.Result.Stdout) > 1 && len(ExtractElements(appium.Result.Stdout)) > 0 {
 					appiumState := c.observeUITree(cfg, appium.Result.Stdout, appium.Driver, false)

@@ -353,6 +353,26 @@ func TestExplicitScreenIdentityIgnoresWordsEndingInView(t *testing.T) {
 	}
 }
 
+func TestExplicitScreenIdentityIgnoresDottedSubElementIDs(t *testing.T) {
+	// Auto-generated sub-element ids that follow the `<Container>.<element>`
+	// convention (codegen tools, manually-typed accessibility ids) must NOT
+	// be promoted to screens, even when the trailing segment ends in a
+	// screen identifier suffix such as `View`. These are addressable
+	// members of a screen, not screens themselves.
+	subElementIDs := []string{
+		"SettingsView.searchField",
+		"FormView.headerContainer",
+		"NavigationBar.titleLabel",
+		"ListView.headerView",
+		"Container.Inner.leafView",
+	}
+	for _, id := range subElementIDs {
+		if identity, ok := explicitScreenIdentity([]Element{{ID: id, Role: "group"}}); ok {
+			t.Fatalf("sub-element %q should not be a screen identity: %+v", id, identity)
+		}
+	}
+}
+
 func TestNaturalScreenIdentityUsesShallowestScreenIdentifier(t *testing.T) {
 	elements := []Element{
 		{ID: "HeaderView", Role: "group", Depth: 2},
