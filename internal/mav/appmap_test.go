@@ -359,12 +359,18 @@ func TestExplicitScreenIdentityIgnoresDottedSubElementIDs(t *testing.T) {
 	// be promoted to screens, even when the trailing segment ends in a
 	// screen identifier suffix such as `View`. These are addressable
 	// members of a screen, not screens themselves.
+	//
+	// Cases also cover degenerate edges (leading/trailing dot, multi-dot
+	// nesting) so we don't accidentally regress to suffix-only matching.
 	subElementIDs := []string{
 		"SettingsView.searchField",
 		"FormView.headerContainer",
 		"NavigationBar.titleLabel",
 		"ListView.headerView",
 		"Container.Inner.leafView",
+		"SettingsView.",
+		".searchField",
+		".",
 	}
 	for _, id := range subElementIDs {
 		if identity, ok := explicitScreenIdentity([]Element{{ID: id, Role: "group"}}); ok {

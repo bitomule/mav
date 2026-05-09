@@ -1167,6 +1167,30 @@ func isWeakLaunchMatch(state uiTreeState) bool {
 	return state.Screen == "start" && state.ScreenSource == "current"
 }
 
+// isUsableAppiumTree reports whether an Appium describe-tree response is
+// useful for screen recognition: no transport error, non-empty AX-style
+// output, more than the bare application root, and at least one extractable
+// element. The same guard is applied to every Appium fallback call inside
+// `waitForTreeReady`; centralising it keeps the call sites readable and the
+// criteria in lockstep.
+func isUsableAppiumTree(tree describedUITree) bool {
+	return tree.Result.Err == nil &&
+		!isEmptyAXTree(tree.Result.Stdout) &&
+		countTreeNodes(tree.Result.Stdout) > 1 &&
+		len(ExtractElements(tree.Result.Stdout)) > 0
+}
+
+// appiumStateExposesNonStartScreen reports whether the Appium-observed state
+// represents a real screen — i.e. anything more specific than the synthetic
+// `start` fallback or an unrecognised tree. Used by the weak-launch fallback
+// to decide whether the Appium tree improves on what AXe already returned.
+func appiumStateExposesNonStartScreen(state uiTreeState) bool {
+	if state.Screen == "" || state.Screen == "unknown" || state.Screen == "start" {
+		return false
+	}
+	return state.ScreenSource != "identity_missing" && state.ScreenSource != "unmatched"
+}
+
 func appiumStateHasExplicitScreenIdentity(state uiTreeState, cfg Config) bool {
 	if state.Screen == "" || state.Screen == "unknown" || state.ScreenSource == "identity_missing" {
 		return false
@@ -1327,9 +1351,9 @@ func (c CLI) waitForTreeReady(ctx context.Context, cfg Config, timeout time.Dura
 			// observing `start` and times out with `launch_tree_not_ready`
 			// even when the target screen is already on display.
 			if isWeakLaunchMatch(state) {
-				if appium, err := c.describeUITree(ctx, cfg, "appium", false); err == nil && appium.Result.Err == nil && !isEmptyAXTree(appium.Result.Stdout) && countTreeNodes(appium.Result.Stdout) > 1 && len(ExtractElements(appium.Result.Stdout)) > 0 {
+				if appium, err := c.describeUITree(ctx, cfg, "appium", false); err == nil && isUsableAppiumTree(appium) {
 					appiumState := c.observeUITree(cfg, appium.Result.Stdout, appium.Driver, false)
-					if appiumState.Screen != "" && appiumState.Screen != "unknown" && appiumState.Screen != "start" && appiumState.ScreenSource != "identity_missing" && appiumState.ScreenSource != "unmatched" {
+					if appiumStateExposesNonStartScreen(appiumState) {
 						result = appium.Result
 						driver = appium.Driver
 						state = appiumState
@@ -1337,7 +1361,7 @@ func (c CLI) waitForTreeReady(ctx context.Context, cfg Config, timeout time.Dura
 				}
 			}
 			if shouldTryAppiumTreeFallback(result.Stdout, state) {
-				if appium, appiumErr := c.describeUITree(ctx, cfg, "appium", true); appiumErr == nil && appium.Result.Err == nil && !isEmptyAXTree(appium.Result.Stdout) && countTreeNodes(appium.Result.Stdout) > 1 && len(ExtractElements(appium.Result.Stdout)) > 0 {
+				if appium, appiumErr := c.describeUITree(ctx, cfg, "appium", true); appiumErr == nil && isUsableAppiumTree(appium) {
 					appiumState := c.observeUITree(cfg, appium.Result.Stdout, appium.Driver, false)
 					if !shouldUseAppiumTreeFallback(result.Stdout, state, appiumState, cfg) {
 						time.Sleep(300 * time.Millisecond)
