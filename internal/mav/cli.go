@@ -31,6 +31,13 @@ type GlobalOptions struct {
 	Raw          bool
 	Help         bool
 	PreferDriver string
+	// SkipAutoObserve suppresses the post-tap tree probe that
+	// promotes pending map actions to edges. Set by callers that
+	// manage the observation lifecycle themselves (route playback in
+	// `mav go`, flow steps that bracket their own observations) so
+	// they don't accidentally learn an edge to a transitional or
+	// off-route screen.
+	SkipAutoObserve bool
 }
 
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
@@ -1400,6 +1407,7 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 	if err != nil {
 		return Fail("prefer_driver_invalid", map[string]string{"usage": "--prefer-driver auto|axe|appium"}).Write(c.Stdout)
 	}
+	autoObserve := !opts.SkipAutoObserve
 	caps := c.resolveCapabilities(ctx, cfg)
 	if id != "" || text != "" || value != "" {
 		fields := map[string]string{}
@@ -1421,6 +1429,9 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			fields["driver"] = "appium"
 			c.appendCurrentCommand(command+" --prefer-driver appium", CommandResult{})
 			c.recordPendingTap(id, text, value, "", "", "appium")
+			if autoObserve {
+				c.observeAfterAction(ctx, cfg, "appium")
+			}
 			return OK("ui.tap", fields).Write(c.Stdout)
 		}
 		if !caps.Tools["axe"] {
@@ -1507,6 +1518,9 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		fields["driver"] = "axe"
 		c.appendCurrentCommand(command, result)
 		c.recordPendingTap(id, text, value, "", "", "axe")
+		if autoObserve {
+			c.observeAfterAction(ctx, cfg, prefer)
+		}
 		return OK("ui.tap", fields).Write(c.Stdout)
 	}
 	if x != "" && y != "" {
@@ -1523,6 +1537,9 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		}
 		c.appendCurrentCommand("mav ui tap --x "+x+" --y "+y, result)
 		c.recordPendingTap("", "", "", x, y, "idb")
+		if autoObserve {
+			c.observeAfterAction(ctx, cfg, prefer)
+		}
 		return OK("ui.tap", map[string]string{"x": x, "y": y, "driver": "idb", "route_recorded": "false"}).Write(c.Stdout)
 	}
 	return Fail("tap_target_missing", map[string]string{"usage": "mav ui tap --id ID | --x X --y Y | --text TEXT | --value VALUE"}).Write(c.Stdout)
@@ -1938,6 +1955,31 @@ func (c CLI) recordPendingTap(id, text, value, x, y, driver string) {
 		return
 	}
 	SetPendingMapAction(c.Root, pendingMapAction{From: from, ID: id, Text: text, Value: value, X: x, Y: y, Driver: driver})
+}
+
+// observeAfterAction fetches a fresh UI tree after a successful tap
+// (or other interaction that sets a pending map action) and runs the
+// observer so the edge gets promoted to the map immediately. Without
+// this, edges only land when a separate `mav ui tree` command is run
+// later, which never happens during long flows where one tap is
+// immediately followed by another. The cost is one extra source
+// fetch per tap (~ 1s on Appium); the benefit is a populated app map
+// that lets `mav go` actually navigate.
+//
+// The function tolerates failures silently — observation is best
+// effort, never the reason a `mav ui tap` would fail.
+func (c CLI) observeAfterAction(ctx context.Context, cfg Config, prefer string) {
+	if _, hasPending := peekPendingMapAction(c.Root); !hasPending {
+		return
+	}
+	described, err := c.describeUITree(ctx, cfg, prefer, false)
+	if err != nil || described.Result.Err != nil {
+		return
+	}
+	if isEmptyAXTree(described.Result.Stdout) {
+		return
+	}
+	_ = c.observeUITree(cfg, described.Result.Stdout, described.Driver, true)
 }
 
 func (c CLI) appendCurrentCommand(command string, result CommandResult) {
@@ -2803,7 +2845,12 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 	case "tap":
 		args := flowArgs(step.Params, "--id", "id", "--text", "text", "--value", "value", "--x", "x", "--y", "y")
 		var out bytes.Buffer
-		err := c.withStdout(&out).uiTap(ctx, GlobalOptions{PreferDriver: prefer}, mustLoadConfig(c.Root), args)
+		// Flow runner has its own post-step observation pass that
+		// promotes edges with the best-fit driver (axe-then-appium
+		// fallback). Suppress the in-tap auto-observe so we don't
+		// run a less-thorough probe first and clear the pending
+		// action when the host tree isn't yet recognisable.
+		err := c.withStdout(&out).uiTap(ctx, GlobalOptions{PreferDriver: prefer, SkipAutoObserve: true}, mustLoadConfig(c.Root), args)
 		cmdErr := commandOutputErr(err, out.String(), "tap_failed")
 		if cmdErr != nil && step.Params["optional"] == "true" {
 			fields := copyParams(step.Params)
@@ -3555,7 +3602,11 @@ func (c CLI) tapRouteEdge(ctx context.Context, cfg Config, edge Edge, driver str
 	if edge.ID == "" && edge.Text == "" && edge.Value == "" {
 		driver = ""
 	}
-	tapOpts := GlobalOptions{PreferDriver: driver}
+	// Suppress auto-observe so route playback retains exclusive
+	// control over the post-tap tree probe (`executeRouteEdge` does
+	// its own `waitForTreeReady`, and a premature observe here would
+	// learn an edge to a transitional or off-route screen).
+	tapOpts := GlobalOptions{PreferDriver: driver, SkipAutoObserve: true}
 	var out bytes.Buffer
 	if err := c.withStdout(&out).uiTap(ctx, tapOpts, cfg, args); err != nil {
 		return err

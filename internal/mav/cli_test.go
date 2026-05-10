@@ -4753,6 +4753,150 @@ func TestEvaluateSingleConditionAppiumFallsBackToSystemOverlay(t *testing.T) {
 	}
 }
 
+func TestUITapAutoObservesAndPromotesEdge(t *testing.T) {
+	// Standalone `mav ui tap` (no flow, no route playback) should
+	// fetch the post-tap tree and promote the pending action to a
+	// real edge so subsequent `mav go` calls can navigate the same
+	// path without manual `mav ui tree` round-trips.
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.BundleID = "com.example.app"
+	cfg.Tools = map[string]bool{"axe": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveAppMap(root, AppMap{
+		AppID: "com.example.app",
+		Start: "home",
+		Screens: map[string]Screen{
+			"home":     testExplicitScreen("home"),
+			"settings": testExplicitScreen("settings"),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	run := RunState{ID: "run-auto-observe", Dir: filepath.Join(t.TempDir(), "run-auto-observe")}
+	if err := os.MkdirAll(run.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	SetCurrentScreen(root, "home", run.ID)
+	runner := fakeRunner{
+		tools: cfg.Tools,
+		out: map[string]string{
+			"axe tap --udid SIM --id settings_button": "",
+			"axe describe-ui --udid SIM":              `{"AXIdentifier":"mav.screen.settings","children":[{"AXLabel":"Settings"}]}`,
+		},
+	}
+	cli := CLI{Runner: runner, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "tap", "--id", "settings_button"}); err != nil {
+		t.Fatal(err)
+	}
+	home, err := LoadScreen(root, "home")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(home.Edges) != 1 || home.Edges[0].To != "settings" || home.Edges[0].ID != "settings_button" {
+		t.Fatalf("expected home → settings edge, got %+v", home.Edges)
+	}
+	if _, ok := peekPendingMapAction(root); ok {
+		t.Fatalf("auto-observe should consume the pending map action")
+	}
+}
+
+func TestUITapWithSkipAutoObserveLeavesPendingForLaterObservation(t *testing.T) {
+	// Route playback (`mav go` → `tapRouteEdge`) sets
+	// `SkipAutoObserve` so the in-tap probe does not learn an edge
+	// to a transitional or off-route screen. The pending action
+	// should remain so the route's own observation pass can decide
+	// what to do.
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.BundleID = "com.example.app"
+	cfg.Tools = map[string]bool{"axe": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveAppMap(root, AppMap{
+		AppID: "com.example.app",
+		Start: "home",
+		Screens: map[string]Screen{
+			"home":     testExplicitScreen("home"),
+			"settings": testExplicitScreen("settings"),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	run := RunState{ID: "run-skip", Dir: filepath.Join(t.TempDir(), "run-skip")}
+	if err := os.MkdirAll(run.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	SetCurrentScreen(root, "home", run.ID)
+	calls := 0
+	runner := &countingRunner{
+		tools: cfg.Tools,
+		out: map[string]string{
+			"axe tap --udid SIM --id settings_button": "",
+			// Note: NO `axe describe-ui` mock — if uiTap auto-observes
+			// despite SkipAutoObserve, the call would record and we
+			// can detect it.
+		},
+		count: &calls,
+	}
+	cli := CLI{Runner: runner, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	if err := cli.uiTap(context.Background(), GlobalOptions{SkipAutoObserve: true}, cfg, []string{"--id", "settings_button"}); err != nil {
+		t.Fatal(err)
+	}
+	// The pending map action must survive — that is the canonical
+	// proof that the post-tap observe was suppressed (the observer
+	// is the only thing that ever consumes it).
+	if _, ok := peekPendingMapAction(root); !ok {
+		t.Fatalf("SkipAutoObserve should preserve the pending map action for later observation")
+	}
+	// And no edge should have been learned, since no observation ran.
+	home, err := LoadScreen(root, "home")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(home.Edges) != 0 {
+		t.Fatalf("SkipAutoObserve should leave home edges untouched; got %+v", home.Edges)
+	}
+}
+
+type countingRunner struct {
+	tools    map[string]bool
+	commands []string
+	out      map[string]string
+	count    *int
+}
+
+func (r *countingRunner) LookPath(file string) (string, error) {
+	if r.tools[file] {
+		return "/usr/bin/" + file, nil
+	}
+	return "", os.ErrNotExist
+}
+
+func (r *countingRunner) Run(ctx context.Context, name string, args ...string) CommandResult {
+	_ = ctx
+	command := name + " " + strings.Join(args, " ")
+	r.commands = append(r.commands, command)
+	*r.count++
+	return CommandResult{Stdout: r.out[command]}
+}
+
+func (r *countingRunner) Start(ctx context.Context, logPath string, name string, args ...string) (int, error) {
+	_, _, _, _ = ctx, logPath, name, args
+	return 1, nil
+}
+
 func TestKnownInProcessOverlayBundlesIncludesPhotosAndPrivacyServices(t *testing.T) {
 	required := []string{
 		"com.apple.tccd",
