@@ -1818,12 +1818,20 @@ func findGestureContainerTargetFrame(value any, id, text, targetValue, container
 // names we care about always end on the role token itself.
 //
 // Coverage rationale:
-//   - tab bars: UITabBarItem hit-tests via its private gesture path; AX
-//     activate sometimes silent-fails.
 //   - sheets / alert: UIAlertController action buttons rely on the
-//     dimming-view tap recognizer instead of the button hit-test.
-//   - popovers: UIPopoverPresentationController content is reachable via
-//     its dimming view; `click` on inner buttons can no-op in iOS 17+.
+//     dimming-view tap recognizer instead of the button hit-test, so
+//     `XCUIElement.click` on the inner buttons can silently no-op.
+//   - popovers: UIPopoverPresentationController content is reachable
+//     via its dimming view; `click` on inner buttons can no-op in
+//     iOS 17+.
+//
+// Tab bars are deliberately NOT in this set: synthetic
+// `mobile: tap` events at the button frame centre are dropped by
+// the simulator immediately after a screen transition (notably
+// post-login), whereas `XCUIElement.click` on the same button is
+// routed through the test infrastructure and triggers the tab
+// switch reliably. Routing tab bar children through coord-tap
+// makes the first tap right after navigation no-op silently.
 func gestureContainerKindFromRole(role string) string {
 	normalized := normalizedRoleToken(role)
 	for suffix, kind := range gestureContainerRoleSuffixes {
@@ -1855,7 +1863,6 @@ func normalizedRoleToken(role string) string {
 // container kind they map to. Ordering does not matter — the
 // taxonomies don't produce role names that match more than one entry.
 var gestureContainerRoleSuffixes = map[string]string{
-	"tabbar":              "tabbar",
 	"sheet":               "sheet",
 	"actionsheet":         "sheet",
 	"alert":               "alert",

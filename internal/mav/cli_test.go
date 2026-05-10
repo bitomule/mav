@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -3944,14 +3945,24 @@ func TestUITapAutoRoutesSelfCellTapToAppium(t *testing.T) {
 	}
 }
 
-func TestUITapAppiumRoutesTabBarItemToMobileTap(t *testing.T) {
+func TestUITapAppiumRoutesTabBarItemThroughElementClick(t *testing.T) {
+	// Tab bar children deliberately do NOT route through the
+	// gesture-container coord-tap detour: synthetic `mobile: tap`
+	// events at the button frame centre are dropped by the simulator
+	// right after a screen transition, while `XCUIElement.click` is
+	// dispatched through the test infrastructure and triggers the tab
+	// switch reliably.
 	calls := []string{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		calls = append(calls, r.Method+" "+r.URL.Path+" "+string(body))
 		switch {
 		case r.URL.Path == "/wd/hub/session/s1/source":
-			_, _ = io.WriteString(w, `{"value":"<App><XCUIElementTypeTabBar><XCUIElementTypeButton name=\"Vender\" label=\"Vender\" x=\"160\" y=\"820\" width=\"94\" height=\"44\" enabled=\"true\"/></XCUIElementTypeTabBar></App>"}`)
+			_, _ = io.WriteString(w, `{"value":"<App><XCUIElementTypeTabBar><XCUIElementTypeButton name=\"PrimaryTab\" label=\"PrimaryTab\" x=\"160\" y=\"820\" width=\"94\" height=\"44\" enabled=\"true\"/></XCUIElementTypeTabBar></App>"}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/wd/hub/session/s1/element":
+			_, _ = io.WriteString(w, `{"value":{"ELEMENT":"E1"}}`)
+		case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/element/E1/click"):
+			_, _ = io.WriteString(w, `{"value":null}`)
 		case r.URL.Path == "/wd/hub/session/s1/execute/sync":
 			_, _ = io.WriteString(w, `{"value":null}`)
 		default:
@@ -3983,28 +3994,36 @@ func TestUITapAppiumRoutesTabBarItemToMobileTap(t *testing.T) {
 		tools: cfg.Tools,
 		out:   map[string]string{"appium driver list --installed": "xcuitest@8.4.3\n"},
 	}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
-	if err := cli.Run(context.Background(), []string{"ui", "tap", "--id", "Vender", "--prefer-driver", "appium"}); err != nil {
+	if err := cli.Run(context.Background(), []string{"ui", "tap", "--id", "PrimaryTab", "--prefer-driver", "appium"}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "ok cmd=ui.tap") {
 		t.Fatalf("output=%q", out.String())
 	}
-	if !containsCall(calls, `"script":"mobile: tap"`) || !containsCall(calls, `"x":207`) || !containsCall(calls, `"y":842`) {
-		t.Fatalf("calls=%v", calls)
+	if !containsCall(calls, "/element/E1/click") {
+		t.Fatalf("tab bar item should use element click: calls=%v", calls)
 	}
-	if containsCall(calls, "/element") {
-		t.Fatalf("tab bar item should not use element click: calls=%v", calls)
+	if containsCall(calls, `"script":"mobile: tap"`) {
+		t.Fatalf("tab bar item should not coord-tap: calls=%v", calls)
 	}
 }
 
-func TestUITapAutoRoutesTabBarItemToAppiumMobileTap(t *testing.T) {
+func TestUITapAutoOnTabBarItemUsesAppiumElementClick(t *testing.T) {
+	// `prefer=auto` falls back to Appium when axe doesn't carry the
+	// tab bar children; the appium path uses `XCUIElement.click`
+	// rather than the coord-tap detour for the same reasons as the
+	// `prefer=appium` test above.
 	calls := []string{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		calls = append(calls, r.Method+" "+r.URL.Path+" "+string(body))
 		switch {
 		case r.URL.Path == "/wd/hub/session/s1/source":
-			_, _ = io.WriteString(w, `{"value":"<App><XCUIElementTypeTabBar><XCUIElementTypeButton name=\"Vender\" label=\"Vender\" x=\"160\" y=\"820\" width=\"94\" height=\"44\" enabled=\"true\"/></XCUIElementTypeTabBar></App>"}`)
+			_, _ = io.WriteString(w, `{"value":"<App><XCUIElementTypeTabBar><XCUIElementTypeButton name=\"PrimaryTab\" label=\"PrimaryTab\" x=\"160\" y=\"820\" width=\"94\" height=\"44\" enabled=\"true\"/></XCUIElementTypeTabBar></App>"}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/wd/hub/session/s1/element":
+			_, _ = io.WriteString(w, `{"value":{"ELEMENT":"E1"}}`)
+		case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/element/E1/click"):
+			_, _ = io.WriteString(w, `{"value":null}`)
 		case r.URL.Path == "/wd/hub/session/s1/execute/sync":
 			_, _ = io.WriteString(w, `{"value":null}`)
 		default:
@@ -4031,28 +4050,34 @@ func TestUITapAutoRoutesTabBarItemToAppiumMobileTap(t *testing.T) {
 	if err := writeAppiumSession(run, appiumSessionState{PID: 123, BaseURL: server.URL + appiumBasePath, SessionID: "s1", UDID: "SIM", BundleID: "com.example.app"}); err != nil {
 		t.Fatal(err)
 	}
-	raw := `[{"role":"AXTabBar","children":[{"AXIdentifier":"Vender","AXLabel":"Vender","role":"AXTab"}]}]`
+	// Axe doesn't see the tab bar buttons (only chrome), and `axe tap`
+	// on the missing identifier fails — that triggers the auto-mode
+	// fallback to Appium, which performs the element click.
+	raw := `[{"AXLabel":"Home","role":"AXStaticText"}]`
 	runner := &sequenceRecordingRunner{
 		tools: cfg.Tools,
 		out: map[string]string{
 			"axe describe-ui --udid SIM":     raw,
 			"appium driver list --installed": "xcuitest@8.4.3\n",
 		},
+		err: map[string]CommandResult{
+			"axe tap --udid SIM --id PrimaryTab": {Err: errors.New("axe: no element matched id=PrimaryTab"), Stderr: "axe: no element matched id=PrimaryTab"},
+		},
 	}
 	var out bytes.Buffer
 	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
-	if err := cli.Run(context.Background(), []string{"ui", "tap", "--id", "Vender"}); err != nil {
+	if err := cli.Run(context.Background(), []string{"ui", "tap", "--id", "PrimaryTab"}); err != nil {
 		t.Fatal(err)
 	}
 	got := out.String()
-	if !strings.Contains(got, "driver=appium") || !strings.Contains(got, "fallback_reason=container_tap") {
+	if !strings.Contains(got, "ok cmd=ui.tap") || !strings.Contains(got, "driver=appium") {
 		t.Fatalf("got %q", got)
 	}
-	if containsCall(runner.commands, "axe tap --id Vender") {
-		t.Fatalf("tab tap should route before axe tap: %v", runner.commands)
+	if !containsCall(calls, "/element/E1/click") {
+		t.Fatalf("tab bar item should use element click: calls=%v", calls)
 	}
-	if !containsCall(calls, `"script":"mobile: tap"`) {
-		t.Fatalf("calls=%v", calls)
+	if containsCall(calls, `"script":"mobile: tap"`) {
+		t.Fatalf("tab bar item should not coord-tap: calls=%v", calls)
 	}
 }
 
@@ -4542,8 +4567,13 @@ func TestGestureContainerKindFromRoleClassifiesGestureDrivenContainers(t *testin
 		role string
 		want string
 	}{
-		{role: "XCUIElementTypeTabBar", want: "tabbar"},
-		{role: "AXTabBar", want: "tabbar"},
+		// Tab bars deliberately fall through: XCUIElement.click on a
+		// tab bar button is more reliable than synthetic taps on
+		// iOS 26 (mobile: tap drops the touch right after a screen
+		// transition), so they should NOT route through the
+		// coord-tap detour.
+		{role: "XCUIElementTypeTabBar", want: ""},
+		{role: "AXTabBar", want: ""},
 		{role: "XCUIElementTypeSheet", want: "sheet"},
 		{role: "AXActionSheet", want: "sheet"},
 		{role: "XCUIElementTypeAlert", want: "alert"},
@@ -4576,10 +4606,10 @@ func TestFindGestureContainerTargetFrameMatchesContainerChildren(t *testing.T) {
 		want string
 	}{
 		{
-			name: "tab bar child by id",
+			name: "tab bar child does NOT trigger the coord-tap detour",
 			tree: `{"role":"AXApp","children":[{"role":"AXTabBar","children":[{"role":"AXTab","AXIdentifier":"sell","AXFrame":"{{160, 820}, {94, 44}}"}]}]}`,
 			id:   "sell",
-			want: "{{160, 820}, {94, 44}}",
+			want: "",
 		},
 		{
 			name: "action sheet button by text",
