@@ -1810,6 +1810,13 @@ func findGestureContainerTargetFrame(value any, id, text, targetValue, container
 // returned non-empty marks the subtree as gesture-handled, so taps on
 // children should be coordinate-based.
 //
+// Match strategy: the role string is normalized (lower-cased,
+// non-alphanumerics stripped) and checked against a closed set of
+// suffixes derived from XCUIElement and AX role taxonomies. Suffix
+// (rather than substring) matching avoids surprises like
+// `XCUIElementTypeSheetButton` triggering the sheet path; the role
+// names we care about always end on the role token itself.
+//
 // Coverage rationale:
 //   - tab bars: UITabBarItem hit-tests via its private gesture path; AX
 //     activate sometimes silent-fails.
@@ -1818,18 +1825,43 @@ func findGestureContainerTargetFrame(value any, id, text, targetValue, container
 //   - popovers: UIPopoverPresentationController content is reachable via
 //     its dimming view; `click` on inner buttons can no-op in iOS 17+.
 func gestureContainerKindFromRole(role string) string {
-	role = strings.ToLower(strings.TrimSpace(role))
-	switch {
-	case strings.Contains(role, "tabbar"), strings.Contains(role, "tab bar"):
-		return "tabbar"
-	case strings.Contains(role, "sheet"), strings.Contains(role, "actionsheet"), strings.Contains(role, "action sheet"):
-		return "sheet"
-	case strings.Contains(role, "alert"), strings.Contains(role, "uialert"):
-		return "alert"
-	case strings.Contains(role, "popover"):
-		return "popover"
+	normalized := normalizedRoleToken(role)
+	for suffix, kind := range gestureContainerRoleSuffixes {
+		if strings.HasSuffix(normalized, suffix) {
+			return kind
+		}
 	}
 	return ""
+}
+
+// normalizedRoleToken strips spaces, punctuation, and case from a role
+// string so suffix comparisons are robust across Appium (`XCUIElementTypeTabBar`)
+// and AX (`AXTabBar`, `AX Tab Bar`) taxonomies.
+func normalizedRoleToken(role string) string {
+	var b strings.Builder
+	b.Grow(len(role))
+	for _, r := range role {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r + ('a' - 'A'))
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// gestureContainerRoleSuffixes pairs normalized role suffixes with the
+// container kind they map to. Ordering does not matter — the
+// taxonomies don't produce role names that match more than one entry.
+var gestureContainerRoleSuffixes = map[string]string{
+	"tabbar":              "tabbar",
+	"sheet":               "sheet",
+	"actionsheet":         "sheet",
+	"alert":               "alert",
+	"uialertcontroller":   "alert",
+	"popover":             "popover",
+	"popoverpresentation": "popover",
 }
 
 func nodeMatchesAppiumTarget(node map[string]any, id, text, targetValue string) bool {
@@ -3927,16 +3959,32 @@ func (c CLI) evaluateSingleConditionWithPrefer(ctx context.Context, condition Fl
 		return false, fmt.Errorf("tree_failed")
 	}
 	raw := result.Stdout
-	if flowConditionMatchesElements(ExtractElements(raw), condition) {
+	hostElements := ExtractElements(raw)
+	if flowConditionMatchesElements(hostElements, condition) {
 		return true, nil
 	}
 	// First miss only ruled out the host-app tree. Targets that live in
 	// modal service overlays (PHPicker, Safari/Mail, privacy alerts,
 	// springboard) are reachable only when we ask Appium for the
 	// active-bundle tree, so retry with `includeSystem=true` regardless
-	// of whether the caller fixed `prefer` to Appium. This keeps
-	// whileNotVisible loops responsive when the matched element only
-	// appears once an overlay dismisses.
+	// of whether the caller fixed `prefer` to Appium.
+	//
+	// Skip the second probe when the first one is already known to
+	// have answered the same question:
+	//   - `described.SystemSource` means the first probe already swung
+	//     to an active system bundle.
+	//   - A rich host tree ( ≥ `hostTreeRichThreshold` elements) keeps
+	//     `appiumSourceTree(includeSystem=true)` on the host source via
+	//     the early-exit there, so the retry would issue a second
+	//     identical `mobile: source` for nothing. Skipping it halves
+	//     Appium load on tight `whileNotVisible` polls against
+	//     unfindable targets.
+	if described.SystemSource {
+		return false, nil
+	}
+	if described.Driver == "appium" && len(hostElements) >= hostTreeRichThreshold {
+		return false, nil
+	}
 	appium, appiumErr := c.describeUITree(ctx, cfg, "appium", true)
 	if appiumErr == nil && appium.Result.Err == nil {
 		return flowConditionMatchesElements(ExtractElements(appium.Result.Stdout), condition), nil

@@ -530,6 +530,16 @@ func (c CLI) appiumSourceTree(ctx context.Context, cfg Config, includeSystem boo
 			// candidate explicitly.
 			bundleIDs = knownInProcessOverlayBundles()
 		}
+		// Track the richest overlay rather than returning the first
+		// non-empty match: bundle iteration order is stable but
+		// arbitrary, and several overlays can return token nodes
+		// simultaneously (e.g. tccd dimming chrome alongside PHPicker
+		// content). The overlay that actually carries the user-visible
+		// content has the largest element count.
+		bestRaw, bestBundle, bestCount := "", "", hostElements
+		if hostErr != nil {
+			bestCount = -1
+		}
 		for _, bundleID := range bundleIDs {
 			if bundleID == activeBundle || bundleID == cfg.BundleID {
 				continue
@@ -542,9 +552,14 @@ func (c CLI) appiumSourceTree(ctx context.Context, cfg Config, includeSystem boo
 			if overlayElements == 0 {
 				continue
 			}
-			if hostErr != nil || overlayElements > hostElements {
-				return appiumSourceResult{Raw: raw, ActiveBundle: bundleID, SystemSource: true}, nil
+			if overlayElements > bestCount {
+				bestRaw = raw
+				bestBundle = bundleID
+				bestCount = overlayElements
 			}
+		}
+		if bestBundle != "" {
+			return appiumSourceResult{Raw: bestRaw, ActiveBundle: bestBundle, SystemSource: true}, nil
 		}
 	}
 	if hostErr != nil {

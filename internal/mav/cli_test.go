@@ -4553,6 +4553,12 @@ func TestGestureContainerKindFromRoleClassifiesGestureDrivenContainers(t *testin
 		{role: "AXOther", want: ""},
 		{role: "  XCUIElementTypeSheet  ", want: "sheet"},
 		{role: "", want: ""},
+		// Substring-trap regressions — these end with `Button` or
+		// `Cell`, not the role token, so they must not match.
+		{role: "XCUIElementTypeSheetButton", want: ""},
+		{role: "TabBarHostingCell", want: ""},
+		{role: "AXAlertNotificationCell", want: ""},
+		{role: "PopoverContainerView", want: ""},
 	}
 	for _, tc := range cases {
 		if got := gestureContainerKindFromRole(tc.role); got != tc.want {
@@ -4622,9 +4628,11 @@ func TestFindGestureContainerTargetFrameMatchesContainerChildren(t *testing.T) {
 
 func TestExtractElementsReturnsEveryUniqueNodeBeyond80Limit(t *testing.T) {
 	// Build a JSON tree with 200 unique elements; the previous
-	// `compactElements` cap of 80 dropped tail elements like the tab
-	// bar, breaking `mav ui wait --id Vender` even when the host
-	// source clearly contained the button.
+	// `compactElements` cap of 80 silently dropped any element past
+	// position 80, which broke matchers (`mav ui wait`,
+	// `whileNotVisible`, `scrollUntil`) on screens whose target
+	// elements sit at the bottom of the source tree even when the
+	// raw source clearly contained them.
 	var b strings.Builder
 	b.WriteString("[")
 	for i := 0; i < 200; i++ {
@@ -4641,6 +4649,77 @@ func TestExtractElementsReturnsEveryUniqueNodeBeyond80Limit(t *testing.T) {
 	last := elements[len(elements)-1]
 	if last.ID != "el-199" {
 		t.Fatalf("last element id = %q, want el-199", last.ID)
+	}
+}
+
+func TestEvaluateSingleConditionAppiumFallsBackToSystemOverlay(t *testing.T) {
+	// Reproduces the gap that this fallback closes: when
+	// `prefer=appium` and the host source does not contain the target,
+	// the matcher must still consult the system-overlay tree (the
+	// fallback used to be gated on `prefer=auto`). The mock host
+	// source returns just one chrome node so the rich-host
+	// short-circuit (`hostTreeRichThreshold = 32`) is not triggered
+	// and the system probe runs.
+	calls := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		entry := r.Method + " " + r.URL.Path + " " + string(body)
+		calls = append(calls, entry)
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/wd/hub/session/s1/execute/sync" && strings.Contains(string(body), "activeAppInfo"):
+			_, _ = io.WriteString(w, `{"value":{"bundleId":"com.example.app","name":"App","pid":42}}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/wd/hub/session/s1/appium/settings":
+			_, _ = io.WriteString(w, `{"value":{"defaultActiveApplication":"auto"}}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/wd/hub/session/s1/appium/settings":
+			_, _ = io.WriteString(w, `{"value":null}`)
+		case r.URL.Path == "/wd/hub/session/s1/source":
+			// First /source goes to the host (bare app shell, no
+			// PrimaryAction). Subsequent /source calls (one per
+			// overlay bundle probe) return the privacy-alert tree
+			// that contains PrimaryAction.
+			if strings.Contains(strings.Join(calls, "\n"), `"defaultActiveApplication":"com.apple.tccd"`) {
+				_, _ = io.WriteString(w, `{"value":"<App><XCUIElementTypeAlert><XCUIElementTypeButton name=\"PrimaryAction\" label=\"PrimaryAction\" enabled=\"true\"/></XCUIElementTypeAlert></App>"}`)
+				return
+			}
+			_, _ = io.WriteString(w, `{"value":"<XCUIElementTypeApplication name=\"App\" label=\"App\" enabled=\"true\"/>"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.BundleID = "com.example.app"
+	cfg.Tools = map[string]bool{"appium": true, "node": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAppiumSession(run, appiumSessionState{PID: 123, BaseURL: server.URL + appiumBasePath, SessionID: "s1", UDID: "SIM", BundleID: "com.example.app"}); err != nil {
+		t.Fatal(err)
+	}
+	runner := &sequenceRecordingRunner{
+		tools: cfg.Tools,
+		out:   map[string]string{"appium driver list --installed": "xcuitest@8.4.3\n"},
+	}
+	cli := CLI{Runner: runner, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	matched, err := cli.evaluateSingleConditionWithPrefer(context.Background(), FlowCondition{ID: "PrimaryAction"}, "appium")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !matched {
+		t.Fatalf("expected match via system overlay fallback, calls=%v", calls)
+	}
+	if !containsCall(calls, `"settings":{"defaultActiveApplication":"com.apple.tccd"}`) {
+		t.Fatalf("system overlay probe never ran: calls=%v", calls)
 	}
 }
 
