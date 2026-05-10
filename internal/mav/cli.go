@@ -1159,6 +1159,38 @@ func shouldUseAppiumTreeFallback(raw string, state, appiumState uiTreeState, cfg
 	return state.ScreenSource == "identity_missing" && appiumStateHasExplicitScreenIdentity(appiumState, cfg)
 }
 
+// isWeakLaunchMatch reports whether the screen was recognised through the
+// synthetic `start` screen's `kind: launch` recogniser (used as a permissive
+// catch-all). That match is intentionally low-confidence and should give way
+// to any explicit screen identity the Appium driver can surface.
+func isWeakLaunchMatch(state uiTreeState) bool {
+	return state.Screen == "start" && state.ScreenSource == "current"
+}
+
+// isUsableAppiumTree reports whether an Appium describe-tree response is
+// useful for screen recognition: no transport error, non-empty AX-style
+// output, more than the bare application root, and at least one extractable
+// element. The same guard is applied to every Appium fallback call inside
+// `waitForTreeReady`; centralising it keeps the call sites readable and the
+// criteria in lockstep.
+func isUsableAppiumTree(tree describedUITree) bool {
+	return tree.Result.Err == nil &&
+		!isEmptyAXTree(tree.Result.Stdout) &&
+		countTreeNodes(tree.Result.Stdout) > 1 &&
+		len(ExtractElements(tree.Result.Stdout)) > 0
+}
+
+// appiumStateExposesNonStartScreen reports whether the Appium-observed state
+// represents a real screen — i.e. anything more specific than the synthetic
+// `start` fallback or an unrecognised tree. Used by the weak-launch fallback
+// to decide whether the Appium tree improves on what AXe already returned.
+func appiumStateExposesNonStartScreen(state uiTreeState) bool {
+	if state.Screen == "" || state.Screen == "unknown" || state.Screen == "start" {
+		return false
+	}
+	return state.ScreenSource != "identity_missing" && state.ScreenSource != "unmatched"
+}
+
 func appiumStateHasExplicitScreenIdentity(state uiTreeState, cfg Config) bool {
 	if state.Screen == "" || state.Screen == "unknown" || state.ScreenSource == "identity_missing" {
 		return false
@@ -1308,8 +1340,28 @@ func (c CLI) waitForTreeReady(ctx context.Context, cfg Config, timeout time.Dura
 		}
 		if result.Err == nil && driver != "appium" {
 			state := c.observeUITree(cfg, result.Stdout, driver, false)
+			// AXe only exposes accessibility leaves, so it misses the
+			// `accessibilityIdentifier` developers set on the non-leaf
+			// container view of a screen. When that happens AXe falls all
+			// the way back to the synthetic `start` launch recogniser (its
+			// weakest signal). Probe Appium against the host app (NOT
+			// system overlays — those would re-target a privacy or
+			// SpringBoard bundle and lose the host tree) so the real
+			// screen identity surfaces. Without this nudge `mav go` keeps
+			// observing `start` and times out with `launch_tree_not_ready`
+			// even when the target screen is already on display.
+			if isWeakLaunchMatch(state) {
+				if appium, err := c.describeUITree(ctx, cfg, "appium", false); err == nil && isUsableAppiumTree(appium) {
+					appiumState := c.observeUITree(cfg, appium.Result.Stdout, appium.Driver, false)
+					if appiumStateExposesNonStartScreen(appiumState) {
+						result = appium.Result
+						driver = appium.Driver
+						state = appiumState
+					}
+				}
+			}
 			if shouldTryAppiumTreeFallback(result.Stdout, state) {
-				if appium, appiumErr := c.describeUITree(ctx, cfg, "appium", true); appiumErr == nil && appium.Result.Err == nil && !isEmptyAXTree(appium.Result.Stdout) && countTreeNodes(appium.Result.Stdout) > 1 && len(ExtractElements(appium.Result.Stdout)) > 0 {
+				if appium, appiumErr := c.describeUITree(ctx, cfg, "appium", true); appiumErr == nil && isUsableAppiumTree(appium) {
 					appiumState := c.observeUITree(cfg, appium.Result.Stdout, appium.Driver, false)
 					if !shouldUseAppiumTreeFallback(result.Stdout, state, appiumState, cfg) {
 						time.Sleep(300 * time.Millisecond)

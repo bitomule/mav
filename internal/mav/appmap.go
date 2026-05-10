@@ -923,6 +923,16 @@ func isNaturalScreenIdentifierElement(el Element) bool {
 	if _, ok := screenIDFromElementID(id); ok {
 		return false
 	}
+	// Skip sub-element identifiers. Codebases that auto-generate
+	// accessibility ids (Sourcery, etc.) commonly emit `<Container>.<element>`
+	// for individual controls (buttons, fields, …). Those are not screens —
+	// they are addressable members of a screen — so we ignore any id with a
+	// dot regardless of suffix. Prefixed screen ids such as `mav.screen.<id>`
+	// or `screen.<id>` are matched earlier by `screenIDFromElementID` and
+	// never reach this branch.
+	if strings.Contains(id, ".") {
+		return false
+	}
 	if isApplicationRootElement(el) {
 		return false
 	}

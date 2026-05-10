@@ -1183,6 +1183,93 @@ func TestUITreePreferAxeDoesNotFallbackToAppium(t *testing.T) {
 	}
 }
 
+func TestIsWeakLaunchMatch(t *testing.T) {
+	cases := []struct {
+		name string
+		in   uiTreeState
+		want bool
+	}{
+		{name: "start_via_current_is_weak", in: uiTreeState{Screen: "start", ScreenSource: "current"}, want: true},
+		{name: "start_via_recognized_is_strong", in: uiTreeState{Screen: "start", ScreenSource: "recognized"}, want: false},
+		{name: "non_start_current_is_strong", in: uiTreeState{Screen: "home", ScreenSource: "current"}, want: false},
+		{name: "explicit_id_match_is_strong", in: uiTreeState{Screen: "home", ScreenSource: "explicit_id"}, want: false},
+		{name: "empty_state_is_not_weak", in: uiTreeState{}, want: false},
+		{name: "identity_missing_is_not_weak", in: uiTreeState{Screen: "unknown", ScreenSource: "identity_missing"}, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isWeakLaunchMatch(tc.in); got != tc.want {
+				t.Fatalf("isWeakLaunchMatch(%+v) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWaitForTreeReadyProbesAppiumHostAppOnWeakLaunchMatch covers the
+// recognition path that closes feedback v0.2.11 §5: AXe returns a tree where
+// the only match for the synthetic `start` screen is its `kind: launch`
+// recognizer (because the explicit screen identifier lives on a non-leaf
+// container view that AXe's leaf-only traversal cannot see). The Appium
+// describe-tree against the host app exposes the container id and
+// `waitForTreeReady` must adopt the Appium tree so callers like `mav go`
+// observe the real screen instead of timing out on `launch_tree_not_ready`.
+func TestWaitForTreeReadyProbesAppiumHostAppOnWeakLaunchMatch(t *testing.T) {
+	root, cfg, server, calls := setupAppiumSemanticTest(t)
+	defer server.Close()
+	cfg.Tools["axe"] = true
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	// AppMap with a synthetic `start` (launch recognizer) and a target screen
+	// keyed by the explicit container id that the Appium fixture exposes.
+	m := DefaultAppMap(cfg.BundleID)
+	m.Screens["home"] = Screen{
+		ID:          "home",
+		Recognizers: []Recognizer{{Kind: "id", Value: "mav.screen.home"}},
+	}
+	if err := SaveAppMap(root, m); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate `mav open` having stamped the synthetic `start` as the current
+	// screen — this is what makes AXe match `start` via launch in observeUITree.
+	SetCurrentScreen(root, "start", "run1")
+
+	// AXe response: a non-empty tree with no explicit screen identity on any
+	// element. The application root + a couple of leaves are enough for
+	// observeUITree to fall through to the launch recognizer match.
+	axeRaw := `[{"role":"AXApplication","AXLabel":"Demo","children":[{"role":"button","AXLabel":"Settings"},{"role":"button","AXLabel":"Help"}]}]`
+
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{
+		tools: cfg.Tools,
+		out: map[string]string{
+			"axe describe-ui --udid SIM":     axeRaw,
+			"appium driver list --installed": "xcuitest@7.0.0\n",
+		},
+	}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+
+	tree, err := cli.waitForTreeReady(context.Background(), cfg, 2*time.Second)
+	if err != nil {
+		t.Fatalf("waitForTreeReady err=%v", err)
+	}
+	if tree.Driver != "appium" {
+		t.Fatalf("expected Appium tree to be adopted, got driver=%q", tree.Driver)
+	}
+	hasContainer := false
+	for _, el := range ExtractElements(tree.Raw) {
+		if el.ID == "mav.screen.home" {
+			hasContainer = true
+			break
+		}
+	}
+	if !hasContainer {
+		t.Fatalf("expected explicit container id in adopted tree, raw=%s", tree.Raw)
+	}
+	if !containsCall(*calls, "/wd/hub/session/s1/source") {
+		t.Fatalf("expected Appium /source request to be made, calls=%v", *calls)
+	}
+}
+
 func TestUITreeAutoFallsBackToAppiumForEmptyTree(t *testing.T) {
 	root, cfg, server, calls := setupAppiumSemanticTest(t)
 	defer server.Close()
