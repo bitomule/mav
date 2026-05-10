@@ -508,14 +508,26 @@ func (c CLI) appiumSourceTree(ctx context.Context, cfg Config, includeSystem boo
 			return appiumSourceResult{Raw: raw, ActiveBundle: activeBundle, SystemSource: true}, nil
 		}
 	}
-	if includeSystem && cfg.BundleID != "" {
+	// Probe the host source before any in-process overlay sweep. When
+	// the host already returns a populated tree, treat it as canonical
+	// and skip the overlay probe entirely — every per-bundle probe
+	// requires a `defaultActiveApplication` settings round-trip plus a
+	// `mobile: source`, so probing five candidates per call adds 5–10s
+	// of latency to whileNotVisible loops on a healthy screen.
+	hostRaw, hostErr := appiumDefaultSourceTree(ctx, session)
+	hostElements := 0
+	if hostErr == nil {
+		hostElements = len(ExtractElements(hostRaw))
+	}
+	hostHasRichTree := hostErr == nil && hostElements >= hostTreeRichThreshold
+	if includeSystem && cfg.BundleID != "" && !hostHasRichTree {
 		bundleIDs := knownSystemUIBundles()
 		if activeBundle == cfg.BundleID {
-			// `mobile: activeAppInfo` reports the host app even when a
-			// modal service overlay (PHPicker, SafariViewService, mail
-			// composer, TCC privacy alerts) is on top. Probe every
-			// known overlay rather than only the privacy slice, or
-			// callers will hit `screen_unknown` on those overlays.
+			// `mobile: activeAppInfo` keeps reporting the host app even
+			// when a modal service overlay (PHPicker, SafariViewService,
+			// mail composer, TCC privacy alerts) is on top, so the only
+			// way to expose the overlay's tree is to probe each
+			// candidate explicitly.
 			bundleIDs = knownInProcessOverlayBundles()
 		}
 		for _, bundleID := range bundleIDs {
@@ -523,17 +535,31 @@ func (c CLI) appiumSourceTree(ctx context.Context, cfg Config, includeSystem boo
 				continue
 			}
 			raw, sourceErr := appiumSourceForActiveBundle(ctx, session, bundleID)
-			if sourceErr == nil && !isEmptyAXTree(raw) && len(ExtractElements(raw)) > 0 {
+			if sourceErr != nil || isEmptyAXTree(raw) {
+				continue
+			}
+			overlayElements := len(ExtractElements(raw))
+			if overlayElements == 0 {
+				continue
+			}
+			if hostErr != nil || overlayElements > hostElements {
 				return appiumSourceResult{Raw: raw, ActiveBundle: bundleID, SystemSource: true}, nil
 			}
 		}
 	}
-	raw, err := appiumDefaultSourceTree(ctx, session)
-	if err != nil {
-		return appiumSourceResult{}, err
+	if hostErr != nil {
+		return appiumSourceResult{}, hostErr
 	}
-	return appiumSourceResult{Raw: raw, ActiveBundle: activeBundle}, nil
+	return appiumSourceResult{Raw: hostRaw, ActiveBundle: activeBundle}, nil
 }
+
+// hostTreeRichThreshold is the element-count above which we trust the
+// host source as the canonical tree. Empirical heads-up: privacy
+// alerts and PHPicker overlays leave the host source with fewer than
+// ~10 visible elements (mostly the dimming chrome). A loaded screen of
+// content sits well over 50, so 32 keeps us safely on the “rich” side
+// while still triggering the overlay sweep when the host is masked.
+const hostTreeRichThreshold = 32
 
 func knownSystemUIBundles() []string {
 	return []string{

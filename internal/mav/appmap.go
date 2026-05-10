@@ -677,9 +677,6 @@ func compactElements(elements []Element) []Element {
 		}
 		seen[key] = true
 		out = append(out, el)
-		if len(out) >= 80 {
-			break
-		}
 	}
 	return out
 }

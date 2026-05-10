@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -4616,6 +4617,30 @@ func TestFindGestureContainerTargetFrameMatchesContainerChildren(t *testing.T) {
 				t.Fatalf("got=%q ok=%v want=%q", got, ok, tc.want)
 			}
 		})
+	}
+}
+
+func TestExtractElementsReturnsEveryUniqueNodeBeyond80Limit(t *testing.T) {
+	// Build a JSON tree with 200 unique elements; the previous
+	// `compactElements` cap of 80 dropped tail elements like the tab
+	// bar, breaking `mav ui wait --id Vender` even when the host
+	// source clearly contained the button.
+	var b strings.Builder
+	b.WriteString("[")
+	for i := 0; i < 200; i++ {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		fmt.Fprintf(&b, `{"identifier":"el-%d","label":"el-%d","type":"XCUIElementTypeOther","frame":"{{0, %d}, {10, 10}}"}`, i, i, i)
+	}
+	b.WriteString("]")
+	elements := ExtractElements(b.String())
+	if len(elements) != 200 {
+		t.Fatalf("got %d elements, want 200", len(elements))
+	}
+	last := elements[len(elements)-1]
+	if last.ID != "el-199" {
+		t.Fatalf("last element id = %q, want el-199", last.ID)
 	}
 }
 
