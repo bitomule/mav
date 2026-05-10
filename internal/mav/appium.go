@@ -519,7 +519,7 @@ func (c CLI) appiumSourceTree(ctx context.Context, cfg Config, includeSystem boo
 	if hostErr == nil {
 		hostElements = len(ExtractElements(hostRaw))
 	}
-	hostHasRichTree := hostErr == nil && hostElements >= hostTreeRichThreshold
+	hostHasRichTree := hostErr == nil && IsRichHostTree(hostElements)
 	if includeSystem && cfg.BundleID != "" && !hostHasRichTree {
 		bundleIDs := knownSystemUIBundles()
 		if activeBundle == cfg.BundleID {
@@ -574,7 +574,21 @@ func (c CLI) appiumSourceTree(ctx context.Context, cfg Config, includeSystem boo
 // ~10 visible elements (mostly the dimming chrome). A loaded screen of
 // content sits well over 50, so 32 keeps us safely on the “rich” side
 // while still triggering the overlay sweep when the host is masked.
+//
+// Callers outside this package that want to mirror the rich-host
+// short-circuit should use `IsRichHostTree` instead of comparing the
+// constant directly, so any future threshold tweak stays in one
+// place.
 const hostTreeRichThreshold = 32
+
+// IsRichHostTree reports whether an element count crosses the
+// threshold above which the host-app source is considered canonical
+// and the in-process overlay sweep is skipped. Exposed for callers
+// that need to mirror the same decision (e.g. the
+// `evaluateSingleConditionWithPrefer` retry-skip logic).
+func IsRichHostTree(elementCount int) bool {
+	return elementCount >= hostTreeRichThreshold
+}
 
 func knownSystemUIBundles() []string {
 	return []string{

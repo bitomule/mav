@@ -1834,9 +1834,12 @@ func findGestureContainerTargetFrame(value any, id, text, targetValue, container
 // makes the first tap right after navigation no-op silently.
 func gestureContainerKindFromRole(role string) string {
 	normalized := normalizedRoleToken(role)
-	for suffix, kind := range gestureContainerRoleSuffixes {
-		if strings.HasSuffix(normalized, suffix) {
-			return kind
+	// Iterate the ordered slice so adding a more specific suffix
+	// later (e.g. another `*alert*` flavour) cannot become
+	// non-deterministic by virtue of Go map iteration order.
+	for _, entry := range gestureContainerRoleSuffixes {
+		if strings.HasSuffix(normalized, entry.suffix) {
+			return entry.kind
 		}
 	}
 	return ""
@@ -1859,16 +1862,21 @@ func normalizedRoleToken(role string) string {
 	return b.String()
 }
 
-// gestureContainerRoleSuffixes pairs normalized role suffixes with the
-// container kind they map to. Ordering does not matter — the
-// taxonomies don't produce role names that match more than one entry.
-var gestureContainerRoleSuffixes = map[string]string{
-	"sheet":               "sheet",
-	"actionsheet":         "sheet",
-	"alert":               "alert",
-	"uialertcontroller":   "alert",
-	"popover":             "popover",
-	"popoverpresentation": "popover",
+// gestureContainerRoleSuffixes pairs normalized role suffixes with
+// the container kind they map to. The list is ordered most-specific
+// first so a future addition like `bar` (which is a suffix of
+// `actionsheet`-adjacent names) cannot accidentally win when both
+// match. The current entries are mutually disjoint.
+var gestureContainerRoleSuffixes = []struct {
+	suffix string
+	kind   string
+}{
+	{"uialertcontroller", "alert"},
+	{"popoverpresentation", "popover"},
+	{"actionsheet", "sheet"},
+	{"popover", "popover"},
+	{"alert", "alert"},
+	{"sheet", "sheet"},
 }
 
 func nodeMatchesAppiumTarget(node map[string]any, id, text, targetValue string) bool {
@@ -3980,16 +3988,18 @@ func (c CLI) evaluateSingleConditionWithPrefer(ctx context.Context, condition Fl
 	// have answered the same question:
 	//   - `described.SystemSource` means the first probe already swung
 	//     to an active system bundle.
-	//   - A rich host tree ( ≥ `hostTreeRichThreshold` elements) keeps
+	//   - A rich host tree (per `IsRichHostTree`) keeps
 	//     `appiumSourceTree(includeSystem=true)` on the host source via
 	//     the early-exit there, so the retry would issue a second
 	//     identical `mobile: source` for nothing. Skipping it halves
 	//     Appium load on tight `whileNotVisible` polls against
-	//     unfindable targets.
+	//     unfindable targets. Using the shared helper rather than
+	//     comparing the threshold directly keeps both call sites in
+	//     lockstep if the policy ever changes.
 	if described.SystemSource {
 		return false, nil
 	}
-	if described.Driver == "appium" && len(hostElements) >= hostTreeRichThreshold {
+	if described.Driver == "appium" && IsRichHostTree(len(hostElements)) {
 		return false, nil
 	}
 	appium, appiumErr := c.describeUITree(ctx, cfg, "appium", true)
