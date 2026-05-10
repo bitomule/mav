@@ -511,7 +511,12 @@ func (c CLI) appiumSourceTree(ctx context.Context, cfg Config, includeSystem boo
 	if includeSystem && cfg.BundleID != "" {
 		bundleIDs := knownSystemUIBundles()
 		if activeBundle == cfg.BundleID {
-			bundleIDs = knownPrivacyUIBundles()
+			// `mobile: activeAppInfo` reports the host app even when a
+			// modal service overlay (PHPicker, SafariViewService, mail
+			// composer, TCC privacy alerts) is on top. Probe every
+			// known overlay rather than only the privacy slice, or
+			// callers will hit `screen_unknown` on those overlays.
+			bundleIDs = knownInProcessOverlayBundles()
 		}
 		for _, bundleID := range bundleIDs {
 			if bundleID == activeBundle || bundleID == cfg.BundleID {
@@ -544,12 +549,26 @@ func knownSystemUIBundles() []string {
 	}
 }
 
-func knownPrivacyUIBundles() []string {
+// knownInProcessOverlayBundles lists system services whose UI is
+// presented modally on top of the host app while `mobile: activeAppInfo`
+// continues to report the host as active. These bundles need an
+// explicit `defaultActiveApplication` switch before
+// `mobile: source --bundleId=…` returns a populated tree.
+//
+// Privacy alerts (tccd / PrivacyKit*) and per-feature service overlays
+// (PHPicker, SafariViewController, MFMailComposeViewController) all
+// share that property, so any of them may be the answer when the
+// active-app heuristic points at the host.
+func knownInProcessOverlayBundles() []string {
 	return []string{
 		"com.apple.tccd",
 		"com.apple.PrivacyKitUI",
 		"com.apple.PrivacyKitAccountAuthorization",
 		"com.apple.PrivacyAttribution",
+		"com.apple.PhotosUIService",
+		"com.apple.SafariViewService",
+		"com.apple.MailCompositionService",
+		"com.apple.UIKit.RemoteAlertViewController",
 	}
 }
 

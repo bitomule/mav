@@ -1719,7 +1719,15 @@ func (c CLI) diagnoseTextTapFailure(ctx context.Context, cfg Config, text, stder
 }
 
 func (c CLI) uiTapAppium(ctx context.Context, cfg Config, id, text, value string) error {
-	if tapped, err := c.uiTapAppiumTabBarByCenter(ctx, cfg, id, text, value); tapped || err != nil {
+	// Some XCUIElement containers (tab bars, action sheets, alerts,
+	// popovers) carry children whose `XCUIElement.tap()` / `click`
+	// silently no-ops because UIKit handles their selection through
+	// gesture recognisers rather than the standard hit-test path. For
+	// any target that lives inside one of those containers, prefer a
+	// coordinate-based tap (`mobile: tap` at the element's frame
+	// centre) so the touch is delivered as a synthesised event the
+	// system reliably routes to the responder.
+	if tapped, err := c.uiTapAppiumCoordTapIfNeeded(ctx, cfg, id, text, value); tapped || err != nil {
 		return err
 	}
 	if id != "" {
@@ -1731,7 +1739,7 @@ func (c CLI) uiTapAppium(ctx context.Context, cfg Config, id, text, value string
 	return appiumError{Code: "tap_target_missing", Message: "tap target missing"}
 }
 
-func (c CLI) uiTapAppiumTabBarByCenter(ctx context.Context, cfg Config, id, text, value string) (bool, error) {
+func (c CLI) uiTapAppiumCoordTapIfNeeded(ctx context.Context, cfg Config, id, text, value string) (bool, error) {
 	if id == "" && text == "" && value == "" {
 		return false, nil
 	}
@@ -1743,7 +1751,7 @@ func (c CLI) uiTapAppiumTabBarByCenter(ctx context.Context, cfg Config, id, text
 	if err := json.Unmarshal([]byte(source.Raw), &parsed); err != nil {
 		return false, nil
 	}
-	frame, ok := findTabBarTargetFrame(parsed, id, text, value, false)
+	frame, ok := findGestureContainerTargetFrame(parsed, id, text, value, "")
 	if !ok {
 		return false, nil
 	}
@@ -1757,29 +1765,71 @@ func (c CLI) uiTapAppiumTabBarByCenter(ctx context.Context, cfg Config, id, text
 	return true, nil
 }
 
-func findTabBarTargetFrame(value any, id, text, targetValue string, inTabBar bool) (string, bool) {
+// findGestureContainerTargetFrame walks the tree looking for the first
+// element whose label/id/value matches AND whose nearest ancestor is a
+// container that handles taps via gesture recognisers (tab bars, action
+// sheets, alert controllers, popovers). The string returned is the
+// matched element's `AXFrame` / `frame`; the caller derives the centre.
+//
+// `containerKind` is the lower-cased role of the closest matching
+// container ancestor; the empty string means we are not currently inside
+// one. We track it explicitly (rather than re-walking on each match) so
+// nested children only qualify when the chain is still under the
+// container.
+func findGestureContainerTargetFrame(value any, id, text, targetValue, containerKind string) (string, bool) {
 	switch node := value.(type) {
 	case []any:
 		for _, child := range node {
-			if frame, ok := findTabBarTargetFrame(child, id, text, targetValue, inTabBar); ok {
+			if frame, ok := findGestureContainerTargetFrame(child, id, text, targetValue, containerKind); ok {
 				return frame, true
 			}
 		}
 	case map[string]any:
-		role := strings.ToLower(nodeRole(node))
-		currentInTabBar := inTabBar || strings.Contains(role, "tabbar") || strings.Contains(role, "tab bar")
-		if currentInTabBar && nodeMatchesAppiumTarget(node, id, text, targetValue) {
+		nextContainer := containerKind
+		if nextContainer == "" {
+			if kind := gestureContainerKindFromRole(nodeRole(node)); kind != "" {
+				nextContainer = kind
+			}
+		}
+		if nextContainer != "" && nodeMatchesAppiumTarget(node, id, text, targetValue) {
 			if frame := stringField(node, "AXFrame", "frame"); frame != "" {
 				return frame, true
 			}
 		}
 		for _, child := range nodeChildren(node) {
-			if frame, ok := findTabBarTargetFrame(child, id, text, targetValue, currentInTabBar); ok {
+			if frame, ok := findGestureContainerTargetFrame(child, id, text, targetValue, nextContainer); ok {
 				return frame, true
 			}
 		}
 	}
 	return "", false
+}
+
+// gestureContainerKindFromRole maps an element role to the container
+// classification used by `findGestureContainerTargetFrame`. Any role
+// returned non-empty marks the subtree as gesture-handled, so taps on
+// children should be coordinate-based.
+//
+// Coverage rationale:
+//   - tab bars: UITabBarItem hit-tests via its private gesture path; AX
+//     activate sometimes silent-fails.
+//   - sheets / alert: UIAlertController action buttons rely on the
+//     dimming-view tap recognizer instead of the button hit-test.
+//   - popovers: UIPopoverPresentationController content is reachable via
+//     its dimming view; `click` on inner buttons can no-op in iOS 17+.
+func gestureContainerKindFromRole(role string) string {
+	role = strings.ToLower(strings.TrimSpace(role))
+	switch {
+	case strings.Contains(role, "tabbar"), strings.Contains(role, "tab bar"):
+		return "tabbar"
+	case strings.Contains(role, "sheet"), strings.Contains(role, "actionsheet"), strings.Contains(role, "action sheet"):
+		return "sheet"
+	case strings.Contains(role, "alert"), strings.Contains(role, "uialert"):
+		return "alert"
+	case strings.Contains(role, "popover"):
+		return "popover"
+	}
+	return ""
 }
 
 func nodeMatchesAppiumTarget(node map[string]any, id, text, targetValue string) bool {
@@ -3880,11 +3930,16 @@ func (c CLI) evaluateSingleConditionWithPrefer(ctx context.Context, condition Fl
 	if flowConditionMatchesElements(ExtractElements(raw), condition) {
 		return true, nil
 	}
-	if prefer == "auto" && described.Driver != "appium" {
-		appium, appiumErr := c.describeUITree(ctx, cfg, "appium", true)
-		if appiumErr == nil && appium.Result.Err == nil {
-			return flowConditionMatchesElements(ExtractElements(appium.Result.Stdout), condition), nil
-		}
+	// First miss only ruled out the host-app tree. Targets that live in
+	// modal service overlays (PHPicker, Safari/Mail, privacy alerts,
+	// springboard) are reachable only when we ask Appium for the
+	// active-bundle tree, so retry with `includeSystem=true` regardless
+	// of whether the caller fixed `prefer` to Appium. This keeps
+	// whileNotVisible loops responsive when the matched element only
+	// appears once an overlay dismisses.
+	appium, appiumErr := c.describeUITree(ctx, cfg, "appium", true)
+	if appiumErr == nil && appium.Result.Err == nil {
+		return flowConditionMatchesElements(ExtractElements(appium.Result.Stdout), condition), nil
 	}
 	return false, nil
 }

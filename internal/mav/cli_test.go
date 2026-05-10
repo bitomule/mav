@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -4532,5 +4533,108 @@ func TestCountTreeNodes(t *testing.T) {
 	raw := `[{"children":[{"children":[]},{"children":[{"children":[]}]}]}]`
 	if got := countTreeNodes(raw); got != 4 {
 		t.Fatalf("got %d", got)
+	}
+}
+
+func TestGestureContainerKindFromRoleClassifiesGestureDrivenContainers(t *testing.T) {
+	cases := []struct {
+		role string
+		want string
+	}{
+		{role: "XCUIElementTypeTabBar", want: "tabbar"},
+		{role: "AXTabBar", want: "tabbar"},
+		{role: "XCUIElementTypeSheet", want: "sheet"},
+		{role: "AXActionSheet", want: "sheet"},
+		{role: "XCUIElementTypeAlert", want: "alert"},
+		{role: "AXUIAlertController", want: "alert"},
+		{role: "XCUIElementTypePopover", want: "popover"},
+		{role: "XCUIElementTypeButton", want: ""},
+		{role: "AXOther", want: ""},
+		{role: "  XCUIElementTypeSheet  ", want: "sheet"},
+		{role: "", want: ""},
+	}
+	for _, tc := range cases {
+		if got := gestureContainerKindFromRole(tc.role); got != tc.want {
+			t.Fatalf("role=%q got=%q want=%q", tc.role, got, tc.want)
+		}
+	}
+}
+
+func TestFindGestureContainerTargetFrameMatchesContainerChildren(t *testing.T) {
+	cases := []struct {
+		name string
+		tree string
+		id   string
+		text string
+		want string
+	}{
+		{
+			name: "tab bar child by id",
+			tree: `{"role":"AXApp","children":[{"role":"AXTabBar","children":[{"role":"AXTab","AXIdentifier":"sell","AXFrame":"{{160, 820}, {94, 44}}"}]}]}`,
+			id:   "sell",
+			want: "{{160, 820}, {94, 44}}",
+		},
+		{
+			name: "action sheet button by text",
+			tree: `{"role":"AXApp","children":[{"role":"XCUIElementTypeSheet","children":[{"role":"XCUIElementTypeButton","AXLabel":"Take photo","AXFrame":"{{20, 600}, {335, 56}}"}]}]}`,
+			text: "Take photo",
+			want: "{{20, 600}, {335, 56}}",
+		},
+		{
+			name: "alert button by id",
+			tree: `{"role":"AXApp","children":[{"role":"XCUIElementTypeAlert","children":[{"role":"XCUIElementTypeButton","AXIdentifier":"Confirm","AXFrame":"{{40, 400}, {140, 44}}"}]}]}`,
+			id:   "Confirm",
+			want: "{{40, 400}, {140, 44}}",
+		},
+		{
+			name: "popover child by id",
+			tree: `{"role":"AXApp","children":[{"role":"XCUIElementTypePopover","children":[{"role":"XCUIElementTypeButton","AXIdentifier":"Edit","AXFrame":"{{20, 100}, {200, 44}}"}]}]}`,
+			id:   "Edit",
+			want: "{{20, 100}, {200, 44}}",
+		},
+		{
+			name: "ignores buttons outside any gesture container",
+			tree: `{"role":"AXApp","children":[{"role":"XCUIElementTypeButton","AXIdentifier":"Plain","AXFrame":"{{0, 0}, {44, 44}}"}]}`,
+			id:   "Plain",
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var node any
+			if err := json.Unmarshal([]byte(tc.tree), &node); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			got, ok := findGestureContainerTargetFrame(node, tc.id, tc.text, "", "")
+			if tc.want == "" {
+				if ok {
+					t.Fatalf("expected no match, got frame=%q", got)
+				}
+				return
+			}
+			if !ok || got != tc.want {
+				t.Fatalf("got=%q ok=%v want=%q", got, ok, tc.want)
+			}
+		})
+	}
+}
+
+func TestKnownInProcessOverlayBundlesIncludesPhotosAndPrivacyServices(t *testing.T) {
+	required := []string{
+		"com.apple.tccd",
+		"com.apple.PrivacyKitUI",
+		"com.apple.PhotosUIService",
+		"com.apple.SafariViewService",
+		"com.apple.MailCompositionService",
+	}
+	bundles := knownInProcessOverlayBundles()
+	got := map[string]bool{}
+	for _, b := range bundles {
+		got[b] = true
+	}
+	for _, want := range required {
+		if !got[want] {
+			t.Fatalf("missing %q in %v", want, bundles)
+		}
 	}
 }
