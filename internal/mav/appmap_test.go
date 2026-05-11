@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func testExplicitScreen(id string) Screen {
@@ -618,4 +619,113 @@ func TestUpsertEdgePreservesFromConfidenceAndFailures(t *testing.T) {
 	if len(updated) != 1 || updated[0].From != "home" || updated[0].Confidence != "high" || updated[0].FailureCount != 1 || updated[0].LastFailure != "then" {
 		t.Fatalf("edges=%+v", updated)
 	}
+}
+
+func TestUpsertEdgePreservesRecordedAtAndLastSuccess(t *testing.T) {
+	// Re-observation of the same transition must not reset the
+	// staleness clock — the original RecordedAt and the most
+	// recent LastSuccessAt are TTL inputs that the BFS demote
+	// rule depends on.
+	original := "2026-04-01T10:00:00Z"
+	lastSuccess := "2026-05-09T12:00:00Z"
+	edges := []Edge{{To: "settings", ID: "settings_button", RecordedAt: original, LastSuccessAt: lastSuccess}}
+	updated := upsertEdge(edges, Edge{To: "settings", ID: "settings_button", Driver: "axe"})
+	if len(updated) != 1 {
+		t.Fatalf("expected single edge, got %d", len(updated))
+	}
+	if updated[0].RecordedAt != original {
+		t.Fatalf("RecordedAt=%q want %q", updated[0].RecordedAt, original)
+	}
+	if updated[0].LastSuccessAt != lastSuccess {
+		t.Fatalf("LastSuccessAt=%q want %q", updated[0].LastSuccessAt, lastSuccess)
+	}
+}
+
+func TestIsEdgeStaleHonoursLastSuccessAndRecorded(t *testing.T) {
+	now := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name string
+		edge Edge
+		ttl  time.Duration
+		want bool
+	}{
+		{name: "fresh by LastSuccessAt", edge: Edge{LastSuccessAt: now.Add(-3 * 24 * time.Hour).Format(time.RFC3339), RecordedAt: now.Add(-60 * 24 * time.Hour).Format(time.RFC3339)}, ttl: 14 * 24 * time.Hour, want: false},
+		{name: "stale by LastSuccessAt", edge: Edge{LastSuccessAt: now.Add(-30 * 24 * time.Hour).Format(time.RFC3339)}, ttl: 14 * 24 * time.Hour, want: true},
+		{name: "no LastSuccessAt, fresh RecordedAt", edge: Edge{RecordedAt: now.Add(-5 * 24 * time.Hour).Format(time.RFC3339)}, ttl: 14 * 24 * time.Hour, want: false},
+		{name: "no LastSuccessAt, stale RecordedAt", edge: Edge{RecordedAt: now.Add(-30 * 24 * time.Hour).Format(time.RFC3339)}, ttl: 14 * 24 * time.Hour, want: true},
+		{name: "no timestamps", edge: Edge{}, ttl: 14 * 24 * time.Hour, want: false},
+		{name: "ttl zero disables", edge: Edge{RecordedAt: now.Add(-90 * 24 * time.Hour).Format(time.RFC3339)}, ttl: 0, want: false},
+		{name: "garbage timestamp", edge: Edge{RecordedAt: "not-a-date"}, ttl: 14 * 24 * time.Hour, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsEdgeStale(tc.edge, tc.ttl, now); got != tc.want {
+				t.Fatalf("IsEdgeStale=%v want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRouteFromWithTTLPrefersFreshEdgesAndFallsBackToStale(t *testing.T) {
+	now := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	fresh := now.Add(-2 * 24 * time.Hour).Format(time.RFC3339)
+	stale := now.Add(-30 * 24 * time.Hour).Format(time.RFC3339)
+
+	t.Run("fresh edge wins when both exist", func(t *testing.T) {
+		m := AppMap{
+			AppID: "x",
+			Start: "home",
+			Screens: map[string]Screen{
+				"home": testExplicitScreenWithEdges("home",
+					Edge{From: "home", To: "settings_via_stale", ID: "old_btn", RecordedAt: stale},
+					Edge{From: "home", To: "target", ID: "new_btn", RecordedAt: fresh},
+				),
+				"settings_via_stale": testExplicitScreen("settings_via_stale"),
+				"target":             testExplicitScreen("target"),
+			},
+		}
+		route, err := RouteFromWithTTL(m, "home", "target", 14*24*time.Hour, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(route) != 1 || route[0].ID != "new_btn" {
+			t.Fatalf("route=%+v", route)
+		}
+	})
+
+	t.Run("stale edge used when no fresh alternative exists", func(t *testing.T) {
+		m := AppMap{
+			AppID: "x",
+			Start: "home",
+			Screens: map[string]Screen{
+				"home":   testExplicitScreenWithEdges("home", Edge{From: "home", To: "target", ID: "ancient_btn", RecordedAt: stale}),
+				"target": testExplicitScreen("target"),
+			},
+		}
+		route, err := RouteFromWithTTL(m, "home", "target", 14*24*time.Hour, now)
+		if err != nil {
+			t.Fatalf("expected fallback to stale edge, got err=%v", err)
+		}
+		if len(route) != 1 || route[0].ID != "ancient_btn" {
+			t.Fatalf("route=%+v", route)
+		}
+	})
+
+	t.Run("zero ttl disables staleness gate entirely", func(t *testing.T) {
+		m := AppMap{
+			AppID: "x",
+			Start: "home",
+			Screens: map[string]Screen{
+				"home":   testExplicitScreenWithEdges("home", Edge{From: "home", To: "target", ID: "ancient_btn", RecordedAt: stale}),
+				"target": testExplicitScreen("target"),
+			},
+		}
+		route, err := RouteFromWithTTL(m, "home", "target", 0, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(route) != 1 {
+			t.Fatalf("route=%+v", route)
+		}
+	})
 }

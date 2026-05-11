@@ -59,19 +59,53 @@ type Element struct {
 }
 
 type Edge struct {
-	From         string `json:"from,omitempty"`
-	To           string `json:"to"`
-	ID           string `json:"id,omitempty"`
-	Text         string `json:"text,omitempty"`
-	Value        string `json:"value,omitempty"`
-	X            string `json:"x,omitempty"`
-	Y            string `json:"y,omitempty"`
-	Wait         string `json:"wait,omitempty"`
-	Driver       string `json:"driver,omitempty"`
-	Source       string `json:"source,omitempty"`
-	Confidence   string `json:"confidence,omitempty"`
-	LastFailure  string `json:"last_failure,omitempty"`
-	FailureCount int    `json:"failure_count,omitempty"`
+	From          string `json:"from,omitempty"`
+	To            string `json:"to"`
+	ID            string `json:"id,omitempty"`
+	Text          string `json:"text,omitempty"`
+	Value         string `json:"value,omitempty"`
+	X             string `json:"x,omitempty"`
+	Y             string `json:"y,omitempty"`
+	Wait          string `json:"wait,omitempty"`
+	Driver        string `json:"driver,omitempty"`
+	Source        string `json:"source,omitempty"`
+	Confidence    string `json:"confidence,omitempty"`
+	LastFailure   string `json:"last_failure,omitempty"`
+	FailureCount  int    `json:"failure_count,omitempty"`
+	RecordedAt    string `json:"recorded_at,omitempty"`     // RFC3339 timestamp of first observation.
+	LastSuccessAt string `json:"last_success_at,omitempty"` // RFC3339 timestamp of last successful route replay.
+}
+
+// DefaultEdgeTTL is the maximum age, since the last observed success
+// (or the original recording if never replayed), after which edges
+// are considered stale and get demoted in BFS scoring. Users can
+// override it via `--edge-ttl` on `mav go` or the `route.edge_ttl`
+// config key.
+//
+// 14 days is empirical: short enough that a UI refactor caught in
+// the same release cycle won't keep stale edges alive, but long
+// enough that weekly-cadence test runs never trip the gate.
+const DefaultEdgeTTL = 14 * 24 * time.Hour
+
+// IsEdgeStale reports whether `now - edge.LastSuccessAt` (or
+// `RecordedAt` when the edge has never been successfully replayed)
+// exceeds the supplied TTL. A zero TTL disables the check.
+func IsEdgeStale(edge Edge, ttl time.Duration, now time.Time) bool {
+	if ttl <= 0 {
+		return false
+	}
+	stamp := edge.LastSuccessAt
+	if stamp == "" {
+		stamp = edge.RecordedAt
+	}
+	if stamp == "" {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, stamp)
+	if err != nil {
+		return false
+	}
+	return now.Sub(t) > ttl
 }
 
 type mapIndex struct {
@@ -258,6 +292,16 @@ func Route(m AppMap, target string) ([]Edge, error) {
 }
 
 func RouteFrom(m AppMap, start, target string) ([]Edge, error) {
+	return RouteFromWithTTL(m, start, target, DefaultEdgeTTL, time.Now().UTC())
+}
+
+// RouteFromWithTTL exposes the BFS with a configurable edge TTL so
+// the route engine can demote stale edges without skipping them
+// outright. Stale edges are visited in a second BFS pass only when
+// the fresh-edge pass returned no route — this preserves the "always
+// shortest path among healthy edges" guarantee while still finding
+// SOMETHING if all known edges are old.
+func RouteFromWithTTL(m AppMap, start, target string, ttl time.Duration, now time.Time) ([]Edge, error) {
 	if _, ok := m.Screens[target]; !ok {
 		return nil, fmt.Errorf("screen_not_found")
 	}
@@ -270,6 +314,17 @@ func RouteFrom(m AppMap, start, target string) ([]Edge, error) {
 	if target == start {
 		return nil, nil
 	}
+	// First pass: only fresh, non-low-confidence edges. Most calls
+	// finish here. The pass over stale edges runs as a fallback so
+	// the engine can still propose a path on a long-quiet map
+	// instead of bailing out with `route_not_found`.
+	if route, err := bfsRoute(m, start, target, ttl, now, false); err == nil {
+		return route, nil
+	}
+	return bfsRoute(m, start, target, ttl, now, true)
+}
+
+func bfsRoute(m AppMap, start, target string, ttl time.Duration, now time.Time, allowStale bool) ([]Edge, error) {
 	type node struct {
 		id    string
 		route []Edge
@@ -281,6 +336,9 @@ func RouteFrom(m AppMap, start, target string) ([]Edge, error) {
 		queue = queue[1:]
 		for _, edge := range m.Screens[cur.id].Edges {
 			if edge.Confidence == "low" {
+				continue
+			}
+			if !allowStale && IsEdgeStale(edge, ttl, now) {
 				continue
 			}
 			if seen[edge.To] {
@@ -526,7 +584,20 @@ func ObserveScreenDetailedWithDriver(root string, cfg Config, run RunState, rawT
 	if pending, ok := consumePendingMapAction(root); ok && pending.From != screenID {
 		from := m.Screens[pending.From]
 		from.ID = pending.From
-		from.Edges = upsertEdge(from.Edges, Edge{From: pending.From, To: screenID, ID: pending.ID, Text: pending.Text, Value: pending.Value, X: pending.X, Y: pending.Y, Wait: "1s", Driver: pending.Driver, Source: "observed", Confidence: "high"})
+		from.Edges = upsertEdge(from.Edges, Edge{
+			From:       pending.From,
+			To:         screenID,
+			ID:         pending.ID,
+			Text:       pending.Text,
+			Value:      pending.Value,
+			X:          pending.X,
+			Y:          pending.Y,
+			Wait:       "1s",
+			Driver:     pending.Driver,
+			Source:     "observed",
+			Confidence: "high",
+			RecordedAt: time.Now().UTC().Format(time.RFC3339),
+		})
 		m.Screens[pending.From] = from
 	}
 	if err := SaveAppMap(root, m); err != nil {
@@ -1038,6 +1109,16 @@ func upsertEdge(edges []Edge, edge Edge) []Edge {
 			if existing.FailureCount > 0 && edge.FailureCount == 0 {
 				edge.FailureCount = existing.FailureCount
 				edge.LastFailure = existing.LastFailure
+			}
+			// Preserve the original `RecordedAt` so re-observing the
+			// same transition doesn't reset the staleness clock. A
+			// successful replay updates `LastSuccessAt` separately
+			// (via markRouteEdgeSuccess); both are TTL inputs.
+			if edge.RecordedAt == "" {
+				edge.RecordedAt = existing.RecordedAt
+			}
+			if edge.LastSuccessAt == "" {
+				edge.LastSuccessAt = existing.LastSuccessAt
 			}
 			edges[i] = edge
 			return edges

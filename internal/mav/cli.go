@@ -3117,6 +3117,10 @@ func (c CLI) goScreen(ctx context.Context, opts GlobalOptions, args []string) er
 		return Fail("screen_missing", map[string]string{"usage": "mav go SCREEN_ID"}).Write(c.Stdout)
 	}
 	screenID := args[0]
+	ttl, ttlErr := parseEdgeTTLFlag(args)
+	if ttlErr != nil {
+		return Fail("edge_ttl_invalid", map[string]string{"value": flagValue(args, "--edge-ttl"), "next": "use a duration like '14d', '24h', or '0' to disable"}).Write(c.Stdout)
+	}
 	m, mapErr := LoadAppMap(c.Root)
 	if mapErr != nil {
 		cfg, cfgErr := LoadConfig(c.Root)
@@ -3137,7 +3141,7 @@ func (c CLI) goScreen(ctx context.Context, opts GlobalOptions, args []string) er
 			"next":   "add or configure a stable screen identifier, then explore with mav ui tree/tap",
 		}).Write(c.Stdout)
 	}
-	route, routeErr := Route(m, screenID)
+	route, routeErr := RouteFromWithTTL(m, m.Start, screenID, ttl, time.Now().UTC())
 	cfg, cfgErr := LoadConfig(c.Root)
 	if cfgErr != nil {
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
@@ -3196,7 +3200,7 @@ func (c CLI) goScreen(ctx context.Context, opts GlobalOptions, args []string) er
 			route = nil
 			routeErr = nil
 		} else if observed.Screen != "" && observed.Screen != "unknown" {
-			if observedRoute, err := RouteFrom(m, observed.Screen, screenID); err == nil {
+			if observedRoute, err := RouteFromWithTTL(m, observed.Screen, screenID, ttl, time.Now().UTC()); err == nil {
 				route = observedRoute
 				routeErr = nil
 				if required := routeRequiredDriver(m, screenID, route); required != "" {
@@ -3576,6 +3580,12 @@ func (c CLI) executeRouteEdge(ctx context.Context, cfg Config, edge Edge, before
 		if sameTreeForRoute(beforeTree, afterTree.Raw) {
 			continue
 		}
+		// Edge played cleanly — bump its `LastSuccessAt` so TTL
+		// resets and flaky-history bookkeeping clears. Called
+		// before returning so the success is persisted even when
+		// downstream verification (in navigateToScreen) decides the
+		// route landed on the wrong screen overall.
+		markRouteEdgeSuccess(c.Root, edge.From, edge)
 		return afterTree, lastDriver, retried, nil
 	}
 	ClearPendingMapAction(c.Root)
@@ -3662,6 +3672,56 @@ func markRouteEdgeFailure(root, from string, edge Edge) {
 			screen.Edges[i].LastFailure = time.Now().Format(time.RFC3339)
 			if screen.Edges[i].FailureCount >= 2 {
 				screen.Edges[i].Confidence = "low"
+			}
+			_ = SaveScreen(root, screen)
+			return
+		}
+	}
+}
+
+// parseEdgeTTLFlag reads `--edge-ttl` from a flag list, accepts the
+// usual `time.ParseDuration` syntax plus a `Nd` (days) shorthand for
+// ergonomics, and falls back to `DefaultEdgeTTL` when the flag is
+// absent. A value of `0` disables the staleness gate (route engine
+// treats all edges as fresh).
+func parseEdgeTTLFlag(args []string) (time.Duration, error) {
+	raw := strings.TrimSpace(flagValue(args, "--edge-ttl"))
+	if raw == "" {
+		return DefaultEdgeTTL, nil
+	}
+	if strings.HasSuffix(raw, "d") {
+		days, err := strconv.Atoi(strings.TrimSuffix(raw, "d"))
+		if err != nil || days < 0 {
+			return 0, fmt.Errorf("edge_ttl_invalid: %q", raw)
+		}
+		return time.Duration(days) * 24 * time.Hour, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d < 0 {
+		return 0, fmt.Errorf("edge_ttl_invalid: %q", raw)
+	}
+	return d, nil
+}
+
+// markRouteEdgeSuccess stamps `LastSuccessAt` on the matching edge
+// and resets failure bookkeeping so a previously-flaky edge that's
+// working again earns its way back to "high" confidence on the next
+// observation. Called from `executeRouteEdge` on the happy path.
+func markRouteEdgeSuccess(root, from string, edge Edge) {
+	if from == "" {
+		return
+	}
+	screen, err := LoadScreen(root, from)
+	if err != nil {
+		return
+	}
+	for i := range screen.Edges {
+		if sameRouteEdge(screen.Edges[i], edge) {
+			screen.Edges[i].LastSuccessAt = time.Now().UTC().Format(time.RFC3339)
+			screen.Edges[i].FailureCount = 0
+			screen.Edges[i].LastFailure = ""
+			if screen.Edges[i].Confidence == "low" {
+				screen.Edges[i].Confidence = "high"
 			}
 			_ = SaveScreen(root, screen)
 			return

@@ -4897,6 +4897,81 @@ func (r *countingRunner) Start(ctx context.Context, logPath string, name string,
 	return 1, nil
 }
 
+func TestParseEdgeTTLFlagAcceptsDurationAndDays(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want time.Duration
+		err  bool
+	}{
+		{name: "default when flag absent", args: nil, want: DefaultEdgeTTL},
+		{name: "days shorthand", args: []string{"--edge-ttl", "7d"}, want: 7 * 24 * time.Hour},
+		{name: "raw hours", args: []string{"--edge-ttl", "36h"}, want: 36 * time.Hour},
+		{name: "zero disables", args: []string{"--edge-ttl", "0"}, want: 0},
+		{name: "negative rejected", args: []string{"--edge-ttl", "-1h"}, err: true},
+		{name: "garbage rejected", args: []string{"--edge-ttl", "soon"}, err: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseEdgeTTLFlag(tc.args)
+			if tc.err {
+				if err == nil {
+					t.Fatalf("expected error, got %v", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("got %v want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestMarkRouteEdgeSuccessStampsAndResetsFailures(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.demo"
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	m := AppMap{
+		AppID: "com.example.demo",
+		Start: "home",
+		Screens: map[string]Screen{
+			"home": testExplicitScreenWithEdges("home",
+				Edge{From: "home", To: "settings", ID: "settings_button", Driver: "axe", FailureCount: 3, LastFailure: "earlier", Confidence: "low"},
+			),
+			"settings": testExplicitScreen("settings"),
+		},
+	}
+	if err := SaveAppMap(root, m); err != nil {
+		t.Fatal(err)
+	}
+	cli := CLI{Root: root}
+	_ = cli
+	markRouteEdgeSuccess(root, "home", Edge{To: "settings", ID: "settings_button"})
+	loaded, err := LoadScreen(root, "home")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Edges) != 1 {
+		t.Fatalf("edges=%+v", loaded.Edges)
+	}
+	got := loaded.Edges[0]
+	if got.LastSuccessAt == "" {
+		t.Fatalf("LastSuccessAt not stamped: %+v", got)
+	}
+	if got.FailureCount != 0 || got.LastFailure != "" {
+		t.Fatalf("failure bookkeeping not reset: %+v", got)
+	}
+	if got.Confidence != "high" {
+		t.Fatalf("confidence not restored: %+v", got)
+	}
+}
+
 func TestKnownInProcessOverlayBundlesIncludesPhotosAndPrivacyServices(t *testing.T) {
 	required := []string{
 		"com.apple.tccd",
