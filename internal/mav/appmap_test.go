@@ -1,6 +1,7 @@
 package mav
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -664,6 +665,84 @@ func TestIsEdgeStaleHonoursLastSuccessAndRecorded(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRouteFailureCarriesStructuredDetail(t *testing.T) {
+	// Unknown target → RouteFailureUnknownTarget, terse error
+	// string preserved for back-compat.
+	t.Run("unknown target", func(t *testing.T) {
+		m := AppMap{
+			AppID:   "x",
+			Start:   "home",
+			Screens: map[string]Screen{"home": testExplicitScreen("home")},
+		}
+		_, err := Route(m, "ghost")
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if err.Error() != "screen_not_found" {
+			t.Fatalf("legacy code: got %q", err.Error())
+		}
+		var rf *RouteFailure
+		if !errors.As(err, &rf) {
+			t.Fatalf("expected *RouteFailure, got %T", err)
+		}
+		if rf.Reason != RouteFailureUnknownTarget {
+			t.Fatalf("reason=%q", rf.Reason)
+		}
+		if rf.Target != "ghost" {
+			t.Fatalf("target=%q", rf.Target)
+		}
+	})
+
+	t.Run("unreachable subgraph collects skip metadata", func(t *testing.T) {
+		now := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+		// home reaches settings fresh; target lives in its own
+		// subgraph with no inbound edges. home → trash exists
+		// but is low confidence so it's surfaced as a skip.
+		m := AppMap{
+			AppID: "x",
+			Start: "home",
+			Screens: map[string]Screen{
+				"home": testExplicitScreenWithEdges("home",
+					Edge{From: "home", To: "settings", ID: "ok_btn", RecordedAt: now.Format(time.RFC3339)},
+					Edge{From: "home", To: "trash", ID: "broken_btn", Confidence: "low"},
+				),
+				"settings":  testExplicitScreen("settings"),
+				"trash":     testExplicitScreen("trash"),
+				"unreached": testExplicitScreen("unreached"),
+			},
+		}
+		_, err := RouteFromWithTTL(m, "home", "unreached", 14*24*time.Hour, now)
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if err.Error() != "route_not_found" {
+			t.Fatalf("legacy code: got %q", err.Error())
+		}
+		var rf *RouteFailure
+		if !errors.As(err, &rf) {
+			t.Fatalf("expected *RouteFailure, got %T", err)
+		}
+		if rf.Reason != RouteFailureUnreachableSubgraph {
+			t.Fatalf("reason=%q", rf.Reason)
+		}
+		if rf.NearestKnownScreen != "settings" {
+			t.Fatalf("expected NearestKnownScreen=settings, got %q", rf.NearestKnownScreen)
+		}
+		// Low-confidence edge is rejected in BOTH passes, so it
+		// should appear in skipped edges of the final pass.
+		foundLow := false
+		for _, s := range rf.SkippedEdges {
+			if s.Why == EdgeSkipLowConfidence {
+				foundLow = true
+				break
+			}
+		}
+		if !foundLow {
+			t.Fatalf("expected low_confidence skip in SkippedEdges: %+v", rf.SkippedEdges)
+		}
+	})
 }
 
 func TestRouteFromWithTTLPrefersFreshEdgesAndFallsBackToStale(t *testing.T) {

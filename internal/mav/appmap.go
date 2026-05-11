@@ -87,6 +87,84 @@ type Edge struct {
 // enough that weekly-cadence test runs never trip the gate.
 const DefaultEdgeTTL = 14 * 24 * time.Hour
 
+// RouteFailureReason categorises why `RouteFromWithTTL` could not
+// produce a path. Surfaced verbatim in CLI failures and in the
+// upcoming evidence-report renderer so operators get an actionable
+// hint instead of a bare `route_not_found`.
+type RouteFailureReason string
+
+const (
+	// RouteFailureUnknownTarget means the supplied target screen
+	// id is not in the map at all (no recogniser, no edges
+	// pointing at it). The fix is "visit it once so the map
+	// learns it" or "add a recogniser to product code".
+	RouteFailureUnknownTarget RouteFailureReason = "unknown_target"
+	// RouteFailureStartNotFound means the start screen is missing
+	// from the map. Almost always indicates a config drift
+	// between the map and the running app.
+	RouteFailureStartNotFound RouteFailureReason = "start_not_found"
+	// RouteFailureUnreachableSubgraph means both the start and
+	// the target are known but the graph has no path connecting
+	// them — typically the target lives in a sub-tree that the
+	// map has never observed an inbound edge for.
+	RouteFailureUnreachableSubgraph RouteFailureReason = "unreachable_subgraph"
+)
+
+// EdgeSkipReason records why a single edge was skipped during BFS.
+// Aggregated into `RouteFailure.SkippedEdges` so a route failure can
+// explain what the engine considered and rejected — that's the seed
+// data for the P3 renderer.
+type EdgeSkipReason string
+
+const (
+	// EdgeSkipLowConfidence: edge marked `low` by the failure
+	// machinery; BFS treats it as if it didn't exist.
+	EdgeSkipLowConfidence EdgeSkipReason = "low_confidence"
+	// EdgeSkipStale: edge older than TTL and a fresh alternative
+	// existed at the same hop. Only emitted in the first BFS
+	// pass.
+	EdgeSkipStale EdgeSkipReason = "stale"
+	// EdgeSkipCycle: the destination screen was already visited
+	// earlier in this BFS run.
+	EdgeSkipCycle EdgeSkipReason = "cycle"
+)
+
+// EdgeSkip pairs an edge with the reason BFS skipped it.
+type EdgeSkip struct {
+	Edge Edge
+	Why  EdgeSkipReason
+}
+
+// RouteFailure is the structured error returned by
+// `RouteFromWithTTL` when no path could be found. It implements the
+// `error` interface so it survives existing call sites; callers that
+// want structured detail can use `errors.As`.
+type RouteFailure struct {
+	Reason             RouteFailureReason
+	Target             string
+	Start              string
+	NearestKnownScreen string
+	SkippedEdges       []EdgeSkip
+}
+
+// Error satisfies the `error` interface. Returns the historical
+// flat code that callers and tests have always grepped on
+// (`screen_not_found`, `route_start_not_found`, `route_not_found`)
+// — typed callers reach into the struct fields via `errors.As` to
+// get the richer detail.
+func (r *RouteFailure) Error() string {
+	switch r.Reason {
+	case RouteFailureUnknownTarget:
+		return "screen_not_found"
+	case RouteFailureStartNotFound:
+		return "route_start_not_found"
+	case RouteFailureUnreachableSubgraph:
+		return "route_not_found"
+	default:
+		return string(r.Reason)
+	}
+}
+
 // IsEdgeStale reports whether `now - edge.LastSuccessAt` (or
 // `RecordedAt` when the edge has never been successfully replayed)
 // exceeds the supplied TTL. A zero TTL disables the check.
@@ -301,15 +379,19 @@ func RouteFrom(m AppMap, start, target string) ([]Edge, error) {
 // the fresh-edge pass returned no route — this preserves the "always
 // shortest path among healthy edges" guarantee while still finding
 // SOMETHING if all known edges are old.
+//
+// On failure the returned error is a `*RouteFailure` describing why
+// the BFS gave up, plus the edges that were considered and rejected
+// — that's the seed data for the P3 evidence renderer.
 func RouteFromWithTTL(m AppMap, start, target string, ttl time.Duration, now time.Time) ([]Edge, error) {
 	if _, ok := m.Screens[target]; !ok {
-		return nil, fmt.Errorf("screen_not_found")
+		return nil, &RouteFailure{Reason: RouteFailureUnknownTarget, Target: target, Start: start}
 	}
 	if start == "" {
 		start = m.Start
 	}
 	if _, ok := m.Screens[start]; !ok {
-		return nil, fmt.Errorf("route_start_not_found")
+		return nil, &RouteFailure{Reason: RouteFailureStartNotFound, Target: target, Start: start}
 	}
 	if target == start {
 		return nil, nil
@@ -317,31 +399,50 @@ func RouteFromWithTTL(m AppMap, start, target string, ttl time.Duration, now tim
 	// First pass: only fresh, non-low-confidence edges. Most calls
 	// finish here. The pass over stale edges runs as a fallback so
 	// the engine can still propose a path on a long-quiet map
-	// instead of bailing out with `route_not_found`.
-	if route, err := bfsRoute(m, start, target, ttl, now, false); err == nil {
+	// instead of bailing out with `unreachable_subgraph`.
+	if route, _ := bfsRoute(m, start, target, ttl, now, false); route != nil {
 		return route, nil
 	}
-	return bfsRoute(m, start, target, ttl, now, true)
+	route, skipped := bfsRoute(m, start, target, ttl, now, true)
+	if route != nil {
+		return route, nil
+	}
+	return nil, &RouteFailure{
+		Reason:             RouteFailureUnreachableSubgraph,
+		Target:             target,
+		Start:              start,
+		NearestKnownScreen: bfsFurthestReachable(m, start, ttl, now),
+		SkippedEdges:       skipped,
+	}
 }
 
-func bfsRoute(m AppMap, start, target string, ttl time.Duration, now time.Time, allowStale bool) ([]Edge, error) {
+// bfsRoute now returns the slice of edges skipped along the way so
+// `RouteFromWithTTL` can attach them to a `RouteFailure` for the
+// upcoming P3 renderer. A `nil` route + empty `skipped` means BFS
+// exhausted the reachable set without rejecting anything — which is
+// the textbook "unreachable subgraph" case.
+func bfsRoute(m AppMap, start, target string, ttl time.Duration, now time.Time, allowStale bool) ([]Edge, []EdgeSkip) {
 	type node struct {
 		id    string
 		route []Edge
 	}
 	queue := []node{{id: start}}
 	seen := map[string]bool{start: true}
+	skipped := []EdgeSkip{}
 	for len(queue) > 0 {
 		cur := queue[0]
 		queue = queue[1:]
 		for _, edge := range m.Screens[cur.id].Edges {
 			if edge.Confidence == "low" {
+				skipped = append(skipped, EdgeSkip{Edge: edge, Why: EdgeSkipLowConfidence})
 				continue
 			}
 			if !allowStale && IsEdgeStale(edge, ttl, now) {
+				skipped = append(skipped, EdgeSkip{Edge: edge, Why: EdgeSkipStale})
 				continue
 			}
 			if seen[edge.To] {
+				skipped = append(skipped, EdgeSkip{Edge: edge, Why: EdgeSkipCycle})
 				continue
 			}
 			if edge.From != "" && edge.From != cur.id {
@@ -350,13 +451,44 @@ func bfsRoute(m AppMap, start, target string, ttl time.Duration, now time.Time, 
 			edge.From = cur.id
 			nextRoute := append(append([]Edge{}, cur.route...), edge)
 			if edge.To == target {
-				return nextRoute, nil
+				return nextRoute, skipped
 			}
 			seen[edge.To] = true
 			queue = append(queue, node{id: edge.To, route: nextRoute})
 		}
 	}
-	return nil, fmt.Errorf("route_not_found")
+	return nil, skipped
+}
+
+// bfsFurthestReachable returns a screen id reachable from `start`
+// that's "closest" to the target in BFS sense — useful in the
+// failure report so the operator can immediately see what part of
+// the map IS reachable. Empty string means the start itself has no
+// outgoing edges.
+func bfsFurthestReachable(m AppMap, start string, ttl time.Duration, now time.Time) string {
+	type node struct{ id string }
+	queue := []node{{id: start}}
+	seen := map[string]bool{start: true}
+	var last string
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		for _, edge := range m.Screens[cur.id].Edges {
+			if edge.Confidence == "low" {
+				continue
+			}
+			if IsEdgeStale(edge, ttl, now) {
+				continue
+			}
+			if seen[edge.To] {
+				continue
+			}
+			seen[edge.To] = true
+			last = edge.To
+			queue = append(queue, node{id: edge.To})
+		}
+	}
+	return last
 }
 
 func loadYAMLAppMap(root string) (AppMap, error) {

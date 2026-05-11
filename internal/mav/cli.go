@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -3267,6 +3268,23 @@ func (c CLI) goScreen(ctx context.Context, opts GlobalOptions, args []string) er
 		if code == "screen_not_found" || code == "route_not_found" || code == "route_start_not_found" {
 			fields["next"] = "add or configure a stable screen identifier, then explore with mav ui tree/tap"
 		}
+		// Surface the structured detail so operators (and the P3
+		// evidence renderer) see why the BFS gave up and which
+		// edges were considered. Each field is namespaced so the
+		// existing flat CLI output stays parseable.
+		var rf *RouteFailure
+		if errors.As(routeErr, &rf) {
+			fields["reason"] = string(rf.Reason)
+			if rf.NearestKnownScreen != "" {
+				fields["nearest_reachable"] = rf.NearestKnownScreen
+			}
+			if n := len(rf.SkippedEdges); n > 0 {
+				fields["skipped_edges"] = strconv.Itoa(n)
+				if summary := summariseEdgeSkips(rf.SkippedEdges); summary != "" {
+					fields["skipped_reasons"] = summary
+				}
+			}
+		}
 		_ = c.withStdout(io.Discard).evidenceStop(ctx, GlobalOptions{}, []string{"--run", run.ID, "--note", "No route to " + screenID})
 		_ = c.withStdout(io.Discard).evidenceReport(GlobalOptions{}, []string{"--run", run.ID})
 		_ = c.withStdout(io.Discard).stop(ctx, GlobalOptions{}, []string{"--run", run.ID})
@@ -3872,6 +3890,31 @@ func markRouteEdgeFailure(root, from string, edge Edge) {
 			return
 		}
 	}
+}
+
+// summariseEdgeSkips compacts a slice of `EdgeSkip` records into a
+// small, sortable "low_confidence=3,stale=1" style string. Renders
+// cleanly inside CLI failure output and inside the P3 evidence
+// HTML; typed callers can still walk the original slice via
+// `errors.As(*RouteFailure)` for richer detail.
+func summariseEdgeSkips(skips []EdgeSkip) string {
+	if len(skips) == 0 {
+		return ""
+	}
+	counts := map[EdgeSkipReason]int{}
+	for _, s := range skips {
+		counts[s.Why]++
+	}
+	reasons := make([]string, 0, len(counts))
+	for reason := range counts {
+		reasons = append(reasons, string(reason))
+	}
+	sort.Strings(reasons)
+	parts := make([]string, 0, len(reasons))
+	for _, reason := range reasons {
+		parts = append(parts, reason+"="+strconv.Itoa(counts[EdgeSkipReason(reason)]))
+	}
+	return strings.Join(parts, ",")
 }
 
 // parseEdgeRetryFlag reads `--edge-retry` from a flag list. Returns

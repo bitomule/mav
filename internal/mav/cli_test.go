@@ -4949,6 +4949,41 @@ func TestEffectiveEdgeRetryAppliesPrecedence(t *testing.T) {
 	}
 }
 
+func TestSummariseEdgeSkipsGroupsByReasonInOrder(t *testing.T) {
+	cases := []struct {
+		name  string
+		input []EdgeSkip
+		want  string
+	}{
+		{name: "empty input → empty string", input: nil, want: ""},
+		{
+			name: "single reason",
+			input: []EdgeSkip{
+				{Why: EdgeSkipLowConfidence},
+				{Why: EdgeSkipLowConfidence},
+			},
+			want: "low_confidence=2",
+		},
+		{
+			name: "multiple reasons sorted alphabetically",
+			input: []EdgeSkip{
+				{Why: EdgeSkipStale},
+				{Why: EdgeSkipLowConfidence},
+				{Why: EdgeSkipStale},
+				{Why: EdgeSkipCycle},
+			},
+			want: "cycle=1,low_confidence=1,stale=2",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := summariseEdgeSkips(tc.input); got != tc.want {
+				t.Fatalf("got %q want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestShouldCoordTapFallbackHonoursEveryGate(t *testing.T) {
 	now := time.Now().UTC()
 	fresh := now.Add(-1 * time.Hour).Format(time.RFC3339)
