@@ -2987,6 +2987,80 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 	}
 }
 
+// runDiscoveryFallback runs the live-UI discovery walker bounded
+// by the supplied options (today: defaults; future: --discover-*
+// CLI flags). Returns the result so callers can persist the path
+// or surface diagnostics on failure.
+func (c CLI) runDiscoveryFallback(ctx context.Context, cfg Config, run RunState, target string) (DiscoverResult, error) {
+	runner := cliDiscoverRunner{cli: c, cfg: cfg, run: run}
+	return Discover(ctx, runner, target, DiscoverOptions{})
+}
+
+// cliDiscoverRunner adapts the CLI's tap + observation primitives
+// to the `DiscoverRunner` interface used by the discovery
+// algorithm. Created on the fly inside `goScreen` so the algorithm
+// can stay file-local and unit-testable without dragging in the
+// real simulator.
+type cliDiscoverRunner struct {
+	cli CLI
+	cfg Config
+	run RunState
+}
+
+func (r cliDiscoverRunner) CurrentScreen(ctx context.Context) (string, []Element, error) {
+	tree, err := r.cli.waitForTreeReady(ctx, r.cfg, discoverTreeReadyMaxAge)
+	if err != nil {
+		return "", nil, err
+	}
+	observed, _ := ObserveScreenDetailedWithDriver(r.cli.Root, r.cfg, r.run, tree.Raw, tree.Driver)
+	return observed.Screen, observed.Elements, nil
+}
+
+func (r cliDiscoverRunner) Tap(ctx context.Context, sel ApproachStep) (string, []Element, error) {
+	args := []string{}
+	if sel.ID != "" {
+		args = append(args, "--id", sel.ID)
+	}
+	if sel.Text != "" {
+		args = append(args, "--text", sel.Text)
+	}
+	if sel.Value != "" {
+		args = append(args, "--value", sel.Value)
+	}
+	if sel.X != "" && sel.Y != "" {
+		args = append(args, "--x", sel.X, "--y", sel.Y)
+	}
+	if len(args) == 0 {
+		return "", nil, fmt.Errorf("discover_tap_empty_selector")
+	}
+	var out bytes.Buffer
+	tapOpts := GlobalOptions{PreferDriver: sel.Driver, SkipAutoObserve: true}
+	if err := r.cli.withStdout(&out).uiTap(ctx, tapOpts, r.cfg, args); err != nil {
+		return "", nil, err
+	}
+	if code, ok := outputFailureCode(out.String()); ok {
+		return "", nil, fmt.Errorf("%s", code)
+	}
+	tree, err := r.cli.waitForTreeReady(ctx, r.cfg, discoverTreeReadyMaxAge)
+	if err != nil {
+		return "", nil, err
+	}
+	observed, _ := ObserveScreenDetailedWithDriver(r.cli.Root, r.cfg, r.run, tree.Raw, tree.Driver)
+	return observed.Screen, observed.Elements, nil
+}
+
+func (r cliDiscoverRunner) Back(ctx context.Context) (string, []Element, error) {
+	// Best-effort hardware-back gesture (left-edge swipe).
+	swipeArgs := []string{"--direction", "right"}
+	_ = r.cli.withStdout(&bytes.Buffer{}).uiSwipe(ctx, GlobalOptions{}, r.cfg, swipeArgs)
+	tree, err := r.cli.waitForTreeReady(ctx, r.cfg, discoverTreeReadyMaxAge)
+	if err != nil {
+		return "", nil, err
+	}
+	observed, _ := ObserveScreenDetailedWithDriver(r.cli.Root, r.cfg, r.run, tree.Raw, tree.Driver)
+	return observed.Screen, observed.Elements, nil
+}
+
 // approachCommand routes `mav approach <subcommand>` to the right
 // handler. Three subcommands today: `list`, `show`, and `extract`.
 // `extract` is the user-facing tool that derives a reusable
@@ -3583,6 +3657,52 @@ func (c CLI) goScreen(ctx context.Context, opts GlobalOptions, args []string) er
 		return Fail("launch_tree_not_ready", map[string]string{"run": run.ID, "screen": screenID, "report": filepath.Join(run.Dir, "report.html")}).Write(c.Stdout)
 	}
 	if routeErr != nil {
+		// Live-discovery fallback: only when the failure is a
+		// typed `*RouteFailure` reporting an unreachable
+		// subgraph or unknown target. We skip discovery for
+		// plain string errors coming from launch/observation
+		// fallbacks — those failure modes call for evidence,
+		// not random taps.
+		shouldDiscover := false
+		var rfCandidate *RouteFailure
+		if errors.As(routeErr, &rfCandidate) {
+			// `unknown_target` is the canonical "the map has no
+			// record of this screen at all" signal — that's
+			// when live discovery is most likely to help and
+			// least likely to do harm. `unreachable_subgraph`
+			// means the map HAS the screen but no path; that's
+			// often a sign the operator should add an edge by
+			// hand. Discovery is opt-in for that case via
+			// `--discover-on-unreachable`.
+			switch rfCandidate.Reason {
+			case RouteFailureUnknownTarget:
+				shouldDiscover = true
+			case RouteFailureUnreachableSubgraph:
+				shouldDiscover = hasFlag(args, "--discover-on-unreachable")
+			}
+		}
+		if shouldDiscover && !hasFlag(args, "--no-discover") {
+			if rResult, rErr := c.runDiscoveryFallback(ctx, cfg, run, screenID); rErr == nil && rResult.Reached {
+				_ = PersistDiscoveredPath(c.Root, rResult.Path)
+				route = nil
+				routeErr = nil
+				fields, navErr := c.navigateToScreen(ctx, screenID)
+				if navErr == nil {
+					_, _ = c.captureEvidenceStep(ctx, run, "discovered", "Reached "+screenID+" via live discovery")
+					if time.Since(evidenceStarted) < 1200*time.Millisecond {
+						time.Sleep(1200*time.Millisecond - time.Since(evidenceStarted))
+					}
+					_ = c.withStdout(io.Discard).evidenceStop(ctx, GlobalOptions{}, []string{"--run", run.ID, "--note", "Navigated via discovery"})
+					_ = c.withStdout(io.Discard).evidenceReport(GlobalOptions{}, []string{"--run", run.ID})
+					_ = c.withStdout(io.Discard).stop(ctx, GlobalOptions{}, []string{"--run", run.ID})
+					fields["run"] = run.ID
+					fields["report"] = filepath.Join(run.Dir, "report.html")
+					fields["discovered"] = "true"
+					fields["discover_steps"] = strconv.Itoa(len(rResult.Path))
+					return OK("go", fields).Write(c.Stdout)
+				}
+			}
+		}
 		fields := map[string]string{"screen": screenID}
 		code := routeErr.Error()
 		if code == "screen_not_found" || code == "route_not_found" || code == "route_start_not_found" {
