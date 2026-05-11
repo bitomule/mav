@@ -15,8 +15,6 @@ default; there is no separate JSON mode to opt into.
 - Driving simulator UI through accessibility trees before screenshots.
 - Building repeatable flows that combine UI actions, waits, screenshots, video,
   logs, crash checks, and HTML evidence.
-- Maintaining an app map that lets `mav go <screen>` navigate from app launch to
-  known screens.
 
 MAV uses a project-local launch recipe to build, locate, install, and launch
 the app. Bazel, Xcode, Tuist, Make, Just, and project scripts are setup-time
@@ -34,7 +32,6 @@ MAV is early and evolving. The current stable pieces are:
 - Appium-backed WDA fallback for system-process trees, form wrappers, and
   optional multitouch gestures.
 - Native MAV YAML flows through `mav run`.
-- JSON app map storage in `.mav/map/**`.
 - HTML evidence reports in `/tmp/mav/<run-id>/report.html`.
 - Filtered unified log capture for explicit MAV probes.
 
@@ -66,10 +63,10 @@ mav setup
 ```
 
 `mav setup` is idempotent and interactive by default. It scaffolds or refreshes
-`.mav/config.yaml` and the initial app map by detecting app identity, simulator
-defaults, UI tools, and an editable launch recipe, then asks you to accept or
-replace each value. Existing explicit choices in `.mav/config.yaml` are
-preserved. Use `mav setup --non-interactive` for CI/scripts.
+`.mav/config.yaml` by detecting app identity, simulator defaults, UI tools, and
+an editable launch recipe, then asks you to accept or replace each value.
+Existing explicit choices in `.mav/config.yaml` are preserved. Use
+`mav setup --non-interactive` for CI/scripts.
 
 ```bash
 mav setup --install axe idb appium
@@ -147,8 +144,7 @@ mav open
 mav ui tree
 ```
 
-`mav setup` scaffolds `.mav/config.yaml` and an initial app map. By default it
-is interactive: MAV detects a bundle id, selected simulator, locale/language,
+`mav setup` scaffolds `.mav/config.yaml`. By default it is interactive: MAV detects a bundle id, selected simulator, locale/language,
 available tools, and a launch recipe when it can infer one, then lets you accept
 or replace each value. Use `mav setup --non-interactive` for CI/scripts.
 Launch recipe detection is intentionally conservative: MAV recognizes explicit
@@ -218,7 +214,6 @@ Examples:
 ```text
 ok cmd=capture file=/tmp/mav/7fd/captures/20260503T120000.000.png run=7fd
 ok cmd=logs file=/tmp/mav/7fd/logs.txt matches=1 run=7fd
-fail code=screen_not_found next="add or configure a stable screen identifier, then explore with mav ui tree/tap" screen=settings
 fail code=ui_tree_empty driver=axe reason=simulator_accessibility_unavailable recovered=false
 ```
 
@@ -253,27 +248,15 @@ Run state:
 `/tmp` may resolve to a macOS per-user temporary directory such as
 `/var/folders/.../T`.
 
-## App Map
+## Screen Identity
 
-The app map is JSON. It is updated by normal MAV commands, but only for screens
-that expose an explicit screen accessibility identifier. The built-in start
-screen is a launch state, so it does not require an app-owned identifier. For
-product screens, MAV recognizes prefixed screen ids:
-
-```text
-mav.screen.<screen-id>
-screen.<screen-id>
-```
-
-For example, a node with `id=mav.screen.settings` becomes map screen
-`settings`. MAV also accepts natural root-view identifiers without MAV-specific
-prefixes and derives the map id from the identifier, for example
-`UploadFormView` becomes `upload-form-view`. In both cases the recognizer is
-persisted in `.mav/map/screens/<screen-id>.json`.
-
-If the current tree has no explicit screen id, MAV still prints the tree and UI
-commands still work, but the map is not updated and any pending route edge is
-discarded.
+`mav ui tree` reports a natural screen id derived from the AX tree alone: the
+kebab-case form of the shallowest `View`-suffix root element id, e.g.
+`WallView` → `wall-view`, `ItemDetailView` → `item-detail-view`. The detector
+also accepts the explicit prefixes `mav.screen.<id>` and `screen.<id>`. If no
+qualifying element is found, mav reports `screen=unknown
+screen_source=identity_missing` so you can see at a glance which screens are
+missing accessibility identifiers in product code.
 
 SwiftUI:
 
@@ -285,34 +268,18 @@ SettingsView()
 UIKit:
 
 ```swift
-view.accessibilityIdentifier = "mav.screen.settings"
+view.accessibilityIdentifier = "SettingsView"
 ```
 
-Mapping flow:
-
-1. `mav open` resets the current screen to the configured start screen.
-2. `mav ui tree` records the current accessibility tree and screen elements if
-   the tree contains a natural root-view identifier, `mav.screen.<screen-id>`,
-   or `screen.<screen-id>`.
-3. `mav ui tap ...` records a pending action from the current screen.
-4. The next `mav ui tree` observes the next explicit screen id and writes the
-   route edge.
-
-Basic mapping loop:
-
-```bash
-mav open
-mav ui tree
-mav ui tap --id home_settings_button
-mav ui tree
-```
-
-When navigating to a new screen, first make sure the destination exposes a
-natural root-view identifier, `mav.screen.<screen-id>`, or
-`screen.<screen-id>` in `mav ui tree`. If the next tree reports
-`screen_source=identity_missing`, the map did not learn a route and the pending
-tap was discarded; add the screen id, repeat the tap, then run `mav ui tree`
-again before relying on `mav go`.
+A prior version of mav (`mav go`, `mav map`) attempted to maintain a persisted
+graph of screens and tap edges so a single command could navigate from cold
+launch to any known screen. That subsystem was removed after evidence from
+academic literature, Google Robo, and real-world testing showed the
+deterministic-graph approach has a known ceiling that does not justify its
+maintenance burden. See the rationale in
+[Documentation/Notes/maestro-vs-mav-decision.md](https://github.com/SampleApp/sampleapp-ios/blob/main/Documentation/Notes/maestro-vs-mav-decision.md)
+of the SampleApp iOS chapter. mav now stays focused on what it does well:
+deterministic flow execution, AX-tree primitives, and evidence reports.
 
 Prefer target selectors in this order:
 
@@ -321,46 +288,8 @@ Prefer target selectors in this order:
 3. Text: `mav ui tap --text Settings`
 
 Coordinates should be used only when the accessibility tree is insufficient and
-a screenshot makes the target unambiguous. Coordinate taps are visual fallbacks,
-not the primary way to create reliable routes. Text is the last fallback because
+a screenshot makes the target unambiguous. Text is the last fallback because
 labels change with localization and copy edits.
-
-Review `.mav/map/**` diffs before relying on a route. The map is source-level
-project state, not temporary run output.
-
-## Navigation
-
-`mav go <screen-id>` starts from app launch and follows a known route in the app
-map.
-
-```bash
-mav go settings
-```
-
-It will:
-
-1. Build, install, and launch the app.
-2. Wait for a usable accessibility tree.
-3. Start video recording.
-4. Capture the start screen.
-5. Execute each mapped route edge with MAV UI primitives.
-6. Validate that each edge changes the tree.
-7. Validate target screen assertions when the map has them.
-8. Capture the target screen.
-9. Stop video.
-10. Generate `report.html`.
-11. Stop run-owned streams.
-
-If the screen or route is unknown, MAV fails and does not explore:
-
-```text
-fail code=screen_not_found screen=settings
-fail code=route_not_found screen=settings
-fail code=app_map_invalid error="app_map_screen_identity_missing screen=settings"
-```
-
-The caller should then explore manually with `mav ui tree`, `mav ui tap`,
-`mav ui scrollUntil`, and `mav capture`.
 
 ## UI Commands
 
@@ -428,12 +357,6 @@ Appium, and `mav ui hideKeyboard` dismisses the keyboard through WDA.
 When you expect to need Appium, run `mav open --warm-appium` to create the WDA
 session after the launch recipe finishes so the first Appium-backed tree or tap
 does not pay the full cold-start cost.
-
-The app map records driver hints as it learns routes. A screen observed through
-Appium is saved with `driver: appium`, and a transition tapped through Appium is
-saved as an edge with `driver: appium`. `mav go <screen-id>` reads those hints,
-warms Appium automatically when the route needs it, and forces Appium only for
-the mapped actions that require it.
 
 Appium is also used for true multitouch. AXe and idb do not expose a real pinch
 or two-finger gesture primitive. MAV sends Appium W3C Actions: multiple touch
@@ -615,17 +538,11 @@ the same `env` block:
 
 Evidence is explicit. Use it when a user needs proof of verification.
 
-For ad-hoc navigation to a mapped screen:
-
-```bash
-mav go settings
-```
-
 For feature behavior, use a flow with named evidence points:
 
 ```yaml
 - open: {}
-- go: { screen: settings }
+- tap: { id: HomeView.settingsButton }
 - wait: { id: daily_reminder_button, timeout: 5s }
 - video.start: {}
 - evidence.step: { name: before-toggle, note: Before tapping Daily Reminder }
@@ -659,8 +576,8 @@ MAV does not open HTML automatically. Inspect the reported file:
 
 ## Logs
 
-`mav open`, `mav go`, and `mav run` capture a filtered unified log stream for
-MAV probes into `logs.txt`.
+`mav open` and `mav run` capture a filtered unified log stream for MAV probes
+into `logs.txt`.
 
 Use `OSLog.Logger` probes to prove code execution:
 
@@ -769,7 +686,7 @@ them when done:
 mav stop
 ```
 
-`mav go` and `mav run` stop run-owned streams automatically.
+`mav run` stops run-owned streams automatically.
 
 ## Command Reference
 
@@ -800,8 +717,6 @@ mav ui wait --id ID [--timeout 5s]
 mav ui scrollUntil --id ID [--direction up] [--max-swipes 5]
 mav capture [--name NAME] [--run RUN_ID]
 mav run flow.yaml
-mav go <screen-id>
-mav map prune [--filter coordinate-edges|duplicate-selectors|low-confidence] [--apply-warnings] [--dry-run]
 mav logs [--run RUN_ID] [--key KEY] [--contains TEXT] [--level LEVEL]
 mav stop [--run RUN_ID]
 mav crashes [--raw]
@@ -821,18 +736,18 @@ Run:
 mav setup
 ```
 
-`fail code=screen_not_found` or `fail code=route_not_found`
+`fail code=ui_tap_failed` after a screen transition
 
-The map does not know that screen or route yet. Explore manually:
+The target element is not in the current AX tree. Inspect what mav sees:
 
 ```bash
 mav open
-mav ui tree
-mav ui tap --id some_button
-mav ui tree
+mav ui tree --prefer-driver appium
 ```
 
-Then inspect `.mav/map/**`.
+Then refine the selector based on what shows up. Prefer accessibility ids over
+text; add a `mav.screen.<id>` or `View`-suffix `accessibilityIdentifier` to the
+screen root in product code so mav can name the screen in its output.
 
 `fail code=ui_tree_empty`
 
