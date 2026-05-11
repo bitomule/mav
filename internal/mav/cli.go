@@ -29,6 +29,17 @@ type CLI struct {
 	// negative value means "no retry". `goScreen` sets this from
 	// the `--edge-retry` flag before calling `navigateToScreen`.
 	RouteEdgeRetry int
+	// RouteEdgeTTL is the staleness threshold the route engine uses
+	// when deciding whether a recorded edge is still trustworthy.
+	// Zero means "use `DefaultEdgeTTL`". Set from `--edge-ttl` in
+	// `goScreen`.
+	RouteEdgeTTL time.Duration
+	// RouteNoCoordTap disables the coord-tap fallback executed when
+	// id/text-based taps have exhausted the driver chain without
+	// changing the tree. Set from `--no-coord-tap` in `goScreen`
+	// when an operator wants to keep stale-id failures loud
+	// instead of silently masked by a coordinate retry.
+	RouteNoCoordTap bool
 }
 
 type GlobalOptions struct {
@@ -3126,6 +3137,15 @@ func (c CLI) goScreen(ctx context.Context, opts GlobalOptions, args []string) er
 	if ttlErr != nil {
 		return Fail("edge_ttl_invalid", map[string]string{"value": flagValue(args, "--edge-ttl"), "next": "use a duration like '14d', '24h', or '0' to disable"}).Write(c.Stdout)
 	}
+	if flagValue(args, "--edge-ttl") != "" {
+		c.RouteEdgeTTL = ttl
+		if ttl == 0 {
+			// "Explicitly zero" must override the default, so
+			// translate to the negative sentinel mirrored by
+			// `effectiveEdgeTTL`.
+			c.RouteEdgeTTL = -1
+		}
+	}
 	if retry, retryErr := parseEdgeRetryFlag(args); retryErr != nil {
 		return Fail("edge_retry_invalid", map[string]string{"value": flagValue(args, "--edge-retry"), "next": "use a non-negative integer (0 disables retry)"}).Write(c.Stdout)
 	} else if flagValue(args, "--edge-retry") != "" {
@@ -3137,6 +3157,9 @@ func (c CLI) goScreen(ctx context.Context, opts GlobalOptions, args []string) er
 		if retry == 0 {
 			c.RouteEdgeRetry = -1
 		}
+	}
+	if hasFlag(args, "--no-coord-tap") {
+		c.RouteNoCoordTap = true
 	}
 	m, mapErr := LoadAppMap(c.Root)
 	if mapErr != nil {
@@ -3519,6 +3542,13 @@ func (c CLI) navigateToScreen(ctx context.Context, screenID string, routeOverrid
 	if currentFrom == "" {
 		currentFrom = m.Start
 	}
+	// Last-edge stats kept around so the success path can surface
+	// the driver that actually delivered the route (especially
+	// `coord` to signal a P1.c fallback fired). They are
+	// overwritten on each edge so the LAST one is reported, which
+	// is the one observers most often care about.
+	var lastEdgeDriver string
+	var lastEdgeRetried bool
 	for _, edge := range route {
 		from := edge.From
 		if from == "" {
@@ -3529,6 +3559,8 @@ func (c CLI) navigateToScreen(ctx context.Context, screenID string, routeOverrid
 			return map[string]string{"requested": screenID, "stuck_at": from, "edge_target": edge.To}, fmt.Errorf("tree_not_ready")
 		}
 		afterTree, usedDriver, retry, err := c.executeRouteEdge(ctx, cfg, edge, beforeTree.Raw)
+		lastEdgeDriver = usedDriver
+		lastEdgeRetried = retry
 		if err != nil {
 			markRouteEdgeFailure(c.Root, from, edge)
 			fields := map[string]string{"requested": screenID, "stuck_at": from, "edge_target": edge.To}
@@ -3567,6 +3599,12 @@ func (c CLI) navigateToScreen(ctx context.Context, screenID string, routeOverrid
 		}
 	}
 	fields := map[string]string{"screen": screenID, "steps": strconv.Itoa(len(route))}
+	if lastEdgeDriver != "" {
+		fields["driver"] = lastEdgeDriver
+	}
+	if lastEdgeRetried {
+		fields["retried_driver"] = "true"
+	}
 	return fields, nil
 }
 
@@ -3606,6 +3644,15 @@ func (c CLI) effectiveEdgeRetry() int {
 // tap succeeded but the tree did not change. Same-edge retries do not
 // count toward `markRouteEdgeFailure`; only a final unsuccessful
 // outcome does.
+//
+// After exhausting all (driver × retry) attempts via id/text/value
+// selectors, if the edge carries fresh coordinates and the
+// `--no-coord-tap` opt-out is not set, one last attempt is made with
+// `--x`/`--y` only. This catches edges whose id was renamed in
+// product code between map seeding and replay — the coord-tap lands
+// the touch, and the post-tap auto-observe (when re-enabled by the
+// caller) refreshes the edge selector on the next non-suppressed
+// observation cycle.
 func (c CLI) executeRouteEdgeWithRetry(ctx context.Context, cfg Config, edge Edge, beforeTree string, maxSameEdgeRetry int) (readyUITree, string, bool, error) {
 	drivers := routeEdgeDrivers(edge)
 	var lastDriver string
@@ -3649,11 +3696,98 @@ func (c CLI) executeRouteEdgeWithRetry(ctx context.Context, cfg Config, edge Edg
 			return afterTree, lastDriver, retried, nil
 		}
 	}
+	// Id/text-driver chain exhausted. Coord-tap fallback: only run
+	// when allowed, the edge has coordinates, and the edge is not
+	// `low` confidence / not stale (a stale coord on a refactored
+	// screen would tap the wrong button).
+	if c.shouldCoordTapFallback(edge) {
+		if afterTree, ok, err := c.attemptCoordTapFallback(ctx, cfg, edge, beforeTree); err != nil {
+			return readyUITree{}, "coord", true, err
+		} else if ok {
+			markRouteEdgeSuccess(c.Root, edge.From, edge)
+			return afterTree, "coord", true, nil
+		}
+	}
 	ClearPendingMapAction(c.Root)
 	if !tapSucceeded && lastTapErr != nil {
 		return readyUITree{}, lastDriver, retried, fmt.Errorf("tap_failed")
 	}
 	return readyUITree{}, lastDriver, retried, fmt.Errorf("route_no_screen_change")
+}
+
+// shouldCoordTapFallback gates the coord-only retry. The combined
+// rule is: an operator opt-out short-circuits everything; the edge
+// must carry coords AND a semantic selector (id/text/value) — a
+// coord-only edge has already been tried with its native selector by
+// the driver loop, so a second attempt would just repeat the same
+// failure; and it must not be `low` confidence or stale (a stale
+// coord on a refactored screen would tap the wrong button).
+func (c CLI) shouldCoordTapFallback(edge Edge) bool {
+	if c.RouteNoCoordTap {
+		return false
+	}
+	if edge.X == "" || edge.Y == "" {
+		return false
+	}
+	if edge.ID == "" && edge.Text == "" && edge.Value == "" {
+		return false
+	}
+	if edge.Confidence == "low" {
+		return false
+	}
+	if IsEdgeStale(edge, c.effectiveEdgeTTL(), time.Now().UTC()) {
+		return false
+	}
+	return true
+}
+
+// effectiveEdgeTTL mirrors `effectiveEdgeRetry`: zero means "use
+// `DefaultEdgeTTL`", a positive value is honoured verbatim, and a
+// negative value disables the staleness gate. Centralised so the
+// rule travels with the field.
+func (c CLI) effectiveEdgeTTL() time.Duration {
+	switch {
+	case c.RouteEdgeTTL < 0:
+		return 0
+	case c.RouteEdgeTTL == 0:
+		return DefaultEdgeTTL
+	default:
+		return c.RouteEdgeTTL
+	}
+}
+
+// attemptCoordTapFallback fires `mav ui tap --x --y` against the
+// edge's recorded coordinates, observes the post-tap tree, and
+// reports whether the screen changed. Returns `(_, false, nil)` if
+// the coord-tap landed but produced no observable transition (so the
+// caller can record `route_no_screen_change` without crediting the
+// edge with a success).
+func (c CLI) attemptCoordTapFallback(ctx context.Context, cfg Config, edge Edge, beforeTree string) (readyUITree, bool, error) {
+	args := []string{"--x", edge.X, "--y", edge.Y}
+	// Coord-tap uses no semantic selector, so the SkipAutoObserve
+	// flag is the only signal we need to forward — the in-tap
+	// observation would race with our own waitForTreeReady probe
+	// below.
+	tapOpts := GlobalOptions{PreferDriver: "", SkipAutoObserve: true}
+	var out bytes.Buffer
+	if err := c.withStdout(&out).uiTap(ctx, tapOpts, cfg, args); err != nil {
+		return readyUITree{}, false, fmt.Errorf("tap_failed")
+	}
+	if code, ok := outputFailureCode(out.String()); ok {
+		return readyUITree{}, false, errors.New(code)
+	}
+	ClearPendingMapAction(c.Root)
+	if edge.Wait != "" {
+		time.Sleep(parseFlowDuration(edge.Wait, 0))
+	}
+	afterTree, afterErr := c.waitForTreeReady(ctx, cfg, 5*time.Second)
+	if afterErr != nil {
+		return readyUITree{}, false, fmt.Errorf("tree_not_ready")
+	}
+	if sameTreeForRoute(beforeTree, afterTree.Raw) {
+		return readyUITree{}, false, nil
+	}
+	return afterTree, true, nil
 }
 
 func (c CLI) tapRouteEdge(ctx context.Context, cfg Config, edge Edge, driver string) error {

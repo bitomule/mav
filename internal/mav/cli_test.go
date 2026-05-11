@@ -4949,6 +4949,187 @@ func TestEffectiveEdgeRetryAppliesPrecedence(t *testing.T) {
 	}
 }
 
+func TestShouldCoordTapFallbackHonoursEveryGate(t *testing.T) {
+	now := time.Now().UTC()
+	fresh := now.Add(-1 * time.Hour).Format(time.RFC3339)
+	stale := now.Add(-30 * 24 * time.Hour).Format(time.RFC3339)
+	cases := []struct {
+		name string
+		cli  CLI
+		edge Edge
+		want bool
+	}{
+		{
+			name: "default cli, fresh id+coord edge → allowed",
+			edge: Edge{ID: "btn", X: "10", Y: "20", RecordedAt: fresh, Confidence: "high"},
+			want: true,
+		},
+		{
+			name: "no-coord-tap opt-out wins",
+			cli:  CLI{RouteNoCoordTap: true},
+			edge: Edge{ID: "btn", X: "10", Y: "20", RecordedAt: fresh},
+			want: false,
+		},
+		{
+			name: "edge without coords → not eligible",
+			edge: Edge{ID: "btn", RecordedAt: fresh},
+			want: false,
+		},
+		{
+			name: "edge without semantic selector → not eligible (coord-only edges already tried directly)",
+			edge: Edge{X: "10", Y: "20", RecordedAt: fresh},
+			want: false,
+		},
+		{
+			name: "edge marked low confidence → blocked",
+			edge: Edge{ID: "btn", X: "10", Y: "20", RecordedAt: fresh, Confidence: "low"},
+			want: false,
+		},
+		{
+			name: "stale edge → blocked",
+			edge: Edge{ID: "btn", X: "10", Y: "20", RecordedAt: stale, Confidence: "high"},
+			want: false,
+		},
+		{
+			name: "stale edge with TTL disabled (negative) → allowed",
+			cli:  CLI{RouteEdgeTTL: -1},
+			edge: Edge{ID: "btn", X: "10", Y: "20", RecordedAt: stale, Confidence: "high"},
+			want: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cli.shouldCoordTapFallback(tc.edge); got != tc.want {
+				t.Fatalf("got %v want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestEffectiveEdgeTTLAppliesPrecedence(t *testing.T) {
+	cases := []struct {
+		name  string
+		field time.Duration
+		want  time.Duration
+	}{
+		{name: "unset → default", field: 0, want: DefaultEdgeTTL},
+		{name: "positive override", field: 6 * time.Hour, want: 6 * time.Hour},
+		{name: "negative override disables", field: -1, want: 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cli := CLI{RouteEdgeTTL: tc.field}
+			if got := cli.effectiveEdgeTTL(); got != tc.want {
+				t.Fatalf("got %v want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRoutePlaybackFallsBackToCoordTapWhenIdMisses(t *testing.T) {
+	// Models an id that was renamed in product code between map
+	// seeding and replay: `axe tap --id stale_id` fails outright,
+	// the driver chain exhausts, and the route engine retries the
+	// edge with the recorded coordinates — that lands the touch
+	// and the screen finally changes.
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.demo"
+	cfg.Tools = map[string]bool{"axe": true, "idb": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	fresh := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
+	if err := SaveAppMap(root, AppMap{
+		AppID: "com.example.demo",
+		Start: "home",
+		Screens: map[string]Screen{
+			"home": testExplicitScreenWithEdges("home",
+				Edge{From: "home", To: "settings", ID: "stale_id", X: "120", Y: "240", Driver: "axe", RecordedAt: fresh, Confidence: "high"},
+			),
+			"settings": testExplicitScreen("settings"),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	run := RunState{ID: "run-coord", Dir: filepath.Join(t.TempDir(), "run-coord")}
+	if err := os.MkdirAll(run.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	SetCurrentScreen(root, "home", run.ID)
+	homeTree := `{"AXIdentifier":"mav.screen.home","role":"group","children":[{"AXLabel":"Home","role":"heading"}]}`
+	settingsTree := `{"AXIdentifier":"mav.screen.settings","role":"group","children":[{"AXLabel":"Settings"}]}`
+	runner := &errorOverlayRunner{
+		base: fakeRunner{
+			tools: cfg.Tools,
+			seq: map[string][]string{
+				// First describe-ui returns the home tree (before
+				// the edge runs). Both driver attempts fail
+				// without reaching the post-tap probe (no axe
+				// describe-ui call from tapRouteEdge errors), so
+				// the next sequence step belongs to the coord-tap
+				// fallback's post-tap probe — that's where the
+				// settings tree must land. `fakeRunner` clamps
+				// at the last entry once the slice is exhausted.
+				"axe describe-ui": {homeTree, settingsTree},
+			},
+			out: map[string]string{
+				// Coord-tap delegated to idb (the only tool that
+				// handles raw coords today). Empty stdout means
+				// "ok" in mav's command-output protocol.
+				"idb ui tap 120 240": "",
+			},
+			calls: map[string]int{},
+		},
+		errs: map[string]CommandResult{
+			"axe tap --id stale_id": {Err: errors.New("element not found"), Stderr: "element not found"},
+		},
+	}
+	cli := CLI{Runner: runner, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, RouteEdgeRetry: -1}
+	fields, err := cli.navigateToScreen(context.Background(), "settings")
+	if err != nil {
+		t.Fatalf("expected coord-fallback success, fields=%v err=%v", fields, err)
+	}
+	if fields["screen"] != "settings" {
+		t.Fatalf("expected to land on settings, got fields=%v", fields)
+	}
+	// The driver field surfaced upstream should advertise that the
+	// fallback ran so operators can spot stale ids in their map.
+	if fields["driver"] != "coord" {
+		t.Fatalf("expected fallback driver=coord, got fields=%v", fields)
+	}
+}
+
+// errorOverlayRunner combines `fakeRunner`'s sequence/static
+// support with a per-command error overlay so a single command can
+// be scripted to fail in tests of fallback semantics.
+type errorOverlayRunner struct {
+	base fakeRunner
+	errs map[string]CommandResult
+}
+
+func (r *errorOverlayRunner) LookPath(file string) (string, error) {
+	return r.base.LookPath(file)
+}
+
+func (r *errorOverlayRunner) Run(ctx context.Context, name string, args ...string) CommandResult {
+	key := name
+	for _, arg := range args {
+		key += " " + arg
+	}
+	if v, ok := r.errs[key]; ok {
+		return v
+	}
+	return r.base.Run(ctx, name, args...)
+}
+
+func (r *errorOverlayRunner) Start(ctx context.Context, logPath string, name string, args ...string) (int, error) {
+	return r.base.Start(ctx, logPath, name, args...)
+}
+
 func TestRoutePlaybackRetriesSameEdgeOnFirstTapDrop(t *testing.T) {
 	// Models the iOS 26 sim quirk: the first synthetic tap right
 	// after a screen transition is dropped, so the tree probe
