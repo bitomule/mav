@@ -4949,6 +4949,62 @@ func TestEffectiveEdgeRetryAppliesPrecedence(t *testing.T) {
 	}
 }
 
+func TestRouteFailureHintIsActionable(t *testing.T) {
+	cases := []struct {
+		name   string
+		rf     *RouteFailure
+		expect string
+	}{
+		{
+			name:   "unknown target names the missing screen",
+			rf:     &RouteFailure{Reason: RouteFailureUnknownTarget, Target: "upload-form"},
+			expect: "upload-form",
+		},
+		{
+			name:   "start not found points at config",
+			rf:     &RouteFailure{Reason: RouteFailureStartNotFound, Start: "ghost-start"},
+			expect: "ghost-start",
+		},
+		{
+			name:   "unreachable with stale-dominant skips suggests TTL bump",
+			rf:     &RouteFailure{Reason: RouteFailureUnreachableSubgraph, SkippedEdges: []EdgeSkip{{Why: EdgeSkipStale}, {Why: EdgeSkipStale}, {Why: EdgeSkipLowConfidence}}},
+			expect: "edge TTL",
+		},
+		{
+			name:   "unreachable with low-confidence dominant skips suggests re-record",
+			rf:     &RouteFailure{Reason: RouteFailureUnreachableSubgraph, SkippedEdges: []EdgeSkip{{Why: EdgeSkipLowConfidence}, {Why: EdgeSkipLowConfidence}, {Why: EdgeSkipStale}}},
+			expect: "low",
+		},
+		{
+			name:   "unreachable with no skip dominance names nearest reachable",
+			rf:     &RouteFailure{Reason: RouteFailureUnreachableSubgraph, Target: "deep-settings", NearestKnownScreen: "settings"},
+			expect: "settings",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := routeFailureHint(tc.rf)
+			if got == "" || !strings.Contains(got, tc.expect) {
+				t.Fatalf("hint=%q does not contain %q", got, tc.expect)
+			}
+		})
+	}
+}
+
+func TestDominantSkipReasonReturnsEmptyOnTies(t *testing.T) {
+	skips := []EdgeSkip{{Why: EdgeSkipStale}, {Why: EdgeSkipLowConfidence}}
+	if got := dominantSkipReason(skips); got != "" {
+		t.Fatalf("expected empty for tie, got %q", got)
+	}
+	if got := dominantSkipReason(nil); got != "" {
+		t.Fatalf("expected empty for nil, got %q", got)
+	}
+	clear := []EdgeSkip{{Why: EdgeSkipStale}, {Why: EdgeSkipStale}, {Why: EdgeSkipLowConfidence}}
+	if got := dominantSkipReason(clear); got != EdgeSkipStale {
+		t.Fatalf("expected stale, got %q", got)
+	}
+}
+
 func TestSummariseEdgeSkipsGroupsByReasonInOrder(t *testing.T) {
 	cases := []struct {
 		name  string

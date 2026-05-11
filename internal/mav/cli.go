@@ -3724,6 +3724,12 @@ func (c CLI) goScreen(ctx context.Context, opts GlobalOptions, args []string) er
 					fields["skipped_reasons"] = summary
 				}
 			}
+			// Reason-specific operator hints replace the generic
+			// "add a stable identifier" message when we have
+			// concrete information about what went wrong.
+			if hint := routeFailureHint(rf); hint != "" {
+				fields["next"] = hint
+			}
 		}
 		_ = c.withStdout(io.Discard).evidenceStop(ctx, GlobalOptions{}, []string{"--run", run.ID, "--note", "No route to " + screenID})
 		_ = c.withStdout(io.Discard).evidenceReport(GlobalOptions{}, []string{"--run", run.ID})
@@ -4330,6 +4336,70 @@ func markRouteEdgeFailure(root, from string, edge Edge) {
 			return
 		}
 	}
+}
+
+// routeFailureHint returns a one-line operator hint tailored to the
+// `RouteFailure` reason. The goal is "the user reads the failure
+// output and knows what to do next" — exactly the P3 deliverable
+// described in the follow-up plan.
+//
+// The hints are intentionally concrete: nearest reachable screen,
+// the dominant skip reason, the suggested `mav` command to run.
+func routeFailureHint(rf *RouteFailure) string {
+	if rf == nil {
+		return ""
+	}
+	switch rf.Reason {
+	case RouteFailureUnknownTarget:
+		return "the map does not know screen `" + rf.Target + "` — visit it once with `mav ui tap` so the observer records it, then retry"
+	case RouteFailureStartNotFound:
+		return "configured start screen `" + rf.Start + "` is missing from the map — check `.mav/map/index.json` or rerun `mav setup`"
+	case RouteFailureUnreachableSubgraph:
+		dominant := dominantSkipReason(rf.SkippedEdges)
+		switch dominant {
+		case EdgeSkipLowConfidence:
+			return "every known edge is marked `low` confidence (>=2 consecutive failures) — re-record the path or pass `--edge-retry 0` to surface the underlying failure"
+		case EdgeSkipStale:
+			return "the only known path is older than the edge TTL — raise `--edge-ttl` or re-seed the map by re-running the flow that originally captured it"
+		}
+		if rf.NearestKnownScreen != "" {
+			return "the closest reachable screen is `" + rf.NearestKnownScreen + "` — add a transition from there to `" + rf.Target + "` via `mav ui tap` and the observer will record it"
+		}
+		return "the start screen has no outgoing edges — run the flow that seeds your map (or tap manually with `mav ui tap`) before retrying"
+	}
+	return ""
+}
+
+// dominantSkipReason returns the EdgeSkipReason that appears most
+// often in a slice, or empty when the slice is empty / tied. Tied
+// counts return empty so the hint falls back to the more generic
+// "nearest reachable" advice instead of misleadingly picking one
+// of two equally-bad explanations.
+func dominantSkipReason(skips []EdgeSkip) EdgeSkipReason {
+	if len(skips) == 0 {
+		return ""
+	}
+	counts := map[EdgeSkipReason]int{}
+	for _, s := range skips {
+		counts[s.Why]++
+	}
+	var best EdgeSkipReason
+	bestCount := 0
+	tied := false
+	for reason, count := range counts {
+		switch {
+		case count > bestCount:
+			best = reason
+			bestCount = count
+			tied = false
+		case count == bestCount:
+			tied = true
+		}
+	}
+	if tied {
+		return ""
+	}
+	return best
 }
 
 // summariseEdgeSkips compacts a slice of `EdgeSkip` records into a
