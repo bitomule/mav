@@ -24,6 +24,11 @@ type CLI struct {
 	Stdout io.Writer
 	Stderr io.Writer
 	Root   string
+	// RouteEdgeRetry overrides the same-driver retry count used by
+	// `executeRouteEdge`. Zero means "use `DefaultEdgeRetry`". A
+	// negative value means "no retry". `goScreen` sets this from
+	// the `--edge-retry` flag before calling `navigateToScreen`.
+	RouteEdgeRetry int
 }
 
 type GlobalOptions struct {
@@ -3121,6 +3126,18 @@ func (c CLI) goScreen(ctx context.Context, opts GlobalOptions, args []string) er
 	if ttlErr != nil {
 		return Fail("edge_ttl_invalid", map[string]string{"value": flagValue(args, "--edge-ttl"), "next": "use a duration like '14d', '24h', or '0' to disable"}).Write(c.Stdout)
 	}
+	if retry, retryErr := parseEdgeRetryFlag(args); retryErr != nil {
+		return Fail("edge_retry_invalid", map[string]string{"value": flagValue(args, "--edge-retry"), "next": "use a non-negative integer (0 disables retry)"}).Write(c.Stdout)
+	} else if flagValue(args, "--edge-retry") != "" {
+		// Only stash the override when the flag was supplied;
+		// otherwise leave `RouteEdgeRetry == 0` so the default
+		// kicks in (a non-zero override of "0" expresses
+		// "disable").
+		c.RouteEdgeRetry = retry
+		if retry == 0 {
+			c.RouteEdgeRetry = -1
+		}
+	}
 	m, mapErr := LoadAppMap(c.Root)
 	if mapErr != nil {
 		cfg, cfgErr := LoadConfig(c.Root)
@@ -3553,7 +3570,43 @@ func (c CLI) navigateToScreen(ctx context.Context, screenID string, routeOverrid
 	return fields, nil
 }
 
+// DefaultEdgeRetry is how many times `executeRouteEdge` re-attempts
+// the SAME edge with the SAME driver when the tap visibly succeeds
+// but the tree doesn't change (the iOS 26 simulator routinely drops
+// the first synthetic tap on a tab bar right after a screen
+// transition). 1 retry catches the drop without making genuine
+// no-op edges twice as expensive.
+const DefaultEdgeRetry = 1
+
+// edgeRetryWait is the brief pause between same-edge retries.
+// Empirically iOS 26 settles within 200ms after a transition.
+const edgeRetryWait = 350 * time.Millisecond
+
 func (c CLI) executeRouteEdge(ctx context.Context, cfg Config, edge Edge, beforeTree string) (readyUITree, string, bool, error) {
+	return c.executeRouteEdgeWithRetry(ctx, cfg, edge, beforeTree, c.effectiveEdgeRetry())
+}
+
+// effectiveEdgeRetry resolves the same-edge retry count from the CLI
+// field. Zero means "use the package default"; a negative override
+// means "no retries". Centralised so callers don't have to repeat
+// the precedence rules.
+func (c CLI) effectiveEdgeRetry() int {
+	switch {
+	case c.RouteEdgeRetry < 0:
+		return 0
+	case c.RouteEdgeRetry == 0:
+		return DefaultEdgeRetry
+	default:
+		return c.RouteEdgeRetry
+	}
+}
+
+// executeRouteEdgeWithRetry is the same loop as `executeRouteEdge`
+// but retries the SAME driver up to `maxSameEdgeRetry` times when the
+// tap succeeded but the tree did not change. Same-edge retries do not
+// count toward `markRouteEdgeFailure`; only a final unsuccessful
+// outcome does.
+func (c CLI) executeRouteEdgeWithRetry(ctx context.Context, cfg Config, edge Edge, beforeTree string, maxSameEdgeRetry int) (readyUITree, string, bool, error) {
 	drivers := routeEdgeDrivers(edge)
 	var lastDriver string
 	var lastTapErr error
@@ -3564,29 +3617,37 @@ func (c CLI) executeRouteEdge(ctx context.Context, cfg Config, edge Edge, before
 		if i > 0 {
 			retried = true
 		}
-		if err := c.tapRouteEdge(ctx, cfg, edge, driver); err != nil {
-			lastTapErr = err
-			continue
+		for attempt := 0; attempt <= maxSameEdgeRetry; attempt++ {
+			if err := c.tapRouteEdge(ctx, cfg, edge, driver); err != nil {
+				lastTapErr = err
+				break // give up on this driver; move to the next
+			}
+			tapSucceeded = true
+			ClearPendingMapAction(c.Root)
+			if edge.Wait != "" {
+				time.Sleep(parseFlowDuration(edge.Wait, 0))
+			}
+			afterTree, afterErr := c.waitForTreeReady(ctx, cfg, 5*time.Second)
+			if afterErr != nil {
+				return readyUITree{}, lastDriver, retried, fmt.Errorf("tree_not_ready")
+			}
+			if sameTreeForRoute(beforeTree, afterTree.Raw) {
+				if attempt < maxSameEdgeRetry {
+					// Same-driver retry path. iOS 26 sim drops the
+					// first tap post-transition; the second always
+					// lands. Pause briefly to let any in-flight
+					// animation settle before re-tapping.
+					retried = true
+					time.Sleep(edgeRetryWait)
+					continue
+				}
+				// Exhausted retries on this driver — fall through
+				// to the next driver in the fallback chain.
+				break
+			}
+			markRouteEdgeSuccess(c.Root, edge.From, edge)
+			return afterTree, lastDriver, retried, nil
 		}
-		tapSucceeded = true
-		ClearPendingMapAction(c.Root)
-		if edge.Wait != "" {
-			time.Sleep(parseFlowDuration(edge.Wait, 0))
-		}
-		afterTree, afterErr := c.waitForTreeReady(ctx, cfg, 5*time.Second)
-		if afterErr != nil {
-			return readyUITree{}, lastDriver, retried, fmt.Errorf("tree_not_ready")
-		}
-		if sameTreeForRoute(beforeTree, afterTree.Raw) {
-			continue
-		}
-		// Edge played cleanly — bump its `LastSuccessAt` so TTL
-		// resets and flaky-history bookkeeping clears. Called
-		// before returning so the success is persisted even when
-		// downstream verification (in navigateToScreen) decides the
-		// route landed on the wrong screen overall.
-		markRouteEdgeSuccess(c.Root, edge.From, edge)
-		return afterTree, lastDriver, retried, nil
 	}
 	ClearPendingMapAction(c.Root)
 	if !tapSucceeded && lastTapErr != nil {
@@ -3677,6 +3738,21 @@ func markRouteEdgeFailure(root, from string, edge Edge) {
 			return
 		}
 	}
+}
+
+// parseEdgeRetryFlag reads `--edge-retry` from a flag list. Returns
+// the supplied non-negative integer, or `DefaultEdgeRetry` when the
+// flag is absent. A negative value is rejected.
+func parseEdgeRetryFlag(args []string) (int, error) {
+	raw := strings.TrimSpace(flagValue(args, "--edge-retry"))
+	if raw == "" {
+		return DefaultEdgeRetry, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("edge_retry_invalid: %q", raw)
+	}
+	return n, nil
 }
 
 // parseEdgeTTLFlag reads `--edge-ttl` from a flag list, accepts the

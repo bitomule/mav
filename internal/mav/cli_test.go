@@ -4897,6 +4897,127 @@ func (r *countingRunner) Start(ctx context.Context, logPath string, name string,
 	return 1, nil
 }
 
+func TestParseEdgeRetryFlagAcceptsCountAndDefaults(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want int
+		err  bool
+	}{
+		{name: "default when absent", args: nil, want: DefaultEdgeRetry},
+		{name: "zero disables retry", args: []string{"--edge-retry", "0"}, want: 0},
+		{name: "explicit higher count", args: []string{"--edge-retry", "3"}, want: 3},
+		{name: "negative rejected", args: []string{"--edge-retry", "-1"}, err: true},
+		{name: "garbage rejected", args: []string{"--edge-retry", "many"}, err: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseEdgeRetryFlag(tc.args)
+			if tc.err {
+				if err == nil {
+					t.Fatalf("expected error, got %d", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("got %d want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestEffectiveEdgeRetryAppliesPrecedence(t *testing.T) {
+	cases := []struct {
+		name  string
+		field int
+		want  int
+	}{
+		{name: "unset → default", field: 0, want: DefaultEdgeRetry},
+		{name: "positive override", field: 4, want: 4},
+		{name: "negative override means disabled", field: -1, want: 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cli := CLI{RouteEdgeRetry: tc.field}
+			if got := cli.effectiveEdgeRetry(); got != tc.want {
+				t.Fatalf("got %d want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRoutePlaybackRetriesSameEdgeOnFirstTapDrop(t *testing.T) {
+	// Models the iOS 26 sim quirk: the first synthetic tap right
+	// after a screen transition is dropped, so the tree probe
+	// returns the SAME screen. The retry inside `executeRouteEdge`
+	// should re-tap and observe the destination on the second try.
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.demo"
+	cfg.Tools = map[string]bool{"axe": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveAppMap(root, AppMap{
+		AppID: "com.example.demo",
+		Start: "home",
+		Screens: map[string]Screen{
+			"home":     testExplicitScreenWithEdges("home", Edge{From: "home", To: "settings", ID: "settings_button", Driver: "axe"}),
+			"settings": testExplicitScreen("settings"),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	run := RunState{ID: "run-retry", Dir: filepath.Join(t.TempDir(), "run-retry")}
+	if err := os.MkdirAll(run.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	SetCurrentScreen(root, "home", run.ID)
+	homeTree := `{"AXIdentifier":"mav.screen.home","role":"group","children":[{"AXIdentifier":"settings_button","AXLabel":"Settings","role":"button"}]}`
+	settingsTree := `{"AXIdentifier":"mav.screen.settings","role":"group","children":[{"AXLabel":"Settings"}]}`
+	runner := fakeRunner{
+		tools: cfg.Tools,
+		seq: map[string][]string{
+			// Before tap (1), after dropped tap (still home),
+			// after retry (settings). `fakeRunner` clamps to the
+			// last value once we run off the end, so any extra
+			// probes during the navigateToScreen post-step
+			// observation still see `settings`.
+			"axe describe-ui": {homeTree, homeTree, settingsTree},
+		},
+		out:   map[string]string{"axe tap --id settings_button": ""},
+		calls: map[string]int{},
+	}
+	cli := CLI{Runner: runner, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	fields, err := cli.navigateToScreen(context.Background(), "settings")
+	if err != nil {
+		t.Fatalf("expected success after retry, fields=%v err=%v", fields, err)
+	}
+	if fields["screen"] != "settings" {
+		t.Fatalf("expected to land on settings, got fields=%v", fields)
+	}
+	// Edge should NOT have a recorded failure; same-edge retries
+	// are transient and don't increment FailureCount.
+	loaded, loadErr := LoadScreen(root, "home")
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if len(loaded.Edges) != 1 || loaded.Edges[0].FailureCount != 0 {
+		t.Fatalf("retry should not have logged a failure: %+v", loaded.Edges)
+	}
+	// And `LastSuccessAt` should be stamped from the eventual
+	// successful replay.
+	if loaded.Edges[0].LastSuccessAt == "" {
+		t.Fatalf("expected LastSuccessAt to be stamped after retry success: %+v", loaded.Edges[0])
+	}
+}
+
 func TestParseEdgeTTLFlagAcceptsDurationAndDays(t *testing.T) {
 	cases := []struct {
 		name string
