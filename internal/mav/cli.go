@@ -3251,6 +3251,40 @@ func extractApproachSteps(commandsLog string) ([]ApproachStep, error) {
 				TypeChars: intFromAny(entry["chars"]),
 			}
 			steps = append(steps, step)
+		case "delay", "sleep":
+			// Attach the delay to the PRECEDING step's
+			// `Wait` field. `playApproachStep` already
+			// honours `Wait` as the post-action settle time,
+			// so this preserves the original flow's pacing
+			// without inventing a "pure delay" step type.
+			//
+			// A delay before the first tap has nowhere to
+			// attach; dropping it is correct since approach
+			// playback starts immediately after the matching
+			// observation — there's nothing to settle yet.
+			if len(steps) > 0 {
+				if d := stringFromAny(entry["duration"]); d != "" {
+					steps[len(steps)-1].Wait = d
+				}
+			}
+		case "wait":
+			// `wait` actions encode "block until X is
+			// visible, with a cap of `timeout`". The
+			// `elapsed` field records how long the original
+			// run actually paused. For approach replay we
+			// only need to reproduce the pause; the original
+			// flow that recorded the run already verified
+			// the next selector was reachable, so a
+			// timed-wait approximates the operational
+			// behaviour without needing to recreate the
+			// element-visibility predicate.
+			//
+			// Same attach-to-preceding rule as delays.
+			if len(steps) > 0 {
+				if d := stringFromAny(entry["elapsed"]); d != "" && steps[len(steps)-1].Wait == "" {
+					steps[len(steps)-1].Wait = d
+				}
+			}
 		}
 	}
 	return steps, nil

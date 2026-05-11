@@ -183,6 +183,68 @@ func TestExtractApproachStepsReadsTapsAndTypeFromCommandsLog(t *testing.T) {
 	}
 }
 
+func TestExtractApproachStepsAttachesDelayToPrecedingStep(t *testing.T) {
+	root := t.TempDir()
+	log := filepath.Join(root, "commands.jsonl")
+	contents := strings.Join([]string{
+		// Delay before the first tap — has nowhere to attach,
+		// must be dropped silently.
+		`{"action":"delay","status":"ok","duration":"500ms"}`,
+		`{"action":"tap","status":"ok","x":"207","y":"830"}`,
+		`{"action":"delay","status":"ok","duration":"2s"}`,
+		`{"action":"tap","status":"ok","x":"207","y":"542"}`,
+		`{"action":"sleep","status":"ok","duration":"1500ms"}`,
+		`{"action":"tap","status":"ok","text":"Aceptar todo","driver":"appium"}`,
+	}, "\n")
+	if err := osWrite(log, contents); err != nil {
+		t.Fatal(err)
+	}
+	steps, err := extractApproachSteps(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(steps) != 3 {
+		t.Fatalf("expected 3 tap steps, got %+v", steps)
+	}
+	if steps[0].X != "207" || steps[0].Y != "830" || steps[0].Wait != "2s" {
+		t.Fatalf("step 0 should have Wait=2s, got %+v", steps[0])
+	}
+	if steps[1].X != "207" || steps[1].Y != "542" || steps[1].Wait != "1500ms" {
+		t.Fatalf("step 1 should have Wait=1500ms, got %+v", steps[1])
+	}
+	if steps[2].Text != "Aceptar todo" || steps[2].Wait != "" {
+		t.Fatalf("step 2 should have no Wait, got %+v", steps[2])
+	}
+}
+
+func TestExtractApproachStepsAttachesWaitElapsedToPrecedingStep(t *testing.T) {
+	// `wait` actions in the run log describe "the original flow
+	// paused this long before the next selector was visible". For
+	// approach replay we can't recreate the visibility predicate,
+	// but we CAN reproduce the pause — using `elapsed` (what
+	// actually happened) rather than `timeout` (the worst case).
+	root := t.TempDir()
+	log := filepath.Join(root, "commands.jsonl")
+	contents := strings.Join([]string{
+		`{"action":"tap","status":"ok","id":"login_button"}`,
+		`{"action":"wait","status":"ok","value":"email","timeout":"10s","elapsed":"190ms"}`,
+		`{"action":"tap","status":"ok","value":"email","driver":"appium"}`,
+	}, "\n")
+	if err := osWrite(log, contents); err != nil {
+		t.Fatal(err)
+	}
+	steps, err := extractApproachSteps(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(steps) != 2 {
+		t.Fatalf("expected 2 tap steps, got %+v", steps)
+	}
+	if steps[0].ID != "login_button" || steps[0].Wait != "190ms" {
+		t.Fatalf("step 0 should have Wait=190ms from the wait action, got %+v", steps[0])
+	}
+}
+
 func TestCountUnfilledTypeStepsCountsOnlyUnfilled(t *testing.T) {
 	steps := []ApproachStep{
 		{ID: "tap_btn"},
