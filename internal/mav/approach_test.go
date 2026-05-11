@@ -130,6 +130,24 @@ func TestApproachIsStaleHonoursLastSuccess(t *testing.T) {
 	}
 }
 
+func TestMatchingApproachesIgnoresAnchorMismatchAtStartScreen(t *testing.T) {
+	// `applyBlindStartApproach` reuses `MatchingApproaches`
+	// passing the configured start screen as the current screen.
+	// This locks the contract that matches are anchor-based, not
+	// observation-based — exactly what the blind-launch path
+	// relies on when there's no observation to compare against.
+	now := time.Now().UTC()
+	fresh := now.Add(-time.Hour).Format(time.RFC3339)
+	approaches := []Approach{
+		{Name: "anchored-on-start", LastSuccessAt: fresh, Steps: []ApproachStep{{Anchor: "start"}}},
+		{Name: "anchored-on-home", LastSuccessAt: fresh, Steps: []ApproachStep{{Anchor: "home"}}},
+	}
+	got := MatchingApproaches(approaches, "start", 14*24*time.Hour, now)
+	if len(got) != 1 || got[0].Name != "anchored-on-start" {
+		t.Fatalf("expected only start-anchored approach, got %+v", got)
+	}
+}
+
 func TestExtractApproachStepsReadsTapsAndTypeFromCommandsLog(t *testing.T) {
 	root := t.TempDir()
 	log := filepath.Join(root, "commands.jsonl")

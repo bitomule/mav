@@ -3294,6 +3294,52 @@ func stringFromAny(v any) string {
 	return fmt.Sprint(v)
 }
 
+// applyBlindStartApproach plays the freshest non-failed approach
+// anchored on the configured start screen WITHOUT requiring the
+// post-launch tree probe to succeed first. This is the recovery
+// path for AX-opaque launch surfaces — Iubenda CMP WebViews, OS
+// consent prompts, splash screens — where the accessibility tree
+// is empty or unrecognised but the app DOES respond to coord-taps
+// and other selectors we already recorded.
+//
+// Returns `(observation, true)` when at least one approach
+// completed without an early `playApproachStep` error AND the
+// subsequent tree probe succeeded. Returns `(_, false)` to let the
+// caller surface the original `launch_tree_not_ready` error.
+//
+// Distinct from `applyMatchingApproaches` (which gates on observed
+// screen): this variant only checks the anchor against the
+// configured start screen, since we have no current observation
+// to compare to.
+func (c CLI) applyBlindStartApproach(ctx context.Context, cfg Config, run RunState, startScreen string, ttl time.Duration) (ScreenObservation, bool) {
+	if startScreen == "" {
+		return ScreenObservation{}, false
+	}
+	approaches, err := LoadAllApproaches(c.Root)
+	if err != nil || len(approaches) == 0 {
+		return ScreenObservation{}, false
+	}
+	matches := MatchingApproaches(approaches, startScreen, ttl, time.Now().UTC())
+	if len(matches) == 0 {
+		return ScreenObservation{}, false
+	}
+	for _, a := range matches {
+		if _, err := c.runApproachStep(ctx, run, a.Name); err != nil {
+			continue
+		}
+		// Try to observe the tree post-replay. If the approach
+		// dismissed the AX-blind surface (CMP banner, splash),
+		// the tree should now be readable.
+		tree, treeErr := c.waitForTreeReady(ctx, cfg, 8*time.Second)
+		if treeErr != nil {
+			continue
+		}
+		observed, _ := ObserveScreenDetailedWithDriver(c.Root, cfg, run, tree.Raw, tree.Driver)
+		return observed, true
+	}
+	return ScreenObservation{}, false
+}
+
 // applyMatchingApproaches plays the first approach whose anchor
 // matches the observed screen, re-observes the resulting tree, and
 // reports the new screen state. Returns `(observation, true)` when
@@ -3742,11 +3788,52 @@ func (c CLI) goScreen(ctx context.Context, opts GlobalOptions, args []string) er
 			routeErr = fmt.Errorf("route_not_found")
 		}
 	} else {
-		_, _ = c.captureEvidenceStep(ctx, run, "launch-not-ready", "App did not expose a ready accessibility tree after launch")
-		_ = c.withStdout(io.Discard).evidenceStop(ctx, GlobalOptions{}, []string{"--run", run.ID, "--note", "Launch tree was not ready"})
-		_ = c.withStdout(io.Discard).evidenceReport(GlobalOptions{}, []string{"--run", run.ID})
-		_ = c.withStdout(io.Discard).stop(ctx, GlobalOptions{}, []string{"--run", run.ID})
-		return Fail("launch_tree_not_ready", map[string]string{"run": run.ID, "screen": screenID, "report": filepath.Join(run.Dir, "report.html")}).Write(c.Stdout)
+		// AX-blind launch fallback: when the post-launch tree
+		// probe times out, look for a start-anchored approach
+		// (the very purpose of approaches is to coord-tap
+		// through screens the AX hierarchy can't see — Iubenda
+		// CMP WebViews, OS-level consent prompts, etc.). Play
+		// it blind, then retry tree-ready. Only surface
+		// `launch_tree_not_ready` when even the blind replay
+		// doesn't unlock a readable tree.
+		if !hasFlag(args, "--no-approach") {
+			if recoveredObserved, ok := c.applyBlindStartApproach(ctx, cfg, run, m.Start, ttl); ok {
+				observed := recoveredObserved
+				if refreshed, err := LoadAppMap(c.Root); err == nil {
+					m = refreshed
+				}
+				if observed.Screen == screenID {
+					route = nil
+					routeErr = nil
+				} else if observed.Screen != "" && observed.Screen != "unknown" {
+					if observedRoute, err := RouteFromWithTTL(m, observed.Screen, screenID, ttl, time.Now().UTC()); err == nil {
+						route = observedRoute
+						routeErr = nil
+						if required := routeRequiredDriver(m, screenID, route); required != "" {
+							needsDriver = required
+						}
+					} else {
+						route = nil
+						routeErr = err
+					}
+				} else {
+					route = nil
+					routeErr = fmt.Errorf("route_not_found")
+				}
+			} else {
+				_, _ = c.captureEvidenceStep(ctx, run, "launch-not-ready", "App did not expose a ready accessibility tree after launch")
+				_ = c.withStdout(io.Discard).evidenceStop(ctx, GlobalOptions{}, []string{"--run", run.ID, "--note", "Launch tree was not ready"})
+				_ = c.withStdout(io.Discard).evidenceReport(GlobalOptions{}, []string{"--run", run.ID})
+				_ = c.withStdout(io.Discard).stop(ctx, GlobalOptions{}, []string{"--run", run.ID})
+				return Fail("launch_tree_not_ready", map[string]string{"run": run.ID, "screen": screenID, "report": filepath.Join(run.Dir, "report.html")}).Write(c.Stdout)
+			}
+		} else {
+			_, _ = c.captureEvidenceStep(ctx, run, "launch-not-ready", "App did not expose a ready accessibility tree after launch")
+			_ = c.withStdout(io.Discard).evidenceStop(ctx, GlobalOptions{}, []string{"--run", run.ID, "--note", "Launch tree was not ready"})
+			_ = c.withStdout(io.Discard).evidenceReport(GlobalOptions{}, []string{"--run", run.ID})
+			_ = c.withStdout(io.Discard).stop(ctx, GlobalOptions{}, []string{"--run", run.ID})
+			return Fail("launch_tree_not_ready", map[string]string{"run": run.ID, "screen": screenID, "report": filepath.Join(run.Dir, "report.html")}).Write(c.Stdout)
+		}
 	}
 	if routeErr != nil {
 		// Live-discovery fallback: only when the failure is a
