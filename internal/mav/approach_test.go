@@ -130,7 +130,7 @@ func TestApproachIsStaleHonoursLastSuccess(t *testing.T) {
 	}
 }
 
-func TestExtractApproachStepsReadsTapsFromCommandsLog(t *testing.T) {
+func TestExtractApproachStepsReadsTapsAndTypeFromCommandsLog(t *testing.T) {
 	root := t.TempDir()
 	log := filepath.Join(root, "commands.jsonl")
 	contents := strings.Join([]string{
@@ -139,7 +139,7 @@ func TestExtractApproachStepsReadsTapsFromCommandsLog(t *testing.T) {
 		`{"action":"tap","status":"ok","text":"Continue","prefer-driver":"appium"}`,
 		`{"action":"tap","status":"ok","x":"120","y":"240"}`,
 		`{"action":"tap","status":"fail","id":"will_not_show"}`,
-		`{"action":"type","status":"ok","chars":"5"}`,
+		`{"action":"type","status":"ok","chars":"5","driver":"appium"}`,
 	}, "\n")
 	if err := osWrite(log, contents); err != nil {
 		t.Fatal(err)
@@ -148,8 +148,8 @@ func TestExtractApproachStepsReadsTapsFromCommandsLog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(steps) != 3 {
-		t.Fatalf("expected 3 tap steps, got %+v", steps)
+	if len(steps) != 4 {
+		t.Fatalf("expected 3 tap steps + 1 type step, got %+v", steps)
 	}
 	if steps[0].ID != "first_btn" || steps[0].Driver != "appium" {
 		t.Fatalf("step 0 = %+v", steps[0])
@@ -159,6 +159,34 @@ func TestExtractApproachStepsReadsTapsFromCommandsLog(t *testing.T) {
 	}
 	if steps[2].X != "120" || steps[2].Y != "240" {
 		t.Fatalf("step 2 = %+v", steps[2])
+	}
+	if !steps[3].IsType() || steps[3].Type != "" || steps[3].TypeChars != 5 || steps[3].Driver != "appium" {
+		t.Fatalf("step 3 should be a type placeholder with chars=5: %+v", steps[3])
+	}
+}
+
+func TestCountUnfilledTypeStepsCountsOnlyUnfilled(t *testing.T) {
+	steps := []ApproachStep{
+		{ID: "tap_btn"},
+		{Type: "filled", TypeChars: 6},
+		{TypeChars: 8}, // placeholder waiting for operator
+		{TypeChars: 4}, // another placeholder
+		{Type: "also_filled"},
+	}
+	if got := countUnfilledTypeSteps(steps); got != 2 {
+		t.Fatalf("got %d want 2", got)
+	}
+}
+
+func TestApproachStepIsTypeDistinguishesActions(t *testing.T) {
+	if (ApproachStep{ID: "btn"}).IsType() {
+		t.Fatal("tap step should not report IsType")
+	}
+	if !(ApproachStep{Type: "hello"}).IsType() {
+		t.Fatal("filled type step should report IsType")
+	}
+	if !(ApproachStep{TypeChars: 5}).IsType() {
+		t.Fatal("unfilled type placeholder should still report IsType")
 	}
 }
 

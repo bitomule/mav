@@ -3166,19 +3166,50 @@ func (c CLI) approachExtract(args []string) error {
 	if err := SaveApproach(c.Root, approach); err != nil {
 		return Fail("approach_save_failed", map[string]string{"error": err.Error()}).Write(c.Stdout)
 	}
-	return OK("approach.extract", map[string]string{
+	fields := map[string]string{
 		"name":   name,
 		"steps":  strconv.Itoa(len(steps)),
 		"anchor": anchor,
 		"run":    runID,
-	}).Write(c.Stdout)
+	}
+	if unfilled := countUnfilledTypeSteps(steps); unfilled > 0 {
+		// Don't fail the extract — credentials by design don't
+		// leak into commands.jsonl, so the operator MUST fill
+		// them in by hand. The CLI surface tells them where to
+		// look and what to edit.
+		fields["type_steps_unfilled"] = strconv.Itoa(unfilled)
+		fields["next"] = "edit `.mav/map/approaches/" + approachFileName(name) + "` and set `type: \"...\"` on each step where `type_chars` is set; the actual text was never recorded for privacy"
+	}
+	return OK("approach.extract", fields).Write(c.Stdout)
 }
 
-// extractApproachSteps reads a run's `commands.jsonl` and returns a
-// flat slice of `ApproachStep`s — one per successful tap-like
-// command. Non-tap commands (delay, capture, evidence) are skipped:
-// approaches are pure transition sequences, the engine handles
-// settle-time via the step's `Wait` field.
+// countUnfilledTypeSteps tells the extractor how many type steps
+// it left as placeholders. Operators who run extract without
+// reading the warning would otherwise hit
+// `approach_step_type_unfilled` at playback time with no context;
+// surfacing the count up front saves a debug round.
+func countUnfilledTypeSteps(steps []ApproachStep) int {
+	n := 0
+	for _, s := range steps {
+		if s.IsType() && s.Type == "" {
+			n++
+		}
+	}
+	return n
+}
+
+// extractApproachSteps reads a run's `commands.jsonl` and returns
+// a flat slice of `ApproachStep`s, one per successful tap-or-type
+// command. Non-tap/non-type commands (delay, capture, evidence)
+// are skipped: approaches are pure transition sequences, the
+// engine handles settle-time via the step's `Wait` field.
+//
+// Type actions land as type steps with `Type=""` and `TypeChars`
+// set to whatever the run log recorded (`chars=N`). The actual
+// text is intentionally NOT recovered — commands.jsonl never
+// stores it because credentials and search terms shouldn't end up
+// on disk by default. The CLI extract handler surfaces the empty
+// Type as a warning so the operator knows to fill it in.
 func extractApproachSteps(commandsLog string) ([]ApproachStep, error) {
 	data, err := os.ReadFile(commandsLog)
 	if err != nil {
@@ -3194,26 +3225,63 @@ func extractApproachSteps(commandsLog string) ([]ApproachStep, error) {
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			continue
 		}
-		if entry["action"] != "tap" || entry["status"] != "ok" {
+		if entry["status"] != "ok" {
 			continue
 		}
-		step := ApproachStep{
-			ID:     stringFromAny(entry["id"]),
-			Text:   stringFromAny(entry["text"]),
-			Value:  stringFromAny(entry["value"]),
-			X:      stringFromAny(entry["x"]),
-			Y:      stringFromAny(entry["y"]),
-			Driver: stringFromAny(entry["prefer-driver"]),
+		switch entry["action"] {
+		case "tap":
+			step := ApproachStep{
+				ID:     stringFromAny(entry["id"]),
+				Text:   stringFromAny(entry["text"]),
+				Value:  stringFromAny(entry["value"]),
+				X:      stringFromAny(entry["x"]),
+				Y:      stringFromAny(entry["y"]),
+				Driver: stringFromAny(entry["prefer-driver"]),
+			}
+			if step.Driver == "" {
+				step.Driver = stringFromAny(entry["driver"])
+			}
+			if step.ID == "" && step.Text == "" && step.Value == "" && step.X == "" {
+				continue
+			}
+			steps = append(steps, step)
+		case "type":
+			step := ApproachStep{
+				Driver:    stringFromAny(entry["driver"]),
+				TypeChars: intFromAny(entry["chars"]),
+			}
+			steps = append(steps, step)
 		}
-		if step.Driver == "" {
-			step.Driver = stringFromAny(entry["driver"])
-		}
-		if step.ID == "" && step.Text == "" && step.Value == "" && step.X == "" {
-			continue
-		}
-		steps = append(steps, step)
 	}
 	return steps, nil
+}
+
+// intFromAny coerces the JSON number/string representations of an
+// int into a Go int. The commands.jsonl format leaves "chars" as a
+// string in some flows and a number in others, so the extractor
+// tolerates both.
+func intFromAny(v any) int {
+	switch t := v.(type) {
+	case nil:
+		return 0
+	case float64:
+		return int(t)
+	case int:
+		return t
+	case string:
+		n, err := strconv.Atoi(t)
+		if err != nil {
+			return 0
+		}
+		return n
+	default:
+		s := fmt.Sprint(t)
+		n, err := strconv.Atoi(s)
+		if err != nil {
+			return 0
+		}
+		return n
+	}
 }
 
 func stringFromAny(v any) string {
@@ -3305,11 +3373,35 @@ func (c CLI) runApproachStep(ctx context.Context, run RunState, name string) (ma
 	}, nil
 }
 
-// playApproachStep replays a single `ApproachStep` by composing the
-// equivalent `mav ui tap` arguments and delegating to `uiTap`. The
-// post-tap auto-observe is suppressed because the route engine
-// owns the observation lifecycle during approach playback.
+// playApproachStep replays a single `ApproachStep`. Tap steps
+// compose the equivalent `mav ui tap` arguments and delegate to
+// `uiTap`; type steps delegate to `uiType`. The post-action
+// auto-observe is suppressed because the route engine owns the
+// observation lifecycle during approach playback.
+//
+// A type step with an empty `Type` payload is rejected with
+// `approach_step_type_unfilled` — that's `approach extract`'s
+// metadata-only placeholder reminding the operator to supply the
+// text before using the approach (commands.jsonl doesn't record
+// the actual text by design).
 func (c CLI) playApproachStep(ctx context.Context, cfg Config, step ApproachStep) error {
+	if step.IsType() {
+		if step.Type == "" {
+			return fmt.Errorf("approach_step_type_unfilled")
+		}
+		typeOpts := GlobalOptions{PreferDriver: step.Driver}
+		var out bytes.Buffer
+		if err := c.withStdout(&out).uiType(ctx, typeOpts, cfg, []string{step.Type}); err != nil {
+			return err
+		}
+		if code, ok := outputFailureCode(out.String()); ok {
+			return fmt.Errorf("%s", code)
+		}
+		if step.Wait != "" {
+			time.Sleep(parseFlowDuration(step.Wait, time.Second))
+		}
+		return nil
+	}
 	args := []string{}
 	if step.ID != "" {
 		args = append(args, "--id", step.ID)

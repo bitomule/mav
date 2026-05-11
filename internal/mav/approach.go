@@ -14,28 +14,47 @@ import (
 // file per approach (filename derived from the approach name).
 const MapApproachesDir = ".mav/map/approaches"
 
-// ApproachStep is a single move inside an approach path. It mirrors
-// the selectors a map `Edge` carries, but is stored separately so
-// the route engine knows to replay the WHOLE sequence as a unit
-// (instead of trying to BFS each tap individually).
+// ApproachStep is a single move inside an approach path. Most
+// steps are taps (id / text / value / x+y selectors); a step can
+// alternatively be a `type` action (`Type` non-empty) — useful for
+// approaches that have to fill in a login form, search box, etc.
+// before the route engine can move on.
 //
 // `Anchor` is non-empty only on the FIRST step of the sequence — it
 // names the screen the engine must be on for the approach to fire.
 // Subsequent steps assume the previous step landed correctly; they
-// just describe the next tap.
+// just describe the next tap or text input.
 //
 // `Wait` is optional and follows the same convention as `Edge.Wait`
 // (a duration string like "1s", "500ms"). Empty falls back to the
 // engine default.
+//
+// `TypeChars` is a metadata-only hint left by `approach extract`
+// when it sees a `type` action in the run log but the actual text
+// isn't recorded (commands.jsonl stores `chars=<N>` only, by design
+// — operator credentials and other secrets must not leak to disk).
+// Operators see the chars hint when running `approach show`, fill
+// in `Type` by hand, and re-save. Playback errors out cleanly if
+// `Type` is still empty when a step claims to be a type action.
 type ApproachStep struct {
-	Anchor string `json:"anchor,omitempty"`
-	ID     string `json:"id,omitempty"`
-	Text   string `json:"text,omitempty"`
-	Value  string `json:"value,omitempty"`
-	X      string `json:"x,omitempty"`
-	Y      string `json:"y,omitempty"`
-	Wait   string `json:"wait,omitempty"`
-	Driver string `json:"driver,omitempty"`
+	Anchor    string `json:"anchor,omitempty"`
+	ID        string `json:"id,omitempty"`
+	Text      string `json:"text,omitempty"`
+	Value     string `json:"value,omitempty"`
+	X         string `json:"x,omitempty"`
+	Y         string `json:"y,omitempty"`
+	Wait      string `json:"wait,omitempty"`
+	Driver    string `json:"driver,omitempty"`
+	Type      string `json:"type,omitempty"`       // text to type; mutually exclusive with tap selectors
+	TypeChars int    `json:"type_chars,omitempty"` // metadata-only hint from extract; ignored by playback
+}
+
+// IsType reports whether the step is a text-entry action rather
+// than a tap. A type step has the `Type` payload filled in (after
+// extract: also `TypeChars` non-zero meaning "extract saw a type
+// action but the text needs to be supplied").
+func (s ApproachStep) IsType() bool {
+	return s.Type != "" || s.TypeChars > 0
 }
 
 // Approach is a named, ordered sequence the route engine replays as
