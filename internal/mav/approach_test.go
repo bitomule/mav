@@ -162,7 +162,7 @@ func TestExtractApproachStepsReadsTapsAndTypeFromCommandsLog(t *testing.T) {
 	if err := osWrite(log, contents); err != nil {
 		t.Fatal(err)
 	}
-	steps, err := extractApproachSteps(log)
+	steps, _, err := extractApproachSteps(log)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,8 +187,10 @@ func TestExtractApproachStepsAttachesDelayToPrecedingStep(t *testing.T) {
 	root := t.TempDir()
 	log := filepath.Join(root, "commands.jsonl")
 	contents := strings.Join([]string{
-		// Delay before the first tap — has nowhere to attach,
-		// must be dropped silently.
+		// Delay before the first tap is now captured as the
+		// approach-level Warmup so blind-launch replays give
+		// the AX-opaque launch surface time to render before
+		// the first synthetic tap fires.
 		`{"action":"delay","status":"ok","duration":"500ms"}`,
 		`{"action":"tap","status":"ok","x":"207","y":"830"}`,
 		`{"action":"delay","status":"ok","duration":"2s"}`,
@@ -199,9 +201,12 @@ func TestExtractApproachStepsAttachesDelayToPrecedingStep(t *testing.T) {
 	if err := osWrite(log, contents); err != nil {
 		t.Fatal(err)
 	}
-	steps, err := extractApproachSteps(log)
+	steps, warmup, err := extractApproachSteps(log)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if warmup != "500ms" {
+		t.Fatalf("expected Warmup=500ms from pre-first-tap delay, got %q", warmup)
 	}
 	if len(steps) != 3 {
 		t.Fatalf("expected 3 tap steps, got %+v", steps)
@@ -217,12 +222,39 @@ func TestExtractApproachStepsAttachesDelayToPrecedingStep(t *testing.T) {
 	}
 }
 
-func TestExtractApproachStepsAttachesWaitElapsedToPrecedingStep(t *testing.T) {
-	// `wait` actions in the run log describe "the original flow
-	// paused this long before the next selector was visible". For
-	// approach replay we can't recreate the visibility predicate,
-	// but we CAN reproduce the pause — using `elapsed` (what
-	// actually happened) rather than `timeout` (the worst case).
+func TestExtractApproachStepsWarmupFromLeadingWait(t *testing.T) {
+	// A `wait` action before the first tap feeds the
+	// approach-level Warmup. Same rule as the per-step Wait:
+	// use the operator-declared `timeout` not the historical
+	// `elapsed`, since blind replay can't recreate the
+	// visibility predicate and needs the pessimistic bound.
+	root := t.TempDir()
+	log := filepath.Join(root, "commands.jsonl")
+	contents := strings.Join([]string{
+		`{"action":"wait","status":"ok","id":"Splash","timeout":"10s","elapsed":"850ms"}`,
+		`{"action":"tap","status":"ok","id":"begin"}`,
+	}, "\n")
+	if err := osWrite(log, contents); err != nil {
+		t.Fatal(err)
+	}
+	steps, warmup, err := extractApproachSteps(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if warmup != "10s" {
+		t.Fatalf("expected Warmup=10s (timeout, not elapsed), got %q", warmup)
+	}
+	if len(steps) != 1 || steps[0].ID != "begin" {
+		t.Fatalf("steps=%+v", steps)
+	}
+}
+
+func TestExtractApproachStepsAttachesWaitTimeoutToPrecedingStep(t *testing.T) {
+	// `wait` actions in the run log encode "block until X is
+	// visible, max `timeout`". Replay does a flat `time.Sleep`,
+	// so we use the operator-declared `timeout` as the safe
+	// pessimistic bound — the historical `elapsed` can vary by
+	// machine and is too tight for cold-cache simulators.
 	root := t.TempDir()
 	log := filepath.Join(root, "commands.jsonl")
 	contents := strings.Join([]string{
@@ -233,15 +265,15 @@ func TestExtractApproachStepsAttachesWaitElapsedToPrecedingStep(t *testing.T) {
 	if err := osWrite(log, contents); err != nil {
 		t.Fatal(err)
 	}
-	steps, err := extractApproachSteps(log)
+	steps, _, err := extractApproachSteps(log)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(steps) != 2 {
 		t.Fatalf("expected 2 tap steps, got %+v", steps)
 	}
-	if steps[0].ID != "login_button" || steps[0].Wait != "190ms" {
-		t.Fatalf("step 0 should have Wait=190ms from the wait action, got %+v", steps[0])
+	if steps[0].ID != "login_button" || steps[0].Wait != "10s" {
+		t.Fatalf("step 0 should have Wait=10s (timeout, not elapsed), got %+v", steps[0])
 	}
 }
 

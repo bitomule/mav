@@ -69,6 +69,16 @@ type Approach struct {
 	Name          string         `json:"name"`
 	Description   string         `json:"description,omitempty"`
 	Steps         []ApproachStep `json:"steps"`
+	// Warmup is the pause to apply BEFORE the very first step
+	// fires. The capture path populates this from any
+	// `delay`/`sleep`/`wait` action that appears before the
+	// first tap/type in the source run — typically the
+	// `delay: 4s` operators insert to let the launch surface
+	// (CMP WebView, OS splash, third-party SDK init) finish
+	// rendering before the first synthetic tap. Without it,
+	// blind-launch replays consistently race against
+	// app cold-start.
+	Warmup        string         `json:"warmup,omitempty"`
 	RecordedAt    string         `json:"recorded_at,omitempty"`
 	LastSuccessAt string         `json:"last_success_at,omitempty"`
 	LastFailureAt string         `json:"last_failure_at,omitempty"`

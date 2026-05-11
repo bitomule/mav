@@ -3143,7 +3143,7 @@ func (c CLI) approachExtract(args []string) error {
 	if err != nil || run.Dir == "" {
 		return Fail("run_not_found", map[string]string{"run": runID}).Write(c.Stdout)
 	}
-	steps, err := extractApproachSteps(filepath.Join(run.Dir, "commands.jsonl"))
+	steps, warmup, err := extractApproachSteps(filepath.Join(run.Dir, "commands.jsonl"))
 	if err != nil {
 		return Fail("approach_extract_failed", map[string]string{"error": err.Error()}).Write(c.Stdout)
 	}
@@ -3161,6 +3161,7 @@ func (c CLI) approachExtract(args []string) error {
 		Name:        name,
 		Description: "Extracted from run " + runID,
 		Steps:       steps,
+		Warmup:      warmup,
 		RecordedAt:  time.Now().UTC().Format(time.RFC3339),
 	}
 	if err := SaveApproach(c.Root, approach); err != nil {
@@ -3210,12 +3211,20 @@ func countUnfilledTypeSteps(steps []ApproachStep) int {
 // stores it because credentials and search terms shouldn't end up
 // on disk by default. The CLI extract handler surfaces the empty
 // Type as a warning so the operator knows to fill it in.
-func extractApproachSteps(commandsLog string) ([]ApproachStep, error) {
+//
+// The second return value is the warmup duration that should
+// apply BEFORE the first step fires — extracted from any
+// `delay`/`sleep`/`wait` entries that precede the first tap or
+// type in the run log. Operators usually insert a leading
+// `delay: 4s` to let WebView/SDK init finish before the first
+// synthetic tap; this preserves that pause through extraction.
+func extractApproachSteps(commandsLog string) ([]ApproachStep, string, error) {
 	data, err := os.ReadFile(commandsLog)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	var steps []ApproachStep
+	var warmup string
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -3258,36 +3267,48 @@ func extractApproachSteps(commandsLog string) ([]ApproachStep, error) {
 			// so this preserves the original flow's pacing
 			// without inventing a "pure delay" step type.
 			//
-			// A delay before the first tap has nowhere to
-			// attach; dropping it is correct since approach
-			// playback starts immediately after the matching
-			// observation — there's nothing to settle yet.
-			if len(steps) > 0 {
-				if d := stringFromAny(entry["duration"]); d != "" {
+			// A delay BEFORE the first tap is the leading
+			// settle-time operators insert to let the
+			// launch surface render before any synthetic
+			// tap fires (WebView CMP banners, OS splashes,
+			// third-party SDK init). Capture it as the
+			// approach-level `Warmup`.
+			if d := stringFromAny(entry["duration"]); d != "" {
+				if len(steps) > 0 {
 					steps[len(steps)-1].Wait = d
+				} else if warmup == "" {
+					warmup = d
 				}
 			}
 		case "wait":
 			// `wait` actions encode "block until X is
 			// visible, with a cap of `timeout`". The
-			// `elapsed` field records how long the original
-			// run actually paused. For approach replay we
-			// only need to reproduce the pause; the original
-			// flow that recorded the run already verified
-			// the next selector was reachable, so a
-			// timed-wait approximates the operational
-			// behaviour without needing to recreate the
-			// element-visibility predicate.
+			// `timeout` is the operator-declared upper bound
+			// for how long the screen might legitimately
+			// take to settle — that's the safe pessimistic
+			// bound to reuse on blind replay, where the
+			// actual `elapsed` can vary by machine.
+			// Approach playback does a flat `time.Sleep`
+			// (no element-visibility predicate), so we err
+			// toward the timeout rather than the historical
+			// elapsed.
 			//
-			// Same attach-to-preceding rule as delays.
-			if len(steps) > 0 {
-				if d := stringFromAny(entry["elapsed"]); d != "" && steps[len(steps)-1].Wait == "" {
+			// Same attach-to-preceding rule as delays; pre-
+			// first-step waits become the approach Warmup.
+			d := stringFromAny(entry["timeout"])
+			if d == "" {
+				d = stringFromAny(entry["elapsed"])
+			}
+			if d != "" {
+				if len(steps) > 0 && steps[len(steps)-1].Wait == "" {
 					steps[len(steps)-1].Wait = d
+				} else if len(steps) == 0 && warmup == "" {
+					warmup = d
 				}
 			}
 		}
 	}
-	return steps, nil
+	return steps, warmup, nil
 }
 
 // intFromAny coerces the JSON number/string representations of an
@@ -3431,6 +3452,13 @@ func (c CLI) runApproachStep(ctx context.Context, run RunState, name string) (ma
 	cfg, cfgErr := LoadConfig(c.Root)
 	if cfgErr != nil {
 		return map[string]string{"approach": name}, fmt.Errorf("config_not_found")
+	}
+	// Pre-first-step warmup: a duration the original run paused
+	// BEFORE its first tap, captured by `approach extract`.
+	// Typically the `delay: 4s` operators insert to let the
+	// launch surface render before any synthetic tap fires.
+	if approach.Warmup != "" {
+		time.Sleep(parseFlowDuration(approach.Warmup, 0))
 	}
 	executed := 0
 	for i, step := range approach.Steps {
