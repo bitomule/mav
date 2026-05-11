@@ -144,3 +144,165 @@ func compactElements(elements []Element) []Element {
 func elementEmpty(el Element) bool {
 	return el.ID == "" && el.Label == "" && el.Role == "" && el.Value == "" && el.Frame == "" && el.Enabled == "" && el.Subrole == "" && el.Title == "" && el.PID == "" && el.Focused == ""
 }
+
+// explicitScreenIdentity derives a stable screen id from the AX
+// tree alone — no persisted map, no recogniser pipeline. Two
+// flavours: (a) an element whose id is `screen.<x>` or
+// `mav.screen.<x>` wins outright; (b) otherwise, the shallowest
+// non-control element whose id ends in `View` / `ViewController`
+// / `Screen` (and isn't a UIKit framework class name like
+// `UIView` or `UIScrollView`) gives its name. Returns the kebab-
+// case id, the raw element id we matched on, and ok=false when
+// nothing qualifies.
+func explicitScreenIdentity(elements []Element) (id string, elementID string, ok bool) {
+	if pid, pelem, prefOK := prefixedScreenIdentity(elements); prefOK {
+		return pid, pelem, true
+	}
+	return naturalScreenIdentity(elements)
+}
+
+func naturalScreenIdentity(elements []Element) (id string, elementID string, ok bool) {
+	best := Element{}
+	bestOK := false
+	for _, el := range elements {
+		if !isNaturalScreenIdentifierElement(el) {
+			continue
+		}
+		if !bestOK || el.Depth < best.Depth {
+			best = el
+			bestOK = true
+		}
+	}
+	if !bestOK {
+		return "", "", false
+	}
+	eid := strings.TrimSpace(best.ID)
+	id = screenIdentityIDFromSuffix(eid)
+	if id == "" || id == "step" {
+		return "", "", false
+	}
+	return id, eid, true
+}
+
+func prefixedScreenIdentity(elements []Element) (id string, elementID string, ok bool) {
+	for _, el := range elements {
+		eid := strings.TrimSpace(el.ID)
+		matched, matchedOK := screenIDFromElementID(eid)
+		if !matchedOK {
+			continue
+		}
+		return matched, eid, true
+	}
+	return "", "", false
+}
+
+func screenIDFromElementID(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	for _, prefix := range screenIdentityPrefixes() {
+		if !strings.HasPrefix(value, prefix) {
+			continue
+		}
+		suffix := strings.TrimSpace(strings.TrimPrefix(value, prefix))
+		if suffix == "" {
+			return "", false
+		}
+		id := screenIdentityIDFromSuffix(suffix)
+		if id == "" || id == "step" {
+			return "", false
+		}
+		return id, true
+	}
+	return "", false
+}
+
+func screenIdentityIDFromSuffix(value string) string {
+	value = strings.TrimSpace(transliterateLatin(splitCamelIdentifier(value)))
+	value = strings.ToLower(value)
+	if value == "" {
+		return ""
+	}
+	var b strings.Builder
+	lastDash := false
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+func splitCamelIdentifier(value string) string {
+	var b strings.Builder
+	runes := []rune(value)
+	for i, r := range runes {
+		if i > 0 && shouldSplitIdentifierRune(runes[i-1], r, nextRune(runes, i)) {
+			b.WriteByte('-')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func nextRune(runes []rune, index int) rune {
+	if index+1 >= len(runes) {
+		return 0
+	}
+	return runes[index+1]
+}
+
+func shouldSplitIdentifierRune(prev, cur, next rune) bool {
+	if cur < 'A' || cur > 'Z' {
+		return false
+	}
+	if (prev >= 'a' && prev <= 'z') || (prev >= '0' && prev <= '9') {
+		return true
+	}
+	return prev >= 'A' && prev <= 'Z' && next >= 'a' && next <= 'z'
+}
+
+func screenIdentityPrefixes() []string {
+	return []string{"mav.screen.", "screen."}
+}
+
+func isNaturalScreenIdentifierElement(el Element) bool {
+	id := strings.TrimSpace(el.ID)
+	if id == "" {
+		return false
+	}
+	if _, ok := screenIDFromElementID(id); ok {
+		return false
+	}
+	// Skip sub-element identifiers. Codebases that auto-generate
+	// accessibility ids (Sourcery, etc.) commonly emit
+	// `<Container>.<element>` for individual controls. Those are
+	// not screens — they are addressable members of a screen.
+	if strings.Contains(id, ".") {
+		return false
+	}
+	if isApplicationRootElement(el) {
+		return false
+	}
+	role := strings.ToLower(strings.TrimSpace(el.Role))
+	for _, blocked := range []string{"button", "textfield", "text field", "textview", "text view", "statictext", "static text", "switch", "tab", "cell", "image", "slider", "picker"} {
+		if strings.Contains(role, blocked) {
+			return false
+		}
+	}
+	return hasScreenIdentifierSuffix(id)
+}
+
+func hasScreenIdentifierSuffix(id string) bool {
+	id = strings.TrimSpace(id)
+	return strings.HasSuffix(id, "View") || strings.HasSuffix(id, "ViewController") || strings.HasSuffix(id, "Screen")
+}
+
+func isApplicationRootElement(el Element) bool {
+	role := strings.ToLower(strings.TrimSpace(el.Role))
+	return role == "application" || role == "axapplication" || role == "xcuielementtypeapplication" || role == "appiumaut"
+}
