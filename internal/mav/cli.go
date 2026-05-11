@@ -116,6 +116,8 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 		return c.crashes(ctx, opts, rest[1:])
 	case "evidence":
 		return c.evidence(opts, rest[1:])
+	case "approach":
+		return c.approachCommand(ctx, opts, rest[1:])
 	default:
 		return Fail("unknown_command", map[string]string{"command": rest[0]}).Write(c.Stdout)
 	}
@@ -2974,9 +2976,314 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 	case "report":
 		err := c.withStdout(io.Discard).evidenceReport(GlobalOptions{}, []string{"--run", run.ID})
 		return map[string]string{"run": run.ID, "file": filepath.Join(run.Dir, "report.html")}, outputErr(err, "report_failed")
+	case "approach":
+		name := step.Params["name"]
+		if name == "" {
+			return nil, fmt.Errorf("approach_name_missing")
+		}
+		return c.runApproachStep(ctx, run, name)
 	default:
 		return nil, fmt.Errorf("unknown_step")
 	}
+}
+
+// approachCommand routes `mav approach <subcommand>` to the right
+// handler. Three subcommands today: `list`, `show`, and `extract`.
+// `extract` is the user-facing tool that derives a reusable
+// approach from a successful `mav run`.
+func (c CLI) approachCommand(ctx context.Context, opts GlobalOptions, args []string) error {
+	_ = ctx
+	_ = opts
+	if len(args) == 0 {
+		return Fail("approach_subcommand_missing", map[string]string{"usage": "mav approach list|show|extract"}).Write(c.Stdout)
+	}
+	switch args[0] {
+	case "list":
+		return c.approachList(args[1:])
+	case "show":
+		return c.approachShow(args[1:])
+	case "extract":
+		return c.approachExtract(args[1:])
+	default:
+		return Fail("approach_subcommand_unknown", map[string]string{"subcommand": args[0], "usage": "mav approach list|show|extract"}).Write(c.Stdout)
+	}
+}
+
+func (c CLI) approachList(args []string) error {
+	_ = args
+	all, err := LoadAllApproaches(c.Root)
+	if err != nil {
+		return Fail("approach_list_failed", map[string]string{"error": err.Error()}).Write(c.Stdout)
+	}
+	fields := map[string]string{"count": strconv.Itoa(len(all))}
+	if err := OK("approach.list", fields).Write(c.Stdout); err != nil {
+		return err
+	}
+	for _, a := range all {
+		_, _ = fmt.Fprintf(c.Stdout, "approach name=%s steps=%d anchor=%s last_success=%s failures=%d\n",
+			a.Name, len(a.Steps), a.Anchor(), a.LastSuccessAt, a.FailureCount)
+	}
+	return nil
+}
+
+func (c CLI) approachShow(args []string) error {
+	name := flagValue(args, "--name")
+	if name == "" && len(args) > 0 {
+		name = args[0]
+	}
+	if name == "" {
+		return Fail("approach_name_missing", map[string]string{"usage": "mav approach show NAME"}).Write(c.Stdout)
+	}
+	a, err := LoadApproach(c.Root, name)
+	if err != nil {
+		return Fail("approach_not_found", map[string]string{"name": name}).Write(c.Stdout)
+	}
+	data, err := json.MarshalIndent(a, "", "  ")
+	if err != nil {
+		return Fail("approach_show_failed", map[string]string{"error": err.Error()}).Write(c.Stdout)
+	}
+	_, _ = fmt.Fprintln(c.Stdout, string(data))
+	return nil
+}
+
+// approachExtract derives a named approach from the tap-like
+// commands recorded in a past run's `commands.jsonl`. The user runs
+// a focused flow once (e.g. `mav run cold_login.yaml`), then
+// extracts the approach for reuse: `mav approach extract --from-run
+// <id> --name cold_login --anchor start`.
+//
+// Selectors are read verbatim from the recorded command stream —
+// the same id/text/value/x/y that drove the original tap. The
+// anchor (first step's `Anchor` field) defaults to the map's
+// `Start` screen and can be overridden via `--anchor`.
+func (c CLI) approachExtract(args []string) error {
+	runID := flagValue(args, "--from-run")
+	if runID == "" {
+		return Fail("approach_extract_run_missing", map[string]string{"usage": "mav approach extract --from-run RUN_ID --name NAME [--anchor SCREEN]"}).Write(c.Stdout)
+	}
+	name := flagValue(args, "--name")
+	if name == "" {
+		return Fail("approach_extract_name_missing", map[string]string{"usage": "mav approach extract --from-run RUN_ID --name NAME [--anchor SCREEN]"}).Write(c.Stdout)
+	}
+	run, err := LoadRun(c.Root, runID)
+	if err != nil || run.Dir == "" {
+		return Fail("run_not_found", map[string]string{"run": runID}).Write(c.Stdout)
+	}
+	steps, err := extractApproachSteps(filepath.Join(run.Dir, "commands.jsonl"))
+	if err != nil {
+		return Fail("approach_extract_failed", map[string]string{"error": err.Error()}).Write(c.Stdout)
+	}
+	if len(steps) == 0 {
+		return Fail("approach_extract_empty", map[string]string{"run": runID, "next": "ensure the run contains at least one successful `mav ui tap`"}).Write(c.Stdout)
+	}
+	anchor := flagValue(args, "--anchor")
+	if anchor == "" {
+		if m, err := LoadAppMap(c.Root); err == nil {
+			anchor = m.Start
+		}
+	}
+	steps[0].Anchor = anchor
+	approach := Approach{
+		Name:        name,
+		Description: "Extracted from run " + runID,
+		Steps:       steps,
+		RecordedAt:  time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := SaveApproach(c.Root, approach); err != nil {
+		return Fail("approach_save_failed", map[string]string{"error": err.Error()}).Write(c.Stdout)
+	}
+	return OK("approach.extract", map[string]string{
+		"name":   name,
+		"steps":  strconv.Itoa(len(steps)),
+		"anchor": anchor,
+		"run":    runID,
+	}).Write(c.Stdout)
+}
+
+// extractApproachSteps reads a run's `commands.jsonl` and returns a
+// flat slice of `ApproachStep`s — one per successful tap-like
+// command. Non-tap commands (delay, capture, evidence) are skipped:
+// approaches are pure transition sequences, the engine handles
+// settle-time via the step's `Wait` field.
+func extractApproachSteps(commandsLog string) ([]ApproachStep, error) {
+	data, err := os.ReadFile(commandsLog)
+	if err != nil {
+		return nil, err
+	}
+	var steps []ApproachStep
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		if entry["action"] != "tap" || entry["status"] != "ok" {
+			continue
+		}
+		step := ApproachStep{
+			ID:     stringFromAny(entry["id"]),
+			Text:   stringFromAny(entry["text"]),
+			Value:  stringFromAny(entry["value"]),
+			X:      stringFromAny(entry["x"]),
+			Y:      stringFromAny(entry["y"]),
+			Driver: stringFromAny(entry["prefer-driver"]),
+		}
+		if step.Driver == "" {
+			step.Driver = stringFromAny(entry["driver"])
+		}
+		if step.ID == "" && step.Text == "" && step.Value == "" && step.X == "" {
+			continue
+		}
+		steps = append(steps, step)
+	}
+	return steps, nil
+}
+
+func stringFromAny(v any) string {
+	if v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return fmt.Sprint(v)
+}
+
+// applyMatchingApproaches plays the first approach whose anchor
+// matches the observed screen, re-observes the resulting tree, and
+// reports the new screen state. Returns `(observation, true)` when
+// at least one approach ran (the caller should treat the new
+// `observation` as the authoritative current screen and recompute
+// the route from there). Returns `(_, false)` when no approach
+// matched OR every matching approach failed during playback.
+//
+// Multiple approaches with the same anchor are tried in declaration
+// order (fresh-first via `MatchingApproaches`). The first successful
+// playback short-circuits — a single approach is enough to move the
+// engine onto a different screen. Failed approaches are demoted via
+// `markApproachFailure` and the next one is tried.
+func (c CLI) applyMatchingApproaches(ctx context.Context, cfg Config, run RunState, currentScreen string, ttl time.Duration) (ScreenObservation, bool) {
+	approaches, err := LoadAllApproaches(c.Root)
+	if err != nil || len(approaches) == 0 {
+		return ScreenObservation{}, false
+	}
+	matches := MatchingApproaches(approaches, currentScreen, ttl, time.Now().UTC())
+	if len(matches) == 0 {
+		return ScreenObservation{}, false
+	}
+	for _, a := range matches {
+		if _, err := c.runApproachStep(ctx, run, a.Name); err != nil {
+			continue
+		}
+		// Re-observe so the caller has the new screen to BFS
+		// from. waitForTreeReady is bounded to keep the
+		// approach replay snappy — if the tree never settles
+		// we surface the failure via the normal route_failure
+		// path.
+		tree, treeErr := c.waitForTreeReady(ctx, cfg, 5*time.Second)
+		if treeErr != nil {
+			continue
+		}
+		observed, _ := ObserveScreenDetailedWithDriver(c.Root, cfg, run, tree.Raw, tree.Driver)
+		return observed, true
+	}
+	return ScreenObservation{}, false
+}
+
+// runApproachStep loads a named approach from disk and replays its
+// steps as a unit. Failures inside the approach are reported with
+// the approach name so operators can identify which one broke.
+// `LastSuccessAt` is stamped on the approach record on a clean run;
+// `FailureCount` advances on any error.
+func (c CLI) runApproachStep(ctx context.Context, run RunState, name string) (map[string]string, error) {
+	approach, err := LoadApproach(c.Root, name)
+	if err != nil {
+		return map[string]string{"approach": name}, fmt.Errorf("approach_not_found")
+	}
+	if len(approach.Steps) == 0 {
+		return map[string]string{"approach": name}, fmt.Errorf("approach_empty")
+	}
+	cfg, cfgErr := LoadConfig(c.Root)
+	if cfgErr != nil {
+		return map[string]string{"approach": name}, fmt.Errorf("config_not_found")
+	}
+	executed := 0
+	for i, step := range approach.Steps {
+		if err := c.playApproachStep(ctx, cfg, step); err != nil {
+			markApproachFailure(c.Root, approach)
+			return map[string]string{
+				"approach":    name,
+				"step":        strconv.Itoa(i + 1),
+				"total_steps": strconv.Itoa(len(approach.Steps)),
+				"executed":    strconv.Itoa(executed),
+			}, fmt.Errorf("approach_step_failed: %v", err)
+		}
+		executed++
+		_ = run // run reserved for evidence integration in P3
+	}
+	markApproachSuccess(c.Root, approach)
+	return map[string]string{
+		"approach": name,
+		"steps":    strconv.Itoa(executed),
+	}, nil
+}
+
+// playApproachStep replays a single `ApproachStep` by composing the
+// equivalent `mav ui tap` arguments and delegating to `uiTap`. The
+// post-tap auto-observe is suppressed because the route engine
+// owns the observation lifecycle during approach playback.
+func (c CLI) playApproachStep(ctx context.Context, cfg Config, step ApproachStep) error {
+	args := []string{}
+	if step.ID != "" {
+		args = append(args, "--id", step.ID)
+	}
+	if step.Text != "" {
+		args = append(args, "--text", step.Text)
+	}
+	if step.Value != "" {
+		args = append(args, "--value", step.Value)
+	}
+	if step.X != "" && step.Y != "" {
+		args = append(args, "--x", step.X, "--y", step.Y)
+	}
+	if len(args) == 0 {
+		return fmt.Errorf("approach_step_empty")
+	}
+	driver := step.Driver
+	tapOpts := GlobalOptions{PreferDriver: driver, SkipAutoObserve: true}
+	var out bytes.Buffer
+	if err := c.withStdout(&out).uiTap(ctx, tapOpts, cfg, args); err != nil {
+		return err
+	}
+	if code, ok := outputFailureCode(out.String()); ok {
+		return fmt.Errorf("%s", code)
+	}
+	if step.Wait != "" {
+		time.Sleep(parseFlowDuration(step.Wait, time.Second))
+	}
+	return nil
+}
+
+// markApproachSuccess stamps the run-time bookkeeping on a clean
+// playback so subsequent calls to `MatchingApproaches` rank it as
+// fresh.
+func markApproachSuccess(root string, a Approach) {
+	a.LastSuccessAt = time.Now().UTC().Format(time.RFC3339)
+	a.LastFailureAt = ""
+	a.FailureCount = 0
+	_ = SaveApproach(root, a)
+}
+
+// markApproachFailure increments the failure counter and records
+// the timestamp. Two consecutive failures (without an intervening
+// success) demote the approach the same way edges get demoted.
+func markApproachFailure(root string, a Approach) {
+	a.FailureCount++
+	a.LastFailureAt = time.Now().UTC().Format(time.RFC3339)
+	_ = SaveApproach(root, a)
 }
 
 func (c CLI) executeWhenFlowStep(ctx context.Context, run RunState, index int, step FlowStep) (map[string]string, error) {
@@ -3236,6 +3543,19 @@ func (c CLI) goScreen(ctx context.Context, opts GlobalOptions, args []string) er
 		observed, _ := ObserveScreenDetailedWithDriver(c.Root, cfg, run, tree.Raw, tree.Driver)
 		if refreshed, err := LoadAppMap(c.Root); err == nil {
 			m = refreshed
+		}
+		// Approach playback: replay any named approach whose
+		// anchor matches the observed screen before BFS engages.
+		// Approaches collapse known long deterministic chains
+		// (login, onboarding, paywall) so the route engine only
+		// has to BFS the interesting suffix.
+		if observed.Screen != "" && observed.Screen != "unknown" && !hasFlag(args, "--no-approach") {
+			if newObserved, ok := c.applyMatchingApproaches(ctx, cfg, run, observed.Screen, ttl); ok {
+				observed = newObserved
+				if refreshed, err := LoadAppMap(c.Root); err == nil {
+					m = refreshed
+				}
+			}
 		}
 		if observed.Screen == screenID {
 			route = nil

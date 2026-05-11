@@ -377,6 +377,12 @@ func parseScalarFlowStep(action, value string) (FlowStep, bool) {
 		return FlowStep{Action: action, Params: map[string]string{"text": value}}, true
 	case "delay", "sleep":
 		return FlowStep{Action: action, Params: map[string]string{"duration": strings.TrimSpace(value)}}, true
+	case "approach":
+		// `- approach: cold_login` — scalar form, the value is
+		// the approach name. The mapping form (`approach:
+		// name: ...`) lands in `parseFlowStepNode` and stores
+		// the same `name` key. Same shape downstream.
+		return FlowStep{Action: action, Params: map[string]string{"name": strings.TrimSpace(value)}}, true
 	default:
 		return FlowStep{}, false
 	}
@@ -432,7 +438,8 @@ func isSupportedFlowAction(action string) bool {
 	case "open", "when", "whileNotVisible", "go", "tree", "tap", "type", "erase", "hideKeyboard", "swipe", "pinch", "rotate", "twoFingerPan", "actions",
 		"delay", "sleep", "wait", "assert", "waitUntil", "scrollUntil", "capture",
 		"evidence.start", "video.start", "evidence.step", "evidence.stop", "video.stop",
-		"logs", "exec", "crashes", "report":
+		"logs", "exec", "crashes", "report",
+		"approach":
 		return true
 	default:
 		return false
