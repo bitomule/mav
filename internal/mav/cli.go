@@ -80,10 +80,6 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 		return c.capture(ctx, opts, rest[1:])
 	case "run":
 		return c.runFlow(ctx, opts, rest[1:])
-	case "go":
-		return c.goScreen(ctx, opts, rest[1:])
-	case "map":
-		return c.mapCommand(rest[1:])
 	case "logs":
 		return c.logs(opts, rest[1:])
 	case "stop":
@@ -164,8 +160,6 @@ Commands:
   ui          Inspect and control the current UI.
   capture     Capture the current screen.
   run         Execute a native MAV YAML flow.
-  go          Navigate from app launch to a mapped screen with evidence.
-  map         Inspect and validate the learned app map.
   logs        Read captured run logs.
   stop        Stop run-owned background processes.
   crashes     List crashes for the configured app.
@@ -227,16 +221,6 @@ Global flags:
 		return "Usage: mav ui twoFingerPan --x X --y Y --pan-x DX --pan-y DY [--distance D] [--angle DEG] [--duration 800ms] [--hold DURATION]\n"
 	case "run":
 		return "Usage: mav run flow.yaml\n"
-	case "go":
-		return "Usage: mav go <screen-id>\n"
-	case "map":
-		return `Usage:
-  mav map list
-  mav map show <screen-id>
-  mav map graph
-  mav map verify
-  mav map prune [--filter coordinate-edges|duplicate-selectors|low-confidence] [--apply-warnings] [--dry-run]
-`
 	case "logs":
 		return "Usage: mav logs [--run RUN_ID] [--key KEY] [--contains TEXT] [--level LEVEL] [--raw]\n"
 	case "stop":
