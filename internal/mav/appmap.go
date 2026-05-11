@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -42,20 +41,6 @@ type Screen struct {
 type Recognizer struct {
 	Kind  string `json:"kind"`
 	Value string `json:"value"`
-}
-
-type Element struct {
-	ID      string `json:"id,omitempty"`
-	Label   string `json:"label,omitempty"`
-	Role    string `json:"role,omitempty"`
-	Value   string `json:"value,omitempty"`
-	Frame   string `json:"frame,omitempty"`
-	Enabled string `json:"enabled,omitempty"`
-	Subrole string `json:"subrole,omitempty"`
-	Title   string `json:"title,omitempty"`
-	PID     string `json:"pid,omitempty"`
-	Focused string `json:"focused,omitempty"`
-	Depth   int    `json:"depth,omitempty"`
 }
 
 type Edge struct {
@@ -587,105 +572,6 @@ func ObserveExpectedScreenWithDriver(root string, cfg Config, run RunState, rawT
 
 func blankScreen(screen Screen) bool {
 	return screen.AssertID == "" && screen.AssertText == "" && len(screen.Recognizers) == 0 && len(screen.Elements) == 0
-}
-
-func ExtractElements(rawTree string) []Element {
-	var parsed any
-	if err := json.Unmarshal([]byte(rawTree), &parsed); err != nil {
-		return nil
-	}
-	out := []Element{}
-	walkAX(parsed, &out, 0)
-	return compactElements(out)
-}
-
-func walkAX(value any, out *[]Element, depth int) {
-	switch node := value.(type) {
-	case []any:
-		for _, child := range node {
-			walkAX(child, out, depth)
-		}
-	case map[string]any:
-		el := Element{
-			ID:      stringField(node, "AXIdentifier", "identifier", "AXUniqueId"),
-			Label:   stringField(node, "AXLabel", "label", "title"),
-			Role:    stringField(node, "role_description", "role", "type"),
-			Value:   stringField(node, "AXValue", "value"),
-			Frame:   stringField(node, "AXFrame", "frame"),
-			Enabled: boolStringField(node, "AXEnabled", "enabled"),
-			Subrole: stringField(node, "AXSubrole", "subrole"),
-			Title:   stringField(node, "AXTitle", "title"),
-			PID:     stringField(node, "AXPid", "AXPID", "pid"),
-			Focused: boolStringField(node, "AXFocused", "focused", "hasFocus"),
-			Depth:   depth,
-		}
-		if el.ID != "" || el.Label != "" || el.Role != "" || el.Value != "" || el.Frame != "" || el.Enabled != "" || el.Subrole != "" || el.Title != "" || el.PID != "" {
-			*out = append(*out, el)
-		}
-		for _, childKey := range []string{"children", "Children", "AXChildren"} {
-			if child, ok := node[childKey]; ok {
-				walkAX(child, out, depth+1)
-			}
-		}
-	}
-}
-
-func stringField(node map[string]any, keys ...string) string {
-	for _, key := range keys {
-		switch value := node[key].(type) {
-		case string:
-			return strings.TrimSpace(value)
-		case nil:
-		default:
-			text := strings.TrimSpace(fmt.Sprint(value))
-			if text != "" && text != "<nil>" {
-				return text
-			}
-		}
-	}
-	return ""
-}
-
-func boolStringField(node map[string]any, keys ...string) string {
-	for _, key := range keys {
-		switch value := node[key].(type) {
-		case bool:
-			return strconv.FormatBool(value)
-		case string:
-			text := strings.TrimSpace(value)
-			if strings.EqualFold(text, "true") || strings.EqualFold(text, "false") {
-				return strings.ToLower(text)
-			}
-		case nil:
-		default:
-			text := strings.TrimSpace(fmt.Sprint(value))
-			if strings.EqualFold(text, "true") || strings.EqualFold(text, "false") {
-				return strings.ToLower(text)
-			}
-		}
-	}
-	return ""
-}
-
-func compactElements(elements []Element) []Element {
-	seen := map[string]bool{}
-	out := []Element{}
-	for _, el := range elements {
-		key := el.ID + "\x00" + el.Label + "\x00" + el.Role + "\x00" + el.Value + "\x00" + el.Frame + "\x00" + el.Enabled + "\x00" + el.Subrole + "\x00" + el.Title + "\x00" + el.PID + "\x00" + el.Focused + "\x00" + strconv.Itoa(el.Depth)
-		if elementEmpty(el) || seen[key] {
-			continue
-		}
-		seen[key] = true
-		out = append(out, el)
-		if len(out) >= 80 {
-			break
-		}
-	}
-	return out
-}
-
-func elementEmpty(el Element) bool {
-	return el.ID == "" && el.Label == "" && el.Role == "" && el.Value == "" && el.Frame == "" && el.Enabled == "" && el.Subrole == "" && el.Title == "" && el.PID == "" && el.Focused == ""
 }
 
 func recognizeScreen(m AppMap, raw string, elements []Element) string {
