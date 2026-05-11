@@ -27,8 +27,7 @@ make check
 - Prefer accessibility ids for UI targeting, coordinates as a visual fallback,
   and text as the last fallback.
 - Keep simulator/device process ownership explicit. Long-running processes must
-  be tracked in the run directory and stopped by `mav stop`, `mav go`, or
-  `mav run`.
+  be tracked in the run directory and stopped by `mav stop` or `mav run`.
 
 ## Pull Requests
 
@@ -36,7 +35,7 @@ Before opening a PR:
 
 1. Run `make check`.
 2. Update `README.md` and `skills/mav/SKILL.md` when command behavior changes.
-3. Add or update tests for new output contracts, flow steps, and map behavior.
+3. Add or update tests for new output contracts and flow steps.
 4. Include enough context in the PR description to explain the validation path.
 
 ## Security

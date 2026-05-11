@@ -66,24 +66,15 @@ does not explore or repair routes by itself. The agent decides the next action.
    insufficient and the screenshot makes the target unambiguous. Use text as
    the last option because labels change with localization and copy edits. Use
    `mav ui wait --id`, `--text`, or `--value` for readiness checks.
-8. Before navigating to a new screen, verify with `mav ui tree` that the target
-   screen exposes an explicit screen accessibility id: a natural root-view
-   identifier such as `UploadFormView`, or a prefixed id such as
-   `mav.screen.<screen-id>` or `screen.<screen-id>`. The mapping loop is
-   `mav open`, `mav ui tree`, `mav ui tap --id ...`, `mav ui tree`, then inspect
-   `.mav/map/**`. If the next tree reports `screen_source=identity_missing`, no
-   route was learned and the pending tap was discarded; add the explicit screen
-   id, repeat the tap, then run `mav ui tree` again.
-9. Use `mav go <screen-id>` only after `.mav/map/index.json` and
-   `.mav/map/screens/*.json` contain that screen and a route from app launch.
-   `mav go` opens the app, records evidence from the start screen to the target,
-   validates screen change/assertions, writes a report, and stops run-owned
-   streams. If MAV returns `screen_not_found` or `route_not_found`, explore
-   manually with `mav ui tree/tap`; the map updates when the next screen is
-   observed with `mav ui tree`.
-10. If `.mav/map/**` changes, review the git diff before continuing.
-11. For ad-hoc sessions started with `mav open`, run `mav stop` when validation
-    is done. `mav run` stops run-owned streams automatically.
+8. `mav ui tree` reports a natural screen id when the AX root has a `View`-suffix
+   identifier (`WallView` → `wall-view`) or the prefixed form
+   `mav.screen.<id>` / `screen.<id>`. When `screen_source=identity_missing`,
+   the screen root needs a stable `accessibilityIdentifier` added in product
+   code before the agent can name what it sees. Selectors for tapping still
+   work regardless; the natural id is a labelling/observability signal, not a
+   gate.
+9. For ad-hoc sessions started with `mav open`, run `mav stop` when validation
+   is done. `mav run` stops run-owned streams automatically.
 
 ## Internal Execution Validation
 
@@ -244,10 +235,8 @@ The supported flow recording steps are `video.start` and `video.stop`;
 `evidence.start` and `evidence.stop` remain supported aliases. Do not use or
 invent `recordVideo: true`.
 
-Use `mav go <screen-id>` for ad-hoc navigation evidence to a mapped screen; this
-is appropriate when the route itself is the evidence. Use `mav run` for feature
-verification evidence where the tested behavior needs extra taps, waits, logs,
-crash checks, or assertions after navigation, and keep the recording window
+Use `mav run` for feature verification evidence where the tested behavior
+needs taps, waits, logs, crash checks, or assertions. Keep the recording window
 around the behavior rather than the whole setup path.
 
 For off-screen elements, use `scrollUntil` in a MAV flow or `mav ui scrollUntil`
@@ -322,19 +311,18 @@ Output is intentionally compact and agent-friendly by default:
 
 ```text
 ok cmd=open run=7fd logs=/tmp/mav/7fd/logs.txt
-ok cmd=ui.tree driver=axe nodes=42 screen=unknown recognized_screen=settings screen_source=recognized
+ok cmd=ui.tree driver=axe nodes=42 screen=settings screen_source=identity
 node index=1 id=settings_button label=Settings role=button enabled=true frame="{{20, 120}, {180, 44}}"
 ok cmd=capture file=/tmp/mav/7fd/captures/largest-videos-after-pinch.png run=7fd
-fail code=screen_not_found screen=settings
+fail code=ui_tap_failed stderr="…"
 ```
 
 If `mav ui tree` reports `screen=unknown` with
-`screen_source=identity_missing`, the current screen has no explicit screen id.
-UI commands still work, but MAV will not create/update map screens and clears
-any pending route edge. Add a natural root-view identifier or
-`mav.screen.<screen-id>`/`screen.<screen-id>` to the app, repeat the tap that
-navigates to that screen, then run `mav ui tree` again. Do not use `mav go` for
-that destination until `.mav/map/**` contains the screen and route.
+`screen_source=identity_missing`, the current screen has no explicit screen
+identifier (`View`-suffix root id or `mav.screen.<id>` / `screen.<id>`). UI
+commands still work — the natural id is a labelling signal, not a gate — but
+if you want mav's output to name the screen consistently, ask the product
+team to add the identifier in product code.
 
 AXe is the fast semantic driver, but it can miss system-process UI, PHPicker,
 permission alerts, non-accessibility wrapper views, and text-field placeholders.
@@ -349,10 +337,7 @@ a value/placeholder but not as a label. Prefer a stable id, retry with
 With `appium-xcuitest-driver@8`, MAV automatically retries text matching with
 `-ios class chain` when the session rejects `predicate string` selectors.
 
-MAV persists driver hints in `.mav/map/**`: screens and route edges can carry
-`driver: appium`. When `mav go <screen-id>` sees an Appium-required route, it
-warms Appium automatically and forces Appium for only those mapped actions. If
-it reports `required_driver=appium`, keep Appium installed and prefer
+When `mav doctor` reports an Appium-required tool gap, keep Appium installed and prefer
 `mav open --warm-appium` for related manual exploration.
 
 If simulator commands fail with a hint like `requires simulator/idb access;
