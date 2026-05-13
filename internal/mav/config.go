@@ -23,8 +23,11 @@ const (
 type Config struct {
 	ProjectName       string
 	Root              string
+	TargetKind        string
 	AppTarget         string
 	DeviceTarget      string
+	DeviceUDID        string
+	DeviceName        string
 	BundleID          string
 	ProcessName       string
 	SimulatorUDID     string
@@ -57,6 +60,7 @@ type LaunchCommands struct {
 func DefaultConfig(root string) Config {
 	return Config{
 		Root:              root,
+		TargetKind:        "simulator",
 		LogCategory:       "probe",
 		PreferredUIDriver: "axe",
 		Tools:             map[string]bool{},
@@ -134,10 +138,16 @@ func LoadConfig(root string) (Config, error) {
 		switch key {
 		case "project_name":
 			cfg.ProjectName = value
+		case "target_kind":
+			cfg.TargetKind = value
 		case "app_target":
 			cfg.AppTarget = value
 		case "device_target":
 			cfg.DeviceTarget = value
+		case "device_udid":
+			cfg.DeviceUDID = value
+		case "device_name":
+			cfg.DeviceName = value
 		case "bundle_id":
 			cfg.BundleID = value
 		case "process_name":
@@ -168,6 +178,9 @@ func LoadConfig(root string) (Config, error) {
 	if cfg.Launch.Mode == "" && hasLaunchCommands(cfg.Launch.Commands) {
 		cfg.Launch.Mode = "custom"
 	}
+	if cfg.TargetKind == "" {
+		cfg.TargetKind = "simulator"
+	}
 	return cfg, nil
 }
 
@@ -183,11 +196,18 @@ func SaveConfig(root string, cfg Config) error {
 		b.WriteString("\n")
 	}
 	writeKV("project_name", cfg.ProjectName)
+	writeKV("target_kind", normalizedTargetKind(cfg))
 	if cfg.AppTarget != "" {
 		writeKV("app_target", cfg.AppTarget)
 	}
 	if cfg.DeviceTarget != "" {
 		writeKV("device_target", cfg.DeviceTarget)
+	}
+	if cfg.DeviceUDID != "" {
+		writeKV("device_udid", cfg.DeviceUDID)
+	}
+	if cfg.DeviceName != "" {
+		writeKV("device_name", cfg.DeviceName)
 	}
 	b.WriteString("app:\n")
 	b.WriteString("  bundle_id: ")
@@ -309,6 +329,7 @@ func yamlQuote(value string) string {
 
 func SetupConfig(root string, runner Runner) (Config, error) {
 	cfg := DefaultConfig(root)
+	cfg.TargetKind = "simulator"
 	cfg.ProjectName = filepath.Base(root)
 	cfg.AppTarget = detectAppTarget(root, cfg.ProjectName)
 	cfg.DeviceTarget = cfg.AppTarget
@@ -376,6 +397,15 @@ func mergeSetupConfig(existing, detected Config) Config {
 		merged.SimulatorUDID = existing.SimulatorUDID
 		merged.SimulatorName = existing.SimulatorName
 		merged.SimulatorRuntime = existing.SimulatorRuntime
+	}
+	if existing.TargetKind != "" {
+		merged.TargetKind = normalizedTargetKind(existing)
+	}
+	if existing.DeviceUDID != "" {
+		merged.DeviceUDID = existing.DeviceUDID
+	}
+	if existing.DeviceName != "" {
+		merged.DeviceName = existing.DeviceName
 	}
 	if existing.Locale != "" {
 		merged.Locale = existing.Locale

@@ -27,6 +27,8 @@ MAV is early and evolving. The current stable pieces are:
 - Configurable project launch recipes.
 - Setup-time detection for common project launch commands.
 - Simulator selection, boot, install, launch, screenshot, and video.
+- Physical device selection, install, launch, logs, screenshots, UI actions,
+  crashes, and evidence screenshots.
 - AXe-first accessibility tree inspection and semantic interactions.
 - idb coordinate taps and fallback capabilities.
 - Appium-backed WDA fallback for system-process trees, form wrappers, and
@@ -55,6 +57,10 @@ mav doctor
 `mav doctor` reports capability availability. MAV routes commands by
 capability: accessibility and semantic actions use AXe, coordinate taps and
 device fallback use idb, and WDA-backed fallback or multitouch uses Appium.
+Physical iOS devices require idb for install, launch, logs, screenshots, and
+crashes. Appium/WDA can also target a selected physical device, but the
+Appium/XCUITest signing setup for WDA must be configured outside MAV when your
+device requires it.
 
 Configure the project or install supported helper tools:
 
@@ -614,6 +620,36 @@ You can also pass simulator selection flags to `mav open`:
 mav open --device "iPhone 17 Pro Max" --ios 26 --locale es_ES --language es
 ```
 
+## Physical Devices
+
+List and select connected iOS devices:
+
+```bash
+mav device list
+mav device select --udid <device-udid>
+mav device select --name "David iPhone"
+```
+
+`mav device select` switches the active target to `target_kind: device` in
+`.mav/config.yaml`. `mav sim select` switches it back to `target_kind:
+simulator`. For physical devices, MAV uses idb for install, launch, log
+capture, screenshots, and crash listing:
+
+```yaml
+launch:
+  mode: custom
+  commands:
+    build: ./scripts/mav-build-device.sh
+    app_path: ./scripts/mav-app-path-device.sh
+    install: idb install --udid "$MAV_UDID" "$MAV_APP_PATH"
+    launch: idb launch --udid "$MAV_UDID" -f "$MAV_BUNDLE_ID"
+```
+
+The generated simulator install/launch recipe is automatically mapped to idb
+when the active target is a physical device. Video recording is simulator-only
+in this release; use `capture` / `evidence.step` screenshots for device
+evidence.
+
 ## Launch Recipes
 
 MAV does not own the build system. Configure project commands in
@@ -634,9 +670,10 @@ launch:
 ```
 
 Each command runs from `MAV_ROOT` with stable environment variables:
-`MAV_ROOT`, `MAV_RUN_DIR`, `MAV_UDID`, `MAV_BUNDLE_ID`, `MAV_APP_PATH`,
-`MAV_DEVICE_NAME`, `MAV_RUNTIME`, and `MAV_PLATFORM`. `app_path` must print one
-`.app` path. If the app is already installed, configure only `launch`.
+`MAV_ROOT`, `MAV_RUN_DIR`, `MAV_TARGET_KIND`, `MAV_IS_DEVICE`, `MAV_UDID`,
+`MAV_BUNDLE_ID`, `MAV_APP_PATH`, `MAV_DEVICE_NAME`, `MAV_RUNTIME`, and
+`MAV_PLATFORM`. `app_path` must print one `.app` path. If the app is already
+installed, configure only `launch`.
 
 `mav open --clear-state` runs `xcrun simctl uninstall "$MAV_UDID"
 "$MAV_BUNDLE_ID" || true` before the launch recipe. When the configured install
@@ -665,6 +702,9 @@ mav sim list
 mav sim select --device NAME --ios VERSION [--locale LOCALE] [--language LANG]
 mav sim select --udid UDID
 mav sim boot
+mav device list
+mav device select --udid UDID
+mav device select --name NAME
 mav open [--device NAME] [--ios VERSION] [--udid UDID] [--locale LOCALE] [--language LANG] [--clear-state] [--warm-appium]
 mav ui tree [--prefer-driver auto|axe|appium] [--include-system]
 mav ui tap --id ID [--prefer-driver auto|axe|appium]

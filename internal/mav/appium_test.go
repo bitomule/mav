@@ -300,3 +300,21 @@ func TestCreateAppiumSessionUsesUDIDAndBundleID(t *testing.T) {
 		t.Fatalf("id=%q posted=%s", id, posted)
 	}
 }
+
+func TestCreateAppiumSessionUsesPhysicalDeviceUDID(t *testing.T) {
+	oldClient := http.DefaultClient
+	posted := ""
+	http.DefaultClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		data, _ := io.ReadAll(r.Body)
+		posted = string(data)
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"value":{"sessionId":"session-1"}}`)), Header: http.Header{}}, nil
+	})}
+	defer func() { http.DefaultClient = oldClient }()
+	_, err := createAppiumSession(context.Background(), "http://appium.local", Config{TargetKind: "device", DeviceUDID: "REAL-1", SimulatorUDID: "SIM", BundleID: "com.example.app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(posted, `"appium:udid":"REAL-1"`) || strings.Contains(posted, `"appium:udid":"SIM"`) {
+		t.Fatalf("posted=%s", posted)
+	}
+}

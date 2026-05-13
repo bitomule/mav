@@ -211,6 +211,36 @@ func (r *launchRecipeRunner) Start(ctx context.Context, logPath string, name str
 	return 123, nil
 }
 
+type deviceListRunner struct {
+	tools   map[string]bool
+	devices string
+}
+
+func (r deviceListRunner) LookPath(file string) (string, error) {
+	if r.tools[file] {
+		return "/usr/bin/" + file, nil
+	}
+	return "", os.ErrNotExist
+}
+
+func (r deviceListRunner) Run(ctx context.Context, name string, args ...string) CommandResult {
+	_ = ctx
+	for i, arg := range args {
+		if arg == "--json-output" && i+1 < len(args) {
+			_ = os.WriteFile(args[i+1], []byte(r.devices), 0o644)
+		}
+	}
+	return CommandResult{}
+}
+
+func (r deviceListRunner) Start(ctx context.Context, logPath string, name string, args ...string) (int, error) {
+	_ = ctx
+	_ = logPath
+	_ = name
+	_ = args
+	return 123, nil
+}
+
 type launchRetryRunner struct {
 	tools        map[string]bool
 	commands     []string
@@ -3122,6 +3152,219 @@ func TestLaunchLanguageArgs(t *testing.T) {
 	got := strings.Join(simctlLaunchLanguageArgs(Config{Language: "es", Locale: "es_ES"}), " ")
 	if got != "-AppleLanguages (es) -AppleLocale es_ES" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestDeviceListParsesDevicectlJSONOutputFile(t *testing.T) {
+	devices := `{"result":{"devices":[{"identifier":"REAL-1","name":"David iPhone"}]}}`
+	var out bytes.Buffer
+	cli := CLI{Runner: deviceListRunner{tools: map[string]bool{"xcrun": true}, devices: devices}, Root: t.TempDir(), Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"device", "list"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "ok cmd=device.list count=1") || !strings.Contains(out.String(), `device udid=REAL-1 name="David iPhone"`) {
+		t.Fatalf("got %q", out.String())
+	}
+}
+
+func TestDeviceSelectPersistsPhysicalTarget(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.ProjectName = "Demo"
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	devices := `{"result":{"devices":[{"identifier":"REAL-1","name":"David iPhone"}]}}`
+	var out bytes.Buffer
+	cli := CLI{Runner: deviceListRunner{tools: map[string]bool{"xcrun": true}, devices: devices}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"device", "select", "--udid", "REAL-1"}); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.TargetKind != "device" || loaded.DeviceUDID != "REAL-1" || loaded.DeviceName != "David iPhone" {
+		t.Fatalf("loaded=%+v output=%s", loaded, out.String())
+	}
+}
+
+func TestDeviceSelectReportsNotFound(t *testing.T) {
+	root := t.TempDir()
+	if err := SaveConfig(root, DefaultConfig(root)); err != nil {
+		t.Fatal(err)
+	}
+	devices := `{"result":{"devices":[{"identifier":"REAL-1","name":"David iPhone"}]}}`
+	var out bytes.Buffer
+	cli := CLI{Runner: deviceListRunner{tools: map[string]bool{"xcrun": true}, devices: devices}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"device", "select", "--udid", "MISSING"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "fail code=device_not_found") {
+		t.Fatalf("got %q", out.String())
+	}
+}
+
+func TestSimSelectResetsTargetKindToSimulator(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.TargetKind = "device"
+	cfg.DeviceUDID = "REAL-1"
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runner := &sequenceRecordingRunner{
+		out: map[string]string{"xcrun simctl list devices -j": `{"devices":{"runtime":[{"udid":"SIM-1","name":"iPhone","state":"Shutdown","isAvailable":true}]}}`},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"sim", "select", "--udid", "SIM-1"}); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.TargetKind != "simulator" || loaded.SimulatorUDID != "SIM-1" {
+		t.Fatalf("loaded=%+v output=%s", loaded, out.String())
+	}
+}
+
+func TestSimBootRejectsPhysicalTarget(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.TargetKind = "device"
+	cfg.DeviceUDID = "REAL-1"
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: &sequenceRecordingRunner{}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"sim", "boot"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "fail code=sim_not_applicable") {
+		t.Fatalf("got %q", out.String())
+	}
+}
+
+func TestDeviceLaunchRecipeUsesIDB(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.TargetKind = "device"
+	cfg.DeviceUDID = "REAL-1"
+	cfg.BundleID = "com.example.app"
+	cfg.Tools["idb"] = true
+	cfg.Launch = LaunchConfig{Mode: "custom", Commands: LaunchCommands{
+		Build:   "make build-ios",
+		AppPath: "make ios-app-path",
+		Install: `xcrun simctl install "$MAV_UDID" "$MAV_APP_PATH"`,
+		Launch:  `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`,
+	}}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runner := &launchRecipeRunner{
+		tools: map[string]bool{"idb": true},
+		results: map[string]CommandResult{
+			"make ios-app-path": {Stdout: "/tmp/Demo.app\n"},
+		},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"open", "--clear-state"}); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(runner.commands, "\n")
+	for _, want := range []string{"idb uninstall --udid", "idb install --udid", "idb launch --udid"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("missing %q in commands:\n%s\noutput=%s", want, joined, out.String())
+		}
+	}
+	if strings.Contains(joined, "simctl install") || strings.Contains(joined, "simctl launch") {
+		t.Fatalf("device launch should not use simctl:\n%s", joined)
+	}
+}
+
+func TestStartProbeLogsUsesIDBForDevice(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.TargetKind = "device"
+	cfg.DeviceUDID = "REAL-1"
+	cfg.Tools["idb"] = true
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &sequenceRecordingRunner{tools: map[string]bool{"idb": true}}
+	cli := CLI{Runner: runner, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	if _, err := cli.startProbeLogs(context.Background(), cfg, run); err != nil {
+		t.Fatal(err)
+	}
+	records := loadProcessRecords(run)
+	if len(records) != 1 || !strings.Contains(records[0].Command, "idb log --udid REAL-1") {
+		t.Fatalf("records=%+v", records)
+	}
+}
+
+func TestCaptureScreenshotUsesIDBForDevice(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.TargetKind = "device"
+	cfg.DeviceUDID = "REAL-1"
+	cfg.Tools["idb"] = true
+	runner := &recordingRunner{tools: map[string]bool{"idb": true}}
+	cli := CLI{Runner: runner, Root: t.TempDir(), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	if _, err := cli.captureScreenshot(context.Background(), cfg, filepath.Join(t.TempDir(), "screen.png")); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(runner.command, "idb screenshot ") || !strings.Contains(runner.command, "--udid REAL-1") {
+		t.Fatalf("command=%q", runner.command)
+	}
+}
+
+func TestCrashesUsesDeviceUDID(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.TargetKind = "device"
+	cfg.DeviceUDID = "REAL-1"
+	cfg.BundleID = "com.example.app"
+	cfg.Tools["idb"] = true
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runner := &recordingRunner{tools: map[string]bool{"idb": true}}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"crashes"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(runner.command, "idb crash list --udid REAL-1") || !strings.Contains(runner.command, "--bundle-id com.example.app") {
+		t.Fatalf("command=%q output=%s", runner.command, out.String())
+	}
+}
+
+func TestVideoStartUnsupportedOnDevice(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.TargetKind = "device"
+	cfg.DeviceUDID = "REAL-1"
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: &sequenceRecordingRunner{}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"evidence", "start"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "fail code=video_unsupported") || !strings.Contains(out.String(), "target=device") {
+		t.Fatalf("got %q", out.String())
 	}
 }
 

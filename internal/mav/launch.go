@@ -15,9 +15,13 @@ type launchStep struct {
 }
 
 func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clearState bool) (string, *launchStep, CommandResult) {
-	commands := cfg.Launch.Commands
+	commands := effectiveLaunchCommands(cfg)
 	if !hasLaunchCommands(commands) && cfg.BundleID != "" {
-		commands.Launch = `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`
+		if isPhysicalDevice(cfg) {
+			commands.Launch = `idb launch --udid "$MAV_UDID" -f "$MAV_BUNDLE_ID"`
+		} else {
+			commands.Launch = `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`
+		}
 	}
 	steps := []launchStep{
 		{Name: "healthcheck", Command: commands.Healthcheck},
@@ -36,6 +40,9 @@ func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clea
 	env := launchEnv(cfg, run, appPath)
 	if clearState && cfg.BundleID != "" {
 		step := launchStep{Name: "clear_state", Command: `xcrun simctl uninstall "$MAV_UDID" "$MAV_BUNDLE_ID" || true`}
+		if isPhysicalDevice(cfg) {
+			step.Command = `idb uninstall --udid "$MAV_UDID" "$MAV_BUNDLE_ID" || true`
+		}
 		_ = c.runLaunchCommand(ctx, cfg, run, step, env)
 	}
 	for _, step := range steps {
@@ -84,20 +91,48 @@ func (c CLI) runLaunchCommand(ctx context.Context, cfg Config, run RunState, ste
 }
 
 func launchEnv(cfg Config, run RunState, appPath string) map[string]string {
-	udid := cfg.SimulatorUDID
+	udid := targetUDID(cfg)
 	if udid == "" {
 		udid = "booted"
+	}
+	isDevice := "false"
+	if isPhysicalDevice(cfg) {
+		isDevice = "true"
 	}
 	return map[string]string{
 		"MAV_ROOT":        cfg.Root,
 		"MAV_RUN_DIR":     run.Dir,
+		"MAV_TARGET_KIND": normalizedTargetKind(cfg),
+		"MAV_IS_DEVICE":   isDevice,
 		"MAV_UDID":        udid,
 		"MAV_BUNDLE_ID":   cfg.BundleID,
 		"MAV_APP_PATH":    appPath,
-		"MAV_DEVICE_NAME": cfg.SimulatorName,
-		"MAV_RUNTIME":     cfg.SimulatorRuntime,
+		"MAV_DEVICE_NAME": targetName(cfg),
+		"MAV_RUNTIME":     targetRuntime(cfg),
 		"MAV_PLATFORM":    "ios",
 	}
+}
+
+func effectiveLaunchCommands(cfg Config) LaunchCommands {
+	commands := cfg.Launch.Commands
+	if !isPhysicalDevice(cfg) {
+		return commands
+	}
+	if isMAVSimctlInstall(commands.Install) || commands.Install == "" && commands.AppPath != "" {
+		commands.Install = `idb install --udid "$MAV_UDID" "$MAV_APP_PATH"`
+	}
+	if commands.Launch == "" || isMAVSimctlLaunch(commands.Launch) {
+		commands.Launch = `idb launch --udid "$MAV_UDID" -f "$MAV_BUNDLE_ID"`
+	}
+	return commands
+}
+
+func isMAVSimctlInstall(command string) bool {
+	return strings.Contains(command, "xcrun simctl install") && strings.Contains(command, "MAV_APP_PATH")
+}
+
+func isMAVSimctlLaunch(command string) bool {
+	return strings.Contains(command, "xcrun simctl launch") && strings.Contains(command, "MAV_BUNDLE_ID")
 }
 
 func shouldRetryInstallFromWritableCopy(result CommandResult, appPath string) bool {
@@ -117,7 +152,11 @@ func (c CLI) retryInstallFromWritableCopy(ctx context.Context, cfg Config, run R
 		return CommandResult{Stderr: err.Error(), Err: err}, appPath
 	}
 	env := launchEnv(cfg, run, target)
-	result := c.runLaunchCommand(ctx, cfg, run, launchStep{Name: "install_retry", Command: `xcrun simctl install "$MAV_UDID" "$MAV_APP_PATH"`}, env)
+	command := `xcrun simctl install "$MAV_UDID" "$MAV_APP_PATH"`
+	if isPhysicalDevice(cfg) {
+		command = `idb install --udid "$MAV_UDID" "$MAV_APP_PATH"`
+	}
+	result := c.runLaunchCommand(ctx, cfg, run, launchStep{Name: "install_retry", Command: command}, env)
 	return result, target
 }
 
