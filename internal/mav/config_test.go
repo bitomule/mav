@@ -265,6 +265,40 @@ func TestSaveLoadConfig(t *testing.T) {
 	}
 }
 
+func TestLoadLegacyConfigDefaultsToSimulatorTarget(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, ConfigFile), `project_name: Demo
+bundle_id: com.example.demo
+simulator_udid: SIM-1
+`)
+	loaded, err := LoadConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.TargetKind != "simulator" || isPhysicalDevice(loaded) {
+		t.Fatalf("target=%q loaded=%+v", loaded.TargetKind, loaded)
+	}
+}
+
+func TestSaveLoadConfigPreservesDeviceTarget(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.ProjectName = "Demo"
+	cfg.TargetKind = "device"
+	cfg.DeviceUDID = "REAL-1"
+	cfg.DeviceName = "David iPhone"
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.TargetKind != "device" || loaded.DeviceUDID != "REAL-1" || loaded.DeviceName != "David iPhone" {
+		t.Fatalf("loaded=%+v", loaded)
+	}
+}
+
 func mustWrite(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

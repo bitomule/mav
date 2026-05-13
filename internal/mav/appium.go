@@ -905,7 +905,8 @@ func appiumFrame(attrs map[string]string) string {
 }
 
 func (c CLI) ensureAppiumSession(ctx context.Context, cfg Config, run RunState) (appiumSessionState, error) {
-	if existing, err := readAppiumSession(run); err == nil && existing.SessionID != "" && existing.UDID == cfg.SimulatorUDID && existing.BundleID == cfg.BundleID {
+	udid := targetUDID(cfg)
+	if existing, err := readAppiumSession(run); err == nil && existing.SessionID != "" && existing.UDID == udid && existing.BundleID == cfg.BundleID {
 		return existing, nil
 	}
 	port, err := freeLocalPort()
@@ -920,7 +921,7 @@ func (c CLI) ensureAppiumSession(ctx context.Context, cfg Config, run RunState) 
 		return appiumSessionState{}, appiumError{Code: "ui_gesture_failed", Message: firstLine(err.Error())}
 	}
 	appendProcess(run, "appium", pid, "appium "+strings.Join(args, " "))
-	state := appiumSessionState{PID: pid, Port: port, BaseURL: baseURL, UDID: cfg.SimulatorUDID, BundleID: cfg.BundleID}
+	state := appiumSessionState{PID: pid, Port: port, BaseURL: baseURL, UDID: udid, BundleID: cfg.BundleID}
 	if err := waitForAppiumStatus(ctx, baseURL, 10*time.Second); err != nil {
 		return state, appiumError{Code: "appium_status_failed", Message: err.Error()}
 	}
@@ -940,8 +941,8 @@ func createAppiumSession(ctx context.Context, baseURL string, cfg Config) (strin
 		"appium:noReset":           true,
 		"appium:newCommandTimeout": 120,
 	}
-	if cfg.SimulatorUDID != "" {
-		caps["appium:udid"] = cfg.SimulatorUDID
+	if udid := targetUDID(cfg); udid != "" {
+		caps["appium:udid"] = udid
 	}
 	if cfg.BundleID != "" {
 		caps["appium:bundleId"] = cfg.BundleID

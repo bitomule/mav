@@ -71,6 +71,8 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 		return c.installSkills(ctx)
 	case "sim":
 		return c.sim(ctx, opts, rest[1:])
+	case "device":
+		return c.device(ctx, opts, rest[1:])
 	case "open":
 		return c.open(ctx, opts, rest[1:])
 	case "ui":
@@ -155,6 +157,7 @@ Commands:
   install-skills
               Install the MAV agent skill globally for all supported agents.
   sim         List, select, or boot simulators.
+  device      List or select physical iOS devices.
   open        Build, install, launch, and start run logs.
   ui          Inspect and control the current UI.
   capture     Capture the current screen.
@@ -181,6 +184,12 @@ Global flags:
   mav sim select --device "iPhone 17 Pro Max" --ios 26 [--locale es_ES] [--language es]
   mav sim select --udid <simulator-udid>
   mav sim boot
+`
+	case "device":
+		return `Usage:
+  mav device list
+  mav device select --udid <device-udid>
+  mav device select --name <device-name>
 `
 	case "open":
 		return `Usage:
@@ -678,6 +687,7 @@ func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 		if !ok {
 			return Fail("sim_not_found", map[string]string{"device": flagValue(args[1:], "--device"), "ios": flagValue(args[1:], "--ios"), "udid": flagValue(args[1:], "--udid")}).Write(c.Stdout)
 		}
+		cfg.TargetKind = "simulator"
 		cfg.SimulatorUDID = sim.UDID
 		cfg.SimulatorName = sim.Name
 		cfg.SimulatorRuntime = sim.Runtime
@@ -696,6 +706,9 @@ func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 		if err != nil {
 			return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 		}
+		if isPhysicalDevice(cfg) {
+			return Fail("sim_not_applicable", map[string]string{"target": "device", "next": "select a simulator with mav sim select"}).Write(c.Stdout)
+		}
 		if cfg.SimulatorUDID == "" {
 			return Fail("sim_not_selected", map[string]string{"next": "mav sim select --device 'iPhone' --ios 26"}).Write(c.Stdout)
 		}
@@ -710,6 +723,56 @@ func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 		return OK("sim.boot", map[string]string{"udid": cfg.SimulatorUDID, "name": cfg.SimulatorName}).Write(c.Stdout)
 	default:
 		return Fail("sim_unknown_command", map[string]string{"command": args[0]}).Write(c.Stdout)
+	}
+}
+
+func (c CLI) device(ctx context.Context, opts GlobalOptions, args []string) error {
+	_ = opts
+	if len(args) == 0 {
+		return Fail("device_command_missing", map[string]string{"usage": "mav device list|select"}).Write(c.Stdout)
+	}
+	switch args[0] {
+	case "list":
+		devices, err := ListPhysicalDevices(ctx, c.Runner)
+		if err != nil {
+			fields := map[string]string{"error": err.Error()}
+			addSandboxNext(fields, err.Error())
+			return Fail("device_list_failed", fields).Write(c.Stdout)
+		}
+		if err := OK("device.list", map[string]string{"count": strconv.Itoa(len(devices))}).Write(c.Stdout); err != nil {
+			return err
+		}
+		for _, device := range devices {
+			fmt.Fprintf(c.Stdout, "device udid=%s name=%q\n", device.UDID, device.Name)
+		}
+		return nil
+	case "select":
+		cfg, err := LoadConfig(c.Root)
+		if err != nil {
+			return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
+		}
+		udid := flagValue(args[1:], "--udid")
+		name := flagValue(args[1:], "--name")
+		if udid == "" && name == "" {
+			return Fail("device_selector_missing", map[string]string{"usage": "mav device select --udid <device-udid> | --name <device-name>"}).Write(c.Stdout)
+		}
+		devices, err := ListPhysicalDevices(ctx, c.Runner)
+		if err != nil {
+			return Fail("device_list_failed", map[string]string{"error": err.Error()}).Write(c.Stdout)
+		}
+		device, ok := selectPhysicalDevice(devices, udid, name)
+		if !ok {
+			return Fail("device_not_found", map[string]string{"udid": udid, "name": name}).Write(c.Stdout)
+		}
+		cfg.TargetKind = "device"
+		cfg.DeviceUDID = device.UDID
+		cfg.DeviceName = device.Name
+		if err := SaveConfig(c.Root, cfg); err != nil {
+			return err
+		}
+		return OK("device.select", map[string]string{"udid": device.UDID, "name": device.Name}).Write(c.Stdout)
+	default:
+		return Fail("device_unknown_command", map[string]string{"command": args[0]}).Write(c.Stdout)
 	}
 }
 
@@ -730,6 +793,9 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	}
 	if err := SaveCurrentRun(c.Root, run); err != nil {
 		return err
+	}
+	if isPhysicalDevice(cfg) && !hasTool(cfg, "idb") {
+		return Fail("tool_missing", map[string]string{"tool": "idb", "target": "device", "next": "mav setup --install idb"}).Write(c.Stdout)
 	}
 	warmAppium := hasFlag(args, "--warm-appium")
 	var appiumWarmup <-chan appiumWarmupResult
@@ -774,9 +840,10 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 			fields["appium_warmup_next"] = result.Next
 		}
 	}
-	fields["target"] = cfg.SimulatorName
+	fields["target_kind"] = normalizedTargetKind(cfg)
+	fields["target"] = targetName(cfg)
 	if fields["target"] == "" {
-		fields["target"] = cfg.SimulatorUDID
+		fields["target"] = targetUDID(cfg)
 	}
 	if fields["target"] == "" {
 		fields["target"] = "booted"
@@ -871,6 +938,7 @@ func (c CLI) applyOpenTargetOverrides(ctx context.Context, cfg *Config, args []s
 	cfg.SimulatorUDID = sim.UDID
 	cfg.SimulatorName = sim.Name
 	cfg.SimulatorRuntime = sim.Runtime
+	cfg.TargetKind = "simulator"
 	boot := c.Runner.Run(ctx, "xcrun", "simctl", "boot", sim.UDID)
 	if boot.Err != nil && !strings.Contains(boot.Stderr, "Unable to boot device in current state") {
 		return fmt.Errorf("%s", firstLine(boot.Stderr))
@@ -896,6 +964,21 @@ func (c CLI) startProbeLogs(ctx context.Context, cfg Config, run RunState) (int,
 	subsystem := probeLogSubsystem(cfg)
 	category := probeLogCategory(cfg)
 	predicate := fmt.Sprintf(`subsystem == "%s" AND category == "%s"`, subsystem, category)
+	if isPhysicalDevice(cfg) {
+		if !hasTool(cfg, "idb") {
+			return 0, fmt.Errorf("idb_missing")
+		}
+		args := []string{"log"}
+		if cfg.DeviceUDID != "" {
+			args = append(args, "--udid", cfg.DeviceUDID)
+		}
+		args = append(args, "--", "--style", "compact", "--level", "debug", "--predicate", predicate)
+		pid, err := c.Runner.Start(ctx, run.LogsPath, "idb", args...)
+		if err == nil {
+			appendProcess(run, "probe-logs", pid, "idb "+strings.Join(args, " "))
+		}
+		return pid, err
+	}
 	if hasTool(cfg, "xcrun") && cfg.SimulatorUDID != "" {
 		args := []string{"simctl", "spawn", cfg.SimulatorUDID, "log", "stream", "--style", "compact", "--level", "debug", "--predicate", predicate}
 		pid, err := c.Runner.Start(ctx, run.LogsPath, "xcrun", args...)
@@ -1204,6 +1287,9 @@ func (c CLI) describeUITree(ctx context.Context, cfg Config, prefer string, incl
 }
 
 func (c CLI) recoverEmptyAXTree(ctx context.Context, cfg Config) error {
+	if isPhysicalDevice(cfg) {
+		return fmt.Errorf("device_accessibility_recovery_unavailable")
+	}
 	if !hasTool(cfg, "xcrun") || cfg.SimulatorUDID == "" {
 		return fmt.Errorf("simulator_recovery_unavailable")
 	}
@@ -2218,6 +2304,12 @@ func uniqueCapturePath(run RunState, name string) string {
 func (c CLI) captureScreenshot(ctx context.Context, cfg Config, path string) (CommandResult, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return CommandResult{}, err
+	}
+	if isPhysicalDevice(cfg) {
+		if hasTool(cfg, "idb") {
+			return c.Runner.Run(ctx, "idb", idbTargetArgs(cfg, "screenshot", path)...), nil
+		}
+		return CommandResult{}, fmt.Errorf("capture_tool_missing")
 	}
 	if hasTool(cfg, "axe") {
 		return c.Runner.Run(ctx, "axe", axeTargetArgs(cfg, "screenshot", "--output", path)...), nil
@@ -3450,6 +3542,9 @@ func (c CLI) evidenceStart(ctx context.Context, opts GlobalOptions, args []strin
 	}
 	path, pid, err := c.startVideoRecording(ctx, cfg, run)
 	if err != nil {
+		if err.Error() == "video_unsupported" {
+			return Fail("video_unsupported", map[string]string{"target": "device", "next": "use simulator video or capture screenshots; device video is not supported in this PR"}).Write(c.Stdout)
+		}
 		return Fail("evidence_start_failed", map[string]string{"run": run.ID, "error": err.Error()}).Write(c.Stdout)
 	}
 	if err := os.WriteFile(filepath.Join(run.Dir, "video.pid"), []byte(strconv.Itoa(pid)+"\n"), 0o644); err != nil {
@@ -3728,16 +3823,16 @@ func isContainerAtom(kind string) bool {
 
 func axeTargetArgs(cfg Config, args ...string) []string {
 	out := append([]string{}, args...)
-	if cfg.SimulatorUDID != "" {
-		out = append(out, "--udid", cfg.SimulatorUDID)
+	if udid := targetUDID(cfg); udid != "" {
+		out = append(out, "--udid", udid)
 	}
 	return out
 }
 
 func idbTargetArgs(cfg Config, args ...string) []string {
 	out := append([]string{}, args...)
-	if cfg.SimulatorUDID != "" {
-		out = append(out, "--udid", cfg.SimulatorUDID)
+	if udid := targetUDID(cfg); udid != "" {
+		out = append(out, "--udid", udid)
 	}
 	return out
 }
@@ -3790,6 +3885,9 @@ func isSwipeDirection(direction string) bool {
 }
 
 func (c CLI) startVideoRecording(ctx context.Context, cfg Config, run RunState) (string, int, error) {
+	if isPhysicalDevice(cfg) {
+		return "", 0, fmt.Errorf("video_unsupported")
+	}
 	if !hasTool(cfg, "xcrun") {
 		return "", 0, fmt.Errorf("xcrun_missing")
 	}

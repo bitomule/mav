@@ -26,13 +26,18 @@ does not explore or repair routes by itself. The agent decides the next action.
 3. If the validation needs a specific simulator, runtime, or locale, use
    `mav sim list`, then `mav sim select --device ... --ios ... --locale ... --language ...`.
    You can also pass the same target flags to `mav open`.
+   For a physical iOS device, use `mav device list`, then `mav device select
+   --udid ...` or `mav device select --name ...`. Physical devices require idb
+   for install, launch, logs, screenshots, and crashes. If Appium/WDA is used on
+   a physical device, its XCUITest signing setup must be configured outside MAV.
 4. Start the app with `mav open`. Use `mav open --clear-state` for a fresh
    install, and `mav open --warm-appium` when the session is likely to need
    Appium-backed tree or tap fallback. Appium/WDA warm-up can take about a
    minute on a cold start; tell the user it may take a while, then run it
    directly without asking for confirmation. This creates `/tmp/mav/<run-id>/`
    and starts `logs.txt`. MAV captures a filtered unified log stream for MAV
-   probes.
+   probes. On physical devices, generated simulator install/launch recipes are
+   mapped to idb when possible.
 5. Prefer `mav ui tree` to understand the current screen. It prints compact
    screen metadata followed by bounded `node ...` lines with ids, labels, roles,
    values, enabled state, subroles, titles, pids, focus state, and frames when
@@ -299,10 +304,27 @@ launch:
     launch: xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"
 ```
 
-Each command runs from `MAV_ROOT` with `MAV_RUN_DIR`, `MAV_UDID`,
-`MAV_BUNDLE_ID`, `MAV_APP_PATH`, `MAV_DEVICE_NAME`, `MAV_RUNTIME`, and
-`MAV_PLATFORM`. `app_path` must print exactly one `.app` path. If the app is
-already installed, configure only `launch`.
+Physical device launch recipes should use idb:
+
+```yaml
+launch:
+  mode: custom
+  commands:
+    build: ./scripts/mav-build-device.sh
+    app_path: ./scripts/mav-app-path-device.sh
+    install: idb install --udid "$MAV_UDID" "$MAV_APP_PATH"
+    launch: idb launch --udid "$MAV_UDID" -f "$MAV_BUNDLE_ID"
+```
+
+Each command runs from `MAV_ROOT` with `MAV_RUN_DIR`, `MAV_TARGET_KIND`,
+`MAV_IS_DEVICE`, `MAV_UDID`, `MAV_BUNDLE_ID`, `MAV_APP_PATH`,
+`MAV_DEVICE_NAME`, `MAV_RUNTIME`, and `MAV_PLATFORM`. `app_path` must print
+exactly one `.app` path. If the app is already installed, configure only
+`launch`.
+
+`video.start` / `evidence.start` video recording is simulator-only in this
+release. On physical devices, use `capture` / `evidence.step` screenshots,
+crash checks, logs, and reports for evidence.
 
 ## Command Output
 
