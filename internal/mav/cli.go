@@ -746,6 +746,7 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 		return Fail("launch_step_failed", fields).Write(c.Stdout)
 	}
 	if warmAppium {
+		_, _ = fmt.Fprintln(c.Stderr, "mav: warming Appium/WDA session; this can take a minute on a cold start")
 		appiumWarmup = c.startAppiumWarmup(ctx, cfg, run, true)
 	}
 	fields := map[string]string{"run": run.ID, "logs": run.LogsPath, "dir": run.Dir}

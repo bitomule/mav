@@ -28,9 +28,11 @@ does not explore or repair routes by itself. The agent decides the next action.
    You can also pass the same target flags to `mav open`.
 4. Start the app with `mav open`. Use `mav open --clear-state` for a fresh
    install, and `mav open --warm-appium` when the session is likely to need
-   Appium-backed tree or tap fallback. This creates
-   `/tmp/mav/<run-id>/` and starts `logs.txt`. MAV captures a filtered unified
-   log stream for MAV probes.
+   Appium-backed tree or tap fallback. Appium/WDA warm-up can take about a
+   minute on a cold start; tell the user it may take a while, then run it
+   directly without asking for confirmation. This creates `/tmp/mav/<run-id>/`
+   and starts `logs.txt`. MAV captures a filtered unified log stream for MAV
+   probes.
 5. Prefer `mav ui tree` to understand the current screen. It prints compact
    screen metadata followed by bounded `node ...` lines with ids, labels, roles,
    values, enabled state, subroles, titles, pids, focus state, and frames when

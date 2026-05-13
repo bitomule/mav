@@ -1133,16 +1133,20 @@ func TestOpenWarmAppiumCreatesSession(t *testing.T) {
 	})}
 	defer func() { http.DefaultClient = oldClient }()
 	var out bytes.Buffer
+	var stderr bytes.Buffer
 	cli := CLI{Runner: fakeRunner{
 		tools: cfg.Tools,
 		out:   map[string]string{"appium driver list --installed": "xcuitest@7.0.0\n"},
-	}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	}, Root: root, Stdout: &out, Stderr: &stderr}
 	if err := cli.Run(context.Background(), []string{"open", "--warm-appium"}); err != nil {
 		t.Fatal(err)
 	}
 	got := out.String()
 	if !strings.Contains(got, "appium_warmup=ok") || !strings.Contains(got, "appium_session=warm-session") {
 		t.Fatalf("got %q", got)
+	}
+	if !strings.Contains(stderr.String(), "warming Appium/WDA session") {
+		t.Fatalf("stderr=%q", stderr.String())
 	}
 	run, err := LoadRun(root, "")
 	if err != nil {

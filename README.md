@@ -356,7 +356,8 @@ Appium, and `mav ui hideKeyboard` dismisses the keyboard through WDA.
 
 When you expect to need Appium, run `mav open --warm-appium` to create the WDA
 session after the launch recipe finishes so the first Appium-backed tree or tap
-does not pay the full cold-start cost.
+does not pay the full cold-start cost. Cold starts can take about a minute, so
+MAV prints a progress note to stderr before it waits for the Appium/WDA session.
 
 Appium is also used for true multitouch. AXe and idb do not expose a real pinch
 or two-finger gesture primitive. MAV sends Appium W3C Actions: multiple touch
