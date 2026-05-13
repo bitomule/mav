@@ -248,29 +248,6 @@ Run state:
 `/tmp` may resolve to a macOS per-user temporary directory such as
 `/var/folders/.../T`.
 
-## Screen Identity
-
-`mav ui tree` reports a natural screen id derived from the AX tree alone: the
-kebab-case form of the shallowest `View`-suffix root element id, e.g.
-`WallView` → `wall-view`, `ItemDetailView` → `item-detail-view`. The detector
-also accepts the explicit prefixes `mav.screen.<id>` and `screen.<id>`. If no
-qualifying element is found, mav reports `screen=unknown
-screen_source=identity_missing` so you can see at a glance which screens are
-missing accessibility identifiers in product code.
-
-SwiftUI:
-
-```swift
-SettingsView()
-    .accessibilityIdentifier("mav.screen.settings")
-```
-
-UIKit:
-
-```swift
-view.accessibilityIdentifier = "SettingsView"
-```
-
 Prefer target selectors in this order:
 
 1. Accessibility id: `mav ui tap --id home_settings_button`
@@ -315,11 +292,9 @@ operations.
 
 For `mav ui tree` and semantic `mav ui tap`, `--prefer-driver auto` is the
 default. In auto mode MAV tries AXe first, then falls back to Appium/WDA when
-the AXe tree is empty, has no usable elements, or is pending a map update, or
-when an AXe tap by id/text fails. Use `--prefer-driver axe` to debug AXe-only behavior and
-`--prefer-driver appium` for WDA-only inspection. A tree with
-`screen_source=identity_missing` is not mapped by fallback; expose a stable
-screen root identifier before expecting routes to be recorded. Use `mav ui tree
+the AXe tree is empty, has no usable elements, or when an AXe tap by id/text
+fails. Use `--prefer-driver axe` to debug AXe-only behavior and
+`--prefer-driver appium` for WDA-only inspection. Use `mav ui tree
 --include-system` when a system process or cross-app surface is in front, such
 as PHPicker, App Tracking Transparency, permission prompts, SpringBoard, or an
 iOS 26 service process. MAV asks Appium for the active foreground bundle and
@@ -737,8 +712,7 @@ mav ui tree --prefer-driver appium
 ```
 
 Then refine the selector based on what shows up. Prefer accessibility ids over
-text; add a `mav.screen.<id>` or `View`-suffix `accessibilityIdentifier` to the
-screen root in product code so mav can name the screen in its output.
+text.
 
 `fail code=ui_tree_empty`
 

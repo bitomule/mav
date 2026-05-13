@@ -252,7 +252,6 @@ func (r *launchRetryRunner) Start(ctx context.Context, logPath string, name stri
 	return 123, nil
 }
 
-
 func TestDoctorDoesNotRequireMaestro(t *testing.T) {
 	var out bytes.Buffer
 	cli := CLI{Runner: fakeRunner{tools: map[string]bool{"go": true, "bazelisk": true, "xcrun": true, "axe": true, "idb": true}}, Root: t.TempDir(), Stdout: &out, Stderr: &bytes.Buffer{}}
@@ -505,7 +504,6 @@ func TestUITreePrintsNodeDetailsByDefault(t *testing.T) {
 	}
 }
 
-
 func TestUITreePreferAppiumUsesSource(t *testing.T) {
 	root, cfg, server, calls := setupAppiumSemanticTest(t)
 	defer server.Close()
@@ -528,7 +526,6 @@ func TestUITreePreferAppiumUsesSource(t *testing.T) {
 		t.Fatalf("source not requested: %v", *calls)
 	}
 }
-
 
 func TestTextInputWrapperDetection(t *testing.T) {
 	raw := `[{"identifier":"TextAreaView.textAreaView","role":"group","children":[{"identifier":"inner","role":"XCUIElementTypeTextView"}]}]`
@@ -900,8 +897,8 @@ func TestIsWeakLaunchMatch(t *testing.T) {
 // recognizer (because the explicit screen identifier lives on a non-leaf
 // container view that AXe's leaf-only traversal cannot see). The Appium
 // describe-tree against the host app exposes the container id and
-// `waitForTreeReady` must adopt the Appium tree so callers like `mav go`
-// observe the real screen instead of timing out on `launch_tree_not_ready`.
+// `waitForTreeReady` must adopt the Appium tree so callers observe the real
+// screen instead of timing out on `launch_tree_not_ready`.
 
 func TestUITreeAutoFallsBackToAppiumForEmptyTree(t *testing.T) {
 	root, cfg, server, calls := setupAppiumSemanticTest(t)
@@ -1157,7 +1154,6 @@ func TestOpenWarmAppiumCreatesSession(t *testing.T) {
 	}
 }
 
-
 func setupAppiumSemanticTest(t *testing.T) (string, Config, *httptest.Server, *[]string) {
 	t.Helper()
 	calls := []string{}
@@ -1166,7 +1162,7 @@ func setupAppiumSemanticTest(t *testing.T) (string, Config, *httptest.Server, *[
 		calls = append(calls, r.Method+" "+r.URL.Path+" "+string(body))
 		switch {
 		case r.URL.Path == "/wd/hub/session/s1/source":
-			_, _ = io.WriteString(w, `{"value":"<AppiumAUT type=\"XCUIElementTypeApplication\" name=\"Demo\"><XCUIElementTypeOther name=\"mav.screen.home\"><XCUIElementTypeTextField name=\"EmailField\" label=\"\" value=\"Email\" enabled=\"true\" title=\"Email\" pid=\"321\" x=\"10\" y=\"20\" width=\"100\" height=\"40\"/></XCUIElementTypeOther></AppiumAUT>"}`)
+			_, _ = io.WriteString(w, `{"value":"<AppiumAUT type=\"XCUIElementTypeApplication\" name=\"Demo\"><XCUIElementTypeOther name=\"HomeView\"><XCUIElementTypeTextField name=\"EmailField\" label=\"\" value=\"Email\" enabled=\"true\" title=\"Email\" pid=\"321\" x=\"10\" y=\"20\" width=\"100\" height=\"40\"/></XCUIElementTypeOther></AppiumAUT>"}`)
 		case r.URL.Path == "/wd/hub/session/s1/element":
 			_, _ = io.WriteString(w, `{"value":{"element-6066-11e4-a52e-4f735466cecf":"el1"}}`)
 		case r.URL.Path == "/wd/hub/session/s1/element/el1/click":
@@ -1508,7 +1504,6 @@ func TestSubcommandHelp(t *testing.T) {
 	}
 }
 
-
 func TestUIScrollUntilFindsElement(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
@@ -1624,7 +1619,6 @@ func TestUISwipeWithCustomCoordinatesReportsCustomDirection(t *testing.T) {
 		t.Fatalf("got confusing direction: %q", got)
 	}
 }
-
 
 func TestExecStepRequiresOptIn(t *testing.T) {
 	root := t.TempDir()
@@ -3024,7 +3018,6 @@ func TestRunFlowFailsWhenEraseOrHideKeyboardFail(t *testing.T) {
 		})
 	}
 }
-
 
 func TestRunFlowOptionalTapSkipsCommandFailure(t *testing.T) {
 	root := t.TempDir()

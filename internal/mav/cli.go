@@ -1045,7 +1045,7 @@ type uiTreeState struct {
 // derives a natural screen id from the elements alone. No
 // persisted map, no recogniser pipeline — `state.Screen` is either
 // the kebab-case form of the shallowest View-suffix root id
-// (e.g. `WallView` → `wall-view`) or `"unknown"`. The `cfg`
+// (e.g. `ItemDetailView` → `item-detail-view`) or `"unknown"`. The `cfg`
 // argument is kept on the signature so callers don't need to
 // thread it conditionally; it's reserved for any future driver-
 // specific observation tweaks.
@@ -1264,16 +1264,11 @@ func (c CLI) waitForTreeReady(ctx context.Context, cfg Config, timeout time.Dura
 		}
 		if result.Err == nil && driver != "appium" {
 			state := c.observeUITree(cfg, result.Stdout, driver, false)
-			// AXe only exposes accessibility leaves, so it misses the
-			// `accessibilityIdentifier` developers set on the non-leaf
-			// container view of a screen. When that happens AXe falls all
-			// the way back to the synthetic `start` launch recogniser (its
-			// weakest signal). Probe Appium against the host app (NOT
-			// system overlays — those would re-target a privacy or
-			// SpringBoard bundle and lose the host tree) so the real
-			// screen identity surfaces. Without this nudge `mav go` keeps
-			// observing `start` and times out with `launch_tree_not_ready`
-			// even when the target screen is already on display.
+			// AXe only exposes accessibility leaves, so it can miss the
+			// accessibility identifier developers set on a non-leaf screen
+			// container. Probe Appium against the host app before trying
+			// system overlays so the host tree gets a chance to surface a
+			// stronger current-screen signal.
 			if isWeakLaunchMatch(state) {
 				if appium, err := c.describeUITree(ctx, cfg, "appium", false); err == nil && isUsableAppiumTree(appium) {
 					appiumState := c.observeUITree(cfg, appium.Result.Stdout, appium.Driver, false)
@@ -2813,7 +2808,6 @@ func (c CLI) executeWhileNotVisibleFlowStepBoundWithOptions(ctx context.Context,
 		time.Sleep(200 * time.Millisecond)
 	}
 }
-
 
 func (c CLI) currentOrNewRun() (RunState, error) {
 	run, err := LoadRun(c.Root, "")

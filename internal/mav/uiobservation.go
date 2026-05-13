@@ -146,18 +146,13 @@ func elementEmpty(el Element) bool {
 }
 
 // explicitScreenIdentity derives a stable screen id from the AX
-// tree alone — no persisted map, no recogniser pipeline. Two
-// flavours: (a) an element whose id is `screen.<x>` or
-// `mav.screen.<x>` wins outright; (b) otherwise, the shallowest
-// non-control element whose id ends in `View` / `ViewController`
-// / `Screen` (and isn't a UIKit framework class name like
-// `UIView` or `UIScrollView`) gives its name. Returns the kebab-
-// case id, the raw element id we matched on, and ok=false when
-// nothing qualifies.
+// tree alone — no persisted map, no recogniser pipeline. The
+// shallowest non-control element whose id ends in `View`,
+// `ViewController`, or `Screen` (and isn't a UIKit framework class
+// name like `UIView` or `UIScrollView`) gives its name. Returns the
+// kebab-case id, the raw element id we matched on, and ok=false
+// when nothing qualifies.
 func explicitScreenIdentity(elements []Element) (id string, elementID string, ok bool) {
-	if pid, pelem, prefOK := prefixedScreenIdentity(elements); prefOK {
-		return pid, pelem, true
-	}
 	return naturalScreenIdentity(elements)
 }
 
@@ -182,37 +177,6 @@ func naturalScreenIdentity(elements []Element) (id string, elementID string, ok 
 		return "", "", false
 	}
 	return id, eid, true
-}
-
-func prefixedScreenIdentity(elements []Element) (id string, elementID string, ok bool) {
-	for _, el := range elements {
-		eid := strings.TrimSpace(el.ID)
-		matched, matchedOK := screenIDFromElementID(eid)
-		if !matchedOK {
-			continue
-		}
-		return matched, eid, true
-	}
-	return "", "", false
-}
-
-func screenIDFromElementID(value string) (string, bool) {
-	value = strings.TrimSpace(value)
-	for _, prefix := range screenIdentityPrefixes() {
-		if !strings.HasPrefix(value, prefix) {
-			continue
-		}
-		suffix := strings.TrimSpace(strings.TrimPrefix(value, prefix))
-		if suffix == "" {
-			return "", false
-		}
-		id := screenIdentityIDFromSuffix(suffix)
-		if id == "" || id == "step" {
-			return "", false
-		}
-		return id, true
-	}
-	return "", false
 }
 
 func screenIdentityIDFromSuffix(value string) string {
@@ -266,16 +230,9 @@ func shouldSplitIdentifierRune(prev, cur, next rune) bool {
 	return prev >= 'A' && prev <= 'Z' && next >= 'a' && next <= 'z'
 }
 
-func screenIdentityPrefixes() []string {
-	return []string{"mav.screen.", "screen."}
-}
-
 func isNaturalScreenIdentifierElement(el Element) bool {
 	id := strings.TrimSpace(el.ID)
 	if id == "" {
-		return false
-	}
-	if _, ok := screenIDFromElementID(id); ok {
 		return false
 	}
 	// Skip sub-element identifiers. Codebases that auto-generate

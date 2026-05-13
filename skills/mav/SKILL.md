@@ -42,7 +42,7 @@ does not explore or repair routes by itself. The agent decides the next action.
    `AXApplication` tree, MAV attempts recovery internally; do not work around it
    with screenshots unless `mav ui tree` fails after recovery. In the default
    `--prefer-driver auto` mode, MAV may fall back to Appium/WDA when AXe returns
-   an empty tree, has no usable elements, or is pending a map update. Use `mav ui tree --include-system` when
+   an empty tree or has no usable elements. Use `mav ui tree --include-system` when
    inspecting system UI, PHPicker, permission prompts, SpringBoard, or cross-app
    service processes; MAV asks Appium for the active foreground bundle and
    temporarily targets that bundle for the source tree. If the active app still
@@ -68,13 +68,10 @@ does not explore or repair routes by itself. The agent decides the next action.
    insufficient and the screenshot makes the target unambiguous. Use text as
    the last option because labels change with localization and copy edits. Use
    `mav ui wait --id`, `--text`, or `--value` for readiness checks.
-8. `mav ui tree` reports a natural screen id when the AX root has a `View`-suffix
-   identifier (`WallView` → `wall-view`) or the prefixed form
-   `mav.screen.<id>` / `screen.<id>`. When `screen_source=identity_missing`,
-   the screen root needs a stable `accessibilityIdentifier` added in product
-   code before the agent can name what it sees. Selectors for tapping still
-   work regardless; the natural id is a labelling/observability signal, not a
-   gate.
+8. `mav ui tree` may report a natural screen id when the AX root already has a
+   `View`-suffix identifier, such as `SettingsView` → `settings-view`. This is
+   a labelling/observability signal only. Selectors for tapping still work
+   regardless.
 9. For ad-hoc sessions started with `mav open`, run `mav stop` when validation
    is done. `mav run` stops run-owned streams automatically.
 
@@ -320,11 +317,9 @@ fail code=ui_tap_failed stderr="…"
 ```
 
 If `mav ui tree` reports `screen=unknown` with
-`screen_source=identity_missing`, the current screen has no explicit screen
-identifier (`View`-suffix root id or `mav.screen.<id>` / `screen.<id>`). UI
-commands still work — the natural id is a labelling signal, not a gate — but
-if you want mav's output to name the screen consistently, ask the product
-team to add the identifier in product code.
+`screen_source=identity_missing`, mav could not infer a natural screen name
+from the AX tree. UI commands still work; the natural id is a labelling signal,
+not a gate.
 
 AXe is the fast semantic driver, but it can miss system-process UI, PHPicker,
 permission alerts, non-accessibility wrapper views, and text-field placeholders.
