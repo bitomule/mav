@@ -271,16 +271,6 @@ UIKit:
 view.accessibilityIdentifier = "SettingsView"
 ```
 
-A prior version of mav (`mav go`, `mav map`) attempted to maintain a persisted
-graph of screens and tap edges so a single command could navigate from cold
-launch to any known screen. That subsystem was removed after evidence from
-academic literature, Google Robo, and real-world testing showed the
-deterministic-graph approach has a known ceiling that does not justify its
-maintenance burden. See the rationale in
-[Documentation/Notes/maestro-vs-mav-decision.md](https://github.com/SampleApp/sampleapp-ios/blob/main/Documentation/Notes/maestro-vs-mav-decision.md)
-of the SampleApp iOS chapter. mav now stays focused on what it does well:
-deterministic flow execution, AX-tree primitives, and evidence reports.
-
 Prefer target selectors in this order:
 
 1. Accessibility id: `mav ui tap --id home_settings_button`
