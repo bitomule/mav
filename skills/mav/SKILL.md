@@ -31,13 +31,16 @@ does not explore or repair routes by itself. The agent decides the next action.
    for install, launch, logs, screenshots, and crashes. If Appium/WDA is used on
    a physical device, its XCUITest signing setup must be configured outside MAV.
 4. Start the app with `mav open`. Use `mav open --clear-state` for a fresh
-   install, and `mav open --warm-appium` when the session is likely to need
+   install, `mav open --warm-appium` when the session is likely to need
    Appium-backed tree or tap fallback. Appium/WDA warm-up can take about a
    minute on a cold start; tell the user it may take a while, then run it
-   directly without asking for confirmation. This creates `/tmp/mav/<run-id>/`
-   and starts `logs.txt`. MAV captures a filtered unified log stream for MAV
-   probes. On physical devices, generated simulator install/launch recipes are
-   mapped to idb when possible.
+   directly without asking for confirmation. Use
+   `mav open --no-relaunch --warm-appium` when the app was launched manually
+   with custom `SIMCTL_CHILD_*` environment and MAV should only attach to the
+   app already in front. This creates `.mav/runs/<run-id>/` and starts
+   `logs.txt`. MAV captures a filtered unified log stream for MAV probes and
+   app-process logs when `process_name` is configured. On physical devices,
+   generated simulator install/launch recipes are mapped to idb when possible.
 5. Prefer `mav ui tree` to understand the current screen. It prints compact
    screen metadata followed by bounded `node ...` lines with ids, labels, roles,
    values, enabled state, subroles, titles, pids, focus state, and frames when
@@ -56,9 +59,9 @@ does not explore or repair routes by itself. The agent decides the next action.
    composition, and remote alerts.
 6. Use `mav capture --name <descriptive-name>` only when the tree is
    insufficient or visual evidence is needed. Captures are unique by default
-   under `/tmp/mav/<run-id>/captures/`, and `--name` gives the client and report
+   under `.mav/runs/<run-id>/captures/`, and `--name` gives the client and report
    a stable, readable proof point such as `largest-videos-after-pinch`.
-7. Use `mav ui tap/type/erase/hideKeyboard/swipe/wait/scrollUntil` for manual exploration. Prefer
+7. Use `mav ui tap/type/erase/hideKeyboard/swipe/longPress/wait/scrollUntil` for manual exploration. Prefer
    accessibility identifiers first (`--id`). Auto mode routes taps on wrappers
    that contain text fields/text views through Appium so the inner field gets
    keyboard focus. Use `mav ui tap --value VALUE` for placeholders exposed as
@@ -151,7 +154,7 @@ Use evidence when the user needs proof of verification:
 3. Names should describe the assertion, for example `settings-before-toggle`
    and `settings-after-toggle`.
 4. Share the generated report and evidence as clickable Markdown links using
-   absolute paths, for example `[MAV evidence report](/tmp/mav/<run-id>/report.html)`.
+   absolute paths, for example `[MAV evidence report](/path/to/repo/.mav/runs/<run-id>/report.html)`.
    Include the video only when `mav evidence report` reports `video=<path>`;
    if it reports `video=missing`, the report has screenshots/logs but no video
    evidence. Include key captures when they are relevant, for example
@@ -331,7 +334,7 @@ crash checks, logs, and reports for evidence.
 Output is intentionally compact and agent-friendly by default:
 
 ```text
-ok cmd=open run=7fd logs=/tmp/mav/7fd/logs.txt
+ok cmd=open run=7fd logs=/path/to/repo/.mav/runs/7fd/logs.txt
 ok cmd=ui.tree driver=axe nodes=42 screen=settings screen_source=identity
 node index=1 id=settings_button label=Settings role=button enabled=true frame="{{20, 120}, {180, 44}}"
 ok cmd=capture file=/tmp/mav/7fd/captures/largest-videos-after-pinch.png run=7fd

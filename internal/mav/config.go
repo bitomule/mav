@@ -311,8 +311,12 @@ func splitYAMLKV(line string) (string, string, bool) {
 	value := strings.TrimSpace(parts[1])
 	if unquoted, err := strconv.Unquote(value); err == nil {
 		value = unquoted
-	} else {
-		value = strings.Trim(value, `"`)
+	} else if len(value) >= 2 {
+		first := value[0]
+		last := value[len(value)-1]
+		if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+			value = value[1 : len(value)-1]
+		}
 	}
 	return key, value, true
 }

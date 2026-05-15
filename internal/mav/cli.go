@@ -193,7 +193,9 @@ Global flags:
 `
 	case "open":
 		return `Usage:
-  mav open [--device NAME] [--ios VERSION] [--udid UDID] [--locale LOCALE] [--language LANG] [--clear-state] [--warm-appium]
+  mav open [--device NAME] [--ios VERSION] [--udid UDID] [--locale LOCALE] [--language LANG] [--clear-state] [--warm-appium] [--no-relaunch]
+
+--no-relaunch reuses the app already running on the selected target. It starts or reuses a MAV run and can warm Appium without executing the launch recipe.
 `
 	case "ui":
 		return `Usage:
@@ -206,6 +208,7 @@ Global flags:
   mav ui erase [--id ID | --text TEXT | --value VALUE | --focused true] [--prefer-driver appium]
   mav ui hideKeyboard
   mav ui swipe [--direction up|down|left|right]
+  mav ui longPress --x X --y Y [--duration 800ms]
   mav ui pinch --x X --y Y --scale SCALE [--pan-x DX] [--pan-y DY] [--distance D] [--angle DEG] [--rotate DEG] [--duration 800ms] [--hold DURATION]
   mav ui rotate --x X --y Y --degrees DEG [--distance D] [--duration 800ms] [--hold DURATION]
   mav ui twoFingerPan --x X --y Y --pan-x DX --pan-y DY [--distance D] [--angle DEG] [--duration 800ms] [--hold DURATION]
@@ -227,6 +230,8 @@ Global flags:
 		return "Usage: mav ui rotate --x X --y Y --degrees DEG [--distance D] [--duration 800ms] [--hold DURATION]\n"
 	case "ui twoFingerPan":
 		return "Usage: mav ui twoFingerPan --x X --y Y --pan-x DX --pan-y DY [--distance D] [--angle DEG] [--duration 800ms] [--hold DURATION]\n"
+	case "ui longPress":
+		return "Usage: mav ui longPress --x X --y Y [--duration 800ms]\n"
 	case "run":
 		return "Usage: mav run flow.yaml\n"
 	case "logs":
@@ -255,6 +260,21 @@ func (c CLI) doctor(ctx context.Context, opts GlobalOptions) error {
 	caps := c.resolveCapabilities(ctx, cfg)
 	tools := caps.Tools
 	fields := caps.fields()
+	commands := effectiveLaunchCommands(cfg)
+	if hasLaunchCommands(commands) {
+		fields["launch_recipe"] = "ok"
+		if cfg.Launch.Mode != "" {
+			fields["launch_mode"] = cfg.Launch.Mode
+		}
+	} else {
+		fields["launch_recipe"] = "missing"
+		fields["launch_next"] = "mav setup, or add launch.commands build/app_path/install/launch to .mav/config.yaml"
+	}
+	if hasLaunchCommands(commands) && strings.TrimSpace(commands.Launch) == "" {
+		fields["launch_recipe"] = "incomplete"
+		fields["launch_missing"] = "launch"
+		fields["launch_next"] = "add launch.commands.launch to .mav/config.yaml"
+	}
 	missing := []string{}
 	nextHint := ""
 	for _, tool := range []string{"axe", "idb"} {
@@ -784,12 +804,25 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	if err := c.applyOpenTargetOverrides(ctx, &cfg, args); err != nil {
 		return Fail("sim_select_failed", map[string]string{"error": err.Error()}).Write(c.Stdout)
 	}
-	if existing, err := LoadRun(c.Root, ""); err == nil && existing.ID != "" {
-		_ = c.withStdout(io.Discard).stop(ctx, GlobalOptions{}, []string{"--run", existing.ID})
+	noRelaunch := hasFlag(args, "--no-relaunch")
+	if noRelaunch && hasFlag(args, "--clear-state") {
+		return Fail("open_flags_invalid", map[string]string{"usage": "--no-relaunch cannot be combined with --clear-state"}).Write(c.Stdout)
 	}
-	run, err := NewRunState()
+	var previousRunID string
+	var run RunState
+	if noRelaunch {
+		run, err = c.currentOrNewRun()
+	} else {
+		if existing, err := LoadRun(c.Root, ""); err == nil && existing.ID != "" {
+			previousRunID = existing.ID
+		}
+		run, err = NewProjectRunState(c.Root)
+	}
 	if err != nil {
 		return err
+	}
+	if previousRunID != "" {
+		_ = c.withStdout(io.Discard).stop(ctx, GlobalOptions{}, []string{"--run", previousRunID})
 	}
 	if err := SaveCurrentRun(c.Root, run); err != nil {
 		return err
@@ -803,19 +836,27 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	if probeLogErr != nil {
 		appendFile(run.LogsPath, "mav probe log capture failed: "+probeLogErr.Error()+"\n")
 	}
-	appPath, failedStep, failedResult := c.runLaunchRecipe(ctx, cfg, run, hasFlag(args, "--clear-state"))
-	if failedStep != nil {
-		fields := map[string]string{"run": run.ID, "logs": run.LogsPath, "step": failedStep.Name, "stderr": firstLine(failedResult.Stderr)}
-		if fields["stderr"] == "" {
-			fields["stderr"] = failedResult.Err.Error()
+	appPath := ""
+	if !noRelaunch {
+		var failedStep *launchStep
+		var failedResult CommandResult
+		appPath, failedStep, failedResult = c.runLaunchRecipe(ctx, cfg, run, hasFlag(args, "--clear-state"))
+		if failedStep != nil {
+			fields := map[string]string{"run": run.ID, "logs": run.LogsPath, "step": failedStep.Name, "stderr": firstLine(failedResult.Stderr)}
+			if fields["stderr"] == "" && failedResult.Err != nil {
+				fields["stderr"] = failedResult.Err.Error()
+			}
+			return Fail("launch_step_failed", fields).Write(c.Stdout)
 		}
-		return Fail("launch_step_failed", fields).Write(c.Stdout)
 	}
 	if warmAppium {
 		_, _ = fmt.Fprintln(c.Stderr, "mav: warming Appium/WDA session; this can take a minute on a cold start")
 		appiumWarmup = c.startAppiumWarmup(ctx, cfg, run, true)
 	}
 	fields := map[string]string{"run": run.ID, "logs": run.LogsPath, "dir": run.Dir}
+	if noRelaunch {
+		fields["relaunch"] = "false"
+	}
 	if appPath != "" {
 		fields["app"] = appPath
 	}
@@ -961,9 +1002,7 @@ func simctlLaunchLanguageArgs(cfg Config) []string {
 }
 
 func (c CLI) startProbeLogs(ctx context.Context, cfg Config, run RunState) (int, error) {
-	subsystem := probeLogSubsystem(cfg)
-	category := probeLogCategory(cfg)
-	predicate := fmt.Sprintf(`subsystem == "%s" AND category == "%s"`, subsystem, category)
+	predicate := probeLogPredicate(cfg)
 	if isPhysicalDevice(cfg) {
 		if !hasTool(cfg, "idb") {
 			return 0, fmt.Errorf("idb_missing")
@@ -1010,9 +1049,21 @@ func (c CLI) startProbeLogs(ctx context.Context, cfg Config, run RunState) (int,
 	return pid, err
 }
 
+func probeLogPredicate(cfg Config) string {
+	parts := []string{fmt.Sprintf(`(subsystem == "%s" AND category == "%s")`, probeLogSubsystem(cfg), probeLogCategory(cfg))}
+	if cfg.ProcessName != "" {
+		parts = append(parts, fmt.Sprintf(`process == "%s"`, cfg.ProcessName))
+	}
+	if cfg.BundleID != "" {
+		parts = append(parts, fmt.Sprintf(`subsystem == "%s"`, cfg.BundleID))
+	}
+	parts = append(parts, `eventMessage CONTAINS "MAV_LOG"`)
+	return strings.Join(parts, " OR ")
+}
+
 func (c CLI) ui(ctx context.Context, opts GlobalOptions, args []string) error {
 	if len(args) == 0 {
-		return Fail("ui_command_missing", map[string]string{"usage": "mav ui tree|tap|type|erase|hideKeyboard|swipe|pinch|rotate|twoFingerPan|actions|wait|scrollUntil"}).Write(c.Stdout)
+		return Fail("ui_command_missing", map[string]string{"usage": "mav ui tree|tap|type|erase|hideKeyboard|swipe|longPress|pinch|rotate|twoFingerPan|actions|wait|scrollUntil"}).Write(c.Stdout)
 	}
 	cfg, err := LoadConfig(c.Root)
 	if err != nil {
@@ -1031,6 +1082,8 @@ func (c CLI) ui(ctx context.Context, opts GlobalOptions, args []string) error {
 		return c.uiHideKeyboard(ctx, opts, cfg, args[1:])
 	case "swipe":
 		return c.uiSwipe(ctx, opts, cfg, args[1:])
+	case "longPress":
+		return c.uiLongPress(ctx, opts, cfg, args[1:])
 	case "pinch":
 		return c.uiPinch(ctx, opts, cfg, args[1:])
 	case "rotate":
@@ -2109,6 +2162,24 @@ func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args [
 	return OK("ui.swipe", fields).Write(c.Stdout)
 }
 
+func (c CLI) uiLongPress(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
+	_ = opts
+	x := flagValue(args, "--x")
+	y := flagValue(args, "--y")
+	durationText := flagValue(args, "--duration")
+	actions, fields, err := buildLongPressActions(x, y, durationText)
+	if err != nil {
+		return Fail("gesture_invalid", map[string]string{"error": err.Error(), "usage": "mav ui longPress --x X --y Y [--duration 800ms]"}).Write(c.Stdout)
+	}
+	if err := c.performAppiumActions(ctx, cfg, actions); err != nil {
+		return c.writeAppiumGestureError(err)
+	}
+	waitForGestureCompletion(fields)
+	fields["driver"] = "appium"
+	c.appendCurrentCommand("mav ui longPress "+strings.Join(args, " "), CommandResult{})
+	return OK("ui.longPress", fields).Write(c.Stdout)
+}
+
 func (c CLI) uiPinch(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
 	params := gestureParamsFromArgs(args)
 	params.Kind = "pinch"
@@ -2263,7 +2334,7 @@ func (c CLI) capture(ctx context.Context, opts GlobalOptions, args []string) err
 	}
 	run, err := LoadRun(c.Root, flagValue(args, "--run"))
 	if err != nil {
-		run, err = NewRunState()
+		run, err = NewProjectRunState(c.Root)
 		if err != nil {
 			return err
 		}
@@ -2669,9 +2740,13 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 		err := c.withStdout(&out).uiHideKeyboard(ctx, GlobalOptions{}, mustLoadConfig(c.Root), nil)
 		return map[string]string{"driver": "appium"}, commandOutputErr(err, out.String(), "hide_keyboard_failed")
 	case "swipe":
-		args := flowArgs(step.Params, "--direction", "direction")
+		args := flowArgs(step.Params, "--direction", "direction", "--start-x", "start-x", "--start-y", "start-y", "--end-x", "end-x", "--end-y", "end-y")
 		err := c.withStdout(io.Discard).uiSwipe(ctx, GlobalOptions{PreferDriver: prefer}, mustLoadConfig(c.Root), args)
 		return copyParams(step.Params), outputErr(err, "swipe_failed")
+	case "longPress":
+		args := flowArgs(step.Params, "--x", "x", "--y", "y", "--duration", "duration")
+		err := c.withStdout(io.Discard).uiLongPress(ctx, GlobalOptions{}, mustLoadConfig(c.Root), args)
+		return copyParams(step.Params), outputErr(err, "long_press_failed")
 	case "pinch":
 		args := gestureFlowArgs(step.Params)
 		err := c.withStdout(io.Discard).uiPinch(ctx, GlobalOptions{}, mustLoadConfig(c.Root), args)
@@ -2906,7 +2981,7 @@ func (c CLI) currentOrNewRun() (RunState, error) {
 	if err == nil && run.ID != "" {
 		return run, nil
 	}
-	run, err = NewRunState()
+	run, err = NewProjectRunState(c.Root)
 	if err != nil {
 		return RunState{}, err
 	}
@@ -3872,6 +3947,33 @@ func buildSwipeActions(startX, startY, endX, endY string) ([]map[string]any, map
 	fields := map[string]string{"duration": duration.String()}
 	return []map[string]any{
 		touchPointerActions("finger1", point{X: sx, Y: sy}, point{X: ex, Y: ey}, durationMS, 0),
+	}, fields, nil
+}
+
+func buildLongPressActions(x, y, durationText string) ([]map[string]any, map[string]string, error) {
+	px, err := parseRequiredFloat(x, "x")
+	if err != nil {
+		return nil, nil, err
+	}
+	py, err := parseRequiredFloat(y, "y")
+	if err != nil {
+		return nil, nil, err
+	}
+	duration := parseFlowDuration(durationText, 800*time.Millisecond)
+	if duration <= 0 {
+		return nil, nil, fmt.Errorf("duration_invalid")
+	}
+	durationMS := int(duration / time.Millisecond)
+	if durationMS <= 0 {
+		durationMS = 1
+	}
+	fields := map[string]string{
+		"x":        formatNumber(px),
+		"y":        formatNumber(py),
+		"duration": strconv.Itoa(durationMS) + "ms",
+	}
+	return []map[string]any{
+		touchPointerActions("finger1", point{X: px, Y: py}, point{X: px, Y: py}, 0, durationMS),
 	}, fields, nil
 }
 
