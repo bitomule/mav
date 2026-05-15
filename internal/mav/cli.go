@@ -2922,13 +2922,78 @@ func (c CLI) crashes(ctx context.Context, opts GlobalOptions, args []string) err
 		addSandboxNext(fields, result.Stderr)
 		return Fail("crashes_failed", fields).Write(c.Stdout)
 	}
-	count := 0
-	for _, line := range strings.Split(result.Stdout, "\n") {
-		if strings.TrimSpace(line) != "" {
-			count++
-		}
+
+	// Enumerate crash names from `idb crash list` stdout, fetch each
+	// body via `idb crash show <name>`, parse with ParseIPS and persist
+	// both the raw .ips and a one-line summary under <runDir>/crashes/.
+	// Older behaviour (just emitting count) is preserved as the ok line;
+	// the per-crash artefacts and summary fields are additive.
+	names := parseCrashNames(result.Stdout)
+	fields := map[string]string{"count": strconv.Itoa(len(names))}
+
+	if len(names) == 0 {
+		return OK("crashes", fields).Write(c.Stdout)
 	}
-	return OK("crashes", map[string]string{"count": strconv.Itoa(count)}).Write(c.Stdout)
+
+	// Persist + summarise crashes when a run is active. We attach to the
+	// current run if there is one; if not, the count line is still emitted
+	// so flows that call `mav crashes` outside an evidence session don't
+	// fail loudly. Missing run is non-fatal.
+	if run, err := LoadRun(c.Root, ""); err == nil {
+		crashDir := filepath.Join(run.Dir, "crashes")
+		_ = os.MkdirAll(crashDir, 0o755)
+		fetched, summarised := 0, 0
+		for idx, name := range names {
+			body := c.Runner.Run(ctx, "idb", idbTargetArgs(cfg, "crash", "show", name)...)
+			if body.Err != nil || body.Stdout == "" {
+				continue
+			}
+			ipsPath := filepath.Join(crashDir, fmt.Sprintf("%02d.ips", idx+1))
+			if err := os.WriteFile(ipsPath, []byte(body.Stdout), 0o644); err != nil {
+				continue
+			}
+			fetched++
+			summary, err := ParseIPS([]byte(body.Stdout))
+			if err != nil {
+				continue
+			}
+			txtPath := filepath.Join(crashDir, fmt.Sprintf("%02d.txt", idx+1))
+			_ = os.WriteFile(txtPath, []byte(summary.OneLiner()+"\n"), 0o644)
+			summarised++
+		}
+		fields["fetched"] = strconv.Itoa(fetched)
+		fields["summarised"] = strconv.Itoa(summarised)
+		fields["dir"] = crashDir
+	}
+
+	return OK("crashes", fields).Write(c.Stdout)
+}
+
+// parseCrashNames extracts crash report names from `idb crash list` stdout.
+// idb emits one report identifier per line (the file name without the
+// trailing `.ips`). Whitespace-only lines and ANSI-styled rows are
+// tolerated.
+func parseCrashNames(stdout string) []string {
+	var names []string
+	for _, line := range strings.Split(stdout, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		// Some idb versions include a leading bullet/dash; strip it.
+		trimmed = strings.TrimLeft(trimmed, "-* ")
+		if trimmed == "" {
+			continue
+		}
+		// idb's `crash list` includes a header line on some versions; skip
+		// anything obviously not a crash identifier (starts with whitespace,
+		// uppercase keyword we don't expect).
+		if strings.EqualFold(trimmed, "no crashes") {
+			continue
+		}
+		names = append(names, trimmed)
+	}
+	return names
 }
 
 func (c CLI) evidence(opts GlobalOptions, args []string) error {
