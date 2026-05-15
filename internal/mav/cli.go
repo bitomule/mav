@@ -223,7 +223,7 @@ Global flags:
 	case "capture":
 		return "Usage: mav capture [--name NAME] [--run RUN_ID]\n"
 	case "ui tree":
-		return "Usage: mav ui tree [--prefer-driver auto|axe] [--include-system]\n\nPrints compact screen metadata followed by bounded node lines with id, label, role, value, enabled, subrole, title, pid, focused, and frame when available. --include-system asks the system/SpringBoard tree via baguette when a system service, permission prompt, or cross-app view is in front. Simulator only.\n"
+		return "Usage: mav ui tree [--prefer-driver auto|axe] [--include-system] [--agent] [--with-frame]\n\nPrints compact screen metadata followed by bounded node lines with id, label, role, value, enabled, subrole, title, pid, focused, and frame when available. --include-system asks the system/SpringBoard tree via baguette when a system service, permission prompt, or cross-app view is in front. Simulator only.\n\n--agent emits a ranked 40-element view that puts focused + actionable elements first and drops frame to save tokens. Combine with --with-frame to keep coordinates.\n"
 	case "ui swipe":
 		return "Usage: mav ui swipe [--direction up|down|left|right] [--start-x X --start-y Y --end-x X --end-y Y]\n"
 	case "ui pinch":
@@ -958,8 +958,20 @@ func (c CLI) uiTree(ctx context.Context, opts GlobalOptions, cfg Config, args []
 		fields["active_bundle"] = described.ActiveBundle
 		fields["system_source"] = strconv.FormatBool(described.SystemSource)
 	}
+	agentMode := hasFlag(args, "--agent")
+	withFrame := hasFlag(args, "--with-frame")
+	if agentMode {
+		fields["agent"] = "true"
+	}
 	if err := OK("ui.tree", fields).Write(c.Stdout); err != nil {
 		return err
+	}
+	if agentMode {
+		// Agent mode: rank, cap to 40, drop noisy fields. Stays in the
+		// same line-oriented shape as the legacy output so existing
+		// line-parser agents keep working; only the field set differs.
+		agents := AgentTree(state.Elements, AgentTreeOptions{WithFrame: withFrame})
+		return writeAgentElementLines(c.Stdout, agents)
 	}
 	return writeElementLines(c.Stdout, state.Elements)
 }
@@ -2359,6 +2371,46 @@ func writeElementLines(w io.Writer, elements []Element) error {
 		}
 		parts := []string{"node"}
 		keys := []string{"index", "id", "label", "role", "value", "enabled", "subrole", "title", "pid", "focused", "frame"}
+		for _, key := range keys {
+			if fields[key] != "" {
+				parts = append(parts, key+"="+quoteIfNeeded(fields[key]))
+			}
+		}
+		if _, err := fmt.Fprintln(w, strings.Join(parts, " ")); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// writeAgentElementLines emits the compact agent-mode form: one `node` line
+// per element, fewer fields, ranked-and-capped by AgentTree. The output
+// is still kv-pair shaped (not JSON) so existing line-oriented agents can
+// parse it the same way as the legacy mode; only the field set differs.
+//
+// Each line carries `actionable=true|false` so an agent can pick a target
+// without re-deriving the role-list heuristic in its own code.
+func writeAgentElementLines(w io.Writer, agents []AgentElement) error {
+	for i, ae := range agents {
+		fields := map[string]string{
+			"index":      strconv.Itoa(i + 1),
+			"id":         ae.ID,
+			"label":      ae.Label,
+			"role":       ae.Role,
+			"value":      ae.Value,
+			"title":      ae.Title,
+			"subrole":    ae.Subrole,
+			"focused":    ae.Focused,
+			"enabled":    ae.Enabled,
+			"frame":      ae.Frame,
+			"actionable": strconv.FormatBool(ae.Actionable),
+		}
+		parts := []string{"node"}
+		// Order: index first; actionable second so it's prominent; then
+		// identity (id, label), descriptive (role, value, title, subrole),
+		// then state (focused, enabled), then frame (only present with
+		// --with-frame).
+		keys := []string{"index", "actionable", "id", "label", "role", "value", "title", "subrole", "focused", "enabled", "frame"}
 		for _, key := range keys {
 			if fields[key] != "" {
 				parts = append(parts, key+"="+quoteIfNeeded(fields[key]))
