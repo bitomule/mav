@@ -31,14 +31,34 @@ type Element struct {
 // Elements. Bounded at 80 to keep output tractable for downstream
 // callers; the same cap drove `compactElements` historically.
 func ExtractElements(rawTree string) []Element {
+	return Compact(ExtractElementsRaw(rawTree))
+}
+
+// ExtractElementsRaw parses an AX tree and returns the de-duplicated flat
+// list WITHOUT the 80-element cap. Used by evidence persistence so the
+// `*.full.json` fixture stays complete; downstream tooling (agents, the
+// HTML report) still consumes the compact (capped) variant from
+// ExtractElements / Compact.
+func ExtractElementsRaw(rawTree string) []Element {
 	var parsed any
 	if err := json.Unmarshal([]byte(rawTree), &parsed); err != nil {
 		return nil
 	}
 	out := []Element{}
 	walkAX(parsed, &out, 0)
-	return compactElements(out)
+	return dedupElements(out)
 }
+
+// Compact applies the 80-element cap on top of an already-dedup'd slice.
+// Exported so PersistTree can re-cap a raw extraction without re-parsing.
+func Compact(elements []Element) []Element {
+	if len(elements) <= treeCompactCap {
+		return elements
+	}
+	return elements[:treeCompactCap]
+}
+
+const treeCompactCap = 80
 
 // walkAX is the recursive visitor over the parsed AX value. Accepts
 // either lists (multi-root) or maps (single node with optional
@@ -125,6 +145,12 @@ func boolStringField(node map[string]any, keys ...string) string {
 // it prevents the `mav ui tree` output from drowning agents on
 // list-heavy screens.
 func compactElements(elements []Element) []Element {
+	return Compact(dedupElements(elements))
+}
+
+// dedupElements removes duplicates and empty elements but does NOT cap.
+// Used by ExtractElementsRaw so persistence can keep the full set.
+func dedupElements(elements []Element) []Element {
 	seen := map[string]bool{}
 	out := []Element{}
 	for _, el := range elements {
@@ -134,9 +160,6 @@ func compactElements(elements []Element) []Element {
 		}
 		seen[key] = true
 		out = append(out, el)
-		if len(out) >= 80 {
-			break
-		}
 	}
 	return out
 }
