@@ -1,6 +1,10 @@
-// Package idb wraps Facebook's idb_companion. This driver exists as a bridge
-// for the duration of P2 only: P3 deletes it entirely and replaces the device
-// path with the go-ios driver. Do not add features here.
+// Package idb wraps Facebook's idb_companion. After the May 2026 plan revision
+// (go-ios proved unviable as a drop-in: requires sudo for tunnel on iOS 17+,
+// no gesture API, no HAR), idb is a *permanent* driver in MAV's portfolio:
+// the only viable path for device coord taps, screenshots, logs, crashes, and
+// install/launch without root. This package stays stubbed during P2/P3 because
+// the cli.go migration off hasTool() is deferred -- cli.go still calls idb
+// directly today. Functional bodies fill in when that migration happens.
 package idb
 
 import (
@@ -10,7 +14,7 @@ import (
 	"github.com/bitomule/mav/internal/mav/drivers"
 )
 
-// ID is the registry key. Treated as a transitional name; gone in P3.
+// ID is the registry key. Permanent.
 const ID = "idb"
 
 // Driver wraps the idb CLI.
@@ -39,18 +43,28 @@ func (d *Driver) Provides(_ drivers.Target) drivers.CapabilitySet {
 	)
 }
 
-// Cost is set high across the board: idb is the last-resort path during P2 and
-// scheduled for deletion. Other drivers should win every routing comparison.
-func (d *Driver) Cost(_ drivers.Capability, _ drivers.Target) int { return 200 }
+// Cost is canonical (0) for the device-only capabilities idb owns; medium (50)
+// for sim capabilities where AXe/simctl are typically preferred.
+func (d *Driver) Cost(c drivers.Capability, target drivers.Target) int {
+	if target.IsDevice() {
+		return 0
+	}
+	switch c {
+	case drivers.CapCoordTap:
+		return 50
+	default:
+		return 80
+	}
+}
 
 // Probe checks idb is on PATH.
 func (d *Driver) Probe(_ context.Context, p drivers.Probe) drivers.HealthReport {
 	path, err := p.LookPath("idb")
 	if err != nil {
-		return drivers.HealthReport{State: drivers.HealthMissing, Detail: "idb not on PATH"}
+		return drivers.HealthReport{State: drivers.HealthMissing, Detail: "idb not on PATH", Next: "mav setup --install idb"}
 	}
 	d.path = path
-	return drivers.HealthReport{State: drivers.HealthDegraded, Detail: "idb scheduled for removal in P3", Tools: map[string]string{"idb": path}}
+	return drivers.HealthReport{State: drivers.HealthOK, Tools: map[string]string{"idb": path}}
 }
 
 func (d *Driver) Warm(_ context.Context, _ drivers.Target) <-chan error {
@@ -59,9 +73,9 @@ func (d *Driver) Warm(_ context.Context, _ drivers.Target) <-chan error {
 	return ch
 }
 
-// --- functional methods (stubbed, never implemented; deleted in P3) -----
+// --- functional methods (stubs until cli.go migrates to the registry) ---
 
-var errNotYet = errors.New("idb: bridge driver, not implemented (gone in P3)")
+var errNotYet = errors.New("idb: registry path not yet wired in cli.go (still uses hasTool)")
 
 func (d *Driver) Tap(context.Context, drivers.Target, drivers.TapSpec) (drivers.TapResult, error) {
 	return drivers.TapResult{}, errNotYet
