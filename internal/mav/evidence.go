@@ -21,6 +21,21 @@ type EvidenceStep struct {
 	File      string `json:"file"`
 	Kind      string `json:"kind"`
 	CreatedAt string `json:"created_at"`
+
+	// Tree snapshot fields (P4 upgrade). Populated when the step also
+	// persisted an accessibility tree under <runDir>/trees/. Absent on
+	// older evidence steps; readers MUST tolerate empty values.
+	TreePath  string `json:"tree_path,omitempty"`
+	FullPath  string `json:"tree_full_path,omitempty"`
+	DeltaPath string `json:"tree_delta_path,omitempty"`
+	TreeHash  string `json:"tree_hash,omitempty"`
+
+	// Video correlation (P4 upgrade). When a recording is active,
+	// MonotonicMs is the host monotonic clock at capture; VideoOffsetMs
+	// is monotonic_ms minus the recording's start, in milliseconds.
+	// Both empty when no recording is running.
+	MonotonicMs    int64 `json:"monotonic_ms,omitempty"`
+	VideoOffsetMs int64 `json:"video_offset_ms,omitempty"`
 }
 
 type ReportData struct {
