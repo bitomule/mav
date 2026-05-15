@@ -5,6 +5,7 @@ import (
 	"github.com/bitomule/mav/internal/mav/drivers/axe"
 	"github.com/bitomule/mav/internal/mav/drivers/baguette"
 	"github.com/bitomule/mav/internal/mav/drivers/idb"
+	"github.com/bitomule/mav/internal/mav/drivers/network"
 	"github.com/bitomule/mav/internal/mav/drivers/simctl"
 )
 
@@ -22,4 +23,5 @@ func RegisterDefaultDrivers(reg *drivers.Registry, exec drivers.Executor) {
 	reg.Register(simctl.New(exec))
 	reg.Register(idb.New(exec))
 	reg.Register(baguette.New(exec))
+	reg.Register(network.New(exec))
 }
