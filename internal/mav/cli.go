@@ -2540,7 +2540,8 @@ func (c CLI) captureEvidenceStep(ctx context.Context, run RunState, name, note s
 		return nil, fmt.Errorf("config_not_found")
 	}
 	name = safeFileName(name)
-	file := filepath.Join(run.Dir, "steps", fmt.Sprintf("%02d_%s.png", len(LoadEvidenceSteps(run))+1, name))
+	idx := len(LoadEvidenceSteps(run)) + 1
+	file := filepath.Join(run.Dir, "steps", fmt.Sprintf("%02d_%s.png", idx, name))
 	result, err := c.captureScreenshot(ctx, cfg, file)
 	if err != nil {
 		return nil, fmt.Errorf("capture_tool_missing")
@@ -2548,10 +2549,79 @@ func (c CLI) captureEvidenceStep(ctx context.Context, run RunState, name, note s
 	if result.Err != nil {
 		return map[string]string{"stderr": firstLine(result.Stderr)}, fmt.Errorf("capture_failed")
 	}
-	if err := AppendEvidenceStep(run, EvidenceStep{Name: name, Note: note, File: file, Kind: "screenshot"}); err != nil {
+
+	step := EvidenceStep{Name: name, Note: note, File: file, Kind: "screenshot"}
+	attachStepTimings(run, &step)
+	attachStepTree(ctx, c, cfg, run, &step, idx, name)
+
+	if err := AppendEvidenceStep(run, step); err != nil {
 		return nil, err
 	}
-	return map[string]string{"name": name, "file": file}, nil
+
+	fields := map[string]string{"name": name, "file": file}
+	if step.TreePath != "" {
+		fields["tree"] = step.TreePath
+	}
+	if step.DeltaPath != "" {
+		fields["tree_delta"] = step.DeltaPath
+	}
+	return fields, nil
+}
+
+// attachStepTimings populates MonotonicMs and (when a video recording is
+// active) VideoOffsetMs on the step. The offset is computed relative to the
+// recording's start, persisted in <runDir>/video.start.ms when video.start
+// runs. Best-effort: missing file -> VideoOffsetMs stays zero.
+func attachStepTimings(run RunState, step *EvidenceStep) {
+	now := time.Now().UnixMilli()
+	step.MonotonicMs = now
+	if data, err := os.ReadFile(filepath.Join(run.Dir, "video.start.ms")); err == nil {
+		if start, parseErr := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64); parseErr == nil && start > 0 {
+			step.VideoOffsetMs = now - start
+		}
+	}
+}
+
+// attachStepTree extracts the current screen's accessibility tree via axe,
+// persists the compact + full + delta JSON under <runDir>/trees/, and
+// populates the tree fields on step. Best-effort: a failure to extract the
+// tree leaves the step's screenshot untouched. The previous step's tree (if
+// any) feeds the delta.
+func attachStepTree(ctx context.Context, c CLI, cfg Config, run RunState, step *EvidenceStep, idx int, name string) {
+	described, err := c.describeUITree(ctx, cfg, "auto", false)
+	if err != nil || described.Result.Err != nil || described.Result.Stdout == "" {
+		return
+	}
+	raw := ExtractElementsRaw(described.Result.Stdout)
+	if len(raw) == 0 {
+		return
+	}
+	previous := loadPreviousTree(run)
+	persisted, err := PersistTree(run.Dir, idx, name, raw, previous)
+	if err != nil {
+		return
+	}
+	step.TreePath = persisted.CompactPath
+	step.FullPath = persisted.FullPath
+	step.DeltaPath = persisted.DeltaPath
+	step.TreeHash = persisted.Hash
+}
+
+// loadPreviousTree returns the elements of the most recent persisted tree
+// snapshot for the run, used as the baseline for the next step's delta.
+// Returns nil (signalling "no previous") when there is no prior snapshot.
+func loadPreviousTree(run RunState) []Element {
+	steps := LoadEvidenceSteps(run)
+	for i := len(steps) - 1; i >= 0; i-- {
+		if steps[i].TreePath == "" {
+			continue
+		}
+		elements, err := LoadPersistedTree(steps[i].TreePath)
+		if err == nil {
+			return elements
+		}
+	}
+	return nil
 }
 
 func (c CLI) waitForFlowCondition(ctx context.Context, params map[string]string, any []FlowCondition) error {
@@ -3075,6 +3145,10 @@ func (c CLI) evidenceStart(ctx context.Context, opts GlobalOptions, args []strin
 	if err := os.WriteFile(filepath.Join(run.Dir, "video.pid"), []byte(strconv.Itoa(pid)+"\n"), 0o644); err != nil {
 		return err
 	}
+	// Persist the wall-clock start so subsequent evidence steps can compute
+	// video_offset_ms (P4.4 PTS sync). Best-effort; failure here only loses
+	// the offset calibration, not the recording.
+	_ = os.WriteFile(filepath.Join(run.Dir, "video.start.ms"), []byte(strconv.FormatInt(time.Now().UnixMilli(), 10)+"\n"), 0o644)
 	appendCommand(run, "mav evidence start", CommandResult{})
 	return OK("evidence.start", map[string]string{"run": run.ID, "file": path, "pid": strconv.Itoa(pid)}).Write(c.Stdout)
 }
