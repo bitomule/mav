@@ -89,6 +89,8 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 		return c.stop(ctx, opts, rest[1:])
 	case "crashes":
 		return c.crashes(ctx, opts, rest[1:])
+	case "network":
+		return c.network(ctx, opts, rest[1:])
 	case "evidence":
 		return c.evidence(opts, rest[1:])
 	default:
@@ -168,6 +170,7 @@ Commands:
   stop        Stop run-owned background processes.
   crashes     List crashes for the configured app.
   evidence    Start/step/stop/report evidence.
+  network     Start/stop a HAR network capture (sim only).
 
 Global flags:
   --raw       Emit raw underlying tool output where supported.
@@ -248,6 +251,19 @@ Global flags:
   mav evidence step --name NAME [--note NOTE] [--run RUN_ID]
   mav evidence stop [--note NOTE] [--no-capture] [--run RUN_ID]
   mav evidence report [--run RUN_ID]
+`
+	case "network":
+		return `Usage:
+  mav network start [--har PATH] [--port PORT] [--run RUN_ID]
+  mav network stop  [--run RUN_ID]
+
+Starts a HAR network capture via mitmproxy on the current simulator.
+The HAR file lands at <runDir>/network.har by default. The PID of the
+mitmdump process is recorded in processes.jsonl so other commands
+(mav stop, the evidence report) can find it.
+
+Simulator only. On physical devices, point the device at an externally-
+running proxy manually; mav does not bundle that flow.
 `
 	default:
 		return "Unknown help topic. Run: mav help\n"

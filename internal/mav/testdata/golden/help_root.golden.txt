@@ -19,6 +19,7 @@ Commands:
   stop        Stop run-owned background processes.
   crashes     List crashes for the configured app.
   evidence    Start/step/stop/report evidence.
+  network     Start/stop a HAR network capture (sim only).
 
 Global flags:
   --raw       Emit raw underlying tool output where supported.
