@@ -8,8 +8,8 @@ import (
 )
 
 // Element is the framework-neutral view of a single node in an
-// accessibility tree (axe or Appium-source XML/JSON). It collapses
-// the differences between drivers so callers (`mav ui tree`,
+// accessibility tree (axe or baguette JSON). It collapses the
+// differences between drivers so callers (`mav ui tree`,
 // `mav ui tap`, flow conditions, gesture helpers, focus probes)
 // can reason in a single vocabulary.
 type Element struct {
@@ -42,8 +42,8 @@ func ExtractElements(rawTree string) []Element {
 
 // walkAX is the recursive visitor over the parsed AX value. Accepts
 // either lists (multi-root) or maps (single node with optional
-// children), so it works with both axe output (arrays) and Appium
-// source XML serialised as a map.
+// children), so it works with both axe output (arrays) and baguette
+// system-UI output (single-root map).
 func walkAX(value any, out *[]Element, depth int) {
 	switch node := value.(type) {
 	case []any:
@@ -261,5 +261,5 @@ func hasScreenIdentifierSuffix(id string) bool {
 
 func isApplicationRootElement(el Element) bool {
 	role := strings.ToLower(strings.TrimSpace(el.Role))
-	return role == "application" || role == "axapplication" || role == "xcuielementtypeapplication" || role == "appiumaut"
+	return role == "application" || role == "axapplication" || role == "xcuielementtypeapplication"
 }

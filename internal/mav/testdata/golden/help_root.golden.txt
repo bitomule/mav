@@ -23,6 +23,6 @@ Commands:
 Global flags:
   --raw       Emit raw underlying tool output where supported.
   --verbose   Print extra debug details where supported.
-  --prefer-driver auto|axe|appium
+  --prefer-driver auto|axe
               Prefer a UI driver for semantic tree/tap commands.
   --help,-h   Show help.

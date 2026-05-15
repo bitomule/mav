@@ -13,12 +13,10 @@ import (
 // crashes / install), Baguette (sim multitouch + system UI + hardware buttons),
 // simctl (sim lifecycle / video / locale / log stream).
 //
-// Appium has been removed (see the May 2026 plan revision). go-ios was
-// evaluated and rejected: requires sudo for tunnel on iOS 17+, no gesture
-// API, no HAR. idb stays as the canonical device driver.
-//
-// cli.go does not consult this registry yet for every operation; the
-// migration off hasTool() happens incrementally as we move each subcommand.
+// idb is the canonical device driver. Sim-only multitouch / system-UI /
+// hardware-button operations go through baguette. On device targets where
+// baguette is unavailable, cli.go surfaces a structured error rather than
+// silently falling back.
 func RegisterDefaultDrivers(reg *drivers.Registry, exec drivers.Executor) {
 	reg.Register(axe.New(exec))
 	reg.Register(simctl.New(exec))

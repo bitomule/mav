@@ -1,11 +1,11 @@
 Usage:
-  mav ui tree [--prefer-driver auto|axe|appium] [--include-system]
-  mav ui tap --id ID [--prefer-driver auto|axe|appium]
+  mav ui tree [--prefer-driver auto|axe] [--include-system]
+  mav ui tap --id ID [--prefer-driver auto|axe]
   mav ui tap --x X --y Y
-  mav ui tap --text TEXT [--prefer-driver auto|axe|appium]
-  mav ui tap --value VALUE [--prefer-driver auto|appium]
-  mav ui type TEXT [--prefer-driver auto|axe|appium]
-  mav ui erase [--id ID | --text TEXT | --value VALUE | --focused true] [--prefer-driver appium]
+  mav ui tap --text TEXT [--prefer-driver auto|axe]
+  mav ui tap --value VALUE
+  mav ui type TEXT [--prefer-driver auto|axe]
+  mav ui erase [--id ID | --text TEXT | --value VALUE | --focused true]
   mav ui hideKeyboard
   mav ui swipe [--direction up|down|left|right]
   mav ui longPress --x X --y Y [--duration 800ms]

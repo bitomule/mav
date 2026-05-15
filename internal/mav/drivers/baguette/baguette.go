@@ -1,7 +1,7 @@
 // Package baguette wraps the baguette CLI (https://github.com/tddworks/baguette)
 // — a Swift host-side simulator driver built on private SimulatorKit symbols.
 // Baguette is the canonical multitouch / system-UI / hardware-button path on
-// simulator, replacing Appium for those operations.
+// simulator.
 //
 // Sim-only: baguette has no device support. Provides() returns an empty set
 // on device targets so the router never picks it; cli.go must surface a

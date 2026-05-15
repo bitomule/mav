@@ -30,9 +30,9 @@ MAV is early and evolving. The current stable pieces are:
 - Physical device selection, install, launch, logs, screenshots, UI actions,
   crashes, and evidence screenshots.
 - AXe-first accessibility tree inspection and semantic interactions.
-- idb coordinate taps and fallback capabilities.
-- Appium-backed WDA fallback for system-process trees, form wrappers, and
-  optional multitouch gestures.
+- idb coordinate taps and device/simulator fallback capabilities.
+- Baguette-backed multitouch gestures, system UI tree, hardware buttons, and
+  keyboard helpers on simulator.
 - Native MAV YAML flows through `mav run`.
 - Verified evidence manifests in `.mav/runs/<run-id>/report.json`; the MAV
   skill authors the visual HTML report from that data.
@@ -45,9 +45,9 @@ MAV is early and evolving. The current stable pieces are:
 - Go, for development builds.
 - AXe, for accessibility tree and semantic UI actions.
 - idb, for coordinate taps and device/simulator fallback operations.
-- Appium 2 with the XCUITest driver, optional, for WDA-backed tree/tap
-  fallback, system UI such as PHPicker and permission prompts, and true
-  multitouch gestures such as pinch, rotate, and two-finger pan.
+- Baguette, for simulator multitouch (pinch, rotate, two-finger pan), the
+  SpringBoard / system UI tree, hardware buttons, keyboard erase, and
+  hideKeyboard. Sim-only — device multitouch is intentionally unsupported.
 
 Check the local environment:
 
@@ -57,11 +57,10 @@ mav doctor
 
 `mav doctor` reports capability availability. MAV routes commands by
 capability: accessibility and semantic actions use AXe, coordinate taps and
-device fallback use idb, and WDA-backed fallback or multitouch uses Appium.
+device fallback use idb, multitouch and system UI use baguette on simulator.
 Physical iOS devices require idb for install, launch, logs, screenshots, and
-crashes. Appium/WDA can also target a selected physical device, but the
-Appium/XCUITest signing setup for WDA must be configured outside MAV when your
-device requires it.
+crashes. Multitouch gestures, system-UI trees, and hideKeyboard return
+structured errors on device — use a simulator for those flows.
 
 Configure the project or install supported helper tools:
 
@@ -76,20 +75,14 @@ Existing explicit choices in `.mav/config.yaml` are preserved. Use
 `mav setup --non-interactive` for CI/scripts.
 
 ```bash
-mav setup --install axe idb appium
+mav setup --install axe idb baguette
 ```
 
 `mav setup --install idb` prefers pipx with Python 3.12/3.13 for `fb-idb` and
-uses Homebrew for `idb-companion`. AXe uses Homebrew. For Appium it uses npm,
-installs Appium globally, then installs and verifies the `xcuitest` driver. If
-the default `xcuitest` driver requires a newer Appium server than the installed
-one, MAV retries with `xcuitest@8`, which is compatible with Appium 2.x. If
-Appium was installed through a Node version manager, `mav doctor` also checks
-that the active `node` matches the Node path used by the `appium` executable;
-put that Node bin directory first in `PATH` if it reports a `multitouch_issue`
-related to Node. If Appium reports that its home is not writable, MAV retries
-the driver check with a temporary writable `APPIUM_HOME`; if that still fails,
-rerun MAV outside the sandbox or set `APPIUM_HOME` to a writable directory.
+uses Homebrew for `idb-companion`. AXe and Baguette are installed via Homebrew
+(`cameroncooke/axe/axe` and `tddworks/baguette/baguette`). MAV does not require
+Node, npm, Java, or any Appium component (those were dropped in the May 2026
+driver overhaul).
 
 ## Install
 
@@ -165,14 +158,14 @@ launch. If a Bazel app bundle from `bazel-out` fails simulator install with a
 permission error, MAV copies the `.app` into the run directory with writable
 permissions and retries the install.
 
-Use `mav open --no-relaunch --warm-appium` when the app was launched manually
-with custom environment such as `SIMCTL_CHILD_*` and MAV should only attach run
-logging/Appium to the app already in front.
+Use `mav open --no-relaunch` when the app was launched manually with custom
+environment such as `SIMCTL_CHILD_*` and MAV should only attach run logging to
+the app already in front.
 
 Example compact output:
 
 ```text
-ok cmd=setup bundle=com.example.app config=/repo/.mav/config.yaml launch_recipe=ok multitouch=missing multitouch_next="mav setup --install appium"
+ok cmd=setup bundle=com.example.app config=/repo/.mav/config.yaml launch_recipe=ok multitouch=missing multitouch_next="mav setup --install baguette"
 ok cmd=open run=7fd logs=/repo/.mav/runs/7fd/logs.txt target="iPhone 17 Pro Max"
 ok cmd=ui.tree driver=axe nodes=42 screen=unknown recognized_screen=settings screen_source=recognized
 node index=1 id=settings_button label=Settings role=button enabled=true frame="{{20, 120}, {180, 44}}"
@@ -273,15 +266,13 @@ labels change with localization and copy edits.
 
 ```bash
 mav ui tree
-mav ui tree --prefer-driver appium
+mav ui tree --prefer-driver axe
 mav ui tree --include-system
 mav ui tap --id element_id
 mav ui tap --x 120 --y 400
 mav ui tap --text "Daily Reminder"
-mav ui tap --value "Email"
 mav ui type "hello"
-mav ui type "user@example.com" --prefer-driver appium
-mav ui erase --focused --prefer-driver appium
+mav ui erase --focused
 mav ui hideKeyboard
 mav ui swipe --direction up
 mav ui swipe --start-x 220 --start-y 760 --end-x 220 --end-y 260
@@ -300,46 +291,29 @@ mav ui scrollUntil --id privacy_policy_button --direction up --max-swipes 4
 MAV chooses drivers by capability. AXe is the default fast path for
 accessibility tree inspection, semantic taps, typing, swipes, waits, and
 assertions. idb is used for coordinate taps and device/simulator fallback
-operations.
+operations. Baguette provides multitouch, system UI, hardware buttons, erase,
+and hideKeyboard on simulator.
 
 For `mav ui tree` and semantic `mav ui tap`, `--prefer-driver auto` is the
-default. In auto mode MAV tries AXe first, then falls back to Appium/WDA when
-the AXe tree is empty, has no usable elements, or when an AXe tap by id/text
-fails. Use `--prefer-driver axe` to debug AXe-only behavior and
-`--prefer-driver appium` for WDA-only inspection. Use `mav ui tree
---include-system` when a system process or cross-app surface is in front, such
-as PHPicker, App Tracking Transparency, permission prompts, SpringBoard, or an
-iOS 26 service process. MAV asks Appium for the active foreground bundle and
-temporarily targets that bundle for the source tree.
+default. Use `--prefer-driver axe` to debug AXe-only behavior. `mav ui tree
+--include-system` asks baguette for the SpringBoard/system tree when a system
+process or cross-app surface is in front (PHPicker, App Tracking Transparency,
+permission prompts, SpringBoard, iOS 26 service processes). System-tree
+inspection is simulator-only.
 
 If `mav ui tap --text X` fails because AXe sees `X` as a value/placeholder but
-not as a label, MAV reports `ui_tap_text_no_label_match` with `matched_value`
-and suggests Appium text matching. Prefer stable ids when possible. With
-`appium-xcuitest-driver@8`, MAV automatically retries text matching with
-`-ios class chain` when the session rejects `predicate string` selectors.
-Use `mav ui tap --value X` for text fields whose placeholder is exposed as
-`AXValue`; MAV routes that selector through Appium.
+not as a label, MAV reports `ui_tap_text_no_label_match` with `matched_value`.
+Prefer stable accessibility ids when possible.
 
-When `mav ui tap --id X` detects that `X` is a wrapper containing a descendant
-text field or text view, auto mode routes the tap through Appium so the inner
-field receives keyboard focus. `mav ui type TEXT` also checks Appium focus
-metadata when available: if no text input is focused it fails with
-`type_no_focused_field`; when it can compare before/after values it reports
-`chars_sent` and `chars_received` in addition to the legacy `chars` field.
-Use `mav ui type TEXT --prefer-driver appium` for text that must be entered
-through XCUITest, such as emails, URLs, and other strings with shifted keyboard
-characters. `mav ui erase` clears a focused or selected text field through
-Appium, and `mav ui hideKeyboard` dismisses the keyboard through WDA.
+`mav ui erase` and `mav ui hideKeyboard` dispatch through baguette on
+simulator. On a physical device they return `erase_unsupported_on_device` and
+`hide_keyboard_unsupported_on_device` respectively. Tap and retype the field,
+or tap outside the input area to dismiss the keyboard.
 
-When you expect to need Appium, run `mav open --warm-appium` to create the WDA
-session after the launch recipe finishes so the first Appium-backed tree or tap
-does not pay the full cold-start cost. Cold starts can take about a minute, so
-MAV prints a progress note to stderr before it waits for the Appium/WDA session.
-
-Appium is also used for true multitouch. AXe and idb do not expose a real pinch
-or two-finger gesture primitive. MAV sends Appium W3C Actions: multiple touch
-sources execute step-by-step in concurrent ticks, which lets a flow move two
-fingers at the same time for pinch+pan, rotate, and two-finger drag.
+True multitouch gestures (pinch, rotate, two-finger pan) and W3C Actions go
+through baguette on simulator. On device they return
+`gesture_unsupported_on_device` with a remediation hint — use a simulator for
+multitouch flows.
 
 Observation priority:
 
@@ -372,8 +346,8 @@ steps:
   - evidence.step: { name: before-toggle, note: Daily Reminder before tap }
   - tap: { text: Daily Reminder }
   - type: "Search text"
-  - type: { text: "user@example.com", prefer-driver: appium }
-  - erase: { focused: true, prefer-driver: appium }
+  - type: { text: "user@example.com" }
+  - erase: { focused: true }
   - hideKeyboard: {}
   - delay: 500ms
   - when: { visible: { text: Continue } }
@@ -399,22 +373,17 @@ steps:
   - report: {}
 ```
 
-Semantic flow steps inherit the process-level `--prefer-driver auto|axe|appium`
+Semantic flow steps inherit the process-level `--prefer-driver auto|axe`
 setting from `mav run`. A step can override it with `prefer-driver` when one
 interaction needs a specific backend:
 
 ```yaml
-- tap: { text: "Deporte y ocio", prefer-driver: appium }
-- wait: { text: "Continuar", prefer-driver: appium, timeout: 5s }
-- scrollUntil: { text: "Estado*", direction: up, prefer-driver: appium }
+- tap: { text: "Deporte y ocio", prefer-driver: axe }
+- wait: { text: "Continuar", prefer-driver: axe, timeout: 5s }
 ```
 
 This applies to `tree`, `tap`, `swipe`, `wait`, `assert`, `waitUntil`, and
-`scrollUntil`; `type` and `erase` can also force Appium for form fields. In
-`auto` mode, MAV also routes taps inside table, collection, sheet, and tab bar
-containers through Appium/WDA when AXe can match the text but may not activate
-the row or tab. `wait`, `assert`, `waitUntil`, and `whileNotVisible` also retry
-their condition with Appium when AXe misses the target.
+`scrollUntil`.
 
 Supported step types:
 
@@ -452,10 +421,8 @@ video.stop
 report
 ```
 
-`hideKeyboard` verifies that the keyboard disappeared. If WDA reports success
-but the keyboard is still present, MAV retries with alternate Appium strategies
-and then fails with `ui_hide_keyboard_failed reason=keyboard_still_visible`
-instead of returning a false positive.
+`hideKeyboard` dispatches through baguette on simulator. On device it returns
+`hide_keyboard_unsupported_on_device`.
 
 `type`, `delay`, and `sleep` accept both scalar and object forms. These are
 equivalent:
@@ -707,7 +674,7 @@ mav stop
 ```text
 mav doctor
 mav setup [--non-interactive]
-mav setup --install axe idb appium
+mav setup --install axe idb baguette
 mav install-skills
 mav sim list
 mav sim select --device NAME --ios VERSION [--locale LOCALE] [--language LANG]
@@ -716,14 +683,13 @@ mav sim boot
 mav device list
 mav device select --udid UDID
 mav device select --name NAME
-mav open [--device NAME] [--ios VERSION] [--udid UDID] [--locale LOCALE] [--language LANG] [--clear-state] [--warm-appium] [--no-relaunch]
-mav ui tree [--prefer-driver auto|axe|appium] [--include-system]
-mav ui tap --id ID [--prefer-driver auto|axe|appium]
+mav open [--device NAME] [--ios VERSION] [--udid UDID] [--locale LOCALE] [--language LANG] [--clear-state] [--no-relaunch]
+mav ui tree [--prefer-driver auto|axe] [--include-system]
+mav ui tap --id ID [--prefer-driver auto|axe]
 mav ui tap --x X --y Y
-mav ui tap --text TEXT [--prefer-driver auto|axe|appium]
-mav ui tap --value VALUE [--prefer-driver auto|appium]
-mav ui type TEXT [--prefer-driver auto|axe|appium]
-mav ui erase [--id ID | --text TEXT | --value VALUE | --focused true] [--prefer-driver appium]
+mav ui tap --text TEXT [--prefer-driver auto|axe]
+mav ui type TEXT [--prefer-driver auto|axe]
+mav ui erase [--id ID | --text TEXT | --value VALUE | --focused true]
 mav ui hideKeyboard
 mav ui swipe [--direction up|down|left|right]
 mav ui longPress --x X --y Y [--duration 800ms]
@@ -760,7 +726,7 @@ The target element is not in the current AX tree. Inspect what mav sees:
 
 ```bash
 mav open
-mav ui tree --prefer-driver appium
+mav ui tree --include-system
 ```
 
 Then refine the selector based on what shows up. Prefer accessibility ids over
@@ -771,7 +737,7 @@ text.
 The simulator accessibility service did not recover after MAV retried. Re-run
 `mav open` or select another simulator with `mav sim select`.
 
-`CoreSimulator`, `idb`, or Appium permission failures
+`CoreSimulator` or `idb` permission failures
 
 MAV needs direct simulator/device access for launch, accessibility, coordinate
 taps, screenshots, video, and multitouch. If output says to rerun outside the

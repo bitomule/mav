@@ -1,7 +1,6 @@
 // Package simctl wraps Apple's `xcrun simctl` for simulator lifecycle, video
 // recording, log streaming, screenshots, and locale config. simctl is a
-// permanent helper in the new architecture (not deprecated alongside idb/
-// appium): it is the stock SDK path to simulators and has no viable
+// permanent helper: it is the stock SDK path to simulators and has no viable
 // replacement.
 package simctl
 
