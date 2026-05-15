@@ -429,7 +429,7 @@ func validateFlowSteps(steps []FlowStep) error {
 
 func isSupportedFlowAction(action string) bool {
 	switch action {
-	case "open", "when", "whileNotVisible", "go", "tree", "tap", "type", "erase", "hideKeyboard", "swipe", "pinch", "rotate", "twoFingerPan", "actions",
+	case "open", "when", "whileNotVisible", "go", "tree", "tap", "type", "erase", "hideKeyboard", "swipe", "longPress", "pinch", "rotate", "twoFingerPan", "actions",
 		"delay", "sleep", "wait", "assert", "waitUntil", "scrollUntil", "capture",
 		"evidence.start", "video.start", "evidence.step", "evidence.stop", "video.stop",
 		"logs", "exec", "crashes", "report":

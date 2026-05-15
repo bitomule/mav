@@ -157,18 +157,22 @@ Launch recipe detection is intentionally conservative: MAV recognizes explicit
 `Makefile`/`justfile` MAV targets, `scripts/mav-build` plus
 `scripts/mav-app-path`, and standard Bazel/Tuist/Xcode project shapes.
 
-`mav open` executes the configured launch recipe. It creates a run directory
-under `/tmp/mav/<run-id>/` and starts `logs.txt` for MAV probes. Use
+`mav open` executes the configured launch recipe. It creates a persistent run
+directory under `.mav/runs/<run-id>/` and starts `logs.txt` for MAV probes. Use
 `mav open --clear-state` to uninstall the configured bundle before install and
 launch. If a Bazel app bundle from `bazel-out` fails simulator install with a
 permission error, MAV copies the `.app` into the run directory with writable
 permissions and retries the install.
 
+Use `mav open --no-relaunch --warm-appium` when the app was launched manually
+with custom environment such as `SIMCTL_CHILD_*` and MAV should only attach run
+logging/Appium to the app already in front.
+
 Example compact output:
 
 ```text
 ok cmd=setup bundle=com.example.app config=/repo/.mav/config.yaml launch_recipe=ok multitouch=missing multitouch_next="mav setup --install appium"
-ok cmd=open run=7fd logs=/tmp/mav/7fd/logs.txt target="iPhone 17 Pro Max"
+ok cmd=open run=7fd logs=/repo/.mav/runs/7fd/logs.txt target="iPhone 17 Pro Max"
 ok cmd=ui.tree driver=axe nodes=42 screen=unknown recognized_screen=settings screen_source=recognized
 node index=1 id=settings_button label=Settings role=button enabled=true frame="{{20, 120}, {180, 44}}"
 ```
@@ -280,6 +284,7 @@ mav ui erase --focused --prefer-driver appium
 mav ui hideKeyboard
 mav ui swipe --direction up
 mav ui swipe --start-x 220 --start-y 760 --end-x 220 --end-y 260
+mav ui longPress --x 200 --y 450 --duration 800ms
 mav ui pinch --x 200 --y 450 --scale 0.5
 mav ui pinch --x 200 --y 450 --scale 0.5 --pan-x 80 --pan-y -40
 mav ui rotate --x 200 --y 450 --degrees 30
@@ -543,13 +548,15 @@ does not prove video evidence was captured.
 MAV does not open HTML automatically. Inspect the reported file:
 
 ```text
-/tmp/mav/<run-id>/report.html
+.mav/runs/<run-id>/report.html
 ```
 
 ## Logs
 
-`mav open` and `mav run` capture a filtered unified log stream for MAV probes
-into `logs.txt`.
+`mav open` and `mav run` capture a filtered unified log stream into `logs.txt`.
+The predicate includes the configured MAV probe subsystem/category, `MAV_LOG`
+messages, the app process when `process_name` is configured, and the app bundle
+subsystem when `bundle_id` is configured.
 
 Use `OSLog.Logger` probes to prove code execution:
 
@@ -572,8 +579,8 @@ mav logs --contains SettingsReached
 mav --raw logs --key SettingsReached
 ```
 
-Do not use Swift `print` for MAV validation probes. MAV is designed around
-filtered unified logs so the same probe pattern applies to simulator and device.
+Prefer `OSLog.Logger` for validation probes. `NSLog` from the configured app
+process is also captured when `process_name` is set.
 
 For trusted project-local shell assertions, opt in through `.mav/config.yaml`:
 
@@ -705,7 +712,7 @@ mav sim boot
 mav device list
 mav device select --udid UDID
 mav device select --name NAME
-mav open [--device NAME] [--ios VERSION] [--udid UDID] [--locale LOCALE] [--language LANG] [--clear-state] [--warm-appium]
+mav open [--device NAME] [--ios VERSION] [--udid UDID] [--locale LOCALE] [--language LANG] [--clear-state] [--warm-appium] [--no-relaunch]
 mav ui tree [--prefer-driver auto|axe|appium] [--include-system]
 mav ui tap --id ID [--prefer-driver auto|axe|appium]
 mav ui tap --x X --y Y
@@ -715,6 +722,7 @@ mav ui type TEXT [--prefer-driver auto|axe|appium]
 mav ui erase [--id ID | --text TEXT | --value VALUE | --focused true] [--prefer-driver appium]
 mav ui hideKeyboard
 mav ui swipe [--direction up|down|left|right]
+mav ui longPress --x X --y Y [--duration 800ms]
 mav ui pinch --x X --y Y --scale SCALE [--pan-x DX] [--pan-y DY] [--distance D] [--angle DEG] [--rotate DEG] [--duration 800ms] [--hold DURATION]
 mav ui rotate --x X --y Y --degrees DEG [--distance D] [--duration 800ms] [--hold DURATION]
 mav ui twoFingerPan --x X --y Y --pan-x DX --pan-y DY [--distance D] [--angle DEG] [--duration 800ms] [--hold DURATION]

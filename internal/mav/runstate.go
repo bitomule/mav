@@ -19,12 +19,20 @@ type RunState struct {
 }
 
 func NewRunState() (RunState, error) {
+	return newRunStateIn(filepath.Join(os.TempDir(), "mav"))
+}
+
+func NewProjectRunState(root string) (RunState, error) {
+	return newRunStateIn(filepath.Join(root, MavDir, "runs"))
+}
+
+func newRunStateIn(baseDir string) (RunState, error) {
 	var buf [4]byte
 	if _, err := rand.Read(buf[:]); err != nil {
 		return RunState{}, err
 	}
 	id := hex.EncodeToString(buf[:])
-	dir := filepath.Join(os.TempDir(), "mav", id)
+	dir := filepath.Join(baseDir, id)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return RunState{}, err
 	}
@@ -57,7 +65,10 @@ func LoadRun(root, id string) (RunState, error) {
 	if id == "" {
 		return RunState{}, fmt.Errorf("run_not_found")
 	}
-	dir := filepath.Join(os.TempDir(), "mav", id)
+	dir := filepath.Join(root, MavDir, "runs", id)
+	if _, err := os.Stat(dir); err != nil {
+		dir = filepath.Join(os.TempDir(), "mav", id)
+	}
 	return RunState{
 		ID:        id,
 		Dir:       dir,

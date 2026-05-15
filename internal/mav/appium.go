@@ -435,7 +435,16 @@ func (c CLI) performAppiumActions(ctx context.Context, cfg Config, actions any) 
 		defer stopProcess(session.PID)
 	}
 	if err := appiumPostJSON(ctx, session.BaseURL+"/session/"+session.SessionID+"/actions", map[string]any{"actions": actions}, nil); err != nil {
-		return appiumError{Code: "ui_gesture_failed", Message: err.Error()}
+		if isInvalidAppiumSessionError(err) {
+			_ = removeAppiumSession(run)
+			if refreshed, refreshErr := c.ensureAppiumSession(ctx, cfg, run); refreshErr == nil {
+				session = refreshed
+				err = appiumPostJSON(ctx, session.BaseURL+"/session/"+session.SessionID+"/actions", map[string]any{"actions": actions}, nil)
+			}
+		}
+		if err != nil {
+			return appiumError{Code: "ui_gesture_failed", Message: err.Error()}
+		}
 	}
 	_ = appiumDelete(ctx, session.BaseURL+"/session/"+session.SessionID+"/actions")
 	return nil
@@ -734,6 +743,10 @@ func (c CLI) appiumHideKeyboardWithArgs(ctx context.Context, cfg Config, args []
 }
 
 func (c CLI) appiumMobileTap(ctx context.Context, cfg Config, x, y int) error {
+	return c.appiumMobileTapAttempt(ctx, cfg, x, y, true)
+}
+
+func (c CLI) appiumMobileTapAttempt(ctx context.Context, cfg Config, x, y int, retry bool) error {
 	session, cleanup, err := c.appiumSessionForCommand(ctx, cfg)
 	if err != nil {
 		return err
@@ -741,12 +754,20 @@ func (c CLI) appiumMobileTap(ctx context.Context, cfg Config, x, y int) error {
 	defer cleanup()
 	var response map[string]any
 	if err := appiumExecuteScript(ctx, session, "mobile: tap", []any{map[string]any{"x": x, "y": y}}, &response); err != nil {
+		if retry && isInvalidAppiumSessionError(err) {
+			_ = c.forgetCurrentAppiumSession()
+			return c.appiumMobileTapAttempt(ctx, cfg, x, y, false)
+		}
 		return appiumError{Code: "ui_tap_failed", Message: err.Error()}
 	}
 	return nil
 }
 
 func (c CLI) appiumFindElementAndClick(ctx context.Context, cfg Config, using, value string) error {
+	return c.appiumFindElementAndClickAttempt(ctx, cfg, using, value, true)
+}
+
+func (c CLI) appiumFindElementAndClickAttempt(ctx context.Context, cfg Config, using, value string, retry bool) error {
 	session, cleanup, err := c.appiumSessionForCommand(ctx, cfg)
 	if err != nil {
 		return err
@@ -755,6 +776,10 @@ func (c CLI) appiumFindElementAndClick(ctx context.Context, cfg Config, using, v
 	var response map[string]any
 	body := map[string]any{"using": using, "value": value}
 	if err := appiumPostJSON(ctx, session.BaseURL+"/session/"+session.SessionID+"/element", body, &response); err != nil {
+		if retry && isInvalidAppiumSessionError(err) {
+			_ = c.forgetCurrentAppiumSession()
+			return c.appiumFindElementAndClickAttempt(ctx, cfg, using, value, false)
+		}
 		return appiumError{Code: "ui_tap_failed", Message: err.Error()}
 	}
 	elementID := appiumElementID(response)
@@ -763,9 +788,21 @@ func (c CLI) appiumFindElementAndClick(ctx context.Context, cfg Config, using, v
 	}
 	clickURL := session.BaseURL + "/session/" + session.SessionID + "/element/" + url.PathEscape(elementID) + "/click"
 	if err := appiumPostJSON(ctx, clickURL, map[string]any{}, nil); err != nil {
+		if retry && isInvalidAppiumSessionError(err) {
+			_ = c.forgetCurrentAppiumSession()
+			return c.appiumFindElementAndClickAttempt(ctx, cfg, using, value, false)
+		}
 		return appiumError{Code: "ui_tap_failed", Message: err.Error()}
 	}
 	return nil
+}
+
+func (c CLI) forgetCurrentAppiumSession() error {
+	run, err := LoadRun(c.Root, "")
+	if err != nil {
+		return err
+	}
+	return removeAppiumSession(run)
 }
 
 func appiumElementID(response map[string]any) string {
@@ -934,6 +971,17 @@ func (c CLI) ensureAppiumSession(ctx context.Context, cfg Config, run RunState) 
 	return state, nil
 }
 
+func isInvalidAppiumSessionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "invalid session") ||
+		strings.Contains(message, "session does not exist") ||
+		strings.Contains(message, "no such driver") ||
+		strings.Contains(message, "terminated")
+}
+
 func createAppiumSession(ctx context.Context, baseURL string, cfg Config) (string, error) {
 	caps := map[string]any{
 		"platformName":             "iOS",
@@ -1036,6 +1084,10 @@ func writeAppiumSession(run RunState, state appiumSessionState) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(run.Dir, "appium-session.json"), data, 0o644)
+}
+
+func removeAppiumSession(run RunState) error {
+	return os.Remove(filepath.Join(run.Dir, "appium-session.json"))
 }
 
 func freeLocalPort() (int, error) {

@@ -32,10 +32,10 @@ func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clea
 	}
 	appPath := ""
 	if strings.TrimSpace(commands.Launch) == "" {
-		return appPath, &launchStep{Name: "launch"}, CommandResult{Stderr: "launch command missing", Err: fmt.Errorf("launch command missing")}
+		return appPath, &launchStep{Name: "launch"}, CommandResult{Stderr: "launch command missing; run mav setup or add launch.commands.launch to .mav/config.yaml", Err: fmt.Errorf("launch_command_missing")}
 	}
 	if clearState && strings.TrimSpace(commands.Install) == "" {
-		return appPath, &launchStep{Name: "clear_state"}, CommandResult{Stderr: "clearState requires an install command in the launch recipe", Err: fmt.Errorf("clear_state_install_missing")}
+		return appPath, &launchStep{Name: "clear_state"}, CommandResult{Stderr: "clearState requires an install command in the launch recipe; add launch.commands.install to .mav/config.yaml", Err: fmt.Errorf("clear_state_install_missing")}
 	}
 	env := launchEnv(cfg, run, appPath)
 	if clearState && cfg.BundleID != "" {

@@ -299,6 +299,19 @@ func TestSaveLoadConfigPreservesDeviceTarget(t *testing.T) {
 	}
 }
 
+func TestSplitYAMLKVPreservesInnerShellQuotes(t *testing.T) {
+	key, value, ok := splitYAMLKV(`app_path: echo "$MAV_ROOT/bazel-bin/Demo.app"`)
+	if !ok {
+		t.Fatal("expected key/value")
+	}
+	if key != "app_path" {
+		t.Fatalf("key=%q", key)
+	}
+	if value != `echo "$MAV_ROOT/bazel-bin/Demo.app"` {
+		t.Fatalf("value=%q", value)
+	}
+}
+
 func mustWrite(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

@@ -1650,6 +1650,47 @@ func TestUISwipeWithCustomCoordinatesReportsCustomDirection(t *testing.T) {
 	}
 }
 
+func TestOpenNoRelaunchSkipsLaunchRecipe(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.app"
+	cfg.Launch = LaunchConfig{Mode: "custom", Commands: LaunchCommands{
+		Build:  "make mav-build",
+		Launch: `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`,
+	}}
+	cfg.Tools = map[string]bool{"xcrun": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runner := &launchRecipeRunner{tools: cfg.Tools}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"open", "--no-relaunch"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "ok cmd=open") || !strings.Contains(got, "relaunch=false") {
+		t.Fatalf("got %q", got)
+	}
+	if containsCall(runner.commands, "make mav-build") || containsCall(runner.commands, "simctl launch") {
+		t.Fatalf("launch recipe should not run: %v", runner.commands)
+	}
+}
+
+func TestBuildLongPressActions(t *testing.T) {
+	actions, fields, err := buildLongPressActions("10", "20", "1200ms")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fields["x"] != "10" || fields["y"] != "20" || fields["duration"] != "1200ms" {
+		t.Fatalf("fields=%v", fields)
+	}
+	steps := actions[0]["actions"].([]map[string]any)
+	if steps[2]["type"] != "pointerMove" || steps[3]["type"] != "pause" || steps[3]["duration"] != 1200 {
+		t.Fatalf("steps=%v", steps)
+	}
+}
+
 func TestExecStepRequiresOptIn(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
