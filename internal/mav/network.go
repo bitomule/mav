@@ -2,7 +2,6 @@ package mav
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"path/filepath"
 	"strconv"
@@ -30,7 +29,7 @@ func (c CLI) network(ctx context.Context, opts GlobalOptions, args []string) err
 // on sim) and persists the PID of the background mitmdump process under the
 // current run. Subsequent `mav network stop` finds the PID via processes.jsonl
 // without the caller having to track it.
-func (c CLI) networkStart(ctx context.Context, opts GlobalOptions, args []string) error {
+func (c CLI) networkStart(ctx context.Context, _ GlobalOptions, args []string) error {
 	cfg, err := LoadConfig(c.Root)
 	if err != nil {
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
@@ -88,7 +87,6 @@ func (c CLI) networkStart(ctx context.Context, opts GlobalOptions, args []string
 
 	appendProcess(run, "network", result.PID, fmt.Sprintf("%s --listen-port %d --hardump %s", driver.ID(), result.ListenPort, result.OutPath))
 
-	_ = opts
 	return OK("network.start", map[string]string{
 		"driver":      driver.ID(),
 		"pid":         strconv.Itoa(result.PID),
@@ -102,7 +100,7 @@ func (c CLI) networkStart(ctx context.Context, opts GlobalOptions, args []string
 // networkStop terminates the background mitmdump for the current run.
 // The HAR file flushes incrementally so the partial recording is usable
 // even if mitmdump never receives the SIGTERM (e.g. a crashed run).
-func (c CLI) networkStop(ctx context.Context, opts GlobalOptions, args []string) error {
+func (c CLI) networkStop(ctx context.Context, _ GlobalOptions, args []string) error {
 	run, err := LoadRun(c.Root, flagValue(args, "--run"))
 	if err != nil {
 		return Fail("run_not_found", nil).Write(c.Stdout)
@@ -135,7 +133,6 @@ func (c CLI) networkStop(ctx context.Context, opts GlobalOptions, args []string)
 			"error": err.Error(),
 		}).Write(c.Stdout)
 	}
-	_ = opts
 	return OK("network.stop", map[string]string{
 		"pid": strconv.Itoa(pid),
 		"run": run.ID,
@@ -190,6 +187,3 @@ func loadOrDefaultConfig(root string) Config {
 	return cfg
 }
 
-// errNetworkNotSupported is the sentinel used internally so tests can assert
-// the device branch without scraping error strings.
-var errNetworkNotSupported = errors.New("network capture is sim-only")

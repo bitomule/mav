@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -108,39 +109,11 @@ func TestAttachStepTimingsComputesVideoOffset(t *testing.T) {
 	root := t.TempDir()
 	run, _ := NewProjectRunState(root)
 	videoStart := time.Now().UnixMilli() - 1500
-	mustWrite(t, filepath.Join(run.Dir, "video.start.ms"), itoaWithNewline(videoStart))
+	mustWrite(t, filepath.Join(run.Dir, "video.start.ms"), strconv.FormatInt(videoStart, 10)+"\n")
 
 	step := EvidenceStep{}
 	attachStepTimings(run, &step)
 	if step.VideoOffsetMs < 1500 || step.VideoOffsetMs > 2500 {
 		t.Fatalf("expected VideoOffsetMs ~1500, got %d", step.VideoOffsetMs)
 	}
-}
-
-func itoaWithNewline(n int64) string {
-	return formatInt(n) + "\n"
-}
-
-func formatInt(n int64) string {
-	// Hand-rolled to avoid importing strconv just for the helper. Negative
-	// values aren't expected here but handled for completeness.
-	if n == 0 {
-		return "0"
-	}
-	negative := n < 0
-	if negative {
-		n = -n
-	}
-	var buf [20]byte
-	pos := len(buf)
-	for n > 0 {
-		pos--
-		buf[pos] = byte('0' + n%10)
-		n /= 10
-	}
-	if negative {
-		pos--
-		buf[pos] = '-'
-	}
-	return string(buf[pos:])
 }
