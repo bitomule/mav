@@ -1,6 +1,10 @@
 package mav
 
 import (
+	"encoding/json"
+	"image"
+	"image/color"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,14 +17,14 @@ func TestGenerateReport(t *testing.T) {
 	if err := os.WriteFile(run.LogsPath, []byte("hello log\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "screen.png"), []byte("png"), 0o644); err != nil {
+	if err := writeTestPNG(filepath.Join(dir, "screen.png")); err != nil {
 		t.Fatal(err)
 	}
 	stepFile := filepath.Join(dir, "steps", "01_notifications-before.png")
 	if err := os.MkdirAll(filepath.Dir(stepFile), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(stepFile, []byte("png"), 0o644); err != nil {
+	if err := writeTestPNG(stepFile); err != nil {
 		t.Fatal(err)
 	}
 	if err := AppendEvidenceStep(run, EvidenceStep{Name: "notifications-before", Note: "before toggling notifications", File: stepFile}); err != nil {
@@ -41,14 +45,23 @@ func TestGenerateReport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	html := string(data)
-	for _, want := range []string{"MAV Evidence", "hello log", "screen.png", "notifications-before", "before toggling notifications", "max-width: 390px", "Verification Timeline"} {
-		if !strings.Contains(html, want) {
-			t.Fatalf("report missing %q:\n%s", want, html)
+	var report ReportData
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatalf("invalid report json: %v\n%s", err, data)
+	}
+	if filepath.Base(path) != "report.json" {
+		t.Fatalf("report path=%s", path)
+	}
+	if report.Logs != "hello log\n" || report.ScreenshotEvidence.Width != 32 || report.ValidStepCount != 1 {
+		t.Fatalf("unexpected report data: %+v", report)
+	}
+	for _, want := range []string{"notifications-before", "before toggling notifications"} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("report missing %q:\n%s", want, data)
 		}
 	}
-	if strings.Contains(html, "maestro") || strings.Contains(html, "mav_step_00_launch") {
-		t.Fatalf("report should ignore maestro artifacts:\n%s", html)
+	if strings.Contains(string(data), "maestro") || strings.Contains(string(data), "mav_step_00_launch") {
+		t.Fatalf("report should ignore maestro artifacts:\n%s", data)
 	}
 }
 
@@ -66,9 +79,21 @@ func TestGenerateReportMarksTooShortVideoInvalid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	html := string(data)
-	if !strings.Contains(html, "video_invalid") || !strings.Contains(html, "duration_too_short") {
-		t.Fatalf("report should flag invalid video:\n%s", html)
+	reportJSON := string(data)
+	if !strings.Contains(reportJSON, `"video_status": "invalid"`) || !strings.Contains(reportJSON, "duration_too_short") {
+		t.Fatalf("report should flag invalid video:\n%s", reportJSON)
+	}
+}
+
+func TestValidateEvidenceImageRejectsInvalidImage(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "fake.png")
+	if err := os.WriteFile(path, []byte("png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := ValidateEvidenceImage(path)
+	if got.OK || got.Issue != "image_decode_failed" {
+		t.Fatalf("got %+v", got)
 	}
 }
 
@@ -91,4 +116,22 @@ func TestLoadEvidenceSteps(t *testing.T) {
 	if len(steps) != 1 || steps[0].Name != "one" || steps[0].Kind != "screenshot" {
 		t.Fatalf("steps=%+v", steps)
 	}
+}
+
+func writeTestPNG(path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	img := image.NewRGBA(image.Rect(0, 0, 32, 32))
+	for y := 0; y < 32; y++ {
+		for x := 0; x < 32; x++ {
+			img.Set(x, y, color.RGBA{R: 24, G: 96, B: 160, A: 255})
+		}
+	}
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	return png.Encode(file, img)
 }
