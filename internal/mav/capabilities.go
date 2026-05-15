@@ -6,23 +6,26 @@ import (
 )
 
 type Capabilities struct {
-	Tools                map[string]bool
-	LaunchRecipe         bool
-	Accessibility        bool
-	AccessibilityDriver  string
-	SemanticActions      bool
-	CoordinateTap        bool
-	CoordinateTapDriver  string
-	DeviceFallback       bool
-	DeviceFallbackDriver string
-	AppiumInstall        bool
-	IDBIssue             string
-	IDBNext              string
+	Tools                  map[string]bool
+	LaunchRecipe           bool
+	Accessibility          bool
+	AccessibilityDriver    string
+	SemanticActions        bool
+	CoordinateTap          bool
+	CoordinateTapDriver    string
+	DeviceFallback         bool
+	DeviceFallbackDriver   string
+	Multitouch             bool
+	MultitouchDriver       string
+	NetworkCapture         bool
+	NetworkCaptureDriver   string
+	IDBIssue               string
+	IDBNext                string
 }
 
 func (c CLI) resolveCapabilities(ctx context.Context, cfg Config) Capabilities {
 	tools := map[string]bool{}
-	for _, tool := range []string{"go", "bazelisk", "xcrun", "axe", "idb", "node", "npm", "appium", "pipx", "python3.12", "python3.13", "python3.14"} {
+	for _, tool := range []string{"go", "bazelisk", "xcrun", "axe", "idb", "baguette", "mitmdump", "pipx", "python3.12", "python3.13", "python3.14"} {
 		_, err := c.Runner.LookPath(tool)
 		tools[tool] = err == nil
 	}
@@ -47,8 +50,13 @@ func (c CLI) resolveCapabilities(ctx context.Context, cfg Config) Capabilities {
 			caps.IDBNext = "pipx install --python python3.12 fb-idb"
 		}
 	}
-	if tools["node"] && tools["npm"] {
-		caps.AppiumInstall = true
+	if tools["baguette"] {
+		caps.Multitouch = true
+		caps.MultitouchDriver = "baguette"
+	}
+	if tools["mitmdump"] {
+		caps.NetworkCapture = true
+		caps.NetworkCaptureDriver = "mitmproxy"
 	}
 	return caps
 }
@@ -84,18 +92,24 @@ func (caps Capabilities) fields() map[string]string {
 	} else {
 		fields["device_fallback"] = "missing"
 	}
-	if caps.AppiumInstall {
-		fields["appium_install"] = "ok"
-		fields["appium_install_driver"] = "npm"
+	if caps.Multitouch {
+		fields["multitouch"] = "ok"
+		fields["multitouch_driver"] = caps.MultitouchDriver
 	} else {
-		fields["appium_install"] = "missing"
+		fields["multitouch"] = "missing"
+		fields["multitouch_next"] = "mav setup --install baguette"
+	}
+	if caps.NetworkCapture {
+		fields["network_capture"] = "ok"
+		fields["network_capture_driver"] = caps.NetworkCaptureDriver
+	} else {
+		fields["network_capture"] = "missing"
+		fields["network_capture_next"] = "mav setup --install mitmproxy"
 	}
 	if caps.IDBIssue != "" {
 		fields["idb_issue"] = caps.IDBIssue
 		fields["idb_next"] = caps.IDBNext
 	}
-	fields["multitouch"] = "missing"
-	fields["multitouch_next"] = "mav setup --install appium"
 	return fields
 }
 

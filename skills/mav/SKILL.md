@@ -11,11 +11,8 @@ does not explore or repair routes by itself. The agent decides the next action.
 ## Workflow
 
 1. Run `mav doctor`.
-   If it reports CoreSimulator, idb, or Appium sandbox/permission failures,
-   rerun MAV outside the sandbox. For Appium home permission failures, MAV
-   retries with a temporary writable `APPIUM_HOME`; if it still reports
-   `appium_home_not_writable`, rerun outside the sandbox or set `APPIUM_HOME`
-   to a writable directory.
+   If it reports CoreSimulator or idb sandbox/permission failures, rerun MAV
+   outside the sandbox.
 2. If the project lacks `.mav/config.yaml`, run `mav setup` and review the
    prompts. Setup is idempotent and interactive by default: it detects app
    identity, simulator defaults, UI tools, and an editable `launch.commands`
@@ -28,19 +25,16 @@ does not explore or repair routes by itself. The agent decides the next action.
    You can also pass the same target flags to `mav open`.
    For a physical iOS device, use `mav device list`, then `mav device select
    --udid ...` or `mav device select --name ...`. Physical devices require idb
-   for install, launch, logs, screenshots, and crashes. If Appium/WDA is used on
-   a physical device, its XCUITest signing setup must be configured outside MAV.
+   for install, launch, logs, screenshots, and crashes. Multitouch, system UI,
+   and `hideKeyboard` are simulator-only and return structured errors on
+   device.
 4. Start the app with `mav open`. Use `mav open --clear-state` for a fresh
-   install, `mav open --warm-appium` when the session is likely to need
-   Appium-backed tree or tap fallback. Appium/WDA warm-up can take about a
-   minute on a cold start; tell the user it may take a while, then run it
-   directly without asking for confirmation. Use
-   `mav open --no-relaunch --warm-appium` when the app was launched manually
-   with custom `SIMCTL_CHILD_*` environment and MAV should only attach to the
-   app already in front. This creates `.mav/runs/<run-id>/` and starts
-   `logs.txt`. MAV captures a filtered unified log stream for MAV probes and
-   app-process logs when `process_name` is configured. On physical devices,
-   generated simulator install/launch recipes are mapped to idb when possible.
+   install. Use `mav open --no-relaunch` when the app was launched manually with
+   custom `SIMCTL_CHILD_*` environment and MAV should only attach to the app
+   already in front. This creates `.mav/runs/<run-id>/` and starts `logs.txt`.
+   MAV captures a filtered unified log stream for MAV probes and app-process
+   logs when `process_name` is configured. On physical devices, generated
+   simulator install/launch recipes are mapped to idb when possible.
 5. Prefer `mav ui tree` to understand the current screen. It prints compact
    screen metadata followed by bounded `node ...` lines with ids, labels, roles,
    values, enabled state, subroles, titles, pids, focus state, and frames when
@@ -48,31 +42,22 @@ does not explore or repair routes by itself. The agent decides the next action.
    Treat this as the primary structured UI source for agents; do not ask for
    `--json`. If the simulator accessibility service returns an empty
    `AXApplication` tree, MAV attempts recovery internally; do not work around it
-   with screenshots unless `mav ui tree` fails after recovery. In the default
-   `--prefer-driver auto` mode, MAV may fall back to Appium/WDA when AXe returns
-   an empty tree or has no usable elements. Use `mav ui tree --include-system` when
-   inspecting system UI, PHPicker, permission prompts, SpringBoard, or cross-app
-   service processes; MAV asks Appium for the active foreground bundle and
-   temporarily targets that bundle for the source tree. If the active app still
-   reports the host bundle, MAV also probes known system UI bundles including
-   SpringBoard, ATT (`com.apple.tccd`), PHPicker, SafariViewService, Mail
-   composition, and remote alerts.
+   with screenshots unless `mav ui tree` fails after recovery. Use
+   `mav ui tree --include-system` when inspecting system UI, PHPicker,
+   permission prompts, SpringBoard, or cross-app service processes; this asks
+   baguette for the SpringBoard/system tree on simulator. The
+   `--include-system` flag is sim-only — on a physical device it returns
+   `tree_system_unsupported_on_device`.
 6. Use `mav capture --name <descriptive-name>` only when the tree is
    insufficient or visual evidence is needed. Captures are unique by default
    under `.mav/runs/<run-id>/captures/`, and `--name` gives the client and report
    a stable, readable proof point such as `largest-videos-after-pinch`.
-7. Use `mav ui tap/type/erase/hideKeyboard/swipe/longPress/wait/scrollUntil` for manual exploration. Prefer
-   accessibility identifiers first (`--id`). Auto mode routes taps on wrappers
-   that contain text fields/text views through Appium so the inner field gets
-   keyboard focus. Use `mav ui tap --value VALUE` for placeholders exposed as
-   AXValue, and `mav ui tap --prefer-driver appium` when `--text` must match a
-   field value/placeholder. Use `mav ui type TEXT --prefer-driver appium` for
-   emails, URLs, and text with shifted keyboard characters such as `@`. If
-   `mav ui type` reports `type_no_focused_field`, tap the field with Appium and
-   retry. Use `mav ui erase --focused --prefer-driver appium` to clear a focused
-   field and `mav ui hideKeyboard` before tapping controls hidden by the
-   keyboard. Use coordinates
-   only when the tree is
+7. Use `mav ui tap/type/erase/hideKeyboard/swipe/longPress/wait/scrollUntil`
+   for manual exploration. Prefer accessibility identifiers first (`--id`).
+   `mav ui erase --focused` clears a focused field via baguette on simulator;
+   `mav ui hideKeyboard` dismisses the keyboard via baguette on simulator. Both
+   return structured errors on a physical device (`erase_unsupported_on_device`,
+   `hide_keyboard_unsupported_on_device`). Use coordinates only when the tree is
    insufficient and the screenshot makes the target unambiguous. Use text as
    the last option because labels change with localization and copy edits. Use
    `mav ui wait --id`, `--text`, or `--value` for readiness checks.
@@ -258,9 +243,8 @@ steps; they are not valid inside `do` blocks.
 
 Use `whileNotVisible` for chained onboarding or permission prompts. MAV repeats
 the `do` block until the target `id`, `text`, `value`, or `any` condition is
-visible, or until `timeout` expires. In `--prefer-driver auto`, conditions retry
-with Appium when AXe misses the target, which helps for tab bars and system-like
-wrappers. Mark dismiss taps as `optional: true` when only some prompts appear:
+visible, or until `timeout` expires. Mark dismiss taps as `optional: true` when
+only some prompts appear:
 
 ```yaml
 - whileNotVisible:
@@ -271,25 +255,19 @@ wrappers. Mark dismiss taps as `optional: true` when only some prompts appear:
       - delay: 500ms
 ```
 
-`mav run --prefer-driver appium flow.yaml` sets the default semantic UI driver
-for flow steps. Use a per-step `prefer-driver` override when a flow mixes fast
-AXe interactions with Appium-only rows, sheets, dropdowns, or system UI:
+`mav run --prefer-driver axe flow.yaml` forces AXe for semantic UI steps. Use a
+per-step `prefer-driver` override when a single interaction needs to pin the
+driver:
 
 ```yaml
-- tap: { text: "Deporte y ocio", prefer-driver: appium }
-- tap: { value: "Dirección de email", prefer-driver: appium }
-- type: { text: "user@example.com", prefer-driver: appium }
-- erase: { focused: true, prefer-driver: appium }
+- tap: { text: "Deporte y ocio", prefer-driver: axe }
+- wait: { text: "Continuar", prefer-driver: axe, timeout: 5s }
 - hideKeyboard: {}
-- swipe: { direction: up, prefer-driver: appium }
-- wait: { text: "Continuar", prefer-driver: appium, timeout: 5s }
-- scrollUntil: { text: "Estado*", direction: up, prefer-driver: appium }
 ```
 
 `open: { clearState: true }` and `open: { clear-state: true }` are both valid
-flow spellings. `mav ui hideKeyboard` verifies that the keyboard disappeared;
-if WDA reports success but the keyboard remains visible, MAV retries alternate
-Appium strategies and then fails with a clear `keyboard_still_visible` reason.
+flow spellings. `mav ui hideKeyboard` dispatches through baguette on simulator
+and returns `hide_keyboard_unsupported_on_device` on a physical device.
 
 Use `include` to compose reusable flow fragments. Resolve paths relative to the
 including YAML file and pass values through `env`; included steps can reference
@@ -332,7 +310,8 @@ id nor coordinates are appropriate.
 
 ## Gestures
 
-Use Appium-backed gestures when the app needs multi-touch behavior:
+Multitouch gestures (pinch, rotate, two-finger pan) dispatch through baguette on
+simulator. They return `gesture_unsupported_on_device` on a physical device:
 
 ```bash
 mav ui pinch --x 200 --y 450 --scale 0.5 --duration 800ms
@@ -414,19 +393,11 @@ not a gate.
 
 AXe is the fast semantic driver, but it can miss system-process UI, PHPicker,
 permission alerts, non-accessibility wrapper views, and text-field placeholders.
-Use `mav ui tree --include-system` for system-process UI and
-`--prefer-driver appium` to force WDA/XCUITest for a specific tree or tap, or
-leave the default `auto` mode to let MAV fall back when AXe cannot provide a
-usable tree or tap target.
+Use `mav ui tree --include-system` (simulator-only) for system-process UI.
 
 If `mav ui tap --text X` returns `ui_tap_text_no_label_match`, AXe found `X` as
-a value/placeholder but not as a label. Prefer a stable id, retry with
-`--prefer-driver appium`, or use coordinates only after capture inspection.
-With `appium-xcuitest-driver@8`, MAV automatically retries text matching with
-`-ios class chain` when the session rejects `predicate string` selectors.
-
-When `mav doctor` reports an Appium-required tool gap, keep Appium installed and prefer
-`mav open --warm-appium` for related manual exploration.
+a value/placeholder but not as a label. Prefer a stable id or use coordinates
+only after capture inspection.
 
 If simulator commands fail with a hint like `requires simulator/idb access;
 rerun outside sandbox`, rerun MAV outside the sandbox instead of retrying the

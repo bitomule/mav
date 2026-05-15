@@ -27,19 +27,19 @@ steps:
   - delay: { duration: 2s }
   - video.stop: { note: Done }
   - logs: { key: SettingsReached }
-  - scrollUntil: { text: Privacy Policy, direction: up, maxSwipes: 3, prefer-driver: appium }
+  - scrollUntil: { text: Privacy Policy, direction: up, maxSwipes: 3, prefer-driver: axe }
   - pinch: { x: 200, y: 450, scale: 0.5, panX: 80, panY: -40, duration: 800ms, hold: 2s }
   - rotate: { x: 200, y: 450, degrees: 30 }
   - twoFingerPan: { x: 200, y: 450, panX: 20, panY: 10 }
   - actions: { file: .mav/actions/map-zoom.json }
   - open: { clearState: true }
   - open: { clear-state: true }
-  - erase: { value: "Email", focused: true, prefer-driver: appium }
+  - erase: { value: "Email", focused: true, prefer-driver: axe }
   - hideKeyboard: {}
   - whileNotVisible:
       text: "You"
       timeout: 30s
-      prefer-driver: appium
+      prefer-driver: axe
       do:
         - tap: { id: dismiss_button, optional: true }
         - delay: 500ms
@@ -68,7 +68,7 @@ steps:
 	if flow.Steps[8].Action != "logs" || flow.Steps[8].Params["key"] != "SettingsReached" {
 		t.Fatalf("logs=%+v", flow.Steps[8])
 	}
-	if flow.Steps[9].Action != "scrollUntil" || flow.Steps[9].Params["maxSwipes"] != "3" || flow.Steps[9].Params["prefer-driver"] != "appium" {
+	if flow.Steps[9].Action != "scrollUntil" || flow.Steps[9].Params["maxSwipes"] != "3" || flow.Steps[9].Params["prefer-driver"] != "axe" {
 		t.Fatalf("scrollUntil=%+v", flow.Steps[9])
 	}
 	if flow.Steps[10].Action != "pinch" || flow.Steps[10].Params["scale"] != "0.5" || flow.Steps[10].Params["panX"] != "80" || flow.Steps[10].Params["hold"] != "2s" {

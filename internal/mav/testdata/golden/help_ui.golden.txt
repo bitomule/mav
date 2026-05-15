@@ -1,0 +1,19 @@
+Usage:
+  mav ui tree [--prefer-driver auto|axe] [--include-system]
+  mav ui tap --id ID [--prefer-driver auto|axe]
+  mav ui tap --x X --y Y
+  mav ui tap --text TEXT [--prefer-driver auto|axe]
+  mav ui tap --value VALUE
+  mav ui type TEXT [--prefer-driver auto|axe]
+  mav ui erase [--id ID | --text TEXT | --value VALUE | --focused true]
+  mav ui hideKeyboard
+  mav ui swipe [--direction up|down|left|right]
+  mav ui longPress --x X --y Y [--duration 800ms]
+  mav ui pinch --x X --y Y --scale SCALE [--pan-x DX] [--pan-y DY] [--distance D] [--angle DEG] [--rotate DEG] [--duration 800ms] [--hold DURATION]
+  mav ui rotate --x X --y Y --degrees DEG [--distance D] [--duration 800ms] [--hold DURATION]
+  mav ui twoFingerPan --x X --y Y --pan-x DX --pan-y DY [--distance D] [--angle DEG] [--duration 800ms] [--hold DURATION]
+  mav ui actions --file actions.json
+  mav ui wait --id ID [--timeout 5s]
+  mav ui wait --text TEXT [--timeout 5s]
+  mav ui wait --value VALUE [--timeout 5s]
+  mav ui scrollUntil --id ID [--direction up] [--max-swipes 5]
