@@ -1,0 +1,1 @@
+ok cmd=doctor accessibility=missing appium_install=missing coordinate_tap=missing device_fallback=missing launch_next="mav setup, or add launch.commands build/app_path/install/launch to .mav/config.yaml" launch_recipe=missing multitouch=missing multitouch_next="mav setup --install appium" next="mav setup --install axe idb" semantic_actions=missing

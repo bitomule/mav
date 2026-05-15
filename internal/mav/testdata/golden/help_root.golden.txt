@@ -1,0 +1,28 @@
+mav - Mobile Agent Verifier for iOS apps
+
+Usage:
+  mav <command> [flags]
+  mav help [command]
+
+Commands:
+  doctor      Check required tools.
+  setup       Configure the project or install helper tools.
+  install-skills
+              Install the MAV agent skill globally for all supported agents.
+  sim         List, select, or boot simulators.
+  device      List or select physical iOS devices.
+  open        Build, install, launch, and start run logs.
+  ui          Inspect and control the current UI.
+  capture     Capture the current screen.
+  run         Execute a native MAV YAML flow.
+  logs        Read captured run logs.
+  stop        Stop run-owned background processes.
+  crashes     List crashes for the configured app.
+  evidence    Start/step/stop/report evidence.
+
+Global flags:
+  --raw       Emit raw underlying tool output where supported.
+  --verbose   Print extra debug details where supported.
+  --prefer-driver auto|axe|appium
+              Prefer a UI driver for semantic tree/tap commands.
+  --help,-h   Show help.
