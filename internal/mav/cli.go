@@ -3168,7 +3168,8 @@ func (c CLI) evidenceStep(ctx context.Context, opts GlobalOptions, args []string
 	}
 	name = safeFileName(name)
 	steps := LoadEvidenceSteps(run)
-	file := filepath.Join(run.Dir, "steps", fmt.Sprintf("%02d_%s.png", len(steps)+1, name))
+	idx := len(steps) + 1
+	file := filepath.Join(run.Dir, "steps", fmt.Sprintf("%02d_%s.png", idx, name))
 	result, err := c.captureScreenshot(ctx, cfg, file)
 	if err != nil {
 		return Fail("tool_missing", map[string]string{"tool": "axe|idb|xcrun"}).Write(c.Stdout)
@@ -3177,11 +3178,20 @@ func (c CLI) evidenceStep(ctx context.Context, opts GlobalOptions, args []string
 		return Fail("evidence_step_failed", map[string]string{"stderr": firstLine(result.Stderr)}).Write(c.Stdout)
 	}
 	step := EvidenceStep{Name: name, Note: flagValue(args, "--note"), File: file, Kind: "screenshot"}
+	attachStepTimings(run, &step)
+	attachStepTree(ctx, c, cfg, run, &step, idx, name)
 	if err := AppendEvidenceStep(run, step); err != nil {
 		return err
 	}
 	appendCommand(run, "mav evidence step --name "+name, result)
-	return OK("evidence.step", map[string]string{"run": run.ID, "name": name, "file": file}).Write(c.Stdout)
+	fields := map[string]string{"run": run.ID, "name": name, "file": file}
+	if step.TreePath != "" {
+		fields["tree"] = step.TreePath
+	}
+	if step.DeltaPath != "" {
+		fields["tree_delta"] = step.DeltaPath
+	}
+	return OK("evidence.step", fields).Write(c.Stdout)
 }
 
 func (c CLI) evidenceStop(ctx context.Context, opts GlobalOptions, args []string) error {
