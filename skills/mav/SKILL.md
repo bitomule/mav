@@ -153,13 +153,79 @@ Use evidence when the user needs proof of verification:
    result is visible, check crashes, and generate a report.
 3. Names should describe the assertion, for example `settings-before-toggle`
    and `settings-after-toggle`.
-4. Share the generated report and evidence as clickable Markdown links using
-   absolute paths, for example `[MAV evidence report](/path/to/repo/.mav/runs/<run-id>/report.html)`.
-   Include the video only when `mav evidence report` reports `video=<path>`;
-   if it reports `video=missing`, the report has screenshots/logs but no video
-   evidence. Include key captures when they are relevant, for example
-   `[video](/tmp/mav/<run-id>/video.mov)` and
-   `[after-toggle](/tmp/mav/<run-id>/captures/after-toggle.png)`.
+4. `mav evidence report` writes a verified evidence manifest at
+   `<run-dir>/report.json`. MAV owns the facts: video duration/frames,
+   screenshot decodability, issue severity, crashes, commands, and log tail.
+   Current project runs normally live under `.mav/runs/<run-id>/`; legacy or
+   ad-hoc runs may live under `/tmp/mav/<run-id>/`. Use the paths printed by
+   MAV instead of guessing. The skill owns the HTML. Read the manifest and
+   author a self-contained `<run-dir>/report.html` for that specific run. Use
+   `./templates/evidence-report.html` as a reference, not as a fixed renderer:
+   rewrite the copy, metrics, media, and sections so the report explains the
+   actual evidence. Share the HTML and manifest as clickable Markdown links
+   using absolute paths, for example
+   `[MAV evidence report](/path/to/repo/.mav/runs/<run-id>/report.html)` and
+   `[evidence data](/path/to/repo/.mav/runs/<run-id>/report.json)`. Include the video only
+   when the manifest reports `video_status=accepted`; if it reports
+   `video_status=missing` or `invalid`, say that video evidence was not
+   accepted. Include key captures when they are relevant, for example
+   `[video](/path/to/repo/.mav/runs/<run-id>/video.mov)` and
+   `[after-toggle](/path/to/repo/.mav/runs/<run-id>/steps/02_after-toggle.png)`.
+
+## Evidence Report Standard
+
+MAV reports must be built like visual explainers: dense, visual, and explicit
+about what each artifact proves. Do not treat a media file as proof just because
+it exists.
+
+- Before authoring HTML, read:
+  - `./references/evidence-html.md` for the MAV evidence report structure.
+  - `./references/style-rules.md` for visual-explainer-grade design rules.
+  - `./references/quality-checks.md` before delivery.
+  - `./templates/evidence-report.html` as a starting shape, not as a fixed
+    renderer.
+- Think briefly before writing. Decide the audience, claim under test, evidence
+  shape, and aesthetic. Evidence reports are usually timeline + dashboard +
+  media review: CSS timeline for named captures, dashboard metrics for manifest
+  health, and full-width video/image sections for the primary proof.
+- Use the CLI manifest as the source of truth. Do not hand-wave around manifest
+  blockers: invalid video, zero/too-short duration, low frame count, missing
+  screenshots, undecodable images, and missing assertion notes must be surfaced
+  in the report and in the final answer.
+- The HTML should start with evidence, not prose: a large accepted video or
+  strongest valid screenshot must dominate the first viewport. Put verdict,
+  video status, valid/invalid step counts, crash count, and command count next
+  to that evidence.
+- Every evidence step needs a human explanation. The note should state the
+  observed claim, not merely repeat the file name. Weak notes such as "after"
+  or "screen" should be treated as low-quality evidence and clarified in the
+  narrative.
+- Screenshots must be verified by the manifest as decodable images with real
+  dimensions. If the image is invalid, too small, missing, or unrelated to the
+  claim, mark it rejected and rerun the flow when possible.
+- Videos of zero seconds, missing duration, too-short duration, or too few
+  frames are not accepted as video evidence. Rerun the flow with a recording
+  window that covers the behavior itself, not unrelated setup or idle padding.
+- The report must be self-contained in styling and narrative. Use local
+  evidence files only; do not use remote CSS, JS, fonts, or image assets.
+  Do not use a generic renderer that blindly maps JSON to cards. The agent must
+  compose the page like visual-explainer does: choose an aesthetic, establish a
+  visual hierarchy, write the explanatory text, and place video/images where
+  they carry the claim.
+- Reports are evidence workspaces. Include direct `Open`, `Download`, and
+  `Copy path` affordances for the primary video and named captures. Include
+  `Copy logs` and `Copy commands` controls for audit sections.
+- Prefer a before/action/after sequence. If a behavior is visual, pair the
+  screenshots with a wait or `changedFrom` assertion so the report explains why
+  the captured state is meaningful.
+- If the HTML has 4 or more major sections, include a compact sticky table of
+  contents on desktop and a horizontal section nav on mobile. Evidence readers
+  should be able to jump from verdict to video, timeline, integrity, logs, and
+  command trail without hunting.
+- After writing the HTML, inspect it when possible. Check that local videos and
+  images load, that rejected artifacts are visibly rejected, that no text
+  overflows at mobile width, and that the first viewport immediately shows the
+  verdict plus primary visual proof.
 
 The video should be limited to the relevant verification moment. Do not record
 long setup, idle time, or repeated navigation unless the navigation itself is

@@ -1,0 +1,607 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MAV Evidence Report</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #080b10;
+      --panel: #10151d;
+      --panel-2: #151c26;
+      --panel-3: #1c2531;
+      --line: rgba(226, 232, 240, 0.14);
+      --line-strong: rgba(226, 232, 240, 0.28);
+      --text: #f8fafc;
+      --muted: #9aa7b7;
+      --faint: #667384;
+      --accent: #38bdf8;
+      --good: #2dd4bf;
+      --warn: #f59e0b;
+      --bad: #fb7185;
+      --shadow: rgba(0, 0, 0, 0.36);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 18% 0%, rgba(56, 189, 248, 0.18), transparent 32rem),
+        linear-gradient(180deg, #0a0e14 0%, var(--bg) 42rem);
+      color: var(--text);
+      font-family: "Avenir Next", "SF Pro Display", system-ui, sans-serif;
+    }
+    main { max-width: 1500px; margin: 0 auto; padding: 18px; }
+    a { color: inherit; }
+    code, pre, .mono { font-family: "SF Mono", "IBM Plex Mono", ui-monospace, monospace; }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 12px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+    .brand-mark {
+      width: 34px;
+      height: 34px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, var(--accent), var(--good));
+      box-shadow: 0 10px 28px rgba(56, 189, 248, 0.20);
+    }
+    .brand h1 {
+      margin: 0;
+      font-size: 18px;
+      letter-spacing: 0;
+      white-space: nowrap;
+    }
+    .brand p {
+      margin: 2px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 10px;
+      border: 1px solid var(--line-strong);
+      border-radius: 999px;
+      background: rgba(16, 21, 29, 0.78);
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      white-space: nowrap;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 999px; background: var(--warn); }
+    .status.ok .dot { background: var(--good); }
+    .status.bad .dot { background: var(--bad); }
+
+    .evidence-stage {
+      min-height: calc(100vh - 96px);
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 360px;
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+    .viewer {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #05070b;
+      box-shadow: 0 24px 60px var(--shadow);
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+    }
+    .viewer-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(16, 21, 29, 0.92);
+    }
+    .viewer-title { min-width: 0; }
+    .viewer-title strong { display: block; font-size: 15px; }
+    .viewer-title span { display: block; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 34px;
+      padding: 7px 10px;
+      border: 1px solid var(--line-strong);
+      border-radius: 7px;
+      background: var(--panel-2);
+      color: var(--text);
+      text-decoration: none;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .button.primary {
+      border-color: rgba(56, 189, 248, 0.45);
+      background: rgba(56, 189, 248, 0.14);
+      color: #dff7ff;
+    }
+    .media-frame {
+      min-height: 0;
+      display: grid;
+      place-items: center;
+      padding: 12px;
+      background:
+        linear-gradient(45deg, rgba(255,255,255,0.025) 25%, transparent 25%, transparent 75%, rgba(255,255,255,0.025) 75%),
+        linear-gradient(45deg, rgba(255,255,255,0.025) 25%, transparent 25%, transparent 75%, rgba(255,255,255,0.025) 75%),
+        #070a0f;
+      background-position: 0 0, 12px 12px;
+      background-size: 24px 24px;
+    }
+    video, img {
+      display: block;
+      width: 100%;
+      max-width: 100%;
+      max-height: calc(100vh - 220px);
+      object-fit: contain;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #000;
+    }
+    .viewer-caption {
+      padding: 11px 14px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+      background: rgba(16, 21, 29, 0.92);
+    }
+
+    .side {
+      min-width: 0;
+      display: grid;
+      grid-template-rows: auto auto minmax(0, 1fr);
+      gap: 14px;
+    }
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(16, 21, 29, 0.90);
+      box-shadow: 0 18px 50px var(--shadow);
+      overflow: hidden;
+    }
+    .panel h2 {
+      margin: 0;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .panel-body { padding: 14px; }
+    .verdict {
+      display: grid;
+      gap: 12px;
+    }
+    .verdict strong {
+      font-size: 28px;
+      line-height: 1.05;
+      letter-spacing: 0;
+    }
+    .verdict p { margin: 0; color: var(--muted); line-height: 1.45; }
+    .metrics {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .metric {
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--panel-2);
+    }
+    .metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .metric strong {
+      display: block;
+      margin-top: 4px;
+      font-size: 22px;
+      letter-spacing: 0;
+    }
+    .thumbs {
+      display: grid;
+      gap: 10px;
+      max-height: min(46vh, 520px);
+      overflow: auto;
+      padding-right: 2px;
+    }
+    .thumb {
+      display: grid;
+      grid-template-columns: 86px minmax(0, 1fr);
+      gap: 10px;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--panel-2);
+    }
+    .thumb img {
+      width: 86px;
+      height: 112px;
+      object-fit: cover;
+      max-height: none;
+      border-radius: 6px;
+    }
+    .thumb strong { display: block; font-size: 13px; }
+    .thumb p { margin: 4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.35; }
+    .thumb .mini-actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+    .mini-actions a {
+      color: var(--text);
+      text-decoration: none;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 5px 7px;
+      font-size: 11px;
+      background: var(--panel-3);
+    }
+
+    .section-nav {
+      position: sticky;
+      top: 0;
+      z-index: 4;
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      padding: 8px 0 14px;
+      background: linear-gradient(180deg, var(--bg) 76%, rgba(8,11,16,0));
+    }
+    .section-nav a {
+      flex: 0 0 auto;
+      color: var(--muted);
+      text-decoration: none;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 7px 10px;
+      background: var(--panel);
+      font-size: 12px;
+    }
+    .section-nav a:hover { color: var(--text); border-color: var(--line-strong); }
+
+    section {
+      margin-bottom: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(16, 21, 29, 0.90);
+      overflow: hidden;
+    }
+    section > h2 {
+      margin: 0;
+      padding: 13px 14px;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .section-body { padding: 14px; }
+    .timeline {
+      display: grid;
+      gap: 12px;
+    }
+    .step {
+      display: grid;
+      grid-template-columns: minmax(300px, 430px) minmax(0, 1fr);
+      gap: 14px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel-2);
+    }
+    .step img {
+      max-height: 640px;
+      background: #000;
+    }
+    .step-kicker {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .step h3 { margin: 6px 0 8px; font-size: 22px; }
+    .step p { margin: 0; color: #d7dee8; line-height: 1.5; }
+    .facts {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .fact {
+      min-width: 0;
+      padding: 9px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--panel);
+    }
+    .fact.wide { grid-column: 1 / -1; }
+    .fact span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .fact strong, .fact code {
+      display: block;
+      margin-top: 4px;
+      overflow-wrap: anywhere;
+      color: var(--text);
+    }
+    .issue-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 10px;
+    }
+    .issue {
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-left: 5px solid var(--warn);
+      border-radius: 8px;
+      background: var(--panel-2);
+    }
+    .issue.bad { border-left-color: var(--bad); }
+    .issue.ok { border-left-color: var(--good); }
+    .issue span { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+    .issue strong { display: block; margin: 4px 0; }
+    .issue p { margin: 0; color: var(--muted); line-height: 1.4; }
+    .audit-grid {
+      display: grid;
+      grid-template-columns: 0.9fr 1.1fr;
+      gap: 14px;
+    }
+    pre {
+      margin: 0;
+      min-height: 220px;
+      max-height: 520px;
+      overflow: auto;
+      white-space: pre-wrap;
+      background: #05070b;
+      color: #d7dee8;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .copybar {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .empty, .caption {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+    .reject {
+      min-height: 220px;
+      display: grid;
+      place-items: center;
+      padding: 18px;
+      border: 1px dashed rgba(245, 158, 11, 0.48);
+      border-radius: 8px;
+      background: rgba(245, 158, 11, 0.08);
+      color: #ffd38a;
+      text-align: center;
+      font-weight: 700;
+    }
+    .ok-text { color: var(--good); }
+    .warn-text { color: var(--warn); }
+    .bad-text { color: var(--bad); }
+
+    @media (prefers-reduced-motion: no-preference) {
+      .viewer, .panel, section { animation: appear 360ms ease both; }
+      @keyframes appear { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+    }
+    @media (max-width: 1100px) {
+      main { padding: 12px; }
+      .evidence-stage { min-height: auto; grid-template-columns: 1fr; }
+      .side { grid-template-rows: auto; }
+      .thumbs { max-height: none; }
+      video, img { max-height: 74vh; }
+      .audit-grid, .step { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 620px) {
+      .topbar { align-items: flex-start; }
+      .brand h1 { white-space: normal; }
+      .viewer-header { align-items: flex-start; flex-direction: column; }
+      .actions { justify-content: flex-start; }
+      .metrics, .facts { grid-template-columns: 1fr; }
+      .thumb { grid-template-columns: 74px minmax(0, 1fr); }
+      .thumb img { width: 74px; height: 96px; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <div class="topbar">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true"></div>
+      <div>
+        <h1>MAV Evidence</h1>
+        <p>Run <code>/tmp/mav/&lt;run-id&gt;</code> - generated from verified report.json</p>
+      </div>
+    </div>
+    <div class="status ok"><span class="dot"></span>verified / needs review / blocked</div>
+  </div>
+
+  <div class="evidence-stage" id="evidence">
+    <div class="viewer">
+      <div class="viewer-header">
+        <div class="viewer-title">
+          <strong>Primary evidence video</strong>
+          <span>Use the accepted video here; if missing/invalid, replace with the strongest valid screenshot and say video is not accepted.</span>
+        </div>
+        <div class="actions">
+          <a class="button primary" href="video.mov" target="_blank" rel="noreferrer">Open</a>
+          <a class="button" href="video.mov" download>Download</a>
+          <button class="button" data-copy="video.mov">Copy path</button>
+        </div>
+      </div>
+      <div class="media-frame">
+        <video src="video.mov" controls></video>
+      </div>
+      <div class="viewer-caption">
+        Accepted only when <code>video_status</code> is <code>accepted</code>. Show duration, frame count, and the exact behavior visible in the recording.
+      </div>
+    </div>
+
+    <aside class="side">
+      <div class="panel">
+        <h2>Verdict</h2>
+        <div class="panel-body verdict">
+          <strong>Evidence first: state the verified behavior here.</strong>
+          <p>The first sentence should say what the video and captures prove. If video is missing or invalid, say so here before any other detail.</p>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>Manifest Health</h2>
+        <div class="panel-body metrics">
+          <div class="metric"><span>Video</span><strong>accepted</strong></div>
+          <div class="metric"><span>Duration</span><strong>2s</strong></div>
+          <div class="metric"><span>Captures</span><strong>3/3</strong></div>
+          <div class="metric"><span>Crashes</span><strong>0</strong></div>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>Captures</h2>
+        <div class="panel-body thumbs">
+          <article class="thumb">
+            <img src="steps/01_before.png" alt="Before state">
+            <div>
+              <strong>Before state</strong>
+              <p>Explain what is visible and why it matters.</p>
+              <div class="mini-actions">
+                <a href="steps/01_before.png" target="_blank" rel="noreferrer">Open</a>
+                <a href="steps/01_before.png" download>Download</a>
+              </div>
+            </div>
+          </article>
+          <article class="thumb">
+            <img src="steps/02_after.png" alt="After state">
+            <div>
+              <strong>After state</strong>
+              <p>Explain the changed state or final assertion.</p>
+              <div class="mini-actions">
+                <a href="steps/02_after.png" target="_blank" rel="noreferrer">Open</a>
+                <a href="steps/02_after.png" download>Download</a>
+              </div>
+            </div>
+          </article>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <nav class="section-nav" aria-label="Evidence report sections">
+    <a href="#evidence">Evidence</a>
+    <a href="#timeline">Captures</a>
+    <a href="#integrity">Integrity</a>
+    <a href="#logs">Logs</a>
+    <a href="#commands">Commands</a>
+  </nav>
+
+  <section id="timeline">
+    <h2>Capture Timeline</h2>
+    <div class="section-body timeline">
+      <article class="step">
+        <div class="step-media"><img src="steps/01_before.png" alt="Before capture"></div>
+        <div>
+          <div class="step-kicker">Evidence 1 - screenshot - accepted</div>
+          <h3>Before: starting state</h3>
+          <p>Describe the assertion this screenshot proves. Do not merely repeat the file name.</p>
+          <div class="facts">
+            <div class="fact"><span>Status</span><strong class="ok-text">accepted</strong></div>
+            <div class="fact"><span>Validation</span><strong>1179 x 2556, 412 KB</strong></div>
+            <div class="fact wide"><span>File</span><code>/tmp/mav/&lt;run-id&gt;/steps/01_before.png</code></div>
+            <div class="fact wide"><span>Actions</span><a class="button" href="steps/01_before.png" download>Download capture</a></div>
+          </div>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <section id="integrity">
+    <h2>Evidence Integrity</h2>
+    <div class="section-body issue-grid">
+      <article class="issue ok"><span>accepted</span><strong>Video accepted</strong><p>Only say this when report.json has video_status=accepted. Include duration and frames.</p></article>
+      <article class="issue"><span>warning</span><strong>Missing notes weaken proof</strong><p>If a screenshot note is missing, call it out instead of silently presenting it as strong evidence.</p></article>
+      <article class="issue bad"><span>blocker</span><strong>Rejected artifacts stay rejected</strong><p>Invalid videos or screenshots must remain visible as rejected evidence and cannot support a verified claim.</p></article>
+    </div>
+  </section>
+
+  <div class="audit-grid">
+    <section id="logs">
+      <h2>Logs</h2>
+      <div class="section-body">
+        <div class="copybar">
+          <button class="button" data-copy-target="#log-tail">Copy logs</button>
+        </div>
+        <pre id="log-tail">Paste the relevant log tail from report.json here.</pre>
+      </div>
+    </section>
+
+    <section id="commands">
+      <h2>Command Trail</h2>
+      <div class="section-body">
+        <div class="copybar">
+          <button class="button" data-copy-target="#command-trail">Copy commands</button>
+        </div>
+        <pre id="command-trail">mav evidence start
+mav evidence step --name before-state
+mav evidence stop
+mav evidence report</pre>
+      </div>
+    </section>
+  </div>
+</main>
+
+<script>
+  for (const button of document.querySelectorAll("[data-copy]")) {
+    button.addEventListener("click", async () => {
+      await navigator.clipboard.writeText(button.getAttribute("data-copy"));
+      button.textContent = "Copied";
+    });
+  }
+  for (const button of document.querySelectorAll("[data-copy-target]")) {
+    button.addEventListener("click", async () => {
+      const target = document.querySelector(button.getAttribute("data-copy-target"));
+      await navigator.clipboard.writeText(target ? target.textContent : "");
+      button.textContent = "Copied";
+    });
+  }
+</script>
+</body>
+</html>

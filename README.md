@@ -34,7 +34,8 @@ MAV is early and evolving. The current stable pieces are:
 - Appium-backed WDA fallback for system-process trees, form wrappers, and
   optional multitouch gestures.
 - Native MAV YAML flows through `mav run`.
-- HTML evidence reports in `/tmp/mav/<run-id>/report.html`.
+- Verified evidence manifests in `.mav/runs/<run-id>/report.json`; the MAV
+  skill authors the visual HTML report from that data.
 - Filtered unified log capture for explicit MAV probes.
 
 ## Requirements
@@ -245,14 +246,14 @@ Project state:
 Run state:
 
 ```text
-/tmp/mav/<run-id>/logs.txt
-/tmp/mav/<run-id>/commands.jsonl
-/tmp/mav/<run-id>/evidence.jsonl
-/tmp/mav/<run-id>/steps/*.png
-/tmp/mav/<run-id>/trees/*.json
-/tmp/mav/<run-id>/video.mov
-/tmp/mav/<run-id>/crashes/
-/tmp/mav/<run-id>/report.html
+.mav/runs/<run-id>/logs.txt
+.mav/runs/<run-id>/commands.jsonl
+.mav/runs/<run-id>/evidence.jsonl
+.mav/runs/<run-id>/steps/*.png
+.mav/runs/<run-id>/trees/*.json
+.mav/runs/<run-id>/video.mov
+.mav/runs/<run-id>/crashes/
+.mav/runs/<run-id>/report.json
 ```
 
 `/tmp` may resolve to a macOS per-user temporary directory such as
@@ -541,15 +542,18 @@ flow steps are `video.start` and `video.stop`; `evidence.start` and
 `evidence.stop` remain supported aliases. Flows do not have a `recordVideo`
 option.
 
-`mav evidence report` prints `video=<path>` only when a valid video exists, and
-`video=missing` when the report has no recording. A report without `video.mov`
+`mav evidence report` writes `.mav/runs/<run-id>/report.json` for project runs
+and prints
+`video=<path>` only when a valid video exists. It prints `video=missing` when
+the run has no recording, and `video=invalid` with `video_issue=...` when the
+file exists but is not acceptable evidence. A report without an accepted video
 does not prove video evidence was captured.
 
-MAV does not open HTML automatically. Inspect the reported file:
-
-```text
-.mav/runs/<run-id>/report.html
-```
+The CLI owns the evidence data. The MAV skill owns the visual HTML report: it
+reads the manifest, uses `skills/mav/templates/evidence-report.html` as a
+reference, and writes a self-contained `.mav/runs/<run-id>/report.html`
+tailored to the run. MAV does not open HTML automatically; inspect the reported
+HTML file after the skill writes it.
 
 ## Logs
 

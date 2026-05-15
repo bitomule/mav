@@ -2823,7 +2823,7 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 		return map[string]string{"run": run.ID}, outputErr(err, "crashes_failed")
 	case "report":
 		err := c.withStdout(io.Discard).evidenceReport(GlobalOptions{}, []string{"--run", run.ID})
-		return map[string]string{"run": run.ID, "file": filepath.Join(run.Dir, "report.html")}, outputErr(err, "report_failed")
+		return map[string]string{"run": run.ID, "data": filepath.Join(run.Dir, "report.json"), "file": filepath.Join(run.Dir, "report.json")}, outputErr(err, "report_failed")
 	default:
 		return nil, fmt.Errorf("unknown_step")
 	}
@@ -3589,7 +3589,7 @@ func (c CLI) evidenceReport(opts GlobalOptions, args []string) error {
 	if err != nil {
 		return Fail("report_failed", map[string]string{"error": err.Error()}).Write(c.Stdout)
 	}
-	fields := map[string]string{"run": run.ID, "file": path, "video": "missing"}
+	fields := map[string]string{"run": run.ID, "data": path, "file": path, "video": "missing"}
 	if video, validation := reportVideo(run); video != "" {
 		if validation.OK {
 			fields["video"] = video

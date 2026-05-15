@@ -3,7 +3,10 @@ package mav
 import (
 	"bufio"
 	"encoding/json"
-	"html/template"
+	"fmt"
+	"image"
+	_ "image/jpeg"
+	_ "image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,17 +24,45 @@ type EvidenceStep struct {
 }
 
 type ReportData struct {
-	RunID        string
-	CreatedAt    string
-	Dir          string
-	Screenshot   string
-	Steps        []EvidenceStep
-	Video        string
-	VideoInvalid bool
-	VideoIssue   string
-	Logs         string
-	Crashes      []string
-	Commands     []string
+	RunID              string               `json:"run_id"`
+	CreatedAt          string               `json:"created_at"`
+	Dir                string               `json:"dir"`
+	Screenshot         string               `json:"screenshot,omitempty"`
+	ScreenshotEvidence ImageEvidence        `json:"screenshot_evidence"`
+	Steps              []ReportEvidenceStep `json:"steps"`
+	Video              string               `json:"video,omitempty"`
+	VideoStatus        string               `json:"video_status"`
+	VideoIssue         string               `json:"video_issue,omitempty"`
+	VideoDuration      string               `json:"video_duration,omitempty"`
+	VideoFrames        string               `json:"video_frames,omitempty"`
+	Logs               string               `json:"logs,omitempty"`
+	Crashes            []string             `json:"crashes,omitempty"`
+	Commands           []string             `json:"commands,omitempty"`
+	Issues             []ReportIssue        `json:"issues,omitempty"`
+	ValidStepCount     int                  `json:"valid_step_count"`
+	InvalidStepCount   int                  `json:"invalid_step_count"`
+	Verdict            string               `json:"verdict"`
+}
+
+type ReportEvidenceStep struct {
+	EvidenceStep
+	Index       int           `json:"index"`
+	DisplayName string        `json:"display_name"`
+	Image       ImageEvidence `json:"image"`
+}
+
+type ImageEvidence struct {
+	OK     bool   `json:"ok"`
+	Issue  string `json:"issue,omitempty"`
+	Width  int    `json:"width,omitempty"`
+	Height int    `json:"height,omitempty"`
+	Size   int64  `json:"size,omitempty"`
+}
+
+type ReportIssue struct {
+	Severity string `json:"severity"`
+	Title    string `json:"title"`
+	Detail   string `json:"detail"`
 }
 
 func GenerateReport(run RunState) (string, error) {
@@ -39,7 +70,39 @@ func GenerateReport(run RunState) (string, error) {
 		RunID:     run.ID,
 		CreatedAt: time.Now().Format(time.RFC3339),
 		Dir:       run.Dir,
-		Steps:     LoadEvidenceSteps(run),
+	}
+	for index, step := range LoadEvidenceSteps(run) {
+		reportStep := ReportEvidenceStep{
+			EvidenceStep: step,
+			Index:        index + 1,
+			DisplayName:  humanizeEvidenceName(step.Name),
+			Image:        ValidateEvidenceImage(step.File),
+		}
+		if reportStep.Image.OK {
+			data.ValidStepCount++
+		} else {
+			data.InvalidStepCount++
+			data.Issues = append(data.Issues, ReportIssue{
+				Severity: "blocker",
+				Title:    "Evidence image is not usable",
+				Detail:   fmt.Sprintf("%s: %s", step.Name, reportStep.Image.Issue),
+			})
+		}
+		if strings.TrimSpace(step.Note) == "" {
+			data.Issues = append(data.Issues, ReportIssue{
+				Severity: "warning",
+				Title:    "Evidence step has no assertion note",
+				Detail:   fmt.Sprintf("%s should explain what the screenshot proves.", step.Name),
+			})
+		}
+		data.Steps = append(data.Steps, reportStep)
+	}
+	if len(data.Steps) == 0 {
+		data.Issues = append(data.Issues, ReportIssue{
+			Severity: "warning",
+			Title:    "No named evidence steps",
+			Detail:   "Capture named before/after or state-specific proof points with mav evidence step.",
+		})
 	}
 	screen := filepath.Join(run.Dir, "screen.png")
 	if exists(screen) {
@@ -51,12 +114,52 @@ func GenerateReport(run RunState) (string, error) {
 			data.Screenshot = path
 		}
 	}
+	if data.Screenshot != "" {
+		data.ScreenshotEvidence = ValidateEvidenceImage(data.Screenshot)
+		if !data.ScreenshotEvidence.OK {
+			data.Issues = append(data.Issues, ReportIssue{
+				Severity: "warning",
+				Title:    "Current screenshot is not usable",
+				Detail:   data.ScreenshotEvidence.Issue,
+			})
+		}
+	}
 	if video, validation := reportVideo(run); video != "" {
 		data.Video = video
-		if !validation.OK {
-			data.VideoInvalid = true
+		if validation.OK {
+			data.VideoStatus = "accepted"
+			data.VideoDuration = validation.Duration.String()
+			if validation.Frames > 0 {
+				data.VideoFrames = fmt.Sprintf("%d", validation.Frames)
+			} else {
+				data.VideoFrames = "unknown"
+			}
+		} else {
+			data.VideoStatus = "invalid"
 			data.VideoIssue = validation.Issue
+			if validation.Duration > 0 {
+				data.VideoDuration = validation.Duration.String()
+			} else {
+				data.VideoDuration = "0s"
+			}
+			if validation.Frames > 0 {
+				data.VideoFrames = fmt.Sprintf("%d", validation.Frames)
+			} else {
+				data.VideoFrames = "unknown"
+			}
+			data.Issues = append(data.Issues, ReportIssue{
+				Severity: "blocker",
+				Title:    "Video is not accepted as evidence",
+				Detail:   fmt.Sprintf("%s (%s)", validation.Issue, data.VideoDuration),
+			})
 		}
+	} else {
+		data.VideoStatus = "missing"
+		data.Issues = append(data.Issues, ReportIssue{
+			Severity: "warning",
+			Title:    "No video evidence captured",
+			Detail:   "Screenshot evidence is still shown, but the report does not prove the interaction sequence.",
+		})
 	}
 	if exists(run.LogsPath) {
 		content, _ := os.ReadFile(run.LogsPath)
@@ -83,13 +186,64 @@ func GenerateReport(run RunState) (string, error) {
 			}
 		}
 	}
-	path := filepath.Join(run.Dir, "report.html")
+	data.Verdict = "needs review"
+	if data.InvalidStepCount == 0 && data.VideoStatus == "accepted" && len(data.Steps) > 0 {
+		data.Verdict = "verified"
+	}
+	if data.InvalidStepCount > 0 || data.VideoStatus == "invalid" {
+		data.Verdict = "blocked"
+	}
+	path := filepath.Join(run.Dir, "report.json")
 	file, err := os.Create(path)
 	if err != nil {
 		return "", err
 	}
 	defer file.Close()
-	return path, reportTemplate.Execute(file, data)
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "  ")
+	return path, encoder.Encode(data)
+}
+
+func ValidateEvidenceImage(path string) ImageEvidence {
+	info, err := os.Stat(path)
+	if err != nil {
+		return ImageEvidence{Issue: "file_missing"}
+	}
+	if info.Size() == 0 {
+		return ImageEvidence{Size: info.Size(), Issue: "file_empty"}
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return ImageEvidence{Size: info.Size(), Issue: "file_unreadable"}
+	}
+	defer file.Close()
+	config, _, err := image.DecodeConfig(file)
+	if err != nil {
+		return ImageEvidence{Size: info.Size(), Issue: "image_decode_failed"}
+	}
+	evidence := ImageEvidence{OK: true, Width: config.Width, Height: config.Height, Size: info.Size()}
+	if config.Width <= 0 || config.Height <= 0 {
+		evidence.OK = false
+		evidence.Issue = "image_dimensions_missing"
+	} else if config.Width < 24 || config.Height < 24 {
+		evidence.OK = false
+		evidence.Issue = "image_dimensions_too_small"
+	}
+	return evidence
+}
+
+func humanizeEvidenceName(name string) string {
+	name = strings.TrimSpace(strings.ReplaceAll(name, "-", " "))
+	if name == "" {
+		return "Evidence step"
+	}
+	parts := strings.Fields(name)
+	for i, part := range parts {
+		if len(part) > 0 {
+			parts[i] = strings.ToUpper(part[:1]) + part[1:]
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 func reportVideo(run RunState) (string, VideoValidation) {
@@ -148,90 +302,3 @@ func exists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
 }
-
-var reportTemplate = template.Must(template.New("report").Parse(`<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MAV Evidence {{.RunID}}</title>
-  <style>
-    :root { color-scheme: light; --ink:#171717; --muted:#6b7280; --line:#e5e7eb; --panel:#fff; --bg:#f6f7f9; --accent:#3157d5; }
-    * { box-sizing: border-box; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; color: var(--ink); background: var(--bg); }
-    main { max-width: 1180px; margin: 0 auto; padding: 28px; }
-    header { display: flex; justify-content: space-between; gap: 24px; align-items: flex-start; margin-bottom: 24px; }
-    h1 { font-size: 28px; margin: 0 0 6px; letter-spacing: 0; }
-    h2 { font-size: 15px; margin: 0 0 14px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
-    h3 { font-size: 17px; margin: 0 0 6px; }
-    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-    pre { white-space: pre-wrap; background: #111827; color: #f9fafb; padding: 16px; border-radius: 8px; overflow: auto; max-height: 360px; font-size: 12px; line-height: 1.45; }
-    section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 18px; margin-bottom: 18px; }
-    img, video { display: block; width: 100%; max-width: 390px; max-height: 760px; object-fit: contain; border: 1px solid var(--line); border-radius: 8px; background: white; }
-    video { max-width: 430px; }
-    .meta { color: var(--muted); font-size: 13px; line-height: 1.5; }
-    .badge { display:inline-flex; align-items:center; border:1px solid var(--line); border-radius:999px; padding:6px 10px; background:white; color:var(--muted); font-size:12px; white-space: nowrap; }
-    .grid { display:grid; grid-template-columns: 1fr 1fr; gap:18px; align-items:start; }
-    .timeline { display:grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap:16px; }
-    .step { border:1px solid var(--line); border-radius:8px; padding:12px; background:#fbfbfc; }
-    .step img { max-width: 100%; max-height: 520px; margin-top: 10px; }
-    .empty { color: var(--muted); margin: 0; }
-    .commands { display:grid; gap:8px; }
-    .command { background:#f3f4f6; border:1px solid var(--line); border-radius:6px; padding:8px; font-size:12px; overflow:auto; }
-    @media (max-width: 820px) { main { padding: 16px; } header, .grid { display:block; } section { padding: 14px; } img, video { max-width: 100%; } }
-  </style>
-</head>
-<body>
-<main>
-  <header>
-    <div>
-      <h1>MAV Evidence</h1>
-      <div class="meta">run={{.RunID}}<br>created={{.CreatedAt}}<br>{{.Dir}}</div>
-    </div>
-    <div class="badge">{{if .Video}}{{if .VideoInvalid}}video_invalid{{else}}video{{end}}{{else}}no video{{end}} · {{len .Steps}} steps · {{if .Crashes}}{{len .Crashes}} crashes{{else}}0 crashes{{end}}</div>
-  </header>
-
-  <section>
-    <h2>Flow Recording</h2>
-    {{if .Video}}{{if .VideoInvalid}}<p class="empty">Video invalid: {{.VideoIssue}}. The file is kept for inspection, but it is not accepted as evidence.</p>{{end}}<video src="{{.Video}}" controls></video>{{else}}<p class="empty">No video captured. Start evidence recording before the flow and stop it after the tested behavior.</p>{{end}}
-  </section>
-
-  <section>
-    <h2>Verification Timeline</h2>
-    {{if .Steps}}
-    <div class="timeline">
-      {{range .Steps}}
-      <article class="step">
-        <h3>{{.Name}}</h3>
-        <div class="meta">{{.Kind}} · {{.CreatedAt}}{{if .Note}}<br>{{.Note}}{{end}}</div>
-        <img src="{{.File}}" alt="{{.Name}}">
-      </article>
-      {{end}}
-    </div>
-    {{else}}<p class="empty">No named evidence steps captured.</p>{{end}}
-  </section>
-
-  <div class="grid">
-    <section>
-      <h2>Current Screenshot</h2>
-      {{if .Screenshot}}<img src="{{.Screenshot}}" alt="MAV screenshot">{{else}}<p class="empty">No current screenshot captured.</p>{{end}}
-    </section>
-    <section>
-      <h2>Crashes</h2>
-      {{if .Crashes}}{{range .Crashes}}<p><code>{{.}}</code></p>{{end}}{{else}}<p class="empty">No crashes captured.</p>{{end}}
-    </section>
-  </div>
-
-  <section>
-    <h2>Commands</h2>
-    {{if .Commands}}<div class="commands">{{range .Commands}}<div class="command"><code>{{.}}</code></div>{{end}}</div>{{else}}<p class="empty">No commands recorded.</p>{{end}}
-  </section>
-
-  <section>
-    <h2>Logs</h2>
-    {{if .Logs}}<pre>{{.Logs}}</pre>{{else}}<p class="empty">No logs captured.</p>{{end}}
-  </section>
-</main>
-</body>
-</html>
-`))
