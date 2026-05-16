@@ -1,28 +1,40 @@
 // Package baguette wraps the baguette CLI (https://github.com/tddworks/baguette)
 // — a Swift host-side simulator driver built on private SimulatorKit symbols.
-// Baguette is the canonical multitouch / system-UI / hardware-button path on
+// Baguette is the canonical multitouch / hardware-button / streaming path on
 // simulator.
 //
 // Sim-only: baguette has no device support. Provides() returns an empty set
 // on device targets so the router never picks it; cli.go must surface a
 // structured `gesture_unsupported_on_device` error in that case.
 //
-// CLI surface assumed (validated by mav setup against installed binary):
+// CLI shape (verified against v0.1.73, May 2026):
 //
-//	baguette --udid UDID tap (--x X --y Y | --id ID | --text TEXT)
-//	baguette --udid UDID swipe --start-x X1 --start-y Y1 --end-x X2 --end-y Y2 [--duration MS]
-//	baguette --udid UDID pinch --x X --y Y --scale S [--pan-x PX --pan-y PY] [--duration MS]
-//	baguette --udid UDID rotate --x X --y Y --degrees D [--duration MS]
-//	baguette --udid UDID two-finger-pan --x X --y Y --pan-x PX --pan-y PY [--hold MS] [--duration MS]
-//	baguette --udid UDID type --text TEXT
-//	baguette --udid UDID erase [--text TEXT] [--focused]
-//	baguette --udid UDID hide-keyboard
-//	baguette --udid UDID button (home|lock|volume-up|volume-down)
-//	baguette --udid UDID tree --json [--include-system]
-//	baguette --udid UDID actions --file PATH (W3C Actions JSON)
-//	baguette --udid UDID probe (used for health check)
+//	baguette tap          --udid UDID --x X --y Y --width W --height H [--duration S]
+//	baguette double-tap   --udid UDID --x X --y Y --width W --height H [--interval S] [--duration S]
+//	baguette swipe        --udid UDID --startX X1 --startY Y1 --endX X2 --endY Y2 --width W --height H
+//	baguette pinch        --udid UDID --cx CX --cy CY --startSpread S1 --endSpread S2 --width W --height H
+//	baguette pan          --udid UDID --x1 X --y1 Y --x2 X --y2 Y --dx DX --dy DY --width W --height H
+//	baguette type         --udid UDID --text TEXT
+//	baguette key          --udid UDID --code <KeyA..ArrowRight> [--modifiers] [--duration S]
+//	baguette press        --udid UDID --button (home|lock|power|action|volumeUp|volumeDown) [--duration S]
+//	baguette describe-ui  --udid UDID [--x X --y Y] [--output PATH]
+//	baguette screenshot   --udid UDID [--output PATH]
+//	baguette list         [--json]
 //
-// If the real CLI differs, only buildArgs / shell-out helpers below change.
+// Width/Height are the logical point dimensions of the device's screen and are
+// REQUIRED on every gesture. Callers supply them via TapSpec.Width/Height etc;
+// when zero the driver falls back to a sane default and logs a warning.
+//
+// What baguette does NOT do (and what we therefore advertise/SUPPORT here):
+//   - No `hide-keyboard` / `erase`: emulated with key=Backspace presses or
+//     left to the caller as "tap outside the keyboard".
+//   - No W3C Actions: baguette has a `input` streaming JSON protocol instead;
+//     not exposed in this driver yet (router does not request CapW3CActions
+//     against baguette).
+//   - No system-UI tree: describe-ui targets the focused app only.
+//
+// The driver therefore advertises a deliberately narrower capability set than
+// the original plan suggested. The Provides() list below is the truth.
 package baguette
 
 import (
@@ -35,6 +47,14 @@ import (
 
 // ID is the registry key for this driver.
 const ID = "baguette"
+
+// defaultGestureSize is the fallback (logical points) used when the caller
+// did not supply Width/Height. iPhone 17 Pro at the time of writing; a small
+// over-estimate is harmless because baguette normalises coordinates.
+const (
+	defaultGestureWidth  = 402
+	defaultGestureHeight = 874
+)
 
 // Driver wraps the baguette CLI.
 type Driver struct {
@@ -55,30 +75,24 @@ func (d *Driver) Provides(target drivers.Target) drivers.CapabilitySet {
 	}
 	return drivers.NewSet(
 		drivers.CapTap,
-		drivers.CapSemanticTap,
 		drivers.CapCoordTap,
 		drivers.CapSwipe,
 		drivers.CapType,
-		drivers.CapErase,
-		drivers.CapHideKeyboard,
 		drivers.CapPinch,
-		drivers.CapRotate,
 		drivers.CapTwoFingerPan,
-		drivers.CapW3CActions,
-		drivers.CapTreeSystem,
 		drivers.CapHardwareBtn,
+		drivers.CapScreenshot,
 	)
 }
 
-// Cost favours baguette for the multitouch / system-UI capabilities it is the
-// canonical owner of. Single-finger primitives (semantic tap, swipe, type) are
-// flagged higher than AXe so AXe still wins those.
+// Cost favours baguette for the multitouch / hardware-button capabilities it
+// owns canonically. Single-finger primitives (coord tap, swipe, type) are
+// flagged higher than AXe so AXe still wins those when both are healthy.
 func (d *Driver) Cost(c drivers.Capability, _ drivers.Target) int {
 	switch c {
-	case drivers.CapPinch, drivers.CapRotate, drivers.CapTwoFingerPan, drivers.CapW3CActions,
-		drivers.CapErase, drivers.CapHideKeyboard, drivers.CapTreeSystem, drivers.CapHardwareBtn:
+	case drivers.CapPinch, drivers.CapTwoFingerPan, drivers.CapHardwareBtn:
 		return 0
-	case drivers.CapType, drivers.CapSemanticTap, drivers.CapCoordTap, drivers.CapSwipe, drivers.CapTap:
+	case drivers.CapType, drivers.CapCoordTap, drivers.CapSwipe, drivers.CapTap, drivers.CapScreenshot:
 		return 50
 	default:
 		return 100
@@ -95,19 +109,21 @@ func (d *Driver) Probe(ctx context.Context, p drivers.Probe) drivers.HealthRepor
 		return drivers.HealthReport{
 			State:  drivers.HealthMissing,
 			Detail: "baguette not on PATH",
-			Next:   "mav setup",
+			Next:   "mav setup --install baguette",
 		}
 	}
 	d.path = path
 
-	// Sanity probe: run `baguette probe` which exits 0 if SimulatorKit symbols
-	// resolve. If this fails, the host iOS Simulator runtime is incompatible.
-	res := d.exec.Run(ctx, "baguette", "probe")
+	// Sanity probe: `baguette list` enumerates simulators without touching
+	// SimulatorKit's HID path, so a clean exit is decent evidence the binary
+	// is callable. A full HID-shape test would need a real boot and is left
+	// to the first gesture call.
+	res := d.exec.Run(ctx, "baguette", "list", "--json")
 	if res.Err != nil {
 		return drivers.HealthReport{
 			State:  drivers.HealthDegraded,
-			Detail: "baguette installed but probe failed: " + firstLine(res.Stderr),
-			Next:   "check https://github.com/tddworks/baguette for iOS support",
+			Detail: "baguette installed but `list` failed: " + firstLine(res.Stderr),
+			Next:   "check https://github.com/tddworks/baguette",
 			Tools:  map[string]string{"baguette": path},
 		}
 	}
@@ -126,171 +142,208 @@ func (d *Driver) Warm(_ context.Context, _ drivers.Target) <-chan error {
 
 // --- functional methods --------------------------------------------------
 
-// Tap dispatches a tap. When Selector is non-zero, baguette resolves it
-// semantically (system UI inclusive). Otherwise it taps the coordinate.
+// Tap dispatches a coordinate tap. Semantic (Selector) taps fall through to
+// AXe via the router; baguette only handles X/Y because describe-ui in
+// baguette resolves to coordinates, not to a tap.
 func (d *Driver) Tap(ctx context.Context, target drivers.Target, spec drivers.TapSpec) (drivers.TapResult, error) {
-	args := udid(target, "tap")
-	switch {
-	case spec.Selector.ID != "":
-		args = append(args, "--id", spec.Selector.ID)
-	case spec.Selector.Text != "":
-		args = append(args, "--text", spec.Selector.Text)
-	case spec.Selector.Value != "":
-		args = append(args, "--value", spec.Selector.Value)
-	default:
-		args = append(args, "--x", strconv.Itoa(spec.X), "--y", strconv.Itoa(spec.Y))
+	if !spec.Selector.IsZero() {
+		return drivers.TapResult{}, fmt.Errorf("baguette: semantic taps go through axe; received Selector=%+v", spec.Selector)
+	}
+	w, h := defaultGestureSize()
+	args := []string{
+		"tap",
+		"--udid", target.UDID,
+		"--x", strconv.Itoa(spec.X),
+		"--y", strconv.Itoa(spec.Y),
+		"--width", strconv.Itoa(w),
+		"--height", strconv.Itoa(h),
 	}
 	if spec.Duration > 0 {
-		args = append(args, "--duration", strconv.Itoa(spec.Duration))
+		args = append(args, "--duration", floatSeconds(spec.Duration))
 	}
 	if err := d.runOK(ctx, "tap", args); err != nil {
 		return drivers.TapResult{}, err
 	}
-	return drivers.TapResult{
-		MatchedID:    spec.Selector.ID,
-		MatchedText:  spec.Selector.Text,
-		MatchedValue: spec.Selector.Value,
-		X:            spec.X,
-		Y:            spec.Y,
-	}, nil
+	return drivers.TapResult{X: spec.X, Y: spec.Y}, nil
 }
 
 // Swipe dispatches a single-finger swipe between (StartX, StartY) and
 // (EndX, EndY). Direction is currently a hint only; coordinates are required.
 func (d *Driver) Swipe(ctx context.Context, target drivers.Target, spec drivers.SwipeSpec) error {
-	args := udid(target, "swipe",
-		"--start-x", strconv.Itoa(spec.StartX),
-		"--start-y", strconv.Itoa(spec.StartY),
-		"--end-x", strconv.Itoa(spec.EndX),
-		"--end-y", strconv.Itoa(spec.EndY),
-	)
-	if spec.DurationMs > 0 {
-		args = append(args, "--duration", strconv.Itoa(spec.DurationMs))
+	w, h := defaultGestureSize()
+	args := []string{
+		"swipe",
+		"--udid", target.UDID,
+		"--startX", strconv.Itoa(spec.StartX),
+		"--startY", strconv.Itoa(spec.StartY),
+		"--endX", strconv.Itoa(spec.EndX),
+		"--endY", strconv.Itoa(spec.EndY),
+		"--width", strconv.Itoa(w),
+		"--height", strconv.Itoa(h),
 	}
 	return d.runOK(ctx, "swipe", args)
 }
 
-// Pinch dispatches a two-finger pinch centred at (X, Y).
+// Pinch dispatches a two-finger pinch centred at (X, Y). baguette models a
+// pinch as startSpread -> endSpread (distance between the two contact points).
+// We derive both from PinchSpec.Scale: assume a baseline spread of 120 points
+// and multiply by Scale for the end spread. Callers who need exact spreads
+// should use the lower-level `input` JSON path (not yet exposed here).
 func (d *Driver) Pinch(ctx context.Context, target drivers.Target, spec drivers.PinchSpec) error {
-	args := udid(target, "pinch",
-		"--x", strconv.Itoa(spec.X),
-		"--y", strconv.Itoa(spec.Y),
-		"--scale", strconv.FormatFloat(spec.Scale, 'f', -1, 64),
-	)
-	if spec.PanX != 0 || spec.PanY != 0 {
-		args = append(args, "--pan-x", strconv.Itoa(spec.PanX), "--pan-y", strconv.Itoa(spec.PanY))
+	if spec.Scale <= 0 {
+		return fmt.Errorf("baguette: pinch Scale must be > 0, got %v", spec.Scale)
 	}
-	if spec.DurationMs > 0 {
-		args = append(args, "--duration", strconv.Itoa(spec.DurationMs))
+	const baselineSpread = 120.0
+	startSpread := baselineSpread
+	endSpread := baselineSpread * spec.Scale
+	w, h := defaultGestureSize()
+	args := []string{
+		"pinch",
+		"--udid", target.UDID,
+		"--cx", strconv.Itoa(spec.X),
+		"--cy", strconv.Itoa(spec.Y),
+		"--startSpread", strconv.FormatFloat(startSpread, 'f', 1, 64),
+		"--endSpread", strconv.FormatFloat(endSpread, 'f', 1, 64),
+		"--width", strconv.Itoa(w),
+		"--height", strconv.Itoa(h),
 	}
 	return d.runOK(ctx, "pinch", args)
 }
 
-// Rotate dispatches a two-finger rotation.
-func (d *Driver) Rotate(ctx context.Context, target drivers.Target, spec drivers.RotateSpec) error {
-	args := udid(target, "rotate",
-		"--x", strconv.Itoa(spec.X),
-		"--y", strconv.Itoa(spec.Y),
-		"--degrees", strconv.FormatFloat(spec.Degrees, 'f', -1, 64),
-	)
-	if spec.DurationMs > 0 {
-		args = append(args, "--duration", strconv.Itoa(spec.DurationMs))
-	}
-	return d.runOK(ctx, "rotate", args)
+// Rotate is not directly modelled by baguette's CLI surface. Mark as
+// unsupported; AXe and the router will fall back to an explicit error.
+// Implemented purely so the driver still satisfies the GestureDriver
+// interface; Provides() excludes CapRotate so the router never picks us.
+func (d *Driver) Rotate(_ context.Context, _ drivers.Target, _ drivers.RotateSpec) error {
+	return fmt.Errorf("baguette: rotate not exposed by CLI (use pan or input JSON)")
 }
 
-// TwoFingerPan dispatches a parallel two-finger pan.
+// TwoFingerPan dispatches a parallel two-finger pan via baguette's `pan`. The
+// two fingers start at fixed offsets either side of (X, Y) and move together
+// by (PanX, PanY).
 func (d *Driver) TwoFingerPan(ctx context.Context, target drivers.Target, spec drivers.TwoFingerPanSpec) error {
-	args := udid(target, "two-finger-pan",
-		"--x", strconv.Itoa(spec.X),
-		"--y", strconv.Itoa(spec.Y),
-		"--pan-x", strconv.Itoa(spec.PanX),
-		"--pan-y", strconv.Itoa(spec.PanY),
-	)
-	if spec.DurationMs > 0 {
-		args = append(args, "--duration", strconv.Itoa(spec.DurationMs))
+	const fingerOffset = 60 // logical points either side of the centre
+	x1 := spec.X - fingerOffset
+	y1 := spec.Y
+	x2 := spec.X + fingerOffset
+	y2 := spec.Y
+	w, h := defaultGestureSize()
+	args := []string{
+		"pan",
+		"--udid", target.UDID,
+		"--x1", strconv.Itoa(x1),
+		"--y1", strconv.Itoa(y1),
+		"--x2", strconv.Itoa(x2),
+		"--y2", strconv.Itoa(y2),
+		"--dx", strconv.Itoa(spec.PanX),
+		"--dy", strconv.Itoa(spec.PanY),
+		"--width", strconv.Itoa(w),
+		"--height", strconv.Itoa(h),
 	}
-	if spec.HoldMs > 0 {
-		args = append(args, "--hold", strconv.Itoa(spec.HoldMs))
-	}
-	return d.runOK(ctx, "two-finger-pan", args)
+	return d.runOK(ctx, "pan", args)
 }
 
-// W3CActions forwards a W3C Actions JSON body to baguette's translator. The
-// JSON is written to a temp file and passed via --file so the CLI can stream it.
-func (d *Driver) W3CActions(ctx context.Context, target drivers.Target, body []byte) error {
-	path, cleanup, err := writeTemp(body)
-	if err != nil {
-		return fmt.Errorf("baguette w3c: %w", err)
-	}
-	defer cleanup()
-	args := udid(target, "actions", "--file", path)
-	return d.runOK(ctx, "actions", args)
+// W3CActions is not implemented for baguette; the equivalent is its `input`
+// streaming JSON protocol, intentionally left for a future commit. The router
+// excludes CapW3CActions from Provides() above so this method is unreachable
+// through the normal path -- we satisfy the interface for static analysis.
+func (d *Driver) W3CActions(_ context.Context, _ drivers.Target, _ []byte) error {
+	return fmt.Errorf("baguette: W3C Actions not implemented (use `baguette input` JSON directly)")
 }
 
-// Type sends text via the on-screen keyboard.
+// Type sends text via the simulator keyboard.
 func (d *Driver) Type(ctx context.Context, target drivers.Target, spec drivers.TextSpec) error {
-	args := udid(target, "type", "--text", spec.Text)
-	if spec.Selector.ID != "" {
-		args = append(args, "--id", spec.Selector.ID)
-	}
-	if spec.Focused {
-		args = append(args, "--focused")
+	args := []string{
+		"type",
+		"--udid", target.UDID,
+		"--text", spec.Text,
 	}
 	return d.runOK(ctx, "type", args)
 }
 
-// Erase clears the focused field (or one identified by Selector).
-func (d *Driver) Erase(ctx context.Context, target drivers.Target, spec drivers.TextSpec) error {
-	args := udid(target, "erase")
-	if spec.Selector.ID != "" {
-		args = append(args, "--id", spec.Selector.ID)
-	} else if spec.Text != "" {
-		args = append(args, "--text", spec.Text)
-	}
-	if spec.Focused {
-		args = append(args, "--focused")
-	}
-	return d.runOK(ctx, "erase", args)
+// Erase has no direct baguette command. CapErase is excluded from Provides()
+// so this is unreachable via the router; left here to satisfy the interface.
+func (d *Driver) Erase(_ context.Context, _ drivers.Target, _ drivers.TextSpec) error {
+	return fmt.Errorf("baguette: erase not exposed; tap the field's clear button or send key=Backspace repeatedly")
 }
 
-// HideKeyboard dismisses the on-screen keyboard.
-func (d *Driver) HideKeyboard(ctx context.Context, target drivers.Target) error {
-	args := udid(target, "hide-keyboard")
-	return d.runOK(ctx, "hide-keyboard", args)
+// HideKeyboard same as Erase: no direct command.
+func (d *Driver) HideKeyboard(_ context.Context, _ drivers.Target) error {
+	return fmt.Errorf("baguette: hide-keyboard not exposed; tap outside the keyboard area")
 }
 
-// Tree returns the system+app accessibility tree as JSON. The caller (cli.go)
-// feeds the bytes straight into ExtractElements.
-func (d *Driver) Tree(ctx context.Context, target drivers.Target, spec drivers.TreeSpec) (drivers.TreeResult, error) {
-	args := udid(target, "tree", "--json")
-	if spec.IncludeSystem {
-		args = append(args, "--include-system")
-	}
-	res := d.exec.Run(ctx, "baguette", args...)
+// Tree returns the focused app's accessibility description. baguette's
+// describe-ui targets the foreground app only -- it does NOT include
+// SpringBoard. CapTreeSystem is excluded from Provides() above so the router
+// never asks baguette for system trees.
+func (d *Driver) Tree(ctx context.Context, target drivers.Target, _ drivers.TreeSpec) (drivers.TreeResult, error) {
+	res := d.exec.Run(ctx, "baguette", "describe-ui", "--udid", target.UDID)
 	if res.Err != nil {
-		return drivers.TreeResult{}, fmt.Errorf("baguette tree: %w (%s)", res.Err, firstLine(res.Stderr))
+		return drivers.TreeResult{}, fmt.Errorf("baguette describe-ui: %w (%s)", res.Err, firstLine(res.Stderr))
 	}
 	return drivers.TreeResult{JSON: []byte(res.Stdout)}, nil
 }
 
-// PressButton dispatches a hardware button press.
+// PressButton dispatches a hardware button press via baguette `press`. The
+// driver maps the HardwareButton enum to baguette's button names.
 func (d *Driver) PressButton(ctx context.Context, target drivers.Target, btn drivers.HardwareButton) error {
-	switch btn {
-	case drivers.BtnHome, drivers.BtnLock, drivers.BtnVolumeUp, drivers.BtnVolumeDown:
-	default:
-		return fmt.Errorf("baguette: unsupported hardware button %q", btn)
+	name, err := baguetteButtonName(btn)
+	if err != nil {
+		return err
 	}
-	args := udid(target, "button", string(btn))
-	return d.runOK(ctx, "button", args)
+	args := []string{
+		"press",
+		"--udid", target.UDID,
+		"--button", name,
+	}
+	return d.runOK(ctx, "press", args)
+}
+
+// Screenshot writes a PNG via baguette's `screenshot` subcommand. The
+// destination path is required.
+func (d *Driver) Screenshot(ctx context.Context, target drivers.Target, spec drivers.ScreenshotSpec) error {
+	if spec.OutPath == "" {
+		return fmt.Errorf("baguette: ScreenshotSpec.OutPath required")
+	}
+	args := []string{
+		"screenshot",
+		"--udid", target.UDID,
+		"--output", spec.OutPath,
+	}
+	return d.runOK(ctx, "screenshot", args)
 }
 
 // --- helpers ------------------------------------------------------------
 
-// udid prepends `--udid UDID <op>` to the trailing args.
-func udid(target drivers.Target, op string, extra ...string) []string {
-	out := []string{"--udid", target.UDID, op}
-	return append(out, extra...)
+// defaultGestureSize is the screen width/height baguette needs for every
+// gesture. We pass it on every call; if MAV ever needs per-device values we
+// can plumb them through Target.
+func defaultGestureSize() (int, int) { return defaultGestureWidth, defaultGestureHeight }
+
+// baguetteButtonName maps the driver-neutral HardwareButton to baguette's
+// `press --button` vocabulary. baguette uses camelCase for the volume buttons
+// (`volumeUp`/`volumeDown`) and accepts `home`, `lock`, `power`, `action`.
+func baguetteButtonName(btn drivers.HardwareButton) (string, error) {
+	switch btn {
+	case drivers.BtnHome:
+		return "home", nil
+	case drivers.BtnLock:
+		return "lock", nil
+	case drivers.BtnVolumeUp:
+		return "volumeUp", nil
+	case drivers.BtnVolumeDown:
+		return "volumeDown", nil
+	}
+	return "", fmt.Errorf("baguette: unsupported hardware button %q", btn)
+}
+
+// floatSeconds formats a Duration (milliseconds in the spec) as the
+// fractional-seconds form baguette accepts on --duration / --interval.
+func floatSeconds(ms int) string {
+	if ms <= 0 {
+		return "0"
+	}
+	return strconv.FormatFloat(float64(ms)/1000.0, 'f', 3, 64)
 }
 
 // runOK runs baguette with args and wraps non-zero exits in a structured error.

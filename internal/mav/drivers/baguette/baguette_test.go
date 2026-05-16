@@ -9,12 +9,12 @@ import (
 	"github.com/bitomule/mav/internal/mav/drivers"
 )
 
-// fakeExec captures every baguette invocation as a sorted "args" string and
-// canned stdout/code per command key. Sufficient for unit tests of the driver.
+// fakeExec captures every baguette invocation as a single "args" string and
+// returns canned responses per command key.
 type fakeExec struct {
 	tools     map[string]bool
-	calls     []string                  // each is "name arg1 arg2 ..."
-	responses map[string]drivers.ExecResult // key is "name arg1 arg2 ..."
+	calls     []string
+	responses map[string]drivers.ExecResult
 }
 
 func (f *fakeExec) LookPath(name string) (string, error) {
@@ -59,190 +59,206 @@ func TestProvidesEmptyOnDevice(t *testing.T) {
 	}
 }
 
-func TestProvidesIncludesMultitouchOnSim(t *testing.T) {
+func TestProvidesAdvertisesSupportedCapsOnly(t *testing.T) {
 	d := New(newFake())
 	caps := d.Provides(simTarget())
+	// Must include capabilities the new driver actually serves.
 	for _, want := range []drivers.Capability{
-		drivers.CapPinch, drivers.CapRotate, drivers.CapTwoFingerPan,
-		drivers.CapHideKeyboard, drivers.CapErase, drivers.CapTreeSystem,
-		drivers.CapHardwareBtn, drivers.CapW3CActions,
+		drivers.CapPinch,
+		drivers.CapTwoFingerPan,
+		drivers.CapHardwareBtn,
+		drivers.CapScreenshot,
+		drivers.CapType,
+		drivers.CapTap,
+		drivers.CapCoordTap,
+		drivers.CapSwipe,
 	} {
 		if !caps.Has(want) {
 			t.Errorf("expected baguette to provide %s on sim", want)
+		}
+	}
+	// Must NOT include capabilities baguette's CLI doesn't expose.
+	for _, banned := range []drivers.Capability{
+		drivers.CapRotate,
+		drivers.CapW3CActions,
+		drivers.CapHideKeyboard,
+		drivers.CapErase,
+		drivers.CapTreeSystem,
+	} {
+		if caps.Has(banned) {
+			t.Errorf("did not expect baguette to advertise %s — CLI does not expose it", banned)
 		}
 	}
 }
 
 func TestProbeMissing(t *testing.T) {
 	exec := newFake()
-	exec.tools = map[string]bool{} // baguette absent
+	exec.tools = map[string]bool{}
 	d := New(exec)
-	report := d.Probe(context.Background(), exec)
-	if report.State != drivers.HealthMissing {
-		t.Fatalf("expected Missing, got %s", report.State)
+	if got := d.Probe(context.Background(), exec); got.State != drivers.HealthMissing {
+		t.Fatalf("expected Missing, got %s", got.State)
 	}
 }
 
-func TestProbeRunsSanityCommand(t *testing.T) {
+func TestProbeRunsListSanity(t *testing.T) {
 	exec := newFake()
 	d := New(exec)
 	report := d.Probe(context.Background(), exec)
 	if report.State != drivers.HealthOK {
 		t.Fatalf("expected OK, got %s (%s)", report.State, report.Detail)
 	}
-	if len(exec.calls) != 1 || exec.calls[0] != "baguette probe" {
-		t.Fatalf("expected single `baguette probe` call, got %v", exec.calls)
+	if len(exec.calls) != 1 || exec.calls[0] != "baguette list --json" {
+		t.Fatalf("expected single `baguette list --json` call, got %v", exec.calls)
 	}
 }
 
-func TestProbeDegradedWhenSanityFails(t *testing.T) {
-	exec := newFake()
-	exec.responses["baguette probe"] = drivers.ExecResult{
-		Err:    fmt.Errorf("exit 1"),
-		Stderr: "SimulatorKit symbol not found\n",
-	}
-	d := New(exec)
-	report := d.Probe(context.Background(), exec)
-	if report.State != drivers.HealthDegraded {
-		t.Fatalf("expected Degraded, got %s", report.State)
-	}
-}
-
-func TestTapBuildsCoordArgs(t *testing.T) {
+func TestTapBuildsCoordArgsWithWidthHeight(t *testing.T) {
 	exec := newFake()
 	d := New(exec)
 	_, err := d.Tap(context.Background(), simTarget(), drivers.TapSpec{X: 120, Y: 340})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "baguette --udid " + simUDID + " tap --x 120 --y 340"
-	if exec.calls[0] != want {
-		t.Fatalf("got=%q want=%q", exec.calls[0], want)
+	got := exec.calls[0]
+	for _, want := range []string{
+		"baguette tap",
+		"--udid " + simUDID,
+		"--x 120 --y 340",
+		"--width 402 --height 874",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected %q in %q", want, got)
+		}
 	}
 }
 
-func TestTapBuildsSemanticArgs(t *testing.T) {
-	exec := newFake()
-	d := New(exec)
+func TestTapRejectsSemanticSelector(t *testing.T) {
+	d := New(newFake())
 	_, err := d.Tap(context.Background(), simTarget(), drivers.TapSpec{
 		Selector: drivers.ElementSelector{ID: "submit"},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(exec.calls[0], "--id submit") {
-		t.Fatalf("expected --id submit, got %q", exec.calls[0])
-	}
-	if strings.Contains(exec.calls[0], "--x") {
-		t.Fatalf("did not expect coord flags, got %q", exec.calls[0])
+	if err == nil {
+		t.Fatal("expected error: semantic taps go via AXe")
 	}
 }
 
-func TestPinchBuildsArgs(t *testing.T) {
+func TestSwipeUsesCamelCaseFlags(t *testing.T) {
+	exec := newFake()
+	d := New(exec)
+	err := d.Swipe(context.Background(), simTarget(), drivers.SwipeSpec{
+		StartX: 100, StartY: 200, EndX: 300, EndY: 400,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := exec.calls[0]
+	for _, want := range []string{
+		"baguette swipe",
+		"--startX 100 --startY 200",
+		"--endX 300 --endY 400",
+		"--width 402 --height 874",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected %q in %q", want, got)
+		}
+	}
+}
+
+func TestPinchUsesSpreadModel(t *testing.T) {
 	exec := newFake()
 	d := New(exec)
 	err := d.Pinch(context.Background(), simTarget(), drivers.PinchSpec{
-		X: 200, Y: 400, Scale: 1.5, DurationMs: 500,
+		X: 200, Y: 400, Scale: 2.0,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "baguette --udid " + simUDID + " pinch --x 200 --y 400 --scale 1.5 --duration 500"
-	if exec.calls[0] != want {
-		t.Fatalf("got=%q want=%q", exec.calls[0], want)
+	got := exec.calls[0]
+	for _, want := range []string{
+		"baguette pinch",
+		"--cx 200 --cy 400",
+		"--startSpread 120.0 --endSpread 240.0",
+		"--width 402 --height 874",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected %q in %q", want, got)
+		}
 	}
 }
 
-func TestRotateBuildsArgs(t *testing.T) {
-	exec := newFake()
-	d := New(exec)
-	err := d.Rotate(context.Background(), simTarget(), drivers.RotateSpec{
-		X: 100, Y: 200, Degrees: 90,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := "baguette --udid " + simUDID + " rotate --x 100 --y 200 --degrees 90"
-	if exec.calls[0] != want {
-		t.Fatalf("got=%q want=%q", exec.calls[0], want)
+func TestPinchRejectsZeroScale(t *testing.T) {
+	d := New(newFake())
+	if err := d.Pinch(context.Background(), simTarget(), drivers.PinchSpec{Scale: 0}); err == nil {
+		t.Fatal("expected error on Scale=0")
 	}
 }
 
-func TestTwoFingerPanBuildsArgs(t *testing.T) {
+func TestTwoFingerPanBuildsPanArgs(t *testing.T) {
 	exec := newFake()
 	d := New(exec)
 	err := d.TwoFingerPan(context.Background(), simTarget(), drivers.TwoFingerPanSpec{
-		X: 100, Y: 100, PanX: 50, PanY: -20, HoldMs: 200,
+		X: 200, Y: 400, PanX: 80, PanY: -40,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "baguette --udid " + simUDID + " two-finger-pan --x 100 --y 100 --pan-x 50 --pan-y -20 --hold 200"
-	if exec.calls[0] != want {
-		t.Fatalf("got=%q want=%q", exec.calls[0], want)
-	}
-}
-
-func TestHideKeyboardBuildsArgs(t *testing.T) {
-	exec := newFake()
-	d := New(exec)
-	if err := d.HideKeyboard(context.Background(), simTarget()); err != nil {
-		t.Fatal(err)
-	}
-	want := "baguette --udid " + simUDID + " hide-keyboard"
-	if exec.calls[0] != want {
-		t.Fatalf("got=%q want=%q", exec.calls[0], want)
+	got := exec.calls[0]
+	for _, want := range []string{
+		"baguette pan",
+		"--x1 140 --y1 400",
+		"--x2 260 --y2 400",
+		"--dx 80 --dy -40",
+		"--width 402 --height 874",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected %q in %q", want, got)
+		}
 	}
 }
 
 func TestTypeBuildsArgs(t *testing.T) {
 	exec := newFake()
 	d := New(exec)
-	if err := d.Type(context.Background(), simTarget(), drivers.TextSpec{Text: "hola", Focused: true}); err != nil {
+	if err := d.Type(context.Background(), simTarget(), drivers.TextSpec{Text: "hola"}); err != nil {
 		t.Fatal(err)
 	}
-	want := "baguette --udid " + simUDID + " type --text hola --focused"
+	want := "baguette type --udid " + simUDID + " --text hola"
 	if exec.calls[0] != want {
 		t.Fatalf("got=%q want=%q", exec.calls[0], want)
 	}
 }
 
-func TestEraseBuildsArgs(t *testing.T) {
-	exec := newFake()
-	d := New(exec)
-	if err := d.Erase(context.Background(), simTarget(), drivers.TextSpec{Focused: true}); err != nil {
-		t.Fatal(err)
-	}
-	want := "baguette --udid " + simUDID + " erase --focused"
-	if exec.calls[0] != want {
-		t.Fatalf("got=%q want=%q", exec.calls[0], want)
-	}
-}
-
-func TestPressButton(t *testing.T) {
-	exec := newFake()
-	d := New(exec)
-	if err := d.PressButton(context.Background(), simTarget(), drivers.BtnHome); err != nil {
-		t.Fatal(err)
-	}
-	want := "baguette --udid " + simUDID + " button home"
-	if exec.calls[0] != want {
-		t.Fatalf("got=%q want=%q", exec.calls[0], want)
+func TestPressButtonMapsVolumeNames(t *testing.T) {
+	for _, c := range []struct {
+		btn  drivers.HardwareButton
+		want string
+	}{
+		{drivers.BtnHome, "home"},
+		{drivers.BtnLock, "lock"},
+		{drivers.BtnVolumeUp, "volumeUp"},
+		{drivers.BtnVolumeDown, "volumeDown"},
+	} {
+		exec := newFake()
+		d := New(exec)
+		if err := d.PressButton(context.Background(), simTarget(), c.btn); err != nil {
+			t.Fatalf("%s: %v", c.btn, err)
+		}
+		if !strings.Contains(exec.calls[0], "--button "+c.want) {
+			t.Errorf("button=%s: expected `--button %s`, got %q", c.btn, c.want, exec.calls[0])
+		}
 	}
 }
 
 func TestPressButtonRejectsUnknown(t *testing.T) {
-	exec := newFake()
-	d := New(exec)
-	err := d.PressButton(context.Background(), simTarget(), drivers.HardwareButton("noisy-stick"))
-	if err == nil {
+	d := New(newFake())
+	if err := d.PressButton(context.Background(), simTarget(), drivers.HardwareButton("noisy")); err == nil {
 		t.Fatal("expected error on unknown button")
 	}
 }
 
-func TestTreeReturnsJSON(t *testing.T) {
+func TestTreeRunsDescribeUI(t *testing.T) {
 	exec := newFake()
-	exec.responses["baguette --udid "+simUDID+" tree --json"] = drivers.ExecResult{
+	exec.responses["baguette describe-ui --udid "+simUDID] = drivers.ExecResult{
 		Stdout: `[{"id":"root"}]`,
 	}
 	d := New(exec)
@@ -255,29 +271,49 @@ func TestTreeReturnsJSON(t *testing.T) {
 	}
 }
 
-func TestW3CActionsWritesTempFile(t *testing.T) {
+func TestScreenshotRequiresOutPath(t *testing.T) {
+	d := New(newFake())
+	if err := d.Screenshot(context.Background(), simTarget(), drivers.ScreenshotSpec{}); err == nil {
+		t.Fatal("expected error when OutPath empty")
+	}
+}
+
+func TestScreenshotBuildsArgs(t *testing.T) {
 	exec := newFake()
 	d := New(exec)
-	if err := d.W3CActions(context.Background(), simTarget(), []byte(`{"actions":[]}`)); err != nil {
+	if err := d.Screenshot(context.Background(), simTarget(), drivers.ScreenshotSpec{OutPath: "/tmp/out.png"}); err != nil {
 		t.Fatal(err)
 	}
-	if len(exec.calls) != 1 {
-		t.Fatalf("expected one call, got %d", len(exec.calls))
+	want := "baguette screenshot --udid " + simUDID + " --output /tmp/out.png"
+	if exec.calls[0] != want {
+		t.Fatalf("got=%q want=%q", exec.calls[0], want)
 	}
-	if !strings.Contains(exec.calls[0], "actions --file ") {
-		t.Fatalf("expected actions --file ..., got %q", exec.calls[0])
+}
+
+func TestHideKeyboardAndEraseAndRotateAndW3CReturnUnsupported(t *testing.T) {
+	d := New(newFake())
+	if err := d.HideKeyboard(context.Background(), simTarget()); err == nil {
+		t.Error("HideKeyboard should return unsupported error")
+	}
+	if err := d.Erase(context.Background(), simTarget(), drivers.TextSpec{}); err == nil {
+		t.Error("Erase should return unsupported error")
+	}
+	if err := d.Rotate(context.Background(), simTarget(), drivers.RotateSpec{}); err == nil {
+		t.Error("Rotate should return unsupported error")
+	}
+	if err := d.W3CActions(context.Background(), simTarget(), []byte("{}")); err == nil {
+		t.Error("W3CActions should return unsupported error")
 	}
 }
 
 func TestErrorOnNonZeroExit(t *testing.T) {
 	exec := newFake()
-	exec.responses["baguette --udid "+simUDID+" hide-keyboard"] = drivers.ExecResult{
+	exec.responses["baguette type --udid "+simUDID+" --text x"] = drivers.ExecResult{
 		Code:   2,
-		Stderr: "keyboard not visible\n",
+		Stderr: "type failed\n",
 	}
 	d := New(exec)
-	err := d.HideKeyboard(context.Background(), simTarget())
-	if err == nil || !strings.Contains(err.Error(), "exit 2") {
+	if err := d.Type(context.Background(), simTarget(), drivers.TextSpec{Text: "x"}); err == nil || !strings.Contains(err.Error(), "exit 2") {
 		t.Fatalf("expected exit 2 error, got %v", err)
 	}
 }

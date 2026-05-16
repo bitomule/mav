@@ -529,7 +529,7 @@ func TestSetupInstallsBaguette(t *testing.T) {
 	if err := cli.Run(context.Background(), []string{"setup", "--install", "baguette"}); err != nil {
 		t.Fatal(err)
 	}
-	if len(runner.commands) == 0 || !strings.Contains(runner.commands[0], "brew install tddworks/baguette/baguette") {
+	if len(runner.commands) == 0 || !strings.Contains(runner.commands[0], "brew install tddworks/tap/baguette") {
 		t.Fatalf("commands=%v", runner.commands)
 	}
 	if !strings.Contains(out.String(), "ok cmd=setup") || !strings.Contains(out.String(), "installed=baguette") {
