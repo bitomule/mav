@@ -319,8 +319,9 @@ func (c CLI) setup(ctx context.Context, opts GlobalOptions, args []string) error
 		return Fail("setup_install_missing", nil).Write(c.Stdout)
 	}
 	commands := map[string][]string{
-		"axe":      {"brew", "install", "cameroncooke/axe/axe"},
-		"baguette": {"brew", "install", "tddworks/baguette/baguette"},
+		"axe":       {"brew", "install", "cameroncooke/axe/axe"},
+		"baguette":  {"brew", "install", "tddworks/tap/baguette"},
+		"mitmproxy": {"brew", "install", "mitmproxy"},
 	}
 	for _, tool := range tools {
 		if tool == "idb" {
