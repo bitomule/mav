@@ -1,3 +1,10 @@
+# NOTE: This file is a snapshot from an early release and is NOT what
+# Homebrew users install. The release workflow in
+# `.github/workflows/release.yml` generates the canonical formula on
+# every tag and pushes it to `bitomule/homebrew-tap`, which is the tap
+# referenced by `brew install bitomule/tap/mav`. Manual edits here have
+# no effect on the install path; they only document the formula shape.
+
 class Mav < Formula
   desc "Mobile Agent Verifier for iOS apps"
   homepage "https://github.com/bitomule/mav"
