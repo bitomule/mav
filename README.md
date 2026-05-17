@@ -1,13 +1,23 @@
+<p align="left">
+  <img src="assets/logo.png" alt="mav logo" width="120">
+</p>
+
 # MAV
 
-Mobile Agent Verifier (`mav`) is a deterministic agent-native CLI for
-validating iOS apps from coding agents.
+[![CI](https://github.com/bitomule/mav/actions/workflows/ci.yml/badge.svg)](https://github.com/bitomule/mav/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/bitomule/mav?display_name=tag)](https://github.com/bitomule/mav/releases)
+[![Go Report Card](https://goreportcard.com/badge/github.com/bitomule/mav)](https://goreportcard.com/report/github.com/bitomule/mav)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-MAV gives agents a compact API to build, launch, observe, navigate, interact,
-capture evidence, read logs, and check crashes. It is intentionally not an
-autonomous testing agent: it runs concrete commands and returns small,
-parseable results that another agent can act on. MAV output is agent-friendly by
-default; there is no separate JSON mode to opt into.
+The deterministic iOS validation CLI for AI coding agents. Drive a simulator, read the accessibility tree, capture evidence — give your agent eyes.
+
+<p align="center">
+  <img src="assets/hero.png" alt="A split screen showing an iOS simulator on the left and a terminal on the right running mav tap, mav axtree, and mav screenshot, with compact agent-readable output" width="820">
+</p>
+
+Mobile Agent Verifier (`mav`) is a small CLI agents call between turns: it runs concrete commands against a simulator (or a real device), returns one compact line per result, and writes evidence to disk so the next turn can act on it.
+
+MAV is intentionally not an autonomous testing agent. It runs the command. The agent decides what to run next.
 
 ## What MAV Is For
 
@@ -19,6 +29,41 @@ default; there is no separate JSON mode to opt into.
 MAV uses a project-local launch recipe to build, locate, install, and launch
 the app. Bazel, Xcode, Tuist, Make, Just, and project scripts are setup-time
 templates only; runtime executes the configured recipe.
+
+## Why MAV?
+
+### vs Maestro
+
+Maestro is for humans: a fluent YAML DSL, a recording mode, a flow file you read top-to-bottom. MAV is for agents: single-shot commands, one compact line per result, no flow language to learn unless you want one. If you already write Maestro flows for human testing, MAV does not replace them — it gives your agent a different kind of access.
+
+### vs XCUITest
+
+XCUITest knows what the test file says. It does not know what the screen actually looks like right now. MAV reads the live accessibility tree, so the agent can react to whatever state the app reached, not just the states the test author predicted.
+
+### vs Appium
+
+Appium covers Android, iOS, Windows, web, and a long tail of platforms — at the cost of a heavy stack and a slower path to "did the tap happen?". MAV is macOS-only and iOS-only on purpose: it leans on `simctl`, AXe, and idb directly, with Appium/WDA as an optional fallback for the cases those tools cannot reach.
+
+### vs Detox
+
+Detox is the right answer if you are shipping React Native and want gray-box testing tied to the JS runtime. MAV is app-stack-agnostic — Swift, RN, Flutter, anything that ends up in a `.app` bundle. The price is that MAV does not know about your framework; it only knows what the simulator shows.
+
+## How an agent uses MAV
+
+<p align="center">
+  <img src="assets/loop.png" alt="The mav loop: agent decides next action, mav executes a deterministic command, agent reads the compact output, loops" width="720">
+</p>
+
+Each call is one verb. The agent picks the next verb based on the previous output. The full vocabulary lives below in the Command Reference, but the four verbs that cover most flows are `tap`, `tree` (accessibility tree), `screenshot`, and `logs`.
+
+## Used at
+
+`mav` runs in development on these production iOS apps:
+
+- [Undolly](https://undolly.app) — finding duplicate photos
+- [Boxy](https://boxyapp.com) — organising physical items
+- [HiddenFace](https://hiddenface.app) — privacy-first face blur
+- [Nokoru](https://nokoru.app) — quick voice memo capture
 
 ## Status
 
