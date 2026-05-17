@@ -6,7 +6,6 @@
 
 [![CI](https://github.com/bitomule/mav/actions/workflows/ci.yml/badge.svg)](https://github.com/bitomule/mav/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/bitomule/mav?display_name=tag)](https://github.com/bitomule/mav/releases)
-[![Go Report Card](https://goreportcard.com/badge/github.com/bitomule/mav)](https://goreportcard.com/report/github.com/bitomule/mav)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 The deterministic iOS validation CLI for AI coding agents. Drive a simulator, read the accessibility tree, capture evidence — give your agent eyes.
@@ -42,7 +41,7 @@ XCUITest knows what the test file says. It does not know what the screen actuall
 
 ### vs Appium
 
-Appium covers Android, iOS, Windows, web, and a long tail of platforms — at the cost of a heavy stack and a slower path to "did the tap happen?". MAV is macOS-only and iOS-only on purpose: it leans on `simctl`, AXe, and idb directly, with Appium/WDA as an optional fallback for the cases those tools cannot reach.
+Appium covers Android, iOS, Windows, web, and a long tail of platforms — at the cost of a heavy stack and a slower path to "did the tap happen?". MAV is macOS-only and iOS-only on purpose: it leans on `simctl`, AXe, `idb`, and Baguette directly. The May 2026 driver overhaul removed Appium/WDA from the pipeline entirely; everything runs through native host-side drivers now.
 
 ### vs Detox
 
@@ -61,9 +60,8 @@ Each call is one verb. The agent picks the next verb based on the previous outpu
 `mav` runs in development on these production iOS apps:
 
 - [Undolly](https://undolly.app) — finding duplicate photos
-- [Boxy](https://boxyapp.com) — organising physical items
+- [Boxy](https://boxy-app.com/) — organising physical items
 - [HiddenFace](https://hiddenface.app) — privacy-first face blur
-- [Nokoru](https://nokoru.app) — quick voice memo capture
 
 ## Status
 
@@ -93,6 +91,8 @@ MAV is early and evolving. The current stable pieces are:
 - Baguette, for simulator multitouch (pinch, rotate, two-finger pan), the
   SpringBoard / system UI tree, hardware buttons, keyboard erase, and
   hideKeyboard. Sim-only — device multitouch is intentionally unsupported.
+- mitmproxy, optional, for `mav network start|stop` HAR capture on the
+  simulator. Install with `mav setup --install mitmproxy`.
 
 Check the local environment:
 
@@ -241,8 +241,8 @@ open
 ui
 capture
 run
-go
 logs
+network
 stop
 crashes
 evidence
