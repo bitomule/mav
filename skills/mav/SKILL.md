@@ -43,10 +43,10 @@ does not explore or repair routes by itself. The agent decides the next action.
    `--json`. If the simulator accessibility service returns an empty
    `AXApplication` tree, MAV attempts recovery internally; do not work around it
    with screenshots unless `mav ui tree` fails after recovery. Use
-   `mav ui tree --include-system` when inspecting system UI, PHPicker,
-   permission prompts, SpringBoard, or cross-app service processes; this asks
-   baguette for the SpringBoard/system tree on simulator. The
-   `--include-system` flag is sim-only — on a physical device it returns
+   `mav ui tree --include-system` when checking whether MAV can see a
+   simulator system surface. System-process UI is best-effort; if the tree
+   still shows only the host app, use a named capture and coordinate tap.
+   The `--include-system` flag is sim-only — on a physical device it returns
    `tree_system_unsupported_on_device`.
 6. Use `mav capture --name <descriptive-name>` only when the tree is
    insufficient or visual evidence is needed. Captures are unique by default
@@ -54,13 +54,12 @@ does not explore or repair routes by itself. The agent decides the next action.
    a stable, readable proof point such as `largest-videos-after-pinch`.
 7. Use `mav ui tap/type/erase/hideKeyboard/swipe/longPress/wait/scrollUntil`
    for manual exploration. Prefer accessibility identifiers first (`--id`).
-   `mav ui erase --focused` clears a focused field via baguette on simulator;
-   `mav ui hideKeyboard` dismisses the keyboard via baguette on simulator. Both
-   return structured errors on a physical device (`erase_unsupported_on_device`,
-   `hide_keyboard_unsupported_on_device`). Use coordinates only when the tree is
-   insufficient and the screenshot makes the target unambiguous. Use text as
-   the last option because labels change with localization and copy edits. Use
-   `mav ui wait --id`, `--text`, or `--value` for readiness checks.
+   `mav ui type` uses the simulator pasteboard when possible, so emails and
+   ASCII punctuation are not affected by the simulator keyboard layout. Use
+   coordinates only when the tree is insufficient and the screenshot makes the
+   target unambiguous. Use text as the last option because labels change with
+   localization and copy edits. Use `mav ui wait --id`, `--text`, or `--value`
+   for readiness checks.
 8. `mav ui tree` may report a natural screen id when the AX root already has a
    `View`-suffix identifier, such as `SettingsView` → `settings-view`. This is
    a labelling/observability signal only. Selectors for tapping still work
@@ -393,7 +392,8 @@ not a gate.
 
 AXe is the fast semantic driver, but it can miss system-process UI, PHPicker,
 permission alerts, non-accessibility wrapper views, and text-field placeholders.
-Use `mav ui tree --include-system` (simulator-only) for system-process UI.
+Use `mav ui tree --include-system` (simulator-only) to try system-process UI,
+then fall back to captures plus coordinates if iOS does not expose that overlay.
 
 If `mav ui tap --text X` returns `ui_tap_text_no_label_match`, AXe found `X` as
 a value/placeholder but not as a label. Prefer a stable id or use coordinates

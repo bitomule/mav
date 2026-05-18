@@ -11,11 +11,11 @@ import (
 
 // RegisterDefaultDrivers wires the canonical driver portfolio into reg:
 // AXe (fast a11y + semantic tap), idb (device coord tap / screenshot / logs /
-// crashes / install), Baguette (sim multitouch + system UI + hardware buttons),
-// simctl (sim lifecycle / video / locale / log stream).
+// crashes / install), Baguette (sim multitouch + hardware buttons), simctl
+// (sim lifecycle / video / locale / log stream).
 //
-// idb is the canonical device driver. Sim-only multitouch / system-UI /
-// hardware-button operations go through baguette. On device targets where
+// idb is the canonical device driver. Sim-only multitouch / hardware-button
+// operations go through baguette. On device targets where
 // baguette is unavailable, cli.go surfaces a structured error rather than
 // silently falling back.
 func RegisterDefaultDrivers(reg *drivers.Registry, exec drivers.Executor) {

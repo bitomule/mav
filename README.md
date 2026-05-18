@@ -88,9 +88,9 @@ MAV is early and evolving. The current stable pieces are:
 - Go, for development builds.
 - AXe, for accessibility tree and semantic UI actions.
 - idb, for coordinate taps and device/simulator fallback operations.
-- Baguette, for simulator multitouch (pinch, rotate, two-finger pan), the
-  SpringBoard / system UI tree, hardware buttons, keyboard erase, and
-  hideKeyboard. Sim-only — device multitouch is intentionally unsupported.
+- Baguette, for simulator multitouch (pinch, two-finger pan), hardware
+  buttons, and screenshot fallback. Sim-only — device multitouch is
+  intentionally unsupported.
 - mitmproxy, optional, for `mav network start|stop` HAR capture on the
   simulator. Install with `mav setup --install mitmproxy`.
 
@@ -102,7 +102,7 @@ mav doctor
 
 `mav doctor` reports capability availability. MAV routes commands by
 capability: accessibility and semantic actions use AXe, coordinate taps and
-device fallback use idb, multitouch and system UI use baguette on simulator.
+device fallback use idb, and multitouch uses baguette on simulator.
 Physical iOS devices require idb for install, launch, logs, screenshots, and
 crashes. Multitouch gestures, system-UI trees, and hideKeyboard return
 structured errors on device — use a simulator for those flows.
@@ -334,24 +334,25 @@ mav ui scrollUntil --id privacy_policy_button --direction up --max-swipes 4
 ```
 
 MAV chooses drivers by capability. AXe is the default fast path for
-accessibility tree inspection, semantic taps, typing, swipes, waits, and
-assertions. idb is used for coordinate taps and device/simulator fallback
-operations. Baguette provides multitouch, system UI, hardware buttons, erase,
-and hideKeyboard on simulator.
+accessibility tree inspection, semantic taps, swipes, waits, and assertions.
+On simulators, `mav ui type` uses the simulator pasteboard and Cmd+V so emails
+and ASCII punctuation are not affected by the active keyboard layout. idb is
+used for coordinate taps and device/simulator fallback operations. Baguette
+provides multitouch and hardware buttons on simulator.
 
 For `mav ui tree` and semantic `mav ui tap`, `--prefer-driver auto` is the
 default. Use `--prefer-driver axe` to debug AXe-only behavior. `mav ui tree
---include-system` asks baguette for the SpringBoard/system tree when a system
-process or cross-app surface is in front (PHPicker, App Tracking Transparency,
-permission prompts, SpringBoard, iOS 26 service processes). System-tree
-inspection is simulator-only.
+--include-system` tries the best available simulator system-tree path when a
+system process or cross-app surface is in front. iOS may still expose only the
+host app tree for some password-manager and login overlays; in that case use a
+capture plus coordinate tap. System-tree inspection is simulator-only.
 
 If `mav ui tap --text X` fails because AXe sees `X` as a value/placeholder but
 not as a label, MAV reports `ui_tap_text_no_label_match` with `matched_value`.
 Prefer stable accessibility ids when possible.
 
-`mav ui erase` and `mav ui hideKeyboard` dispatch through baguette on
-simulator. On a physical device they return `erase_unsupported_on_device` and
+`mav ui erase` and `mav ui hideKeyboard` are simulator-only helper commands.
+On a physical device they return `erase_unsupported_on_device` and
 `hide_keyboard_unsupported_on_device` respectively. Tap and retype the field,
 or tap outside the input area to dismiss the keyboard.
 
@@ -718,6 +719,7 @@ mav stop
 
 ```text
 mav doctor
+mav version
 mav setup [--non-interactive]
 mav setup --install axe idb baguette
 mav install-skills

@@ -45,6 +45,9 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 func (c CLI) Run(ctx context.Context, args []string) error {
 	opts, rest := parseGlobal(args)
+	if len(rest) == 1 && (rest[0] == "--version" || rest[0] == "-v" || rest[0] == "version") {
+		return OK("version", map[string]string{"version": Version}).Write(c.Stdout)
+	}
 	if len(rest) == 0 {
 		return c.help(opts, "")
 	}
@@ -171,12 +174,15 @@ Commands:
   crashes     List crashes for the configured app.
   evidence    Start/step/stop/report evidence.
   network     Start/stop a HAR network capture (sim only).
+  version     Print the MAV version.
 
 Global flags:
   --raw       Emit raw underlying tool output where supported.
   --verbose   Print extra debug details where supported.
   --prefer-driver auto|axe
               Prefer a UI driver for semantic tree/tap commands.
+  --version,-v
+              Print the MAV version.
   --help,-h   Show help.
 `
 	case "setup":
@@ -323,20 +329,31 @@ func (c CLI) setup(ctx context.Context, opts GlobalOptions, args []string) error
 		"baguette":  {"brew", "install", "tddworks/tap/baguette"},
 		"mitmproxy": {"brew", "install", "mitmproxy"},
 	}
+	installed := []string{}
+	alreadyInstalled := []string{}
 	for _, tool := range tools {
 		if tool == "idb" {
-			ok, err := c.setupIDB(ctx, opts)
+			status, err := c.setupIDB(ctx, opts)
 			if err != nil {
 				return err
 			}
-			if !ok {
+			if status == setupInstallFailed {
 				return nil
+			}
+			if status == setupAlreadyInstalled {
+				alreadyInstalled = append(alreadyInstalled, tool)
+			} else {
+				installed = append(installed, tool)
 			}
 			continue
 		}
 		cmd, ok := commands[tool]
 		if !ok {
 			return Fail("setup_unknown_tool", map[string]string{"tool": tool}).Write(c.Stdout)
+		}
+		if _, err := c.Runner.LookPath(tool); err == nil {
+			alreadyInstalled = append(alreadyInstalled, tool)
+			continue
 		}
 		if opts.Verbose {
 			fmt.Fprintln(c.Stderr, strings.Join(cmd, " "))
@@ -345,11 +362,35 @@ func (c CLI) setup(ctx context.Context, opts GlobalOptions, args []string) error
 		if result.Err != nil {
 			return Fail("setup_failed", map[string]string{"tool": tool, "stderr": firstLine(result.Stderr)}).Write(c.Stdout)
 		}
+		installed = append(installed, tool)
 	}
-	return OK("setup", map[string]string{"installed": strings.Join(tools, ",")}).Write(c.Stdout)
+	fields := map[string]string{}
+	if len(installed) > 0 {
+		fields["installed"] = strings.Join(installed, ",")
+	}
+	if len(alreadyInstalled) > 0 {
+		fields["already_installed"] = strings.Join(alreadyInstalled, ",")
+	}
+	if len(fields) == 0 {
+		fields["installed"] = ""
+	}
+	return OK("setup", fields).Write(c.Stdout)
 }
 
-func (c CLI) setupIDB(ctx context.Context, opts GlobalOptions) (bool, error) {
+type setupInstallStatus int
+
+const (
+	setupInstallFailed setupInstallStatus = iota
+	setupInstalled
+	setupAlreadyInstalled
+)
+
+func (c CLI) setupIDB(ctx context.Context, opts GlobalOptions) (setupInstallStatus, error) {
+	_, idbErr := c.Runner.LookPath("idb")
+	_, companionErr := c.Runner.LookPath("idb_companion")
+	if idbErr == nil && companionErr == nil {
+		return setupAlreadyInstalled, nil
+	}
 	if _, err := c.Runner.LookPath("pipx"); err == nil {
 		python := ""
 		if _, err := c.Runner.LookPath("python3.12"); err == nil {
@@ -358,26 +399,32 @@ func (c CLI) setupIDB(ctx context.Context, opts GlobalOptions) (bool, error) {
 			python = "python3.13"
 		}
 		if python == "" {
-			return false, Fail("setup_failed", map[string]string{"tool": "idb", "stderr": "supported Python missing", "next": "install Python 3.12, then rerun mav setup --install idb"}).Write(c.Stdout)
+			return setupInstallFailed, Fail("setup_failed", map[string]string{"tool": "idb", "stderr": "supported Python missing", "next": "install Python 3.12, then rerun mav setup --install idb"}).Write(c.Stdout)
 		}
-		cmd := []string{"pipx", "install", "--python", python, "fb-idb"}
+		if idbErr != nil {
+			cmd := []string{"pipx", "install", "--python", python, "fb-idb"}
+			if opts.Verbose {
+				fmt.Fprintln(c.Stderr, strings.Join(cmd, " "))
+			}
+			result := c.Runner.Run(ctx, cmd[0], cmd[1:]...)
+			if result.Err != nil {
+				return setupInstallFailed, Fail("setup_failed", map[string]string{"tool": "idb", "stderr": firstLine(result.Stderr), "next": "pipx install --python python3.12 fb-idb"}).Write(c.Stdout)
+			}
+		}
+	} else if idbErr != nil {
+		return setupInstallFailed, Fail("setup_failed", map[string]string{"tool": "idb", "stderr": "pipx missing", "next": "install pipx and Python 3.12, then rerun mav setup --install idb"}).Write(c.Stdout)
+	}
+	if companionErr != nil {
+		cmd := []string{"brew", "install", "idb-companion"}
 		if opts.Verbose {
 			fmt.Fprintln(c.Stderr, strings.Join(cmd, " "))
 		}
 		result := c.Runner.Run(ctx, cmd[0], cmd[1:]...)
 		if result.Err != nil {
-			return false, Fail("setup_failed", map[string]string{"tool": "idb", "stderr": firstLine(result.Stderr), "next": "pipx install --python python3.12 fb-idb"}).Write(c.Stdout)
+			return setupInstallFailed, Fail("setup_failed", map[string]string{"tool": "idb", "stderr": firstLine(result.Stderr), "next": "install pipx and Python 3.12, then rerun mav setup --install idb"}).Write(c.Stdout)
 		}
 	}
-	cmd := []string{"brew", "install", "idb-companion"}
-	if opts.Verbose {
-		fmt.Fprintln(c.Stderr, strings.Join(cmd, " "))
-	}
-	result := c.Runner.Run(ctx, cmd[0], cmd[1:]...)
-	if result.Err != nil {
-		return false, Fail("setup_failed", map[string]string{"tool": "idb", "stderr": firstLine(result.Stderr), "next": "install pipx and Python 3.12, then rerun mav setup --install idb"}).Write(c.Stdout)
-	}
-	return true, nil
+	return setupInstalled, nil
 }
 
 func (c CLI) installSkills(ctx context.Context) error {
@@ -715,6 +762,7 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 		return Fail("open_flags_invalid", map[string]string{"usage": "--no-relaunch cannot be combined with --clear-state"}).Write(c.Stdout)
 	}
 	var previousRunID string
+	staleRunsStopped := 0
 	var run RunState
 	if noRelaunch {
 		run, err = c.currentOrNewRun()
@@ -729,11 +777,12 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	}
 	if previousRunID != "" {
 		_ = c.withStdout(io.Discard).stop(ctx, GlobalOptions{}, []string{"--run", previousRunID})
+		staleRunsStopped = 1
 	}
 	if err := SaveCurrentRun(c.Root, run); err != nil {
 		return err
 	}
-	if isPhysicalDevice(cfg) && !hasTool(cfg, "idb") {
+	if isPhysicalDevice(cfg) && !c.hasTool(cfg, "idb") {
 		return Fail("tool_missing", map[string]string{"tool": "idb", "target": "device", "next": "mav setup --install idb"}).Write(c.Stdout)
 	}
 	probeLogPID, probeLogErr := c.startProbeLogs(ctx, cfg, run)
@@ -756,6 +805,9 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	fields := map[string]string{"run": run.ID, "logs": run.LogsPath, "dir": run.Dir}
 	if noRelaunch {
 		fields["relaunch"] = "false"
+	}
+	if staleRunsStopped > 0 {
+		fields["stale_runs_stopped"] = strconv.Itoa(staleRunsStopped)
 	}
 	if appPath != "" {
 		fields["app"] = appPath
@@ -825,7 +877,7 @@ func simctlLaunchLanguageArgs(cfg Config) []string {
 func (c CLI) startProbeLogs(ctx context.Context, cfg Config, run RunState) (int, error) {
 	predicate := probeLogPredicate(cfg)
 	if isPhysicalDevice(cfg) {
-		if !hasTool(cfg, "idb") {
+		if !c.hasTool(cfg, "idb") {
 			return 0, fmt.Errorf("idb_missing")
 		}
 		args := []string{"log"}
@@ -839,7 +891,7 @@ func (c CLI) startProbeLogs(ctx context.Context, cfg Config, run RunState) (int,
 		}
 		return pid, err
 	}
-	if hasTool(cfg, "xcrun") && cfg.SimulatorUDID != "" {
+	if c.hasTool(cfg, "xcrun") && cfg.SimulatorUDID != "" {
 		args := []string{"simctl", "spawn", cfg.SimulatorUDID, "log", "stream", "--style", "compact", "--level", "debug", "--predicate", predicate}
 		pid, err := c.Runner.Start(ctx, run.LogsPath, "xcrun", args...)
 		if err == nil {
@@ -847,7 +899,7 @@ func (c CLI) startProbeLogs(ctx context.Context, cfg Config, run RunState) (int,
 		}
 		return pid, err
 	}
-	if hasTool(cfg, "idb") {
+	if c.hasTool(cfg, "idb") {
 		args := []string{"log"}
 		if cfg.SimulatorUDID != "" {
 			args = append(args, "--udid", cfg.SimulatorUDID)
@@ -859,7 +911,7 @@ func (c CLI) startProbeLogs(ctx context.Context, cfg Config, run RunState) (int,
 		}
 		return pid, err
 	}
-	if !hasTool(cfg, "xcrun") {
+	if !c.hasTool(cfg, "xcrun") {
 		return 0, fmt.Errorf("log_tool_missing")
 	}
 	args := []string{"simctl", "spawn", "booted", "log", "stream", "--style", "compact", "--level", "debug", "--predicate", predicate}
@@ -1081,13 +1133,13 @@ func (c CLI) describeUITree(ctx context.Context, cfg Config, prefer string, incl
 			return describedUITree{}, err
 		}
 	}
-	if hasTool(cfg, "axe") {
+	if c.hasTool(cfg, "axe") {
 		return describedUITree{Driver: "axe", Result: c.Runner.Run(ctx, "axe", axeTargetArgs(cfg, "describe-ui")...)}, nil
 	}
 	if prefer == "axe" {
 		return describedUITree{}, fmt.Errorf("tree_tool_missing")
 	}
-	if hasTool(cfg, "idb") {
+	if c.hasTool(cfg, "idb") {
 		return describedUITree{Driver: "idb", Result: c.Runner.Run(ctx, "idb", idbTargetArgs(cfg, "ui", "describe-all", "--json", "--nested")...)}, nil
 	}
 	return describedUITree{}, fmt.Errorf("tree_tool_missing")
@@ -1097,7 +1149,7 @@ func (c CLI) recoverEmptyAXTree(ctx context.Context, cfg Config) error {
 	if isPhysicalDevice(cfg) {
 		return fmt.Errorf("device_accessibility_recovery_unavailable")
 	}
-	if !hasTool(cfg, "xcrun") || cfg.SimulatorUDID == "" {
+	if !c.hasTool(cfg, "xcrun") || cfg.SimulatorUDID == "" {
 		return fmt.Errorf("simulator_recovery_unavailable")
 	}
 	run, _ := LoadRun(c.Root, "")
@@ -1285,9 +1337,15 @@ func (c CLI) uiType(ctx context.Context, opts GlobalOptions, cfg Config, args []
 	}
 	text := strings.Join(args, " ")
 	driver := "axe"
-	axeArgs := axeTargetArgs(cfg, "type")
-	axeArgs = append(axeArgs, text)
-	result := c.Runner.Run(ctx, "axe", axeArgs...)
+	var result CommandResult
+	if !isPhysicalDevice(cfg) && c.hasTool(cfg, "xcrun") && c.hasTool(cfg, "axe") {
+		result = c.typeViaPasteboard(ctx, cfg, text)
+		driver = "pasteboard"
+	} else {
+		axeArgs := axeTargetArgs(cfg, "type")
+		axeArgs = append(axeArgs, text)
+		result = c.Runner.Run(ctx, "axe", axeArgs...)
+	}
 	if result.Err != nil {
 		return Fail("ui_type_failed", map[string]string{"stderr": firstLine(result.Stderr)}).Write(c.Stdout)
 	}
@@ -1297,6 +1355,24 @@ func (c CLI) uiType(ctx context.Context, opts GlobalOptions, cfg Config, args []
 		"driver":     driver,
 	}
 	return OK("ui.type", fields).Write(c.Stdout)
+}
+
+func (c CLI) typeViaPasteboard(ctx context.Context, cfg Config, text string) CommandResult {
+	target := cfg.SimulatorUDID
+	if target == "" {
+		target = "booted"
+	}
+	copyCmd := "printf %s " + shellQuote(text) + " | xcrun simctl pbcopy " + shellQuote(target)
+	copyResult := c.Runner.Run(ctx, "/bin/sh", "-c", copyCmd)
+	if copyResult.Err != nil {
+		return copyResult
+	}
+	pasteArgs := axeTargetArgs(cfg, "key-combo", "--modifiers", "227", "--key", "25")
+	pasteResult := c.Runner.Run(ctx, "axe", pasteArgs...)
+	if pasteResult.Err != nil {
+		return pasteResult
+	}
+	return CommandResult{Stdout: copyResult.Stdout + pasteResult.Stdout, Stderr: copyResult.Stderr + pasteResult.Stderr}
 }
 
 func (c CLI) uiErase(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
@@ -1376,10 +1452,10 @@ func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args [
 	}
 	driver := "axe"
 	var result CommandResult
-	if hasTool(cfg, "axe") {
+	if c.hasTool(cfg, "axe") {
 		axeArgs := axeTargetArgs(cfg, "swipe", "--start-x", startX, "--start-y", startY, "--end-x", endX, "--end-y", endY)
 		result = c.Runner.Run(ctx, "axe", axeArgs...)
-	} else if hasTool(cfg, "idb") {
+	} else if c.hasTool(cfg, "idb") {
 		if prefer == "axe" {
 			return Fail("tool_missing", map[string]string{"tool": "axe", "next": "install AXe or use --prefer-driver auto"}).Write(c.Stdout)
 		}
@@ -1733,18 +1809,18 @@ func (c CLI) captureScreenshot(ctx context.Context, cfg Config, path string) (Co
 		return CommandResult{}, err
 	}
 	if isPhysicalDevice(cfg) {
-		if hasTool(cfg, "idb") {
+		if c.hasTool(cfg, "idb") {
 			return c.Runner.Run(ctx, "idb", idbTargetArgs(cfg, "screenshot", path)...), nil
 		}
 		return CommandResult{}, fmt.Errorf("capture_tool_missing")
 	}
-	if hasTool(cfg, "axe") {
+	if c.hasTool(cfg, "axe") {
 		return c.Runner.Run(ctx, "axe", axeTargetArgs(cfg, "screenshot", "--output", path)...), nil
 	}
-	if hasTool(cfg, "idb") {
+	if c.hasTool(cfg, "idb") {
 		return c.Runner.Run(ctx, "idb", idbTargetArgs(cfg, "screenshot", path)...), nil
 	}
-	if hasTool(cfg, "xcrun") {
+	if c.hasTool(cfg, "xcrun") {
 		target := cfg.SimulatorUDID
 		if target == "" {
 			target = "booted"
@@ -2992,7 +3068,7 @@ func (c CLI) crashes(ctx context.Context, opts GlobalOptions, args []string) err
 	if err != nil {
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
-	if !hasTool(cfg, "idb") {
+	if !c.hasTool(cfg, "idb") {
 		return Fail("tool_missing", map[string]string{"tool": "idb"}).Write(c.Stdout)
 	}
 	idbArgs := idbTargetArgs(cfg, "crash", "list")
@@ -3440,10 +3516,11 @@ func axeTargetArgs(cfg Config, args ...string) []string {
 }
 
 func idbTargetArgs(cfg Config, args ...string) []string {
-	out := append([]string{}, args...)
+	out := []string{}
 	if udid := targetUDID(cfg); udid != "" {
 		out = append(out, "--udid", udid)
 	}
+	out = append(out, args...)
 	return out
 }
 
@@ -3473,7 +3550,7 @@ func (c CLI) startVideoRecording(ctx context.Context, cfg Config, run RunState) 
 	if isPhysicalDevice(cfg) {
 		return "", 0, fmt.Errorf("video_unsupported")
 	}
-	if !hasTool(cfg, "xcrun") {
+	if !c.hasTool(cfg, "xcrun") {
 		return "", 0, fmt.Errorf("xcrun_missing")
 	}
 	target := cfg.SimulatorUDID
@@ -3638,11 +3715,12 @@ func hasFlag(args []string, name string) bool {
 	return false
 }
 
-func hasTool(cfg Config, tool string) bool {
-	if cfg.Tools == nil {
-		return false
+func (c CLI) hasTool(cfg Config, tool string) bool {
+	if cfg.Tools != nil && cfg.Tools[tool] {
+		return true
 	}
-	return cfg.Tools[tool]
+	_, err := c.Runner.LookPath(tool)
+	return err == nil
 }
 
 func firstLine(s string) string {

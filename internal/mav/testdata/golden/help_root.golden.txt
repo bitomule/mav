@@ -20,10 +20,13 @@ Commands:
   crashes     List crashes for the configured app.
   evidence    Start/step/stop/report evidence.
   network     Start/stop a HAR network capture (sim only).
+  version     Print the MAV version.
 
 Global flags:
   --raw       Emit raw underlying tool output where supported.
   --verbose   Print extra debug details where supported.
   --prefer-driver auto|axe
               Prefer a UI driver for semantic tree/tap commands.
+  --version,-v
+              Print the MAV version.
   --help,-h   Show help.

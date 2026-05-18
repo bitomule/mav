@@ -312,8 +312,32 @@ func TestCoordinateTapUsesResolvedIDBCapability(t *testing.T) {
 	if !strings.Contains(out.String(), "ok cmd=ui.tap") {
 		t.Fatalf("got %q", out.String())
 	}
-	if !strings.Contains(strings.Join(runner.commands, "\n"), "idb ui tap 10 20 --udid SIM") {
+	if !strings.Contains(strings.Join(runner.commands, "\n"), "idb --udid SIM ui tap 10 20") {
 		t.Fatalf("commands=%v", runner.commands)
+	}
+}
+
+func TestUITreeUsesPathWhenConfigToolsAreStale(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.Tools = map[string]bool{"axe": false}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{
+		Runner: fakeRunner{
+			tools: map[string]bool{"axe": true},
+			out:   map[string]string{"axe describe-ui --udid SIM": `[{"AXLabel":"Ready"}]`},
+		},
+		Root: root, Stdout: &out, Stderr: &bytes.Buffer{},
+	}
+	if err := cli.Run(context.Background(), []string{"ui", "tree"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.Contains(got, "ok cmd=ui.tree") || !strings.Contains(got, "driver=axe") {
+		t.Fatalf("got %q", got)
 	}
 }
 
@@ -537,6 +561,26 @@ func TestSetupInstallsBaguette(t *testing.T) {
 	}
 }
 
+func TestSetupReportsAlreadyInstalledTools(t *testing.T) {
+	root := t.TempDir()
+	if err := SaveConfig(root, DefaultConfig(root)); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	runner := &sequenceRecordingRunner{tools: map[string]bool{"axe": true, "idb": true, "idb_companion": true}}
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"setup", "--install", "axe", "idb"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "ok cmd=setup") || !strings.Contains(got, "already_installed=axe,idb") {
+		t.Fatalf("got %q", got)
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("setup should not execute install commands for existing tools: %v", runner.commands)
+	}
+}
+
 func TestSetupRejectsAppium(t *testing.T) {
 	root := t.TempDir()
 	if err := SaveConfig(root, DefaultConfig(root)); err != nil {
@@ -566,6 +610,17 @@ func TestPreferDriverRejectsAppium(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "fail code=prefer_driver_invalid") {
 		t.Fatalf("got %q", out.String())
+	}
+}
+
+func TestVersionFlag(t *testing.T) {
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{}, Root: t.TempDir(), Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"--version"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.Contains(got, "ok cmd=version") || !strings.Contains(got, "version=0.4.2") {
+		t.Fatalf("got %q", got)
 	}
 }
 
@@ -696,6 +751,55 @@ func TestUISwipeWithCustomCoordinatesReportsCustomDirection(t *testing.T) {
 	}
 }
 
+func TestUITypeUsesPasteboardOnSimulator(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.Tools = map[string]bool{}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runner := &sequenceRecordingRunner{tools: map[string]bool{"axe": true, "xcrun": true}}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "type", "mmp_login@mailinator.com"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "ok cmd=ui.type") || !strings.Contains(got, "driver=pasteboard") {
+		t.Fatalf("got %q", got)
+	}
+	if !containsCall(runner.commands, "xcrun simctl pbcopy 'SIM'") {
+		t.Fatalf("expected pbcopy command, got %v", runner.commands)
+	}
+	if !containsCall(runner.commands, "axe key-combo --modifiers 227 --key 25 --udid SIM") {
+		t.Fatalf("expected paste key-combo, got %v", runner.commands)
+	}
+	if containsCall(runner.commands, "axe type") {
+		t.Fatalf("sim typing should not use layout-dependent axe type: %v", runner.commands)
+	}
+}
+
+func TestUITypeFallsBackToAxeOnDevice(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.TargetKind = "device"
+	cfg.DeviceUDID = "REAL-1"
+	cfg.Tools = map[string]bool{"axe": true, "xcrun": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runner := &sequenceRecordingRunner{tools: cfg.Tools}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "type", "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	if !containsCall(runner.commands, "axe type --udid REAL-1 hello") {
+		t.Fatalf("commands=%v", runner.commands)
+	}
+}
+
 func TestOpenNoRelaunchSkipsLaunchRecipe(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
@@ -720,6 +824,45 @@ func TestOpenNoRelaunchSkipsLaunchRecipe(t *testing.T) {
 	}
 	if containsCall(runner.commands, "make mav-build") || containsCall(runner.commands, "simctl launch") {
 		t.Fatalf("launch recipe should not run: %v", runner.commands)
+	}
+}
+
+func TestOpenStopsExistingCurrentRun(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.app"
+	cfg.SimulatorUDID = "SIM"
+	cfg.Launch = LaunchConfig{Mode: "custom", Commands: LaunchCommands{
+		Launch: `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`,
+	}}
+	cfg.Tools = map[string]bool{"xcrun": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := NewProjectRunState(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRun(root, stale); err != nil {
+		t.Fatal(err)
+	}
+	appendProcess(stale, "probe-logs", 0, "fake")
+	runner := &launchRecipeRunner{tools: cfg.Tools}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"open"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "ok cmd=open") || !strings.Contains(got, "stale_runs_stopped=1") {
+		t.Fatalf("got %q", got)
+	}
+	current, err := LoadRun(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.ID == stale.ID {
+		t.Fatalf("expected a fresh run after open, got stale run %s", current.ID)
 	}
 }
 
@@ -1550,7 +1693,7 @@ func TestCaptureScreenshotUsesIDBForDevice(t *testing.T) {
 	if _, err := cli.captureScreenshot(context.Background(), cfg, filepath.Join(t.TempDir(), "screen.png")); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(runner.command, "idb screenshot ") || !strings.Contains(runner.command, "--udid REAL-1") {
+	if !strings.Contains(runner.command, "idb --udid REAL-1 screenshot ") {
 		t.Fatalf("command=%q", runner.command)
 	}
 }
@@ -1571,7 +1714,7 @@ func TestCrashesUsesDeviceUDID(t *testing.T) {
 	if err := cli.Run(context.Background(), []string{"crashes"}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(runner.command, "idb crash list --udid REAL-1") || !strings.Contains(runner.command, "--bundle-id com.example.app") {
+	if !strings.Contains(runner.command, "idb --udid REAL-1 crash list") || !strings.Contains(runner.command, "--bundle-id com.example.app") {
 		t.Fatalf("command=%q output=%s", runner.command, out.String())
 	}
 }
