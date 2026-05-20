@@ -252,16 +252,55 @@ func TestSaveLoadConfig(t *testing.T) {
 	cfg.AppTarget = "//Demo:DemoApp"
 	cfg.BundleID = "com.example.demo"
 	cfg.Launch = LaunchConfig{Mode: "custom", Commands: LaunchCommands{Build: "make build-ios", AppPath: "make app-path", Launch: `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`}}
-	cfg.Tools["axe"] = true
 	if err := SaveConfig(root, cfg); err != nil {
 		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, ConfigFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "tools:") {
+		t.Fatalf("config should not persist runtime tool detection:\n%s", data)
 	}
 	loaded, err := LoadConfig(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.AppTarget != cfg.AppTarget || !loaded.Tools["axe"] || loaded.Launch.Commands.AppPath != "make app-path" {
+	if loaded.AppTarget != cfg.AppTarget || loaded.Launch.Commands.AppPath != "make app-path" {
 		t.Fatalf("loaded=%+v", loaded)
+	}
+}
+
+func TestLoadConfigIgnoresLegacyToolsSection(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, ConfigFile), `project_name: Demo
+target_kind: simulator
+app:
+  bundle_id: com.example.demo
+  process_name: Demo
+bundle_id: com.example.demo
+process_name: Demo
+simulator_udid: SIM
+tools:
+  axe: true
+  idb: true
+`)
+	loaded, err := LoadConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Tools) != 0 {
+		t.Fatalf("legacy tools should not be loaded into config state: %+v", loaded.Tools)
+	}
+	if err := SaveConfig(root, loaded); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, ConfigFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "tools:") || strings.Contains(string(data), "axe: true") {
+		t.Fatalf("legacy tools should be dropped on save:\n%s", data)
 	}
 }
 
