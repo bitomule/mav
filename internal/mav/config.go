@@ -95,13 +95,6 @@ func LoadConfig(root string) (Config, error) {
 			}
 			continue
 		}
-		if section == "tools" && indent >= 2 {
-			key, value, ok := splitYAMLKV(line)
-			if ok {
-				cfg.Tools[key] = value == "true"
-			}
-			continue
-		}
 		if section == "app" && indent >= 2 {
 			key, value, ok := splitYAMLKV(line)
 			if ok {
@@ -245,22 +238,6 @@ func SaveConfig(root string, cfg Config) error {
 		writeCommandKV(&b, "install", cfg.Launch.Commands.Install)
 		writeCommandKV(&b, "launch", cfg.Launch.Commands.Launch)
 		writeCommandKV(&b, "cleanup", cfg.Launch.Commands.Cleanup)
-	}
-	b.WriteString("tools:\n")
-	keys := make([]string, 0, len(cfg.Tools))
-	for key := range cfg.Tools {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		b.WriteString("  ")
-		b.WriteString(key)
-		b.WriteString(": ")
-		if cfg.Tools[key] {
-			b.WriteString("true\n")
-		} else {
-			b.WriteString("false\n")
-		}
 	}
 	return os.WriteFile(filepath.Join(root, ConfigFile), []byte(b.String()), 0o644)
 }
@@ -437,14 +414,6 @@ func mergeSetupConfig(existing, detected Config) Config {
 	}
 	if existing.Launch.Mode != "" || hasLaunchCommands(existing.Launch.Commands) {
 		merged.Launch = existing.Launch
-	}
-	if existing.Tools != nil {
-		if merged.Tools == nil {
-			merged.Tools = map[string]bool{}
-		}
-		for key, value := range existing.Tools {
-			merged.Tools[key] = value
-		}
 	}
 	return merged
 }
