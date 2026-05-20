@@ -465,13 +465,16 @@
           <span>Use the accepted video here; if missing/invalid, replace with the strongest valid screenshot and say video is not accepted.</span>
         </div>
         <div class="actions">
-          <a class="button primary" href="video.mov" target="_blank" rel="noreferrer">Open</a>
-          <a class="button" href="video.mov" download>Download</a>
-          <button class="button" data-copy="video.mov">Copy path</button>
+          <a class="button primary" href="video.mp4" target="_blank" rel="noreferrer">Open</a>
+          <a class="button" href="video.mp4" download>Download</a>
+          <button class="button" data-copy="video.mp4">Copy path</button>
         </div>
       </div>
       <div class="media-frame">
-        <video src="video.mov" controls></video>
+        <video controls>
+          <source src="video.mp4" type="video/mp4">
+          <source src="video.mov" type="video/quicktime">
+        </video>
       </div>
       <div class="viewer-caption">
         Accepted only when <code>video_status</code> is <code>accepted</code>. Show duration, frame count, and the exact behavior visible in the recording.

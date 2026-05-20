@@ -24,6 +24,28 @@ func (f fakeRunner) LookPath(file string) (string, error) {
 }
 
 func (f fakeRunner) Run(ctx context.Context, name string, args ...string) CommandResult {
+	if name == "/usr/bin/avconvert" {
+		var source, out string
+		for i := 0; i < len(args)-1; i++ {
+			switch args[i] {
+			case "-s":
+				source = args[i+1]
+			case "-o":
+				out = args[i+1]
+			}
+		}
+		if out != "" {
+			_ = os.MkdirAll(filepath.Dir(out), 0o755)
+			data := testMovieWithDuration(600, 1200)
+			if source != "" {
+				if sourceData, err := os.ReadFile(source); err == nil {
+					data = sourceData
+				}
+			}
+			_ = os.WriteFile(out, data, 0o644)
+		}
+		return CommandResult{}
+	}
 	key := name
 	for _, arg := range args {
 		key += " " + arg

@@ -10,7 +10,8 @@ Use this reference when turning `<run-dir>/report.json` into
 The manifest is authoritative. Read it first and extract:
 
 - `verdict`
-- `video_status`, `video`, `video_duration`, `video_frames`, `video_issue`
+- `video_status`, `video`, `video_mp4`, `video_duration`, `video_frames`,
+  `video_issue`
 - `valid_step_count`, `invalid_step_count`, `steps[*].image`
 - `issues[*]`
 - `crashes[*]`
@@ -62,6 +63,9 @@ the hero, video, and timeline are the visual core.
 ## Media Rules
 
 - Accepted video: embed with `<video controls>`, show duration and frames.
+  Prefer `video_mp4` for the source when it is present; `video` remains the
+  original recording path and may be a QuickTime `.mov` that Chromium browsers
+  cannot play inline.
 - Accepted video should be the visual center of the page. Avoid burying it
   below overview copy.
 - Invalid video: do not embed as proof. You may link/show the file for

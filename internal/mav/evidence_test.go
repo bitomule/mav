@@ -85,6 +85,35 @@ func TestGenerateReportMarksTooShortVideoInvalid(t *testing.T) {
 	}
 }
 
+func TestGenerateReportIncludesEmbeddableMP4(t *testing.T) {
+	dir := t.TempDir()
+	run := RunState{ID: "abc", Dir: dir}
+	if err := os.WriteFile(filepath.Join(dir, "video.mov"), testMovieWithDuration(600, 1200), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "video.mp4"), testMovieWithDuration(600, 1200), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path, err := GenerateReport(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report ReportData
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatalf("invalid report json: %v\n%s", err, data)
+	}
+	if filepath.Base(report.Video) != "video.mov" {
+		t.Fatalf("source video=%q", report.Video)
+	}
+	if filepath.Base(report.VideoMP4) != "video.mp4" {
+		t.Fatalf("video_mp4=%q", report.VideoMP4)
+	}
+}
+
 func TestValidateEvidenceImageRejectsInvalidImage(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "fake.png")

@@ -60,10 +60,12 @@ does not explore or repair routes by itself. The agent decides the next action.
    `mav ui erase --focused` clears a focused field via baguette on simulator;
    `mav ui hideKeyboard` dismisses the keyboard via baguette on simulator. Both
    return structured errors on a physical device (`erase_unsupported_on_device`,
-   `hide_keyboard_unsupported_on_device`). Use coordinates only when the tree is
-   insufficient and the screenshot makes the target unambiguous. Use text as
-   the last option because labels change with localization and copy edits. Use
-   `mav ui wait --id`, `--text`, or `--value` for readiness checks.
+   `hide_keyboard_unsupported_on_device`). Use `scrollUntil` before tapping
+   targets that are present in the tree but may be off-screen. Use coordinates
+   only when the tree is insufficient and the screenshot makes the target
+   unambiguous. Use text as the last option because labels change with
+   localization and copy edits. Use `mav ui wait --id`, `--text`, or `--value`
+   for readiness checks.
 8. `mav ui tree` may report a natural screen id when the AX root already has a
    `View`-suffix identifier, such as `SettingsView` → `settings-view`. This is
    a labelling/observability signal only. Selectors for tapping still work
@@ -151,17 +153,29 @@ Use evidence when the user needs proof of verification:
    screenshot decodability, issue severity, crashes, commands, and log tail.
    Current project runs normally live under `.mav/runs/<run-id>/`; legacy or
    ad-hoc runs may live under `/tmp/mav/<run-id>/`. Use the paths printed by
-   MAV instead of guessing. The skill owns the HTML. Read the manifest and
-   author a self-contained `<run-dir>/report.html` for that specific run. Use
+   MAV instead of guessing.
+5. **Author the HTML report. This is mandatory, not optional.** `mav evidence
+   report` only writes the JSON manifest; the skill owns the HTML. After
+   `mav evidence report` succeeds, read `report.json` and author a
+   self-contained `<run-dir>/report.html` for that specific run. Use
    `./templates/evidence-report.html` as a reference, not as a fixed renderer:
    rewrite the copy, metrics, media, and sections so the report explains the
-   actual evidence. Share the HTML and manifest as clickable Markdown links
-   using absolute paths, for example
+   actual evidence.
+
+   Do not treat any of the following as a valid evidence deliverable:
+   - opening the run folder in Finder
+   - opening `video.mov` in QuickTime
+   - linking only to `report.json`
+   - saying "see the artifacts in `<run-dir>`"
+
+   The HTML is the deliverable. Share it and the manifest as clickable Markdown
+   links using absolute paths, for example
    `[MAV evidence report](/path/to/repo/.mav/runs/<run-id>/report.html)` and
-   `[evidence data](/path/to/repo/.mav/runs/<run-id>/report.json)`. Include the video only
-   when the manifest reports `video_status=accepted`; if it reports
-   `video_status=missing` or `invalid`, say that video evidence was not
-   accepted. Include key captures when they are relevant, for example
+   `[evidence data](/path/to/repo/.mav/runs/<run-id>/report.json)`. Embed the
+   MP4 video when `video_status=accepted` and `video_mp4` is present; otherwise
+   fall back to `video` only when the browser can play it. If the manifest
+   reports `video_status=missing` or `invalid`, say that video evidence was not
+   accepted. Embed key captures when they are relevant, for example
    `[video](/path/to/repo/.mav/runs/<run-id>/video.mov)` and
    `[after-toggle](/path/to/repo/.mav/runs/<run-id>/steps/02_after-toggle.png)`.
 
