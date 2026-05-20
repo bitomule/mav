@@ -6,26 +6,26 @@ import (
 )
 
 type Capabilities struct {
-	Tools                  map[string]bool
-	LaunchRecipe           bool
-	Accessibility          bool
-	AccessibilityDriver    string
-	SemanticActions        bool
-	CoordinateTap          bool
-	CoordinateTapDriver    string
-	DeviceFallback         bool
-	DeviceFallbackDriver   string
-	Multitouch             bool
-	MultitouchDriver       string
-	NetworkCapture         bool
-	NetworkCaptureDriver   string
-	IDBIssue               string
-	IDBNext                string
+	Tools                map[string]bool
+	LaunchRecipe         bool
+	Accessibility        bool
+	AccessibilityDriver  string
+	SemanticActions      bool
+	CoordinateTap        bool
+	CoordinateTapDriver  string
+	DeviceFallback       bool
+	DeviceFallbackDriver string
+	Multitouch           bool
+	MultitouchDriver     string
+	NetworkCapture       bool
+	NetworkCaptureDriver string
+	IDBIssue             string
+	IDBNext              string
 }
 
 func (c CLI) resolveCapabilities(ctx context.Context, cfg Config) Capabilities {
 	tools := map[string]bool{}
-	for _, tool := range []string{"go", "bazelisk", "xcrun", "axe", "idb", "baguette", "mitmdump", "pipx", "python3.12", "python3.13", "python3.14"} {
+	for _, tool := range knownTools() {
 		_, err := c.Runner.LookPath(tool)
 		tools[tool] = err == nil
 	}
@@ -59,6 +59,23 @@ func (c CLI) resolveCapabilities(ctx context.Context, cfg Config) Capabilities {
 		caps.NetworkCaptureDriver = "mitmproxy"
 	}
 	return caps
+}
+
+func knownTools() []string {
+	return []string{"go", "bazelisk", "xcrun", "axe", "idb", "baguette", "mitmdump", "pipx", "python3.12", "python3.13", "python3.14"}
+}
+
+func (c CLI) resolveConfigTools(cfg *Config) {
+	if cfg.Tools == nil {
+		cfg.Tools = map[string]bool{}
+	}
+	for _, tool := range knownTools() {
+		if _, err := c.Runner.LookPath(tool); err == nil {
+			cfg.Tools[tool] = true
+		} else {
+			cfg.Tools[tool] = false
+		}
+	}
 }
 
 func (caps Capabilities) fields() map[string]string {

@@ -144,7 +144,7 @@ func (r *launchRecipeRunner) Start(ctx context.Context, logPath string, name str
 	_ = logPath
 	_ = name
 	_ = args
-	return 123, nil
+	return 0, nil
 }
 
 type deviceListRunner struct {
@@ -314,6 +314,88 @@ func TestCoordinateTapUsesResolvedIDBCapability(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(runner.commands, "\n"), "idb ui tap 10 20 --udid SIM") {
 		t.Fatalf("commands=%v", runner.commands)
+	}
+}
+
+func TestUITreeUsesResolvedAxeCapability(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.BundleID = "com.example.app"
+	cfg.Tools = map[string]bool{}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runner := &sequenceRecordingRunner{
+		tools: map[string]bool{"axe": true},
+		out: map[string]string{
+			"axe describe-ui --udid SIM": "Application, 0x1, pid 1\n  Window, 0x2\n",
+		},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"--raw", "ui", "tree"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Application") {
+		t.Fatalf("got %q", out.String())
+	}
+	if !containsCall(runner.commands, "axe describe-ui --udid SIM") {
+		t.Fatalf("commands=%v", runner.commands)
+	}
+}
+
+func TestCaptureUsesResolvedXcrunCapability(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.Tools = map[string]bool{}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runner := &sequenceRecordingRunner{tools: map[string]bool{"xcrun": true}}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"capture", "--name", "probe"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "ok cmd=capture") {
+		t.Fatalf("got %q", out.String())
+	}
+	if !containsCall(runner.commands, "xcrun simctl io SIM screenshot") {
+		t.Fatalf("commands=%v", runner.commands)
+	}
+}
+
+func TestOpenRefusesFreshSimulatorLockFromOtherProject(t *testing.T) {
+	root := t.TempDir()
+	other := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.app"
+	cfg.SimulatorUDID = "SIM-LOCKED"
+	cfg.Tools = map[string]bool{"xcrun": true}
+	cfg.Launch = LaunchConfig{Mode: "already_installed", Commands: LaunchCommands{Launch: `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`}}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		removeSimulatorLock("SIM-LOCKED", other)
+		_ = os.RemoveAll(run.Dir)
+	})
+	if err := writeSimulatorLock("SIM-LOCKED", run, other, os.Getpid()); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{tools: map[string]bool{"xcrun": true}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"open"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "fail code=sim_locked") || !strings.Contains(out.String(), "SIM-LOCKED") {
+		t.Fatalf("got %q", out.String())
 	}
 }
 
@@ -1139,6 +1221,7 @@ func TestUISwipePreferAxeDoesNotFallbackToIDB(t *testing.T) {
 
 func TestOpenStartsOnlyProbeLogsByDefault(t *testing.T) {
 	root := t.TempDir()
+	t.Cleanup(func() { removeSimulatorLock("SIM", root) })
 	cfg := DefaultConfig(root)
 	cfg.AppTarget = "//App:App"
 	cfg.BundleID = "com.example.app"
