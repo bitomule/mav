@@ -1067,6 +1067,38 @@ func TestEvidenceReportReportsMissingVideo(t *testing.T) {
 	if !strings.Contains(out.String(), "video=missing") {
 		t.Fatalf("got %q", out.String())
 	}
+	if !strings.Contains(out.String(), "next=") || !strings.Contains(out.String(), "report.html") {
+		t.Fatalf("missing html next hint: %q", out.String())
+	}
+}
+
+func TestEvidenceStopTranscodesMP4(t *testing.T) {
+	root := t.TempDir()
+	run, err := NewProjectRunState(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(run.Dir, "video.pid"), []byte("123\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mov := filepath.Join(run.Dir, "video.mov")
+	if err := os.WriteFile(mov, testMovieWithDuration(600, 1200), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"evidence", "stop", "--run", run.ID, "--no-capture"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "video_mp4=") {
+		t.Fatalf("got %q", out.String())
+	}
+	if _, err := os.Stat(filepath.Join(run.Dir, "video.mp4")); err != nil {
+		t.Fatalf("missing video.mp4: %v", err)
+	}
 }
 
 func TestFlowVideoStartStopAliasesRecordVideo(t *testing.T) {

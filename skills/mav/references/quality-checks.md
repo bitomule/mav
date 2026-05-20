@@ -4,6 +4,7 @@ Run these checks before sharing a report.
 
 ## Content
 
+- An HTML report exists at `<run-dir>/report.html`.
 - The hero states the verdict and the behavior under test.
 - The primary visual proof dominates the first viewport. Evidence comes before
   explanatory copy.

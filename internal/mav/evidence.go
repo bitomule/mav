@@ -34,7 +34,7 @@ type EvidenceStep struct {
 	// MonotonicMs is the host monotonic clock at capture; VideoOffsetMs
 	// is monotonic_ms minus the recording's start, in milliseconds.
 	// Both empty when no recording is running.
-	MonotonicMs    int64 `json:"monotonic_ms,omitempty"`
+	MonotonicMs   int64 `json:"monotonic_ms,omitempty"`
 	VideoOffsetMs int64 `json:"video_offset_ms,omitempty"`
 }
 
@@ -46,6 +46,7 @@ type ReportData struct {
 	ScreenshotEvidence ImageEvidence        `json:"screenshot_evidence"`
 	Steps              []ReportEvidenceStep `json:"steps"`
 	Video              string               `json:"video,omitempty"`
+	VideoMP4           string               `json:"video_mp4,omitempty"`
 	VideoStatus        string               `json:"video_status"`
 	VideoIssue         string               `json:"video_issue,omitempty"`
 	VideoDuration      string               `json:"video_duration,omitempty"`
@@ -141,6 +142,9 @@ func GenerateReport(run RunState) (string, error) {
 	}
 	if video, validation := reportVideo(run); video != "" {
 		data.Video = video
+		if mp4 := reportVideoMP4(run); mp4 != "" {
+			data.VideoMP4 = mp4
+		}
 		if validation.OK {
 			data.VideoStatus = "accepted"
 			data.VideoDuration = validation.Duration.String()
@@ -269,6 +273,14 @@ func reportVideo(run RunState) (string, VideoValidation) {
 		}
 	}
 	return "", VideoValidation{}
+}
+
+func reportVideoMP4(run RunState) string {
+	path := filepath.Join(run.Dir, "video.mp4")
+	if exists(path) {
+		return path
+	}
+	return ""
 }
 
 func AppendEvidenceStep(run RunState, step EvidenceStep) error {

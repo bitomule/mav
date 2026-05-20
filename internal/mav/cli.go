@@ -3178,12 +3178,16 @@ func (c CLI) evidenceReport(opts GlobalOptions, args []string) error {
 		if validation.OK {
 			fields["video"] = video
 			fields["video_duration"] = validation.Duration.String()
+			if mp4 := reportVideoMP4(run); mp4 != "" {
+				fields["video_mp4"] = mp4
+			}
 		} else {
 			fields["video"] = "invalid"
 			fields["video_file"] = video
 			fields["video_issue"] = validation.Issue
 		}
 	}
+	fields["next"] = "author " + filepath.Join(run.Dir, "report.html") + " from report.json; the JSON manifest is not the deliverable"
 	return OK("evidence.report", fields).Write(c.Stdout)
 }
 
@@ -3291,6 +3295,11 @@ func (c CLI) evidenceStop(ctx context.Context, opts GlobalOptions, args []string
 		return Fail("video_invalid", map[string]string{"run": run.ID, "file": fields["file"], "duration": duration, "issue": validation.Issue, "log": filepath.Join(run.Dir, "video.log")}).Write(c.Stdout)
 	}
 	fields["duration"] = validation.Duration.String()
+	if mp4, err := c.transcodeEvidenceVideo(ctx, fields["file"]); err == nil {
+		fields["video_mp4"] = mp4
+	} else {
+		fields["video_mp4_warn"] = err.Error()
+	}
 	if !hasFlag(args, "--no-capture") {
 		cfg, cfgErr := LoadConfig(c.Root)
 		if cfgErr == nil {
@@ -3304,6 +3313,36 @@ func (c CLI) evidenceStop(ctx context.Context, opts GlobalOptions, args []string
 	}
 	appendCommand(run, "mav evidence stop", CommandResult{})
 	return OK("evidence.stop", fields).Write(c.Stdout)
+}
+
+func (c CLI) transcodeEvidenceVideo(ctx context.Context, source string) (string, error) {
+	if source == "" {
+		return "", fmt.Errorf("video_source_missing")
+	}
+	out := strings.TrimSuffix(source, filepath.Ext(source)) + ".mp4"
+	result := c.Runner.Run(ctx, "/usr/bin/avconvert",
+		"-p", "PresetHighestQuality",
+		"-s", source,
+		"-o", out,
+		"--replace",
+	)
+	if result.Err != nil || result.Code != 0 {
+		issue := firstLine(result.Stderr)
+		if issue == "" {
+			issue = firstLine(result.Stdout)
+		}
+		if issue == "" && result.Err != nil {
+			issue = result.Err.Error()
+		}
+		if issue == "" {
+			issue = "avconvert_failed"
+		}
+		return "", fmt.Errorf("%s", issue)
+	}
+	if !fileExists(out) {
+		return "", fmt.Errorf("video_mp4_not_written")
+	}
+	return out, nil
 }
 
 func videoDuration(path string) (time.Duration, error) {
