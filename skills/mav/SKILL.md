@@ -34,7 +34,10 @@ does not explore or repair routes by itself. The agent decides the next action.
    already in front. This creates `.mav/runs/<run-id>/` and starts `logs.txt`.
    MAV captures a filtered unified log stream for MAV probes and app-process
    logs when `process_name` is configured. On physical devices, generated
-   simulator install/launch recipes are mapped to idb when possible.
+   simulator install/launch recipes are mapped to idb when possible. MAV writes
+   `/tmp/mav/sim-locks/<udid>.json` for simulator runs; if another worktree owns
+   a fresh lock, pick a different simulator unless you are sure you own that run
+   and pass `--force`.
 5. Prefer `mav ui tree` to understand the current screen. It prints compact
    screen metadata followed by bounded `node ...` lines with ids, labels, roles,
    values, enabled state, subroles, titles, pids, focus state, and frames when
@@ -67,6 +70,11 @@ does not explore or repair routes by itself. The agent decides the next action.
    regardless.
 9. For ad-hoc sessions started with `mav open`, run `mav stop` when validation
    is done. `mav run` stops run-owned streams automatically.
+
+For evidence flows that need mitmproxy on macOS 26+, remember that mitmproxy's
+local Network Extension may take several seconds to become ready after launch.
+If traffic is not appearing, check `mav network start` output and the run log
+before assuming the app made no requests.
 
 ## Internal Execution Validation
 

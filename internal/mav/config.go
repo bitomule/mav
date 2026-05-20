@@ -344,7 +344,7 @@ func SetupConfig(root string, runner Runner) (Config, error) {
 	if cfg.ProcessName == "" {
 		cfg.ProcessName = processNameFromBundle(cfg.BundleID, cfg.ProjectName)
 	}
-	for _, tool := range []string{"bazelisk", "xcrun", "axe", "idb"} {
+	for _, tool := range knownTools() {
 		_, err := runner.LookPath(tool)
 		cfg.Tools[tool] = err == nil
 	}

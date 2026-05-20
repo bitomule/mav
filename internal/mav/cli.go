@@ -186,8 +186,8 @@ Global flags:
 	case "sim":
 		return `Usage:
   mav sim list
-  mav sim select --device "iPhone 17 Pro Max" --ios 26 [--locale es_ES] [--language es]
-  mav sim select --udid <simulator-udid>
+  mav sim select --device "iPhone 17 Pro Max" --ios 26 [--locale es_ES] [--language es] [--force]
+  mav sim select --udid <simulator-udid> [--force]
   mav sim boot
 `
 	case "device":
@@ -198,9 +198,10 @@ Global flags:
 `
 	case "open":
 		return `Usage:
-  mav open [--device NAME] [--ios VERSION] [--udid UDID] [--locale LOCALE] [--language LANG] [--clear-state] [--no-relaunch]
+  mav open [--device NAME] [--ios VERSION] [--udid UDID] [--locale LOCALE] [--language LANG] [--clear-state] [--no-relaunch] [--force]
 
 --no-relaunch reuses the app already running on the selected target. It starts or reuses a MAV run without executing the launch recipe.
+--force ignores a fresh MAV simulator lock when you know the run is yours.
 `
 	case "ui":
 		return `Usage:
@@ -276,6 +277,7 @@ func (c CLI) doctor(ctx context.Context, opts GlobalOptions) error {
 	if cfg.Root == "" {
 		cfg = DefaultConfig(c.Root)
 	}
+	c.resolveConfigTools(&cfg)
 	caps := c.resolveCapabilities(ctx, cfg)
 	tools := caps.Tools
 	fields := caps.fields()
@@ -305,6 +307,32 @@ func (c CLI) doctor(ctx context.Context, opts GlobalOptions) error {
 	}
 	if len(missing) > 0 {
 		fields["next"] = "mav setup --install " + strings.Join(missing, " ")
+	}
+	if normalizedTargetKind(cfg) != "device" && cfg.SimulatorUDID != "" {
+		if lock, locked := simulatorLockedByOther(cfg.SimulatorUDID, c.Root); locked {
+			fields["sim_contention"] = "locked"
+			fields["sim_lock_run"] = lock.RunID
+			fields["sim_lock_project"] = lock.Project
+			fields["sim_lock_next"] = "select a different simulator with mav sim select, or pass --force if you own this run"
+		}
+	}
+	if tools["xcrun"] {
+		if sims, err := ListSimulators(c.Runner); err == nil {
+			booted, owned := 0, 0
+			for _, sim := range sims {
+				if sim.State != "Booted" {
+					continue
+				}
+				booted++
+				if simulatorOwner(sim) != "" {
+					owned++
+				}
+			}
+			if booted > 1 {
+				fields["booted_sims"] = strconv.Itoa(booted)
+				fields["owned_booted_sims"] = strconv.Itoa(owned)
+			}
+		}
 	}
 	return OK("doctor", fields).Write(c.Stdout)
 }
@@ -597,7 +625,12 @@ func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 			return err
 		}
 		for _, sim := range sims {
-			fmt.Fprintf(c.Stdout, "sim udid=%s name=%q runtime=%s state=%s\n", sim.UDID, sim.Name, sim.Runtime, sim.State)
+			owner := simulatorOwner(sim)
+			if owner == "" {
+				fmt.Fprintf(c.Stdout, "sim udid=%s name=%q runtime=%s state=%s\n", sim.UDID, sim.Name, sim.Runtime, sim.State)
+			} else {
+				fmt.Fprintf(c.Stdout, "sim udid=%s name=%q runtime=%s state=%s owner=%q\n", sim.UDID, sim.Name, sim.Runtime, sim.State, owner)
+			}
 		}
 		return nil
 	case "select":
@@ -605,6 +638,7 @@ func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 		if err != nil {
 			return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 		}
+		c.resolveConfigTools(&cfg)
 		sims, err := ListSimulators(c.Runner)
 		if err != nil {
 			return Fail("sim_list_failed", map[string]string{"error": err.Error()}).Write(c.Stdout)
@@ -612,6 +646,9 @@ func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 		sim, ok := SelectSimulator(sims, flagValue(args[1:], "--device"), flagValue(args[1:], "--ios"), flagValue(args[1:], "--udid"))
 		if !ok {
 			return Fail("sim_not_found", map[string]string{"device": flagValue(args[1:], "--device"), "ios": flagValue(args[1:], "--ios"), "udid": flagValue(args[1:], "--udid")}).Write(c.Stdout)
+		}
+		if lock, locked := simulatorLockedByOther(sim.UDID, c.Root); locked && !hasFlag(args[1:], "--force") {
+			return Fail("sim_locked", map[string]string{"udid": sim.UDID, "run": lock.RunID, "project": lock.Project, "next": "choose another simulator or rerun with --force"}).Write(c.Stdout)
 		}
 		cfg.TargetKind = "simulator"
 		cfg.SimulatorUDID = sim.UDID
@@ -632,6 +669,7 @@ func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 		if err != nil {
 			return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 		}
+		c.resolveConfigTools(&cfg)
 		if isPhysicalDevice(cfg) {
 			return Fail("sim_not_applicable", map[string]string{"target": "device", "next": "select a simulator with mav sim select"}).Write(c.Stdout)
 		}
@@ -707,8 +745,14 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	if err != nil {
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
+	c.resolveConfigTools(&cfg)
 	if err := c.applyOpenTargetOverrides(ctx, &cfg, args); err != nil {
 		return Fail("sim_select_failed", map[string]string{"error": err.Error()}).Write(c.Stdout)
+	}
+	if !isPhysicalDevice(cfg) && cfg.SimulatorUDID != "" && !hasFlag(args, "--force") {
+		if lock, locked := simulatorLockedByOther(cfg.SimulatorUDID, c.Root); locked {
+			return Fail("sim_locked", map[string]string{"udid": cfg.SimulatorUDID, "run": lock.RunID, "project": lock.Project, "next": "select another simulator or rerun with --force"}).Write(c.Stdout)
+		}
 	}
 	noRelaunch := hasFlag(args, "--no-relaunch")
 	if noRelaunch && hasFlag(args, "--clear-state") {
@@ -765,6 +809,11 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 		fields["log_subsystem"] = probeLogSubsystem(cfg)
 		fields["log_category"] = probeLogCategory(cfg)
 	}
+	if !isPhysicalDevice(cfg) && cfg.SimulatorUDID != "" && probeLogPID > 0 {
+		if err := writeSimulatorLock(cfg.SimulatorUDID, run, c.Root, probeLogPID); err == nil {
+			fields["sim_lock"] = simLockPath(cfg.SimulatorUDID)
+		}
+	}
 	fields["target_kind"] = normalizedTargetKind(cfg)
 	fields["target"] = targetName(cfg)
 	if fields["target"] == "" {
@@ -796,6 +845,9 @@ func (c CLI) applyOpenTargetOverrides(ctx context.Context, cfg *Config, args []s
 	sim, ok := SelectSimulator(sims, device, ios, udid)
 	if !ok {
 		return fmt.Errorf("sim_not_found")
+	}
+	if lock, locked := simulatorLockedByOther(sim.UDID, c.Root); locked && !hasFlag(args, "--force") {
+		return fmt.Errorf("sim_locked run=%s project=%s", lock.RunID, lock.Project)
 	}
 	cfg.SimulatorUDID = sim.UDID
 	cfg.SimulatorName = sim.Name
@@ -890,6 +942,7 @@ func (c CLI) ui(ctx context.Context, opts GlobalOptions, args []string) error {
 	if err != nil {
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
+	c.resolveConfigTools(&cfg)
 	switch args[0] {
 	case "tree":
 		return c.uiTree(ctx, opts, cfg, args[1:])
@@ -1688,6 +1741,7 @@ func (c CLI) capture(ctx context.Context, opts GlobalOptions, args []string) err
 	if err != nil {
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
+	c.resolveConfigTools(&cfg)
 	run, err := LoadRun(c.Root, flagValue(args, "--run"))
 	if err != nil {
 		run, err = NewProjectRunState(c.Root)
@@ -2069,7 +2123,7 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 	case "tap":
 		args := flowArgs(step.Params, "--id", "id", "--text", "text", "--value", "value", "--x", "x", "--y", "y")
 		var out bytes.Buffer
-		err := c.withStdout(&out).uiTap(ctx, GlobalOptions{PreferDriver: prefer}, mustLoadConfig(c.Root), args)
+		err := c.withStdout(&out).uiTap(ctx, GlobalOptions{PreferDriver: prefer}, c.mustLoadConfig(), args)
 		cmdErr := commandOutputErr(err, out.String(), "tap_failed")
 		if cmdErr != nil && step.Params["optional"] == "true" {
 			fields := copyParams(step.Params)
@@ -2080,7 +2134,7 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 	case "type":
 		text := step.Params["text"]
 		var out bytes.Buffer
-		err := c.withStdout(&out).uiType(ctx, GlobalOptions{PreferDriver: prefer}, mustLoadConfig(c.Root), []string{text})
+		err := c.withStdout(&out).uiType(ctx, GlobalOptions{PreferDriver: prefer}, c.mustLoadConfig(), []string{text})
 		fields := map[string]string{"chars": strconv.Itoa(len(text))}
 		if prefer != "" {
 			fields["driver"] = prefer
@@ -2089,35 +2143,35 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 	case "erase":
 		args := flowArgs(step.Params, "--id", "id", "--text", "text", "--value", "value", "--focused", "focused")
 		var out bytes.Buffer
-		err := c.withStdout(&out).uiErase(ctx, GlobalOptions{PreferDriver: prefer}, mustLoadConfig(c.Root), args)
+		err := c.withStdout(&out).uiErase(ctx, GlobalOptions{PreferDriver: prefer}, c.mustLoadConfig(), args)
 		return copyParams(step.Params), commandOutputErr(err, out.String(), "erase_failed")
 	case "hideKeyboard":
 		var out bytes.Buffer
-		err := c.withStdout(&out).uiHideKeyboard(ctx, GlobalOptions{}, mustLoadConfig(c.Root), nil)
+		err := c.withStdout(&out).uiHideKeyboard(ctx, GlobalOptions{}, c.mustLoadConfig(), nil)
 		return map[string]string{"driver": "baguette"}, commandOutputErr(err, out.String(), "hide_keyboard_failed")
 	case "swipe":
 		args := flowArgs(step.Params, "--direction", "direction", "--start-x", "start-x", "--start-y", "start-y", "--end-x", "end-x", "--end-y", "end-y")
-		err := c.withStdout(io.Discard).uiSwipe(ctx, GlobalOptions{PreferDriver: prefer}, mustLoadConfig(c.Root), args)
+		err := c.withStdout(io.Discard).uiSwipe(ctx, GlobalOptions{PreferDriver: prefer}, c.mustLoadConfig(), args)
 		return copyParams(step.Params), outputErr(err, "swipe_failed")
 	case "longPress":
 		args := flowArgs(step.Params, "--x", "x", "--y", "y", "--duration", "duration")
-		err := c.withStdout(io.Discard).uiLongPress(ctx, GlobalOptions{}, mustLoadConfig(c.Root), args)
+		err := c.withStdout(io.Discard).uiLongPress(ctx, GlobalOptions{}, c.mustLoadConfig(), args)
 		return copyParams(step.Params), outputErr(err, "long_press_failed")
 	case "pinch":
 		args := gestureFlowArgs(step.Params)
-		err := c.withStdout(io.Discard).uiPinch(ctx, GlobalOptions{}, mustLoadConfig(c.Root), args)
+		err := c.withStdout(io.Discard).uiPinch(ctx, GlobalOptions{}, c.mustLoadConfig(), args)
 		return copyParams(step.Params), outputErr(err, "pinch_failed")
 	case "rotate":
 		args := gestureFlowArgs(step.Params)
-		err := c.withStdout(io.Discard).uiRotate(ctx, GlobalOptions{}, mustLoadConfig(c.Root), args)
+		err := c.withStdout(io.Discard).uiRotate(ctx, GlobalOptions{}, c.mustLoadConfig(), args)
 		return copyParams(step.Params), outputErr(err, "rotate_failed")
 	case "twoFingerPan":
 		args := gestureFlowArgs(step.Params)
-		err := c.withStdout(io.Discard).uiTwoFingerPan(ctx, GlobalOptions{}, mustLoadConfig(c.Root), args)
+		err := c.withStdout(io.Discard).uiTwoFingerPan(ctx, GlobalOptions{}, c.mustLoadConfig(), args)
 		return copyParams(step.Params), outputErr(err, "two_finger_pan_failed")
 	case "actions":
 		args := flowArgs(step.Params, "--file", "file")
-		err := c.withStdout(io.Discard).uiActions(ctx, GlobalOptions{}, mustLoadConfig(c.Root), args)
+		err := c.withStdout(io.Discard).uiActions(ctx, GlobalOptions{}, c.mustLoadConfig(), args)
 		return copyParams(step.Params), outputErr(err, "actions_failed")
 	case "delay", "sleep":
 		duration := parseFlowDuration(step.Params["duration"], 1*time.Second)
@@ -2464,8 +2518,9 @@ func sandboxAccessHint(text string) string {
 	return ""
 }
 
-func mustLoadConfig(root string) Config {
-	cfg, _ := LoadConfig(root)
+func (c CLI) mustLoadConfig() Config {
+	cfg, _ := LoadConfig(c.Root)
+	c.resolveConfigTools(&cfg)
 	return cfg
 }
 
@@ -2527,6 +2582,7 @@ func (c CLI) cleanupFailedFlow(ctx context.Context, run RunState, fields map[str
 		_ = os.Remove(filepath.Join(run.Dir, "video.pid"))
 	}
 	if cfg, err := LoadConfig(c.Root); err == nil {
+		c.resolveConfigTools(&cfg)
 		path := filepath.Join(run.Dir, "failure.png")
 		if result, err := c.captureScreenshot(ctx, cfg, path); err == nil && result.Err == nil {
 			fields["screenshot"] = path
@@ -2540,6 +2596,7 @@ func (c CLI) captureEvidenceStep(ctx context.Context, run RunState, name, note s
 	if err != nil {
 		return nil, fmt.Errorf("config_not_found")
 	}
+	c.resolveConfigTools(&cfg)
 	name = safeFileName(name)
 	idx := len(LoadEvidenceSteps(run)) + 1
 	file := filepath.Join(run.Dir, "steps", fmt.Sprintf("%02d_%s.png", idx, name))
@@ -2676,7 +2733,7 @@ func (c CLI) scrollUntilFlowConditionWithPrefer(ctx context.Context, params map[
 		if i == maxSwipes {
 			break
 		}
-		if err := c.withStdout(io.Discard).uiSwipe(ctx, GlobalOptions{PreferDriver: prefer}, mustLoadConfig(c.Root), []string{"--direction", direction}); err != nil {
+		if err := c.withStdout(io.Discard).uiSwipe(ctx, GlobalOptions{PreferDriver: prefer}, c.mustLoadConfig(), []string{"--direction", direction}); err != nil {
 			return nil, fmt.Errorf("swipe_failed")
 		}
 		time.Sleep(500 * time.Millisecond)
@@ -2785,6 +2842,7 @@ func (c CLI) evaluateSingleConditionWithPrefer(ctx context.Context, condition Fl
 	if err != nil {
 		return false, fmt.Errorf("config_not_found")
 	}
+	c.resolveConfigTools(&cfg)
 	described, err := c.describeUITree(ctx, cfg, prefer, false)
 	if err != nil {
 		return false, fmt.Errorf("tree_failed")
@@ -2845,6 +2903,7 @@ func (c CLI) screenshotChangedFrom(ctx context.Context, name string) (bool, erro
 	if err != nil {
 		return false, fmt.Errorf("config_not_found")
 	}
+	c.resolveConfigTools(&cfg)
 	current := filepath.Join(run.Dir, "wait-current.png")
 	result, err := c.captureScreenshot(ctx, cfg, current)
 	if err != nil || result.Err != nil {
@@ -2915,6 +2974,9 @@ func (c CLI) stop(ctx context.Context, opts GlobalOptions, args []string) error 
 		appendCommand(run, "mav stop "+strconv.Itoa(record.PID), CommandResult{})
 	}
 	fields := map[string]string{"run": run.ID, "stopped": strconv.Itoa(stopped), "failed": strconv.Itoa(failed)}
+	if cfg, err := LoadConfig(c.Root); err == nil && cfg.SimulatorUDID != "" {
+		removeSimulatorLock(cfg.SimulatorUDID, c.Root)
+	}
 	if failed > 0 {
 		return Fail("stop_failed", fields).Write(c.Stdout)
 	}
@@ -2992,6 +3054,7 @@ func (c CLI) crashes(ctx context.Context, opts GlobalOptions, args []string) err
 	if err != nil {
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
+	c.resolveConfigTools(&cfg)
 	if !hasTool(cfg, "idb") {
 		return Fail("tool_missing", map[string]string{"tool": "idb"}).Write(c.Stdout)
 	}
@@ -3129,6 +3192,7 @@ func (c CLI) evidenceStart(ctx context.Context, opts GlobalOptions, args []strin
 	if err != nil {
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
+	c.resolveConfigTools(&cfg)
 	run, err := LoadRun(c.Root, flagValue(args, "--run"))
 	if err != nil {
 		return Fail("run_not_found", nil).Write(c.Stdout)
@@ -3159,6 +3223,7 @@ func (c CLI) evidenceStep(ctx context.Context, opts GlobalOptions, args []string
 	if err != nil {
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
+	c.resolveConfigTools(&cfg)
 	run, err := LoadRun(c.Root, flagValue(args, "--run"))
 	if err != nil {
 		return Fail("run_not_found", nil).Write(c.Stdout)
@@ -3229,6 +3294,7 @@ func (c CLI) evidenceStop(ctx context.Context, opts GlobalOptions, args []string
 	if !hasFlag(args, "--no-capture") {
 		cfg, cfgErr := LoadConfig(c.Root)
 		if cfgErr == nil {
+			c.resolveConfigTools(&cfg)
 			file := filepath.Join(run.Dir, "steps", fmt.Sprintf("%02d_final.png", len(LoadEvidenceSteps(run))+1))
 			if result, err := c.captureScreenshot(ctx, cfg, file); err == nil && result.Err == nil {
 				_ = AppendEvidenceStep(run, EvidenceStep{Name: "final", Note: flagValue(args, "--note"), File: file, Kind: "screenshot"})
