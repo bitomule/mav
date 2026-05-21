@@ -2,15 +2,17 @@ package mav
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/bitomule/mav/internal/mav/drivers"
 )
 
-// network dispatches the `mav network` family. Currently start/stop only;
-// future verbs (status, har-validate, ...) bolt on here.
+// network dispatches the `mav network` family.
 func (c CLI) network(ctx context.Context, opts GlobalOptions, args []string) error {
 	if len(args) == 0 {
 		return Fail("network_command_missing", map[string]string{"usage": "mav network start|stop"}).Write(c.Stdout)
@@ -20,6 +22,8 @@ func (c CLI) network(ctx context.Context, opts GlobalOptions, args []string) err
 		return c.networkStart(ctx, opts, args[1:])
 	case "stop":
 		return c.networkStop(ctx, opts, args[1:])
+	case "status":
+		return c.networkStatus(opts, args[1:])
 	default:
 		return Fail("network_unknown_command", map[string]string{"command": args[0]}).Write(c.Stdout)
 	}
@@ -151,6 +155,46 @@ func findRunningNetworkPID(run RunState) int {
 	return 0
 }
 
+func latestNetworkRecord(run RunState) processRecord {
+	records := loadProcessRecords(run)
+	for i := len(records) - 1; i >= 0; i-- {
+		if records[i].Kind == "network" {
+			return records[i]
+		}
+	}
+	return processRecord{}
+}
+
+func (c CLI) networkStatus(opts GlobalOptions, args []string) error {
+	run, err := LoadRun(c.Root, flagValue(args, "--run"))
+	if err != nil {
+		return Fail("run_not_found", nil).Write(c.Stdout)
+	}
+	record := latestNetworkRecord(run)
+	har := networkHARPath(run, args)
+	fields := map[string]string{"run": run.ID, "har": har}
+	if record.PID > 0 {
+		fields["active"] = "true"
+		fields["pid"] = strconv.Itoa(record.PID)
+		addNetworkCommandFields(fields, record.Command)
+	} else {
+		fields["active"] = "false"
+	}
+	if info, err := os.Stat(har); err == nil {
+		fields["har_size"] = strconv.FormatInt(info.Size(), 10)
+		summary := summarizeHAR(har)
+		for key, value := range summary {
+			fields[key] = value
+		}
+	}
+	if opts.Raw || hasFlag(args, "--raw") {
+		for key, value := range fields {
+			fmt.Fprintf(c.Stdout, "%s=%s\n", key, value)
+		}
+	}
+	return OK("network.status", fields).Write(c.Stdout)
+}
+
 // networkHARPath resolves --har: explicit value wins, otherwise default to
 // <runDir>/network.har so the evidence report finds it without configuration.
 func networkHARPath(run RunState, args []string) string {
@@ -174,6 +218,85 @@ func portFlag(args []string) int {
 	return n
 }
 
+func addNetworkCommandFields(fields map[string]string, command string) {
+	parts := strings.Fields(command)
+	for i, part := range parts {
+		switch part {
+		case "--listen-port":
+			if i+1 < len(parts) {
+				fields["listen_port"] = parts[i+1]
+				fields["proxy_url"] = "http://127.0.0.1:" + parts[i+1]
+			}
+		case "--hardump":
+			if i+1 < len(parts) {
+				fields["har"] = parts[i+1]
+			}
+		}
+	}
+}
+
+func summarizeHAR(path string) map[string]string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var doc struct {
+		Log struct {
+			Entries []struct {
+				Request struct {
+					URL string `json:"url"`
+				} `json:"request"`
+				Response struct {
+					Status int `json:"status"`
+				} `json:"response"`
+			} `json:"entries"`
+		} `json:"log"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return map[string]string{"har_parse": "failed"}
+	}
+	domains := map[string]struct{}{}
+	responses, err4xx, err5xx := 0, 0, 0
+	for _, entry := range doc.Log.Entries {
+		if host := harHost(entry.Request.URL); host != "" {
+			domains[host] = struct{}{}
+		}
+		if entry.Response.Status > 0 {
+			responses++
+		}
+		if entry.Response.Status >= 400 && entry.Response.Status < 500 {
+			err4xx++
+		}
+		if entry.Response.Status >= 500 {
+			err5xx++
+		}
+	}
+	return map[string]string{
+		"requests":       strconv.Itoa(len(doc.Log.Entries)),
+		"responses":      strconv.Itoa(responses),
+		"status_4xx":     strconv.Itoa(err4xx),
+		"status_5xx":     strconv.Itoa(err5xx),
+		"unique_domains": strconv.Itoa(len(domains)),
+	}
+}
+
+func harHost(raw string) string {
+	withoutScheme := strings.TrimSpace(raw)
+	if i := strings.Index(withoutScheme, "://"); i >= 0 {
+		withoutScheme = withoutScheme[i+3:]
+	}
+	if i := strings.IndexAny(withoutScheme, "/?#"); i >= 0 {
+		withoutScheme = withoutScheme[:i]
+	}
+	if i := strings.IndexByte(withoutScheme, '@'); i >= 0 {
+		withoutScheme = withoutScheme[i+1:]
+	}
+	if i := strings.IndexByte(withoutScheme, ':'); i >= 0 {
+		withoutScheme = withoutScheme[:i]
+	}
+	return withoutScheme
+}
+
 // loadOrDefaultConfig is a tiny shim so networkStop can route without
 // hard-failing when the project lacks a config -- the stop call only needs
 // the target kind to disambiguate sim vs device, and stop is intentionally
@@ -186,4 +309,3 @@ func loadOrDefaultConfig(root string) Config {
 	}
 	return cfg
 }
-

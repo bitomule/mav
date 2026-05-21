@@ -83,6 +83,8 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 		return c.capture(ctx, opts, rest[1:])
 	case "run":
 		return c.runFlow(ctx, opts, rest[1:])
+	case "flow":
+		return c.flow(ctx, opts, rest[1:])
 	case "logs":
 		return c.logs(opts, rest[1:])
 	case "stop":
@@ -166,6 +168,7 @@ Commands:
   ui          Inspect and control the current UI.
   capture     Capture the current screen.
   run         Execute a native MAV YAML flow.
+  flow        Lint native MAV YAML flows.
   logs        Read captured run logs.
   stop        Stop run-owned background processes.
   crashes     List crashes for the configured app.
@@ -240,6 +243,8 @@ Global flags:
 		return "Usage: mav ui longPress --x X --y Y [--duration 800ms]\n"
 	case "run":
 		return "Usage: mav run flow.yaml\n"
+	case "flow":
+		return "Usage:\n  mav flow lint flow.yaml [--raw]\n"
 	case "logs":
 		return "Usage: mav logs [--run RUN_ID] [--key KEY] [--contains TEXT] [--level LEVEL] [--raw]\n"
 	case "stop":
@@ -257,6 +262,7 @@ Global flags:
 		return `Usage:
   mav network start [--har PATH] [--port PORT] [--run RUN_ID]
   mav network stop  [--run RUN_ID]
+  mav network status [--har PATH] [--run RUN_ID] [--raw]
 
 Starts a HAR network capture via mitmproxy on the current simulator.
 The HAR file lands at <runDir>/network.har by default. The PID of the
@@ -308,6 +314,7 @@ func (c CLI) doctor(ctx context.Context, opts GlobalOptions) error {
 	if len(missing) > 0 {
 		fields["next"] = "mav setup --install " + strings.Join(missing, " ")
 	}
+	addDoctorMatrixFields(fields, caps)
 	if normalizedTargetKind(cfg) != "device" && cfg.SimulatorUDID != "" {
 		if lock, locked := simulatorLockedByOther(cfg.SimulatorUDID, c.Root); locked {
 			fields["sim_contention"] = "locked"
@@ -335,6 +342,29 @@ func (c CLI) doctor(ctx context.Context, opts GlobalOptions) error {
 		}
 	}
 	return OK("doctor", fields).Write(c.Stdout)
+}
+
+func addDoctorMatrixFields(fields map[string]string, caps Capabilities) {
+	if caps.AccessibilityDriver != "" {
+		fields["sim_tree_driver"] = caps.AccessibilityDriver
+		fields["device_tree_driver"] = caps.AccessibilityDriver
+	}
+	if caps.SemanticActions {
+		fields["sim_semantic_tap_driver"] = caps.AccessibilityDriver
+		fields["device_semantic_tap_driver"] = caps.AccessibilityDriver
+	}
+	if caps.CoordinateTapDriver != "" {
+		fields["sim_coord_tap_driver"] = caps.CoordinateTapDriver
+		fields["device_coord_tap_driver"] = caps.CoordinateTapDriver
+	}
+	if caps.MultitouchDriver != "" {
+		fields["sim_multitouch_driver"] = caps.MultitouchDriver
+		fields["device_multitouch"] = "unsupported"
+	}
+	if caps.NetworkCaptureDriver != "" {
+		fields["sim_network_driver"] = caps.NetworkCaptureDriver
+		fields["device_network"] = "manual_proxy"
+	}
 }
 
 func (c CLI) setup(ctx context.Context, opts GlobalOptions, args []string) error {
@@ -1134,14 +1164,28 @@ func (c CLI) describeUITree(ctx context.Context, cfg Config, prefer string, incl
 			return describedUITree{}, err
 		}
 	}
+	target := targetFromConfig(cfg)
 	if hasTool(cfg, "axe") {
-		return describedUITree{Driver: "axe", Result: c.Runner.Run(ctx, "axe", axeTargetArgs(cfg, "describe-ui")...)}, nil
+		driver, _, err := c.router().Route(ctx, drivers.CapTreeAX, target, "axe")
+		if err != nil {
+			return describedUITree{}, err
+		}
+		treeDriver, ok := driver.(drivers.TreeDriver)
+		if !ok {
+			return describedUITree{}, fmt.Errorf("tree_tool_missing")
+		}
+		tree, err := treeDriver.Tree(ctx, target, drivers.TreeSpec{})
+		if err != nil {
+			return describedUITree{Driver: driver.ID(), Result: CommandResult{Stderr: err.Error(), Err: err}}, nil
+		}
+		return describedUITree{Driver: driver.ID(), Result: CommandResult{Stdout: string(tree.JSON)}}, nil
 	}
 	if prefer == "axe" {
 		return describedUITree{}, fmt.Errorf("tree_tool_missing")
 	}
 	if hasTool(cfg, "idb") {
-		return describedUITree{Driver: "idb", Result: c.Runner.Run(ctx, "idb", idbTargetArgs(cfg, "ui", "describe-all", "--json", "--nested")...)}, nil
+		result := c.Runner.Run(ctx, "idb", idbTargetArgs(cfg, "ui", "describe-all", "--json", "--nested")...)
+		return describedUITree{Driver: "idb", Result: result}, nil
 	}
 	return describedUITree{}, fmt.Errorf("tree_tool_missing")
 }
@@ -1252,21 +1296,26 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			return Fail("tap_target_missing", map[string]string{"usage": "mav ui tap --value VALUE not supported; use --id or --text"}).Write(c.Stdout)
 		}
 		_ = prefer
-		axeArgs := axeTargetArgs(cfg, "tap")
-		if id != "" {
-			axeArgs = append(axeArgs, "--id", id)
-		} else {
-			axeArgs = append(axeArgs, "--label", text)
+		target := targetFromConfig(cfg)
+		driver, _, err := c.router().Route(ctx, drivers.CapSemanticTap, target, "axe")
+		if err != nil {
+			return Fail("tool_missing", map[string]string{"tool": "axe", "next": "use mav ui tap --x X --y Y when AXe is unavailable"}).Write(c.Stdout)
 		}
-		result := c.Runner.Run(ctx, "axe", axeArgs...)
-		if result.Err != nil {
+		td, ok := driver.(drivers.TapDriver)
+		if !ok {
+			return Fail("tool_missing", map[string]string{"tool": "axe"}).Write(c.Stdout)
+		}
+		_, tapErr := td.Tap(ctx, target, drivers.TapSpec{Selector: drivers.ElementSelector{ID: id, Text: text}})
+		result := CommandResult{}
+		if tapErr != nil {
+			result = CommandResult{Stderr: tapErr.Error(), Err: tapErr}
 			diagnosticFields, hasTextDiagnostic := c.diagnoseTextTapFailure(ctx, cfg, text, result.Stderr)
 			if hasTextDiagnostic {
 				return Fail("ui_tap_text_no_label_match", diagnosticFields).Write(c.Stdout)
 			}
 			return Fail("ui_tap_failed", map[string]string{"stderr": firstLine(result.Stderr)}).Write(c.Stdout)
 		}
-		fields["driver"] = "axe"
+		fields["driver"] = driver.ID()
 		c.appendCurrentCommand(command, result)
 		return OK("ui.tap", fields).Write(c.Stdout)
 	}
@@ -1278,12 +1327,26 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			}
 			return Fail("tool_missing", fields).Write(c.Stdout)
 		}
-		result := c.Runner.Run(ctx, "idb", idbTargetArgs(cfg, "ui", "tap", x, y)...)
-		if result.Err != nil {
+		xi, _ := strconv.Atoi(x)
+		yi, _ := strconv.Atoi(y)
+		target := targetFromConfig(cfg)
+		driver, _, err := c.router().Route(ctx, drivers.CapCoordTap, target, "idb")
+		if err != nil {
+			return Fail("tool_missing", map[string]string{"tool": "idb"}).Write(c.Stdout)
+		}
+		td, ok := driver.(drivers.TapDriver)
+		if !ok {
+			return Fail("tool_missing", map[string]string{"tool": "idb"}).Write(c.Stdout)
+		}
+		tapErr := error(nil)
+		_, tapErr = td.Tap(ctx, target, drivers.TapSpec{X: xi, Y: yi})
+		result := CommandResult{}
+		if tapErr != nil {
+			result = CommandResult{Stderr: tapErr.Error(), Err: tapErr}
 			return Fail("ui_tap_failed", map[string]string{"stderr": firstLine(result.Stderr)}).Write(c.Stdout)
 		}
 		c.appendCurrentCommand("mav ui tap --x "+x+" --y "+y, result)
-		return OK("ui.tap", map[string]string{"x": x, "y": y, "driver": "idb", "route_recorded": "false"}).Write(c.Stdout)
+		return OK("ui.tap", map[string]string{"x": x, "y": y, "driver": driver.ID(), "route_recorded": "false"}).Write(c.Stdout)
 	}
 	return Fail("tap_target_missing", map[string]string{"usage": "mav ui tap --id ID | --x X --y Y | --text TEXT"}).Write(c.Stdout)
 }
@@ -1337,17 +1400,22 @@ func (c CLI) uiType(ctx context.Context, opts GlobalOptions, cfg Config, args []
 		return Fail("prefer_driver_invalid", map[string]string{"usage": "--prefer-driver auto|axe"}).Write(c.Stdout)
 	}
 	text := strings.Join(args, " ")
-	driver := "axe"
-	axeArgs := axeTargetArgs(cfg, "type")
-	axeArgs = append(axeArgs, text)
-	result := c.Runner.Run(ctx, "axe", axeArgs...)
-	if result.Err != nil {
-		return Fail("ui_type_failed", map[string]string{"stderr": firstLine(result.Stderr)}).Write(c.Stdout)
+	target := targetFromConfig(cfg)
+	driver, _, err := c.router().Route(ctx, drivers.CapType, target, "axe")
+	if err != nil {
+		return Fail("tool_missing", map[string]string{"tool": "axe", "next": "mav setup --install axe"}).Write(c.Stdout)
+	}
+	td, ok := driver.(drivers.TextDriver)
+	if !ok {
+		return Fail("tool_missing", map[string]string{"tool": "axe"}).Write(c.Stdout)
+	}
+	if err := td.Type(ctx, target, drivers.TextSpec{Text: text}); err != nil {
+		return Fail("ui_type_failed", map[string]string{"stderr": firstLine(err.Error())}).Write(c.Stdout)
 	}
 	fields := map[string]string{
 		"chars":      strconv.Itoa(len(text)),
 		"chars_sent": strconv.Itoa(len(text)),
-		"driver":     driver,
+		"driver":     driver.ID(),
 	}
 	return OK("ui.type", fields).Write(c.Stdout)
 }
@@ -1427,24 +1495,32 @@ func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args [
 		endY = value
 		customCoordinates = true
 	}
-	driver := "axe"
-	var result CommandResult
-	if hasTool(cfg, "axe") {
-		axeArgs := axeTargetArgs(cfg, "swipe", "--start-x", startX, "--start-y", startY, "--end-x", endX, "--end-y", endY)
-		result = c.Runner.Run(ctx, "axe", axeArgs...)
-	} else if hasTool(cfg, "idb") {
+	target := targetFromConfig(cfg)
+	preferred := ""
+	if prefer == "axe" || hasTool(cfg, "axe") {
+		preferred = "axe"
+	}
+	driver, _, err := c.router().Route(ctx, drivers.CapSwipe, target, preferred)
+	if err != nil {
 		if prefer == "axe" {
 			return Fail("tool_missing", map[string]string{"tool": "axe", "next": "install AXe or use --prefer-driver auto"}).Write(c.Stdout)
 		}
-		driver = "idb"
-		result = c.Runner.Run(ctx, "idb", idbTargetArgs(cfg, "ui", "swipe", startX, startY, endX, endY)...)
-	} else {
 		return Fail("tool_missing", map[string]string{"tool": "axe|idb"}).Write(c.Stdout)
 	}
-	if result.Err != nil {
-		return Fail("ui_swipe_failed", map[string]string{"stderr": firstLine(result.Stderr)}).Write(c.Stdout)
+	gd, ok := driver.(interface {
+		Swipe(context.Context, drivers.Target, drivers.SwipeSpec) error
+	})
+	if !ok {
+		return Fail("tool_missing", map[string]string{"tool": "axe|idb"}).Write(c.Stdout)
 	}
-	fields := map[string]string{"direction": direction, "driver": driver}
+	sx, _ := strconv.Atoi(startX)
+	sy, _ := strconv.Atoi(startY)
+	ex, _ := strconv.Atoi(endX)
+	ey, _ := strconv.Atoi(endY)
+	if err := gd.Swipe(ctx, target, drivers.SwipeSpec{Direction: direction, StartX: sx, StartY: sy, EndX: ex, EndY: ey}); err != nil {
+		return Fail("ui_swipe_failed", map[string]string{"stderr": firstLine(err.Error())}).Write(c.Stdout)
+	}
+	fields := map[string]string{"direction": direction, "driver": driver.ID()}
 	if customCoordinates {
 		fields["direction"] = "custom"
 		fields["start_x"] = startX
@@ -1786,26 +1862,30 @@ func (c CLI) captureScreenshot(ctx context.Context, cfg Config, path string) (Co
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return CommandResult{}, err
 	}
-	if isPhysicalDevice(cfg) {
-		if hasTool(cfg, "idb") {
-			return c.Runner.Run(ctx, "idb", idbTargetArgs(cfg, "screenshot", path)...), nil
-		}
+	target := targetFromConfig(cfg)
+	prefer := ""
+	switch {
+	case isPhysicalDevice(cfg):
+		prefer = "idb"
+	case hasTool(cfg, "axe"):
+		prefer = "axe"
+	case hasTool(cfg, "idb"):
+		prefer = "idb"
+	case hasTool(cfg, "xcrun"):
+		prefer = "simctl"
+	}
+	driver, _, err := c.router().Route(ctx, drivers.CapScreenshot, target, prefer)
+	if err != nil {
 		return CommandResult{}, fmt.Errorf("capture_tool_missing")
 	}
-	if hasTool(cfg, "axe") {
-		return c.Runner.Run(ctx, "axe", axeTargetArgs(cfg, "screenshot", "--output", path)...), nil
+	sd, ok := driver.(drivers.ScreenshotDriver)
+	if !ok {
+		return CommandResult{}, fmt.Errorf("capture_tool_missing")
 	}
-	if hasTool(cfg, "idb") {
-		return c.Runner.Run(ctx, "idb", idbTargetArgs(cfg, "screenshot", path)...), nil
+	if err := sd.Screenshot(ctx, target, drivers.ScreenshotSpec{OutPath: path}); err != nil {
+		return CommandResult{Stderr: err.Error(), Err: err}, nil
 	}
-	if hasTool(cfg, "xcrun") {
-		target := cfg.SimulatorUDID
-		if target == "" {
-			target = "booted"
-		}
-		return c.Runner.Run(ctx, "xcrun", "simctl", "io", target, "screenshot", path), nil
-	}
-	return CommandResult{}, fmt.Errorf("capture_tool_missing")
+	return CommandResult{}, nil
 }
 
 func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) error {
@@ -3072,12 +3152,6 @@ func (c CLI) crashes(ctx context.Context, opts GlobalOptions, args []string) err
 		addSandboxNext(fields, result.Stderr)
 		return Fail("crashes_failed", fields).Write(c.Stdout)
 	}
-
-	// Enumerate crash names from `idb crash list` stdout, fetch each
-	// body via `idb crash show <name>`, parse with ParseIPS and persist
-	// both the raw .ips and a one-line summary under <runDir>/crashes/.
-	// Older behaviour (just emitting count) is preserved as the ok line;
-	// the per-crash artefacts and summary fields are additive.
 	names := parseCrashNames(result.Stdout)
 	fields := map[string]string{"count": strconv.Itoa(len(names))}
 
@@ -3085,25 +3159,23 @@ func (c CLI) crashes(ctx context.Context, opts GlobalOptions, args []string) err
 		return OK("crashes", fields).Write(c.Stdout)
 	}
 
-	// Persist + summarise crashes when a run is active. We attach to the
-	// current run if there is one; if not, the count line is still emitted
-	// so flows that call `mav crashes` outside an evidence session don't
-	// fail loudly. Missing run is non-fatal.
 	if run, err := LoadRun(c.Root, ""); err == nil {
 		crashDir := filepath.Join(run.Dir, "crashes")
-		_ = os.MkdirAll(crashDir, 0o755)
-		fetched, summarised := 0, 0
-		for idx, name := range names {
-			body := c.Runner.Run(ctx, "idb", idbTargetArgs(cfg, "crash", "show", name)...)
-			if body.Err != nil || body.Stdout == "" {
-				continue
-			}
-			ipsPath := filepath.Join(crashDir, fmt.Sprintf("%02d.ips", idx+1))
-			if err := os.WriteFile(ipsPath, []byte(body.Stdout), 0o644); err != nil {
-				continue
-			}
-			fetched++
-			summary, err := ParseIPS([]byte(body.Stdout))
+		driver, _, err := c.router().Route(ctx, drivers.CapCrashFetch, targetFromConfig(cfg), "idb")
+		if err != nil {
+			return Fail("tool_missing", map[string]string{"tool": "idb"}).Write(c.Stdout)
+		}
+		cd, ok := driver.(drivers.CrashDriver)
+		if !ok {
+			return Fail("tool_missing", map[string]string{"tool": "idb"}).Write(c.Stdout)
+		}
+		entries, err := cd.CrashFetch(ctx, targetFromConfig(cfg), drivers.CrashSpec{BundleID: cfg.BundleID, OutDir: crashDir})
+		if err != nil {
+			return Fail("crashes_failed", map[string]string{"stderr": firstLine(err.Error())}).Write(c.Stdout)
+		}
+		summarised := 0
+		for idx, entry := range entries {
+			summary, err := ParseIPS(entry.Body)
 			if err != nil {
 				continue
 			}
@@ -3111,7 +3183,7 @@ func (c CLI) crashes(ctx context.Context, opts GlobalOptions, args []string) err
 			_ = os.WriteFile(txtPath, []byte(summary.OneLiner()+"\n"), 0o644)
 			summarised++
 		}
-		fields["fetched"] = strconv.Itoa(fetched)
+		fields["fetched"] = strconv.Itoa(len(entries))
 		fields["summarised"] = strconv.Itoa(summarised)
 		fields["dir"] = crashDir
 	}

@@ -7,6 +7,7 @@ package simctl
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/bitomule/mav/internal/mav/drivers"
 )
@@ -73,22 +74,100 @@ func (d *Driver) Warm(_ context.Context, _ drivers.Target) <-chan error {
 
 // --- functional methods (filled in P3/P5 when migrated from cli.go) -----
 
-var errNotYet = errors.New("simctl: functional implementation lands in P3+")
+var errNotYet = errors.New("simctl: functional implementation not migrated yet")
 
-func (d *Driver) Boot(context.Context, drivers.Target) error                                  { return errNotYet }
-func (d *Driver) Install(context.Context, drivers.Target, drivers.InstallSpec) error          { return errNotYet }
-func (d *Driver) Launch(context.Context, drivers.Target, drivers.LaunchSpec) (drivers.LaunchResult, error) {
-	return drivers.LaunchResult{}, errNotYet
+func (d *Driver) Boot(ctx context.Context, target drivers.Target) error {
+	udid := simUDID(target)
+	res := d.exec.Run(ctx, "xcrun", "simctl", "boot", udid)
+	if res.Err != nil && !strings.Contains(res.Stderr, "Unable to boot device in current state") {
+		return errors.New(firstLine(res.Stderr))
+	}
+	return nil
 }
-func (d *Driver) Uninstall(context.Context, drivers.Target, string) error { return errNotYet }
-func (d *Driver) Screenshot(context.Context, drivers.Target, drivers.ScreenshotSpec) error {
-	return errNotYet
+func (d *Driver) Install(ctx context.Context, target drivers.Target, spec drivers.InstallSpec) error {
+	res := d.exec.Run(ctx, "xcrun", "simctl", "install", simUDID(target), spec.Path)
+	if res.Err != nil {
+		return errors.New(firstLine(res.Stderr))
+	}
+	return nil
+}
+func (d *Driver) Launch(ctx context.Context, target drivers.Target, spec drivers.LaunchSpec) (drivers.LaunchResult, error) {
+	bundleID := spec.BundleID
+	if bundleID == "" {
+		bundleID = target.BundleID
+	}
+	args := []string{"simctl", "launch", simUDID(target), bundleID}
+	args = append(args, simctlLanguageArgs(target)...)
+	res := d.exec.Run(ctx, "xcrun", args...)
+	if res.Err != nil {
+		return drivers.LaunchResult{}, errors.New(firstLine(res.Stderr))
+	}
+	return drivers.LaunchResult{BundleID: bundleID}, nil
+}
+func (d *Driver) Uninstall(ctx context.Context, target drivers.Target, bundleID string) error {
+	res := d.exec.Run(ctx, "xcrun", "simctl", "uninstall", simUDID(target), bundleID)
+	if res.Err != nil {
+		return errors.New(firstLine(res.Stderr))
+	}
+	return nil
+}
+func (d *Driver) Screenshot(ctx context.Context, target drivers.Target, spec drivers.ScreenshotSpec) error {
+	udid := target.UDID
+	if udid == "" {
+		udid = "booted"
+	}
+	res := d.exec.Run(ctx, "xcrun", "simctl", "io", udid, "screenshot", spec.OutPath)
+	if res.Err != nil {
+		return errors.New(firstLine(res.Stderr))
+	}
+	return nil
 }
 func (d *Driver) VideoStart(context.Context, drivers.Target, drivers.VideoSpec) (drivers.VideoResult, error) {
 	return drivers.VideoResult{}, errNotYet
 }
 func (d *Driver) VideoStop(context.Context, drivers.Target, int) error { return errNotYet }
-func (d *Driver) LogStreamStart(context.Context, drivers.Target, drivers.LogStreamSpec) (drivers.LogStreamResult, error) {
-	return drivers.LogStreamResult{}, errNotYet
+func (d *Driver) LogStreamStart(ctx context.Context, target drivers.Target, spec drivers.LogStreamSpec) (drivers.LogStreamResult, error) {
+	predicate := `subsystem == "` + spec.BundleID + `"`
+	args := []string{"simctl", "spawn", simUDID(target), "log", "stream", "--style", "compact", "--level", "debug", "--predicate", predicate}
+	pid, err := d.exec.Start(ctx, spec.OutPath, "xcrun", args...)
+	if err != nil {
+		return drivers.LogStreamResult{}, err
+	}
+	return drivers.LogStreamResult{PID: pid, OutPath: spec.OutPath}, nil
 }
 func (d *Driver) LogStreamStop(context.Context, int) error { return errNotYet }
+
+func simUDID(target drivers.Target) string {
+	if target.UDID != "" {
+		return target.UDID
+	}
+	return "booted"
+}
+
+func simctlLanguageArgs(target drivers.Target) []string {
+	args := []string{}
+	if target.Language != "" {
+		args = append(args, "-AppleLanguages", "("+target.Language+")")
+		if target.Locale != "" {
+			args = append(args, "-AppleLocale", target.Locale)
+		}
+	} else if target.Locale != "" {
+		args = append(args, "-AppleLocale", target.Locale)
+	}
+	return args
+}
+
+func firstLine(s string) string {
+	for i, r := range s {
+		if r == '\n' {
+			if i == 0 {
+				return ""
+			}
+			return s[:i]
+		}
+	}
+	if s == "" {
+		return "command failed"
+	}
+	return s
+}

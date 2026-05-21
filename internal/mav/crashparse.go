@@ -23,9 +23,9 @@ type CrashSummary struct {
 
 	// Body fields (best-effort, may be empty depending on bug_type)
 	Process       string `json:"process,omitempty"`
-	Exception     string `json:"exception,omitempty"`     // e.g., "EXC_BAD_ACCESS (SIGSEGV)"
-	Termination   string `json:"termination,omitempty"`   // e.g., "SIGNAL Code -1"
-	Reason        string `json:"reason,omitempty"`        // exception.subtype + asi when present
+	Exception     string `json:"exception,omitempty"`      // e.g., "EXC_BAD_ACCESS (SIGSEGV)"
+	Termination   string `json:"termination,omitempty"`    // e.g., "SIGNAL Code -1"
+	Reason        string `json:"reason,omitempty"`         // exception.subtype + asi when present
 	CrashedThread string `json:"crashed_thread,omitempty"` // thread name when present
 }
 
@@ -43,11 +43,11 @@ type ipsHeader struct {
 
 // ipsBody matches the second-document subset we care about.
 type ipsBody struct {
-	ProcName   string         `json:"procName"`
-	Exception  ipsException   `json:"exception"`
-	Termination ipsTermination `json:"termination"`
-	ASI        map[string][]string `json:"asi"`
-	Threads    []ipsThread    `json:"threads"`
+	ProcName    string              `json:"procName"`
+	Exception   ipsException        `json:"exception"`
+	Termination ipsTermination      `json:"termination"`
+	ASI         map[string][]string `json:"asi"`
+	Threads     []ipsThread         `json:"threads"`
 }
 
 type ipsException struct {
@@ -64,8 +64,8 @@ type ipsTermination struct {
 }
 
 type ipsThread struct {
-	Name     string `json:"name"`
-	Queue    string `json:"queue"`
+	Name      string `json:"name"`
+	Queue     string `json:"queue"`
 	Triggered bool   `json:"triggered"`
 }
 

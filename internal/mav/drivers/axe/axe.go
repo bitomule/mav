@@ -7,6 +7,7 @@ package axe
 import (
 	"context"
 	"errors"
+	"strconv"
 
 	"github.com/bitomule/mav/internal/mav/drivers"
 )
@@ -16,8 +17,6 @@ import (
 const ID = "axe"
 
 // Driver is the AXe-backed implementation of multiple driver interfaces.
-// The implementation bodies are deliberately stubbed in P2; subsequent phases
-// move the real AXe interaction code out of cli.go into this package.
 type Driver struct {
 	exec drivers.Executor
 	path string // resolved binary path, populated by Probe
@@ -71,18 +70,81 @@ func (d *Driver) Warm(_ context.Context, _ drivers.Target) <-chan error {
 	return ch
 }
 
-// --- functional methods (filled in P3/P4 when cli.go is migrated) -------
+func (d *Driver) Tap(ctx context.Context, target drivers.Target, spec drivers.TapSpec) (drivers.TapResult, error) {
+	args := targetArgs(target, "tap")
+	if spec.Selector.ID != "" {
+		args = append(args, "--id", spec.Selector.ID)
+	} else if spec.Selector.Text != "" {
+		args = append(args, "--label", spec.Selector.Text)
+	} else {
+		return drivers.TapResult{}, errors.New("axe: tap requires id or text selector")
+	}
+	res := d.exec.Run(ctx, "axe", args...)
+	if res.Err != nil {
+		return drivers.TapResult{}, errors.New(firstLine(res.Stderr))
+	}
+	return drivers.TapResult{MatchedID: spec.Selector.ID, MatchedText: spec.Selector.Text}, nil
+}
+func (d *Driver) Tree(ctx context.Context, target drivers.Target, _ drivers.TreeSpec) (drivers.TreeResult, error) {
+	res := d.exec.Run(ctx, "axe", targetArgs(target, "describe-ui")...)
+	if res.Err != nil {
+		return drivers.TreeResult{}, errors.New(firstLine(res.Stderr))
+	}
+	return drivers.TreeResult{JSON: []byte(res.Stdout)}, nil
+}
+func (d *Driver) Swipe(ctx context.Context, target drivers.Target, spec drivers.SwipeSpec) error {
+	args := targetArgs(target, "swipe",
+		"--start-x", strconv.Itoa(spec.StartX),
+		"--start-y", strconv.Itoa(spec.StartY),
+		"--end-x", strconv.Itoa(spec.EndX),
+		"--end-y", strconv.Itoa(spec.EndY),
+	)
+	res := d.exec.Run(ctx, "axe", args...)
+	if res.Err != nil {
+		return errors.New(firstLine(res.Stderr))
+	}
+	return nil
+}
+func (d *Driver) Screenshot(ctx context.Context, target drivers.Target, spec drivers.ScreenshotSpec) error {
+	if spec.OutPath == "" {
+		return errors.New("axe: screenshot output path missing")
+	}
+	res := d.exec.Run(ctx, "axe", targetArgs(target, "screenshot", "--output", spec.OutPath)...)
+	if res.Err != nil {
+		return errors.New(firstLine(res.Stderr))
+	}
+	return nil
+}
+func (d *Driver) Type(ctx context.Context, target drivers.Target, spec drivers.TextSpec) error {
+	if spec.Text == "" {
+		return errors.New("axe: type text missing")
+	}
+	res := d.exec.Run(ctx, "axe", targetArgs(target, "type", spec.Text)...)
+	if res.Err != nil {
+		return errors.New(firstLine(res.Stderr))
+	}
+	return nil
+}
 
-var errNotYet = errors.New("axe: functional implementation lands in P3 driver migration")
+func targetArgs(target drivers.Target, args ...string) []string {
+	out := append([]string{}, args...)
+	if target.UDID != "" {
+		out = append(out, "--udid", target.UDID)
+	}
+	return out
+}
 
-func (d *Driver) Tap(context.Context, drivers.Target, drivers.TapSpec) (drivers.TapResult, error) {
-	return drivers.TapResult{}, errNotYet
+func firstLine(s string) string {
+	for i, r := range s {
+		if r == '\n' {
+			if i == 0 {
+				return ""
+			}
+			return s[:i]
+		}
+	}
+	if s == "" {
+		return "command failed"
+	}
+	return s
 }
-func (d *Driver) Tree(context.Context, drivers.Target, drivers.TreeSpec) (drivers.TreeResult, error) {
-	return drivers.TreeResult{}, errNotYet
-}
-func (d *Driver) Swipe(context.Context, drivers.Target, drivers.SwipeSpec) error { return errNotYet }
-func (d *Driver) Screenshot(context.Context, drivers.Target, drivers.ScreenshotSpec) error {
-	return errNotYet
-}
-func (d *Driver) Type(context.Context, drivers.Target, drivers.TextSpec) error { return errNotYet }

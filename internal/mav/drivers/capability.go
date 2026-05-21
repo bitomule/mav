@@ -38,11 +38,11 @@ const (
 	CapLocale    Capability = "lifecycle.locale"
 
 	// Evidence / observation
-	CapVideo           Capability = "video"
-	CapLogStream       Capability = "log.stream"
-	CapCrashFetch      Capability = "crash.fetch"
-	CapNetworkCapture  Capability = "network.capture"
-	CapHIDSync         Capability = "hid.sync" // optional: synchronous HID delivery confirmation
+	CapVideo          Capability = "video"
+	CapLogStream      Capability = "log.stream"
+	CapCrashFetch     Capability = "crash.fetch"
+	CapNetworkCapture Capability = "network.capture"
+	CapHIDSync        Capability = "hid.sync" // optional: synchronous HID delivery confirmation
 )
 
 // CapabilitySet is the unordered set of capabilities a driver provides.

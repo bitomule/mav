@@ -101,14 +101,21 @@ var PreferDriverInvalid = Code{
 	Remediation: "Run `mav doctor` to see registered drivers",
 }
 
+var FlowLintFailed = Code{
+	ID:          "flow_lint_failed",
+	Title:       "Flow lint found errors",
+	Remediation: "Run `mav flow lint <flow.yaml> --raw` for line-level details",
+}
+
 // Registry is a name -> Code lookup that the HTML report and `mav doctor`
 // can iterate to print the full vocabulary. Add new codes here; tests
 // guard against accidental ID collisions.
 var Registry = map[string]Code{
-	DriverUnhealthy.ID:                DriverUnhealthy,
-	GestureUnsupportedOnDevice.ID:     GestureUnsupportedOnDevice,
-	TreeSystemUnsupportedOnDevice.ID:  TreeSystemUnsupportedOnDevice,
-	NoDriverForCapability.ID:          NoDriverForCapability,
-	ToolMissing.ID:                    ToolMissing,
-	PreferDriverInvalid.ID:            PreferDriverInvalid,
+	DriverUnhealthy.ID:               DriverUnhealthy,
+	GestureUnsupportedOnDevice.ID:    GestureUnsupportedOnDevice,
+	TreeSystemUnsupportedOnDevice.ID: TreeSystemUnsupportedOnDevice,
+	NoDriverForCapability.ID:         NoDriverForCapability,
+	ToolMissing.ID:                   ToolMissing,
+	PreferDriverInvalid.ID:           PreferDriverInvalid,
+	FlowLintFailed.ID:                FlowLintFailed,
 }

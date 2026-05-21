@@ -34,13 +34,13 @@ func TestEvidenceStepBackwardCompat(t *testing.T) {
 // fields round-trips through JSON.
 func TestEvidenceStepEmitsNewFields(t *testing.T) {
 	step := EvidenceStep{
-		Name:           "tap-go",
-		File:           "/tmp/2.png",
-		Kind:           "screenshot",
-		CreatedAt:      "2026-05-15T21:00:00Z",
-		TreePath:       "/tmp/trees/step-02_tap-go.json",
-		TreeHash:       "deadbeef",
-		MonotonicMs:    12345,
+		Name:          "tap-go",
+		File:          "/tmp/2.png",
+		Kind:          "screenshot",
+		CreatedAt:     "2026-05-15T21:00:00Z",
+		TreePath:      "/tmp/trees/step-02_tap-go.json",
+		TreeHash:      "deadbeef",
+		MonotonicMs:   12345,
 		VideoOffsetMs: 4500,
 	}
 	out, err := json.Marshal(step)

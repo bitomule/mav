@@ -15,6 +15,7 @@ Commands:
   ui          Inspect and control the current UI.
   capture     Capture the current screen.
   run         Execute a native MAV YAML flow.
+  flow        Lint native MAV YAML flows.
   logs        Read captured run logs.
   stop        Stop run-owned background processes.
   crashes     List crashes for the configured app.
