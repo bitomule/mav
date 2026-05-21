@@ -62,6 +62,7 @@ func (c CLI) networkStart(ctx context.Context, _ GlobalOptions, args []string) e
 
 	spec := drivers.NetworkCaptureSpec{
 		OutPath:    networkHARPath(run, args),
+		LogPath:    filepath.Join(run.Dir, "network.log"),
 		ListenPort: portFlag(args),
 	}
 
@@ -137,6 +138,7 @@ func (c CLI) networkStop(ctx context.Context, _ GlobalOptions, args []string) er
 			"error": err.Error(),
 		}).Write(c.Stdout)
 	}
+	removeProcess(run, pid)
 	return OK("network.stop", map[string]string{
 		"pid": strconv.Itoa(pid),
 		"run": run.ID,

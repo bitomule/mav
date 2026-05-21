@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -46,6 +47,7 @@ type sequenceRecordingRunner struct {
 	err      map[string]CommandResult
 	seq      map[string][]string
 	calls    map[string]int
+	startPID int
 }
 
 func (r *sequenceRecordingRunner) LookPath(file string) (string, error) {
@@ -59,6 +61,29 @@ func (r *sequenceRecordingRunner) Run(ctx context.Context, name string, args ...
 	_ = ctx
 	command := name + " " + strings.Join(args, " ")
 	r.commands = append(r.commands, command)
+	if name == "/usr/bin/avconvert" {
+		var source, out string
+		for i := 0; i < len(args)-1; i++ {
+			switch args[i] {
+			case "-s":
+				source = args[i+1]
+			case "-o":
+				out = args[i+1]
+			}
+		}
+		if out != "" {
+			_ = os.MkdirAll(filepath.Dir(out), 0o755)
+			data := testMovieWithDuration(600, 1200)
+			if source != "" {
+				if sourceData, err := os.ReadFile(source); err == nil {
+					data = sourceData
+				}
+			}
+			_ = os.WriteFile(out, data, 0o644)
+		}
+		return CommandResult{}
+	}
+	writeScreenshotForCommand(name, args)
 	if result, ok := r.err[command]; ok {
 		return result
 	}
@@ -79,9 +104,60 @@ func (r *sequenceRecordingRunner) Run(ctx context.Context, name string, args ...
 func (r *sequenceRecordingRunner) Start(ctx context.Context, logPath string, name string, args ...string) (int, error) {
 	_ = ctx
 	_ = logPath
-	_ = name
-	_ = args
-	return 123, nil
+	r.commands = append(r.commands, name+" "+strings.Join(args, " "))
+	writeStartedArtifact(name, args)
+	if r.startPID == 0 {
+		r.startPID = 123
+	}
+	pid := r.startPID
+	r.startPID++
+	return pid, nil
+}
+
+func writeScreenshotForCommand(name string, args []string) {
+	switch name {
+	case "axe":
+		for i, arg := range args {
+			if arg == "--output" && i+1 < len(args) {
+				_ = writeTestPNG(args[i+1])
+				return
+			}
+		}
+	case "idb":
+		if len(args) >= 2 && args[0] == "screenshot" {
+			_ = writeTestPNG(args[1])
+		}
+	case "xcrun":
+		for i, arg := range args {
+			if arg == "screenshot" && i+1 < len(args) {
+				_ = writeTestPNG(args[i+1])
+				return
+			}
+		}
+	}
+}
+
+func writeStartedArtifact(name string, args []string) {
+	if name == "xcrun" {
+		for i, arg := range args {
+			if arg == "recordVideo" && i+1 < len(args) {
+				_ = os.MkdirAll(filepath.Dir(args[len(args)-1]), 0o755)
+				_ = os.WriteFile(args[len(args)-1], testMovieWithDuration(600, 1200), 0o644)
+				return
+			}
+		}
+	}
+	if name == "mitmdump" {
+		for i, arg := range args {
+			if arg == "--set" && i+1 < len(args) && strings.HasPrefix(args[i+1], "hardump=") {
+				path := strings.TrimPrefix(args[i+1], "hardump=")
+				_ = os.MkdirAll(filepath.Dir(path), 0o755)
+				har := `{"log":{"entries":[{"request":{"url":"https://api.example.com/refresh"},"response":{"status":200}},{"request":{"url":"https://cdn.example.com/image"},"response":{"status":304}}]}}`
+				_ = os.WriteFile(path, []byte(har), 0o644)
+				return
+			}
+		}
+	}
 }
 
 type errorRunner struct {
@@ -1124,6 +1200,146 @@ func TestFlowVideoStartStopAliasesRecordVideo(t *testing.T) {
 	}
 }
 
+func TestFlowNetworkStartStop(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.Tools = map[string]bool{"mitmdump": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewProjectRunState(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	runner := &sequenceRecordingRunner{tools: cfg.Tools}
+	cli := CLI{Runner: runner, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	if _, err := cli.executeFlowStepBound(context.Background(), run, 1, FlowStep{Action: "network.start", Params: map[string]string{"port": "9090"}}, flowExecBindings{}); err != nil {
+		t.Fatalf("network.start: %v", err)
+	}
+	if got := findRunningNetworkPID(run); got != 123 {
+		t.Fatalf("network pid=%d", got)
+	}
+	if _, err := cli.executeFlowStepBound(context.Background(), run, 2, FlowStep{Action: "network.stop"}, flowExecBindings{}); err != nil {
+		t.Fatalf("network.stop: %v", err)
+	}
+	if got := findRunningNetworkPID(run); got != 0 {
+		t.Fatalf("network pid after stop=%d", got)
+	}
+	if !containsCall(runner.commands, "mitmdump --listen-port 9090 --quiet --set hardump="+filepath.Join(run.Dir, "network.har")) {
+		t.Fatalf("commands=%v", runner.commands)
+	}
+	if !containsCall(runner.commands, "kill -TERM 123") {
+		t.Fatalf("commands=%v", runner.commands)
+	}
+}
+
+func TestRunFlowRecordsVideoNetworkEvidenceAndReportWithMockedDrivers(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.app"
+	cfg.SimulatorUDID = "SIM"
+	cfg.Tools = map[string]bool{"xcrun": true, "axe": true, "mitmdump": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	flowPath := filepath.Join(root, "flow.yaml")
+	if err := os.WriteFile(flowPath, []byte(`
+name: evidence_network_e2e
+steps:
+  - evidence.start: { network: true, port: 9092 }
+  - evidence.step: { name: before-refresh, note: Before triggering refresh }
+  - network.status: {}
+  - evidence.stop: { note: Refresh completed }
+  - report: {}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := &sequenceRecordingRunner{
+		tools: cfg.Tools,
+		out: map[string]string{
+			"axe describe-ui --udid SIM": `[{"AXUniqueId":"HomeView","AXRole":"Application"}]`,
+		},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"run", flowPath}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "ok cmd=run") {
+		t.Fatalf("run output=%q", out.String())
+	}
+	run, err := LoadRun(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reportPath := filepath.Join(run.Dir, "report.json")
+	data, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report ReportData
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatalf("invalid report: %v\n%s", err, data)
+	}
+	if report.VideoStatus != "accepted" || report.VideoMP4 == "" {
+		t.Fatalf("video status=%s mp4=%q report=%s", report.VideoStatus, report.VideoMP4, data)
+	}
+	if !report.Network.OK || report.Network.Requests != 2 || report.Network.UniqueDomains != 2 {
+		t.Fatalf("network=%+v report=%s", report.Network, data)
+	}
+	if report.ValidStepCount < 2 {
+		t.Fatalf("expected named + final evidence steps, got valid=%d data=%s", report.ValidStepCount, data)
+	}
+	for _, want := range []string{
+		"xcrun simctl io SIM recordVideo",
+		"mitmdump --listen-port 9092 --quiet --set hardump=" + filepath.Join(run.Dir, "network.har"),
+		"axe screenshot --output",
+		"kill -TERM 124",
+		"/usr/bin/avconvert",
+	} {
+		if !containsCall(runner.commands, want) {
+			t.Fatalf("missing %q in commands=%v", want, runner.commands)
+		}
+	}
+	if got := findRunningNetworkPID(run); got != 0 {
+		t.Fatalf("network pid after flow=%d records=%+v", got, loadProcessRecords(run))
+	}
+}
+
+func TestEvidenceStartWithNetworkStartsHARCapture(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.app"
+	cfg.SimulatorUDID = "SIM"
+	cfg.Tools = map[string]bool{"xcrun": true, "mitmdump": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewProjectRunState(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	runner := &sequenceRecordingRunner{tools: cfg.Tools}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.evidenceStart(context.Background(), GlobalOptions{}, []string{"--run", run.ID, "--network", "--port", "9091"}); err != nil {
+		t.Fatalf("evidence.start: %v", err)
+	}
+	if got := findRunningNetworkPID(run); got != 124 {
+		t.Fatalf("network pid=%d out=%q records=%+v commands=%v", got, out.String(), loadProcessRecords(run), runner.commands)
+	}
+	if !containsCall(runner.commands, "mitmdump ") {
+		t.Fatalf("commands=%v", runner.commands)
+	}
+}
+
 func TestFlowWhenExecutesDoBlockWhenVisible(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
@@ -1459,6 +1675,34 @@ func TestHideKeyboardOnDeviceFailsWithStructuredError(t *testing.T) {
 	}
 }
 
+func TestEraseAndHideKeyboardUseBaguetteOnSimulator(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.Tools = map[string]bool{"baguette": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runner := &sequenceRecordingRunner{tools: cfg.Tools}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "erase", "--focused"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.Run(context.Background(), []string{"ui", "hideKeyboard"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "ok cmd=ui.erase") || !strings.Contains(out.String(), "ok cmd=ui.hideKeyboard") {
+		t.Fatalf("output=%q", out.String())
+	}
+	if !containsCall(runner.commands, "baguette key --udid SIM --code Backspace") {
+		t.Fatalf("commands=%v", runner.commands)
+	}
+	if !containsCall(runner.commands, "baguette key --udid SIM --code Escape") {
+		t.Fatalf("commands=%v", runner.commands)
+	}
+}
+
 func TestPinchOnDeviceFailsWithStructuredError(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
@@ -1493,6 +1737,33 @@ func TestUITreeIncludeSystemOnDeviceFailsWithStructuredError(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "fail code=tree_system_unsupported_on_device") {
 		t.Fatalf("got %q", out.String())
+	}
+}
+
+func TestUITreeIncludeSystemUsesBaguetteOnSimulator(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.Tools = map[string]bool{"baguette": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runner := &sequenceRecordingRunner{
+		tools: cfg.Tools,
+		out: map[string]string{
+			"baguette describe-ui --udid SIM": `[{"AXUniqueId":"SpringBoard","AXRole":"Application"}]`,
+		},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"--raw", "ui", "tree", "--include-system"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "SpringBoard") {
+		t.Fatalf("output=%q", out.String())
+	}
+	if !containsCall(runner.commands, "baguette describe-ui --udid SIM") {
+		t.Fatalf("commands=%v", runner.commands)
 	}
 }
 

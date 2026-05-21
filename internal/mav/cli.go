@@ -254,6 +254,7 @@ Global flags:
 	case "evidence":
 		return `Usage:
   mav evidence start [--run RUN_ID]
+  mav evidence start --network [--port PORT] [--run RUN_ID]
   mav evidence step --name NAME [--note NOTE] [--run RUN_ID]
   mav evidence stop [--note NOTE] [--no-capture] [--run RUN_ID]
   mav evidence report [--run RUN_ID]
@@ -2148,6 +2149,14 @@ func (c CLI) executeFlowStepBoundWithOptions(ctx context.Context, opts GlobalOpt
 		}
 		return c.executeWhileNotVisibleFlowStepBoundWithOptions(ctx, opts, run, index, prepared, bindings)
 	}
+	if step.Action == "evidence.start" && flowBoolParam(step.Params, "network") {
+		args := []string{"--run", run.ID, "--network"}
+		if port := step.Params["port"]; port != "" {
+			args = append(args, "--port", port)
+		}
+		err := c.withStdout(io.Discard).evidenceStart(ctx, GlobalOptions{}, args)
+		return map[string]string{"run": run.ID, "network": "true"}, outputErr(err, "evidence_start_failed")
+	}
 	prepared, err := substituteExecBindingsInStep(step, bindings)
 	if err != nil {
 		return nil, err
@@ -2276,7 +2285,14 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 		err := c.withStdout(io.Discard).capture(ctx, GlobalOptions{}, []string{"--run", run.ID})
 		return map[string]string{"run": run.ID}, outputErr(err, "capture_failed")
 	case "evidence.start":
-		err := c.withStdout(io.Discard).evidenceStart(ctx, GlobalOptions{}, []string{"--run", run.ID})
+		args := []string{"--run", run.ID}
+		if flowBoolParam(step.Params, "network") {
+			args = append(args, "--network")
+		}
+		if port := step.Params["port"]; port != "" {
+			args = append(args, "--port", port)
+		}
+		err := c.withStdout(io.Discard).evidenceStart(ctx, GlobalOptions{}, args)
 		return map[string]string{"run": run.ID}, outputErr(err, "evidence_start_failed")
 	case "video.start":
 		err := c.withStdout(io.Discard).evidenceStart(ctx, GlobalOptions{}, []string{"--run", run.ID})
@@ -2301,6 +2317,19 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 		}
 		err := c.withStdout(io.Discard).evidenceStop(ctx, GlobalOptions{}, args)
 		return map[string]string{"run": run.ID}, outputErr(err, "video_stop_failed")
+	case "network.start":
+		args := flowArgs(step.Params, "--har", "har", "--port", "port")
+		args = append(args, "--run", run.ID)
+		err := c.withStdout(io.Discard).networkStart(ctx, GlobalOptions{}, args)
+		return copyParams(step.Params), outputErr(err, "network_start_failed")
+	case "network.stop":
+		err := c.withStdout(io.Discard).networkStop(ctx, GlobalOptions{}, []string{"--run", run.ID})
+		return map[string]string{"run": run.ID}, outputErr(err, "network_stop_failed")
+	case "network.status":
+		args := flowArgs(step.Params, "--har", "har")
+		args = append(args, "--run", run.ID)
+		err := c.withStdout(io.Discard).networkStatus(GlobalOptions{}, args)
+		return copyParams(step.Params), outputErr(err, "network_status_failed")
 	case "logs":
 		args := flowArgs(step.Params, "--contains", "contains", "--key", "key", "--level", "level")
 		args = append(args, "--run", run.ID)
@@ -3259,6 +3288,14 @@ func (c CLI) evidenceReport(opts GlobalOptions, args []string) error {
 			fields["video_issue"] = validation.Issue
 		}
 	}
+	if network := reportNetwork(run); network.HAR != "" {
+		fields["network"] = network.HAR
+		fields["network_requests"] = strconv.Itoa(network.Requests)
+		fields["network_responses"] = strconv.Itoa(network.Responses)
+		if network.Issue != "" {
+			fields["network_issue"] = network.Issue
+		}
+	}
 	fields["next"] = "author " + filepath.Join(run.Dir, "report.html") + " from report.json; the JSON manifest is not the deliverable"
 	return OK("evidence.report", fields).Write(c.Stdout)
 }
@@ -3291,7 +3328,26 @@ func (c CLI) evidenceStart(ctx context.Context, opts GlobalOptions, args []strin
 	// the offset calibration, not the recording.
 	_ = os.WriteFile(filepath.Join(run.Dir, "video.start.ms"), []byte(strconv.FormatInt(time.Now().UnixMilli(), 10)+"\n"), 0o644)
 	appendCommand(run, "mav evidence start", CommandResult{})
-	return OK("evidence.start", map[string]string{"run": run.ID, "file": path, "pid": strconv.Itoa(pid)}).Write(c.Stdout)
+	fields := map[string]string{"run": run.ID, "file": path, "pid": strconv.Itoa(pid)}
+	if hasFlag(args, "--network") {
+		var out bytes.Buffer
+		networkArgs := []string{"--run", run.ID}
+		if port := flagValue(args, "--port"); port != "" {
+			networkArgs = append(networkArgs, "--port", port)
+		}
+		if err := commandOutputErr(c.withStdout(&out).networkStart(ctx, GlobalOptions{}, networkArgs), out.String(), "network_start_failed"); err != nil {
+			_ = stopProcess(pid)
+			_ = os.Remove(filepath.Join(run.Dir, "video.pid"))
+			removeProcess(run, pid)
+			return Fail("evidence_network_start_failed", map[string]string{
+				"run":   run.ID,
+				"video": path,
+				"error": firstLine(out.String()),
+			}).Write(c.Stdout)
+		}
+		fields["network"] = filepath.Join(run.Dir, "network.har")
+	}
+	return OK("evidence.start", fields).Write(c.Stdout)
 }
 
 func (c CLI) evidenceStep(ctx context.Context, opts GlobalOptions, args []string) error {
@@ -3371,6 +3427,14 @@ func (c CLI) evidenceStop(ctx context.Context, opts GlobalOptions, args []string
 		fields["video_mp4"] = mp4
 	} else {
 		fields["video_mp4_warn"] = err.Error()
+	}
+	if findRunningNetworkPID(run) > 0 {
+		var out bytes.Buffer
+		if err := c.withStdout(&out).networkStop(ctx, GlobalOptions{}, []string{"--run", run.ID}); err == nil {
+			fields["network"] = filepath.Join(run.Dir, "network.har")
+		} else {
+			fields["network_warn"] = firstLine(out.String())
+		}
 	}
 	if !hasFlag(args, "--no-capture") {
 		cfg, cfgErr := LoadConfig(c.Root)

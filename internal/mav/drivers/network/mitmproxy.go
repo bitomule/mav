@@ -92,11 +92,7 @@ func (d *MitmproxyDriver) NetworkStart(ctx context.Context, target drivers.Targe
 		"--quiet",
 		"--set", "hardump=" + spec.OutPath,
 	}
-	// Start with no log file: mitmdump writes its own status to stdout and
-	// the HAR addon writes the capture file. The Executor's Start helper
-	// already streams its output to a log path -- pass empty so it routes
-	// through the standard run-state log.
-	pid, err := d.exec.Start(ctx, "", "mitmdump", args...)
+	pid, err := d.exec.Start(ctx, spec.LogPath, "mitmdump", args...)
 	if err != nil {
 		return drivers.NetworkCaptureResult{}, fmt.Errorf("mitmproxy: start: %w", err)
 	}

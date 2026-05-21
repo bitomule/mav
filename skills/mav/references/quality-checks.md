@@ -10,6 +10,8 @@ Run these checks before sharing a report.
   explanatory copy.
 - The accepted video or strongest valid screenshot has `Open`, `Download`, and
   `Copy path` controls.
+- Accepted video has a visible `Download video` button wired to `video_mp4`
+  when present, or `video` otherwise.
 - Each named capture has direct open/download access.
 - Logs and commands have copy buttons.
 - Accepted video is embedded only when `video_status` is `accepted`.
@@ -17,6 +19,8 @@ Run these checks before sharing a report.
 - Every named screenshot has a claim sentence, not just a filename.
 - Every rejected artifact remains visible as rejected, with the manifest issue.
 - Crash status is stated.
+- If `network` exists in `report.json`, network status is stated with HAR
+  open/download/copy-path controls and request/response/error/domain counts.
 - Command trail and log tail are present or explicitly empty.
 
 ## Accuracy
@@ -26,6 +30,9 @@ Run these checks before sharing a report.
 - The report never upgrades `needs review` or `blocked` evidence to `verified`.
 - Screenshots marked accepted in the HTML have `image.ok=true` in the manifest.
 - Video duration/frame facts match the manifest.
+- Network facts in the HTML match `network.requests`, `network.responses`,
+  `network.status_4xx`, `network.status_5xx`, `network.unique_domains`,
+  `network.active`, and `network.issue`.
 
 ## Visual Quality
 

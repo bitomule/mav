@@ -133,6 +133,7 @@ type InstallSpec struct {
 // NetworkCaptureSpec configures a HAR-style traffic capture.
 type NetworkCaptureSpec struct {
 	OutPath    string // .har destination
+	LogPath    string // optional process log destination
 	ListenPort int    // sim only; 0 = pick free
 }
 

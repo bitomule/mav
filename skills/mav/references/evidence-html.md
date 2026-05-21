@@ -13,6 +13,9 @@ The manifest is authoritative. Read it first and extract:
 - `video_status`, `video`, `video_mp4`, `video_duration`, `video_frames`,
   `video_issue`
 - `valid_step_count`, `invalid_step_count`, `steps[*].image`
+- `network.har`, `network.ok`, `network.issue`, `network.requests`,
+  `network.responses`, `network.status_4xx`, `network.status_5xx`,
+  `network.unique_domains`, `network.active`
 - `issues[*]`
 - `crashes[*]`
 - `commands[*]`
@@ -30,7 +33,8 @@ The report must answer these questions in the page itself:
 4. Which screenshots support the claim, and what does each one prove?
 5. Which artifacts failed validation?
 6. Were crashes captured?
-7. Which commands and logs support the run?
+7. Was network traffic captured, and what does the HAR prove?
+8. Which commands and logs support the run?
 
 Do not write a generic gallery. Every screenshot caption should state an
 assertion. If the manifest note is weak, write the weakness explicitly.
@@ -45,7 +49,7 @@ Use this order unless the evidence shape demands a better one:
    video and every named capture.
 3. Verdict: one-sentence finding next to the evidence, not above it.
 4. Metrics: video status, screenshot accepted/rejected counts, crash count,
-   command count.
+   network request count when present, command count.
 5. Capture strip: compact list of captures with thumbnails and direct actions.
 6. What this proves: short explanation of the behavior and evidence chain.
 7. Integrity checks: blockers and warnings from `issues`.
@@ -53,9 +57,11 @@ Use this order unless the evidence shape demands a better one:
    clear rejection/missing state.
 9. Named evidence timeline: before/action/after captures with large images and
    per-step validation facts.
-10. Crash evidence.
-11. Command trail with copy button.
-12. Log tail with copy button.
+10. Network evidence: HAR link plus request/response/status/domain facts, or a
+    clear missing/rejected state when network capture was expected.
+11. Crash evidence.
+12. Command trail with copy button.
+13. Log tail with copy button.
 
 For 4+ sections, add a section nav. Keep technical audit sections compact;
 the hero, video, and timeline are the visual core.
@@ -66,6 +72,9 @@ the hero, video, and timeline are the visual core.
   Prefer `video_mp4` for the source when it is present; `video` remains the
   original recording path and may be a QuickTime `.mov` that Chromium browsers
   cannot play inline.
+- Accepted video must have a visible `Download video` button in the primary
+  evidence actions. Prefer downloading `video_mp4`; fall back to `video` when no
+  MP4 exists.
 - Accepted video should be the visual center of the page. Avoid burying it
   below overview copy.
 - Invalid video: do not embed as proof. You may link/show the file for
@@ -78,6 +87,23 @@ the hero, video, and timeline are the visual core.
 - Every important artifact should have at least one direct action:
   `Open`, `Download`, or `Copy path`. Logs and command trails should have
   `Copy logs` / `Copy commands` buttons.
+
+## Network Rules
+
+- If `network.har` is present and `network.ok=true`, include a Network Evidence
+  section with request count, response count, 4xx count, 5xx count, unique
+  domain count, and a direct link to the HAR file.
+- If `network.active=true`, say the capture was still active when the report
+  was generated; this is a warning even if the HAR parses.
+- If `network.issue` is present, surface it in the integrity section and the
+  network section. Do not present an empty or unparsable HAR as successful
+  network evidence.
+- If no `network` object is present, omit the network section unless the flow or
+  behavior under test is explicitly about traffic. In that case, state that no
+  network capture was included.
+- Treat the HAR summary as proof that traffic happened, not proof that payload
+  contents were inspected. Only claim exact request semantics when the HAR file
+  was separately inspected.
 
 ## Completion Criteria
 

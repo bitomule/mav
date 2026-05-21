@@ -26,12 +26,9 @@
 // when zero the driver falls back to a sane default and logs a warning.
 //
 // What baguette does NOT do (and what we therefore advertise/SUPPORT here):
-//   - No `hide-keyboard` / `erase`: emulated with key=Backspace presses or
-//     left to the caller as "tap outside the keyboard".
 //   - No W3C Actions: baguette has a `input` streaming JSON protocol instead;
 //     not exposed in this driver yet (router does not request CapW3CActions
 //     against baguette).
-//   - No system-UI tree: describe-ui targets the focused app only.
 //
 // The driver therefore advertises a deliberately narrower capability set than
 // the original plan suggested. The Provides() list below is the truth.
@@ -82,6 +79,9 @@ func (d *Driver) Provides(target drivers.Target) drivers.CapabilitySet {
 		drivers.CapTwoFingerPan,
 		drivers.CapHardwareBtn,
 		drivers.CapScreenshot,
+		drivers.CapTreeSystem,
+		drivers.CapErase,
+		drivers.CapHideKeyboard,
 	)
 }
 
@@ -90,7 +90,7 @@ func (d *Driver) Provides(target drivers.Target) drivers.CapabilitySet {
 // flagged higher than AXe so AXe still wins those when both are healthy.
 func (d *Driver) Cost(c drivers.Capability, _ drivers.Target) int {
 	switch c {
-	case drivers.CapPinch, drivers.CapTwoFingerPan, drivers.CapHardwareBtn:
+	case drivers.CapPinch, drivers.CapTwoFingerPan, drivers.CapHardwareBtn, drivers.CapTreeSystem, drivers.CapErase, drivers.CapHideKeyboard:
 		return 0
 	case drivers.CapType, drivers.CapCoordTap, drivers.CapSwipe, drivers.CapTap, drivers.CapScreenshot:
 		return 50
@@ -261,21 +261,33 @@ func (d *Driver) Type(ctx context.Context, target drivers.Target, spec drivers.T
 	return d.runOK(ctx, "type", args)
 }
 
-// Erase has no direct baguette command. CapErase is excluded from Provides()
-// so this is unreachable via the router; left here to satisfy the interface.
-func (d *Driver) Erase(_ context.Context, _ drivers.Target, _ drivers.TextSpec) error {
-	return fmt.Errorf("baguette: erase not exposed; tap the field's clear button or send key=Backspace repeatedly")
+// Erase clears the focused field by sending repeated Backspace key presses.
+// If callers pass Text, use its length as a lower bound; otherwise send a
+// conservative fixed count. Baguette does not currently offer semantic field
+// targeting, so non-focused selectors are intentionally ignored by this shim.
+func (d *Driver) Erase(ctx context.Context, target drivers.Target, spec drivers.TextSpec) error {
+	count := len([]rune(spec.Text))
+	if count < 32 {
+		count = 32
+	}
+	for i := 0; i < count; i++ {
+		args := []string{"key", "--udid", target.UDID, "--code", "Backspace"}
+		if err := d.runOK(ctx, "key", args); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-// HideKeyboard same as Erase: no direct command.
-func (d *Driver) HideKeyboard(_ context.Context, _ drivers.Target) error {
-	return fmt.Errorf("baguette: hide-keyboard not exposed; tap outside the keyboard area")
+// HideKeyboard sends Escape through the simulator keyboard, which dismisses
+// the software keyboard for standard UIKit/SwiftUI text inputs.
+func (d *Driver) HideKeyboard(ctx context.Context, target drivers.Target) error {
+	args := []string{"key", "--udid", target.UDID, "--code", "Escape"}
+	return d.runOK(ctx, "key", args)
 }
 
-// Tree returns the focused app's accessibility description. baguette's
-// describe-ui targets the foreground app only -- it does NOT include
-// SpringBoard. CapTreeSystem is excluded from Provides() above so the router
-// never asks baguette for system trees.
+// Tree returns baguette's accessibility description. Callers use this path for
+// simulator system/SpringBoard inspection because AXe is app-focused.
 func (d *Driver) Tree(ctx context.Context, target drivers.Target, _ drivers.TreeSpec) (drivers.TreeResult, error) {
 	res := d.exec.Run(ctx, "baguette", "describe-ui", "--udid", target.UDID)
 	if res.Err != nil {

@@ -150,7 +150,8 @@ Use evidence when the user needs proof of verification:
    and `settings-after-toggle`.
 4. `mav evidence report` writes a verified evidence manifest at
    `<run-dir>/report.json`. MAV owns the facts: video duration/frames,
-   screenshot decodability, issue severity, crashes, commands, and log tail.
+   screenshot decodability, network HAR status/counts, issue severity,
+   crashes, commands, and log tail.
    Current project runs normally live under `.mav/runs/<run-id>/`; legacy or
    ad-hoc runs may live under `/tmp/mav/<run-id>/`. Use the paths printed by
    MAV instead of guessing.
@@ -173,9 +174,13 @@ Use evidence when the user needs proof of verification:
    `[MAV evidence report](/path/to/repo/.mav/runs/<run-id>/report.html)` and
    `[evidence data](/path/to/repo/.mav/runs/<run-id>/report.json)`. Embed the
    MP4 video when `video_status=accepted` and `video_mp4` is present; otherwise
-   fall back to `video` only when the browser can play it. If the manifest
-   reports `video_status=missing` or `invalid`, say that video evidence was not
-   accepted. Embed key captures when they are relevant, for example
+   fall back to `video` only when the browser can play it. The HTML must include
+   a visible video download button whenever `video_status=accepted`; if
+   `video_mp4` exists, download that browser-friendly file, otherwise download
+   `video`. If the manifest reports `video_status=missing` or `invalid`, say
+   that video evidence was not accepted. If the manifest includes `network.har`, link it directly and
+   include the manifest's request, response, error-status, domain, active, and
+   issue fields in the HTML. Embed key captures when they are relevant, for example
    `[video](/path/to/repo/.mav/runs/<run-id>/video.mov)` and
    `[after-toggle](/path/to/repo/.mav/runs/<run-id>/steps/02_after-toggle.png)`.
 
@@ -197,12 +202,13 @@ it exists.
   health, and full-width video/image sections for the primary proof.
 - Use the CLI manifest as the source of truth. Do not hand-wave around manifest
   blockers: invalid video, zero/too-short duration, low frame count, missing
-  screenshots, undecodable images, and missing assertion notes must be surfaced
-  in the report and in the final answer.
+  screenshots, undecodable images, missing assertion notes, active network
+  captures, empty HAR files, or HAR parse failures must be surfaced in the
+  report and in the final answer.
 - The HTML should start with evidence, not prose: a large accepted video or
   strongest valid screenshot must dominate the first viewport. Put verdict,
-  video status, valid/invalid step counts, crash count, and command count next
-  to that evidence.
+  video status, valid/invalid step counts, network request count when present,
+  crash count, and command count next to that evidence.
 - Every evidence step needs a human explanation. The note should state the
   observed claim, not merely repeat the file name. Weak notes such as "after"
   or "screen" should be treated as low-quality evidence and clarified in the
@@ -220,8 +226,11 @@ it exists.
   visual hierarchy, write the explanatory text, and place video/images where
   they carry the claim.
 - Reports are evidence workspaces. Include direct `Open`, `Download`, and
-  `Copy path` affordances for the primary video and named captures. Include
-  `Copy logs` and `Copy commands` controls for audit sections.
+  `Copy path` affordances for the primary video and named captures. The primary
+  video download button is mandatory whenever the manifest has accepted video.
+  Include direct `Open`, `Download`, and `Copy path` affordances for
+  `network.har` when present. Include `Copy logs` and `Copy commands` controls
+  for audit sections.
 - Prefer a before/action/after sequence. If a behavior is visual, pair the
   screenshots with a wait or `changedFrom` assertion so the report explains why
   the captured state is meaningful.

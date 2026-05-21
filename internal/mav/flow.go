@@ -65,8 +65,11 @@ type flowStepPayload struct {
 	Rotate       string          `yaml:"rotate"`
 	Degrees      string          `yaml:"degrees"`
 	File         string          `yaml:"file"`
+	HAR          string          `yaml:"har"`
+	Port         string          `yaml:"port"`
 	PreferDriver string          `yaml:"prefer-driver"`
 	ClearState   bool            `yaml:"clearState"`
+	Network      bool            `yaml:"network"`
 	Focused      string          `yaml:"focused"`
 	Optional     bool            `yaml:"optional"`
 	Any          []FlowCondition `yaml:"any"`
@@ -198,12 +201,17 @@ func parseFlowStepNode(node yaml.Node) (FlowStep, error) {
 	put("rotate", payload.Rotate)
 	put("degrees", payload.Degrees)
 	put("file", payload.File)
+	put("har", payload.HAR)
+	put("port", payload.Port)
 	put("prefer-driver", payload.PreferDriver)
 	if payload.ClearState || mappingBoolValue(node.Content[1], "clear-state") {
 		params["clearState"] = "true"
 	}
 	if payload.Optional {
 		params["optional"] = "true"
+	}
+	if payload.Network {
+		params["network"] = "true"
 	}
 	put("focused", payload.Focused)
 	return FlowStep{Action: action, Params: params, Any: payload.Any}, nil
@@ -432,6 +440,7 @@ func isSupportedFlowAction(action string) bool {
 	case "open", "when", "whileNotVisible", "go", "tree", "tap", "type", "erase", "hideKeyboard", "swipe", "longPress", "pinch", "rotate", "twoFingerPan", "actions",
 		"delay", "sleep", "wait", "assert", "waitUntil", "scrollUntil", "capture",
 		"evidence.start", "video.start", "evidence.step", "evidence.stop", "video.stop",
+		"network.start", "network.stop", "network.status",
 		"logs", "exec", "crashes", "report":
 		return true
 	default:
@@ -532,4 +541,17 @@ func parseFlowDuration(value string, fallback time.Duration) time.Duration {
 		return time.Duration(ms) * time.Millisecond
 	}
 	return fallback
+}
+
+func flowBoolParam(params map[string]string, key string) bool {
+	value, ok := params[key]
+	if !ok {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "true", "1", "yes", "y":
+		return true
+	default:
+		return false
+	}
 }
