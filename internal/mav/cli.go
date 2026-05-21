@@ -59,10 +59,7 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 		return c.help(opts, topic)
 	}
 	if opts.Help {
-		if rest[0] == "ui" && len(rest) > 1 {
-			return c.help(opts, "ui "+rest[1])
-		}
-		return c.help(opts, rest[0])
+		return c.help(opts, strings.Join(rest, " "))
 	}
 	switch rest[0] {
 	case "doctor":
@@ -110,7 +107,7 @@ func parseGlobal(args []string) (GlobalOptions, []string) {
 			opts.Verbose = true
 		case "--raw":
 			opts.Raw = true
-		case "--help", "-h":
+		case "--help", "-h", "-help":
 			opts.Help = true
 		case "--prefer-driver":
 			if i+1 < len(args) {
@@ -149,6 +146,7 @@ func (c CLI) help(opts GlobalOptions, topic string) error {
 }
 
 func helpText(topic string) string {
+	topic = normalizeHelpTopic(topic)
 	switch topic {
 	case "", "mav":
 		return `mav - Mobile Agent Verifier for iOS apps
@@ -180,7 +178,8 @@ Global flags:
   --verbose   Print extra debug details where supported.
   --prefer-driver auto|axe
               Prefer a UI driver for semantic tree/tap commands.
-  --help,-h   Show help.
+  --help,-h,-help
+              Show help.
 `
 	case "setup":
 		return "Usage:\n  mav setup [--non-interactive]\n  mav setup --install axe idb baguette\n"
@@ -193,11 +192,31 @@ Global flags:
   mav sim select --udid <simulator-udid> [--force]
   mav sim boot
 `
+	case "sim list":
+		return "Usage: mav sim list\n\nLists available iOS simulators.\n"
+	case "sim select":
+		return `Usage:
+  mav sim select --device "iPhone 17 Pro Max" --ios 26 [--locale es_ES] [--language es] [--force]
+  mav sim select --udid <simulator-udid> [--force]
+
+Selects the active simulator in .mav/config.yaml. --force ignores a fresh MAV simulator lock when you know the run is yours.
+`
+	case "sim boot":
+		return "Usage: mav sim boot\n\nBoots the selected simulator.\n"
 	case "device":
 		return `Usage:
   mav device list
   mav device select --udid <device-udid>
   mav device select --name <device-name>
+`
+	case "device list":
+		return "Usage: mav device list\n\nLists connected physical iOS devices.\n"
+	case "device select":
+		return `Usage:
+  mav device select --udid <device-udid>
+  mav device select --name <device-name>
+
+Selects a physical iOS device and switches target_kind to device.
 `
 	case "open":
 		return `Usage:
@@ -231,6 +250,21 @@ Global flags:
 		return "Usage: mav capture [--name NAME] [--run RUN_ID]\n"
 	case "ui tree":
 		return "Usage: mav ui tree [--prefer-driver auto|axe] [--include-system] [--agent] [--with-frame]\n\nPrints compact screen metadata followed by bounded node lines with id, label, role, value, enabled, subrole, title, pid, focused, and frame when available. --include-system asks the system/SpringBoard tree via baguette when a system service, permission prompt, or cross-app view is in front. Simulator only.\n\n--agent emits a ranked 40-element view that puts focused + actionable elements first and drops frame to save tokens. Combine with --with-frame to keep coordinates.\n"
+	case "ui tap":
+		return `Usage:
+  mav ui tap --id ID [--prefer-driver auto|axe]
+  mav ui tap --x X --y Y
+  mav ui tap --text TEXT [--prefer-driver auto|axe]
+  mav ui tap --value VALUE
+
+Prefer accessibility ids. Use coordinates only when the tree is insufficient and a screenshot makes the target unambiguous.
+`
+	case "ui type":
+		return "Usage: mav ui type TEXT [--prefer-driver auto|axe]\n"
+	case "ui erase":
+		return "Usage: mav ui erase [--id ID | --text TEXT | --value VALUE | --focused true]\n\nSimulator-backed through baguette. Physical devices return erase_unsupported_on_device.\n"
+	case "ui hideKeyboard":
+		return "Usage: mav ui hideKeyboard\n\nSimulator-backed through baguette. Physical devices return hide_keyboard_unsupported_on_device.\n"
 	case "ui swipe":
 		return "Usage: mav ui swipe [--direction up|down|left|right] [--start-x X --start-y Y --end-x X --end-y Y]\n"
 	case "ui pinch":
@@ -241,10 +275,22 @@ Global flags:
 		return "Usage: mav ui twoFingerPan --x X --y Y --pan-x DX --pan-y DY [--distance D] [--angle DEG] [--duration 800ms] [--hold DURATION]\n"
 	case "ui longPress":
 		return "Usage: mav ui longPress --x X --y Y [--duration 800ms]\n"
+	case "ui actions":
+		return "Usage: mav ui actions --file actions.json\n"
+	case "ui wait":
+		return `Usage:
+  mav ui wait --id ID [--timeout 5s]
+  mav ui wait --text TEXT [--timeout 5s]
+  mav ui wait --value VALUE [--timeout 5s]
+`
+	case "ui scrollUntil":
+		return "Usage: mav ui scrollUntil --id ID [--direction up] [--max-swipes 5]\n"
 	case "run":
 		return "Usage: mav run flow.yaml\n"
 	case "flow":
 		return "Usage:\n  mav flow lint flow.yaml [--raw]\n"
+	case "flow lint":
+		return "Usage: mav flow lint flow.yaml [--raw]\n\nParses and validates a native MAV YAML flow without running it.\n"
 	case "logs":
 		return "Usage: mav logs [--run RUN_ID] [--key KEY] [--contains TEXT] [--level LEVEL] [--raw]\n"
 	case "stop":
@@ -259,6 +305,14 @@ Global flags:
   mav evidence stop [--note NOTE] [--no-capture] [--run RUN_ID]
   mav evidence report [--run RUN_ID]
 `
+	case "evidence start":
+		return "Usage: mav evidence start [--network] [--port PORT] [--run RUN_ID]\n"
+	case "evidence step":
+		return "Usage: mav evidence step --name NAME [--note NOTE] [--run RUN_ID]\n"
+	case "evidence stop":
+		return "Usage: mav evidence stop [--note NOTE] [--no-capture] [--run RUN_ID]\n"
+	case "evidence report":
+		return "Usage: mav evidence report [--run RUN_ID]\n\nWrites the verified evidence manifest for the run.\n"
 	case "network":
 		return `Usage:
   mav network start [--har PATH] [--port PORT] [--run RUN_ID]
@@ -273,9 +327,39 @@ mitmdump process is recorded in processes.jsonl so other commands
 Simulator only. On physical devices, point the device at an externally-
 running proxy manually; mav does not bundle that flow.
 `
+	case "network start":
+		return "Usage: mav network start [--har PATH] [--port PORT] [--run RUN_ID]\n\nStarts a simulator HAR capture through mitmproxy.\n"
+	case "network stop":
+		return "Usage: mav network stop [--run RUN_ID]\n\nStops the current HAR capture and summarizes the file.\n"
+	case "network status":
+		return "Usage: mav network status [--har PATH] [--run RUN_ID] [--raw]\n"
 	default:
 		return "Unknown help topic. Run: mav help\n"
 	}
+}
+
+func normalizeHelpTopic(topic string) string {
+	topic = strings.Join(strings.Fields(topic), " ")
+	aliases := map[string]string{
+		"tree":         "ui tree",
+		"tap":          "ui tap",
+		"type":         "ui type",
+		"erase":        "ui erase",
+		"hideKeyboard": "ui hideKeyboard",
+		"swipe":        "ui swipe",
+		"longPress":    "ui longPress",
+		"pinch":        "ui pinch",
+		"rotate":       "ui rotate",
+		"twoFingerPan": "ui twoFingerPan",
+		"wait":         "ui wait",
+		"scrollUntil":  "ui scrollUntil",
+		"actions":      "ui actions",
+		"screenshot":   "capture",
+	}
+	if alias, ok := aliases[topic]; ok {
+		return alias
+	}
+	return topic
 }
 
 func (c CLI) doctor(ctx context.Context, opts GlobalOptions) error {

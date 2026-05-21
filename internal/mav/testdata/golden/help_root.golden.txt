@@ -27,4 +27,5 @@ Global flags:
   --verbose   Print extra debug details where supported.
   --prefer-driver auto|axe
               Prefer a UI driver for semantic tree/tap commands.
-  --help,-h   Show help.
+  --help,-h,-help
+              Show help.

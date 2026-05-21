@@ -11,7 +11,7 @@
 The iOS control plane for AI coding agents: one command surface, native drivers underneath, and evidence your agent can hand back to a human.
 
 <p align="center">
-  <img src="assets/hero.png" alt="A split screen showing an iOS simulator on the left and a terminal on the right running mav tap, mav axtree, and mav screenshot, with compact agent-readable output" width="820">
+  <img src="assets/hero.png" alt="A split screen showing an iOS simulator on the left and a terminal on the right running mav ui tap, mav ui tree, and mav capture, with compact agent-readable output" width="820">
 </p>
 
 Mobile Agent Verifier (`mav`) is the interface between an agent and iOS. The
@@ -85,7 +85,10 @@ Detox is the right answer if you are shipping React Native and want gray-box tes
   <img src="assets/loop.png" alt="The mav loop: agent decides next action, mav executes a deterministic command, agent reads the compact output, loops" width="720">
 </p>
 
-Each call is one verb. The agent picks the next verb based on the previous output. The full vocabulary lives below in the Command Reference, but the four verbs that cover most flows are `tap`, `tree` (accessibility tree), `screenshot`, and `logs`.
+Each call is one verb. The agent picks the next verb based on the previous
+output. The commands that cover most flows are `mav ui tree`, `mav ui tap`,
+`mav capture`, and `mav logs`. Use `mav -help` and nested help such as
+`mav ui tap -help` or `mav evidence report -help` for the full command surface.
 
 ## Used at
 
@@ -259,28 +262,15 @@ mav --raw ui tree
 ## Help
 
 ```bash
-mav help
-mav help ui
+mav -help
 mav ui --help
+mav ui tap -help
+mav flow lint -help
+mav evidence report -help
 ```
 
-The top-level commands are:
-
-```text
-doctor
-setup
-install-skills
-sim
-open
-ui
-capture
-run
-logs
-network
-stop
-crashes
-evidence
-```
+Help is intentionally hierarchical. The README explains the workflow; the CLI
+owns the current command reference.
 
 ## Output Contract
 
@@ -309,10 +299,6 @@ Project state:
 
 ```text
 .mav/config.yaml
-.mav/map/index.json
-.mav/map/screens/*.json
-.mav/map/current.json
-.mav/map/pending.json
 ```
 
 Run state:
@@ -341,28 +327,13 @@ Coordinates should be used only when the accessibility tree is insufficient and
 a screenshot makes the target unambiguous. Text is the last fallback because
 labels change with localization and copy edits.
 
-## UI Commands
+## UI Usage
+
+Start with the accessibility tree:
 
 ```bash
 mav ui tree
-mav ui tree --prefer-driver axe
 mav ui tree --include-system
-mav ui tap --id element_id
-mav ui tap --x 120 --y 400
-mav ui tap --text "Daily Reminder"
-mav ui type "hello"
-mav ui erase --focused
-mav ui hideKeyboard
-mav ui swipe --direction up
-mav ui swipe --start-x 220 --start-y 760 --end-x 220 --end-y 260
-mav ui longPress --x 200 --y 450 --duration 800ms
-mav ui pinch --x 200 --y 450 --scale 0.5
-mav ui pinch --x 200 --y 450 --scale 0.5 --pan-x 80 --pan-y -40
-mav ui twoFingerPan --x 200 --y 450 --pan-x 80 --pan-y -40
-mav ui wait --id element_id --timeout 5s
-mav ui wait --text "Privacy Policy" --timeout 5s
-mav ui wait --value "Email" --timeout 5s
-mav ui scrollUntil --id privacy_policy_button --direction up --max-swipes 4
 ```
 
 MAV chooses drivers by capability. AXe is the default fast path for
@@ -381,6 +352,14 @@ inspection is simulator-only.
 If `mav ui tap --text X` fails because AXe sees `X` as a value/placeholder but
 not as a label, MAV reports `ui_tap_text_no_label_match` with `matched_value`.
 Prefer stable accessibility ids when possible.
+
+For exact syntax, ask the command:
+
+```bash
+mav ui tap -help
+mav ui wait -help
+mav ui pinch -help
+```
 
 `mav ui erase` and `mav ui hideKeyboard` dispatch through baguette on
 simulator. On a physical device they return `erase_unsupported_on_device` and
@@ -768,47 +747,6 @@ mav stop
 ```
 
 `mav run` stops run-owned streams automatically.
-
-## Command Reference
-
-```text
-mav doctor
-mav setup [--non-interactive]
-mav setup --install axe idb baguette
-mav install-skills
-mav sim list
-mav sim select --device NAME --ios VERSION [--locale LOCALE] [--language LANG]
-mav sim select --udid UDID
-mav sim boot
-mav device list
-mav device select --udid UDID
-mav device select --name NAME
-mav open [--device NAME] [--ios VERSION] [--udid UDID] [--locale LOCALE] [--language LANG] [--clear-state] [--no-relaunch]
-mav ui tree [--prefer-driver auto|axe] [--include-system]
-mav ui tap --id ID [--prefer-driver auto|axe]
-mav ui tap --x X --y Y
-mav ui tap --text TEXT [--prefer-driver auto|axe]
-mav ui type TEXT [--prefer-driver auto|axe]
-mav ui erase [--id ID | --text TEXT | --value VALUE | --focused true]
-mav ui hideKeyboard
-mav ui swipe [--direction up|down|left|right]
-mav ui longPress --x X --y Y [--duration 800ms]
-mav ui pinch --x X --y Y --scale SCALE [--pan-x DX] [--pan-y DY] [--distance D] [--angle DEG] [--rotate DEG] [--duration 800ms] [--hold DURATION]
-mav ui rotate --x X --y Y --degrees DEG [--distance D] [--duration 800ms] [--hold DURATION]
-mav ui twoFingerPan --x X --y Y --pan-x DX --pan-y DY [--distance D] [--angle DEG] [--duration 800ms] [--hold DURATION]
-mav ui actions --file actions.json
-mav ui wait --id ID [--timeout 5s]
-mav ui scrollUntil --id ID [--direction up] [--max-swipes 5]
-mav capture [--name NAME] [--run RUN_ID]
-mav run flow.yaml
-mav logs [--run RUN_ID] [--key KEY] [--contains TEXT] [--level LEVEL]
-mav stop [--run RUN_ID]
-mav crashes [--raw]
-mav evidence start [--run RUN_ID]
-mav evidence step --name NAME [--note NOTE] [--run RUN_ID]
-mav evidence stop [--note NOTE] [--no-capture] [--run RUN_ID]
-mav evidence report [--run RUN_ID]
-```
 
 ## Troubleshooting
 

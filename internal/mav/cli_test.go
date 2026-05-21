@@ -591,6 +591,53 @@ func TestUIHelpShowsSpecificPinchFlags(t *testing.T) {
 	}
 }
 
+func TestNestedHelpAcceptsDashHelp(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "flow", args: []string{"flow", "-help"}, want: "mav flow lint flow.yaml"},
+		{name: "flow lint", args: []string{"flow", "lint", "-help"}, want: "Parses and validates"},
+		{name: "ui tap", args: []string{"ui", "tap", "-help"}, want: "mav ui tap --id ID"},
+		{name: "evidence report", args: []string{"evidence", "report", "-help"}, want: "verified evidence manifest"},
+		{name: "network start", args: []string{"network", "start", "-help"}, want: "simulator HAR capture"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			cli := CLI{Runner: fakeRunner{}, Root: t.TempDir(), Stdout: &out, Stderr: &bytes.Buffer{}}
+			if err := cli.Run(context.Background(), tc.args); err != nil {
+				t.Fatal(err)
+			}
+			if got := out.String(); !strings.Contains(got, tc.want) {
+				t.Fatalf("missing %q in %q", tc.want, got)
+			}
+		})
+	}
+}
+
+func TestHelpVerbAliases(t *testing.T) {
+	tests := []struct {
+		args []string
+		want string
+	}{
+		{args: []string{"tap", "-help"}, want: "mav ui tap --id ID"},
+		{args: []string{"tree", "-help"}, want: "mav ui tree"},
+		{args: []string{"help", "screenshot"}, want: "mav capture"},
+	}
+	for _, tc := range tests {
+		var out bytes.Buffer
+		cli := CLI{Runner: fakeRunner{}, Root: t.TempDir(), Stdout: &out, Stderr: &bytes.Buffer{}}
+		if err := cli.Run(context.Background(), tc.args); err != nil {
+			t.Fatal(err)
+		}
+		if got := out.String(); !strings.Contains(got, tc.want) {
+			t.Fatalf("missing %q in %q", tc.want, got)
+		}
+	}
+}
+
 func TestCapturePathUsesNameAndAvoidsCollisions(t *testing.T) {
 	run := RunState{Dir: t.TempDir()}
 	first := uniqueCapturePath(run, "Largest Videos")
