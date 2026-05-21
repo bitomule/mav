@@ -1,9 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1160" height="720" viewBox="0 0 1160 720" role="img" aria-labelledby="title desc">
   <title id="title">MAV driver router</title>
-  <desc id="desc">MAV receives one agent command, maps it to a capability, routes it to the healthiest lowest-cost iOS driver for the selected target, and records evidence.</desc>
+  <desc id="desc">MAV receives one agent command, maps it to a capability, routes it to the best iOS driver for the target, and records evidence for humans.</desc>
   <defs>
-    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="userSpaceOnUse">
       <path d="M2,2 L10,6 L2,10 Z" fill="#243040"/>
+    </marker>
+    <marker id="soft-arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#6d7d90"/>
     </marker>
     <style>
       text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #17202c; }
@@ -16,76 +19,79 @@
       .agent { fill: #eef7f5; stroke: #66b3a6; }
       .router { fill: #fff5e6; stroke: #e1a449; }
       .evidence { fill: #f2f3ff; stroke: #8792d6; }
-      .driver { fill: #f7fafc; stroke: #b8c5d4; }
+      .backend { fill: #f7fafc; stroke: #b8c5d4; }
       .sim { fill: #edf7ff; stroke: #5b9bd5; }
       .device { fill: #f6f9ee; stroke: #93ad4f; }
+      .network { fill: #fff7ed; stroke: #d38d42; }
       .line { stroke: #243040; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
-      .softline { stroke: #6d7d90; stroke-width: 1.8; fill: none; marker-end: url(#arrow); stroke-dasharray: 6 6; }
+      .softline { stroke: #6d7d90; stroke-width: 1.8; fill: none; marker-end: url(#soft-arrow); stroke-dasharray: 6 6; }
     </style>
   </defs>
 
   <rect x="0" y="0" width="1160" height="720" fill="#f8fafc"/>
   <text x="48" y="58" class="title">MAV is the single iOS interface for agents</text>
-  <text x="48" y="86" class="subtitle">Commands stay stable while the router picks AXe, Baguette, idb, simctl, or mitmproxy per capability and target.</text>
+  <text x="48" y="86" class="subtitle">Agents call one stable API. MAV picks the right native iOS driver and records proof.</text>
 
-  <rect x="48" y="142" width="210" height="116" class="box agent"/>
-  <text x="72" y="178" class="label">Agent / Flow</text>
-  <text x="72" y="207" class="small">tree, tap, type, wait</text>
-  <text x="72" y="229" class="small">pinch, capture, logs</text>
-  <text x="72" y="251" class="small">video + network evidence</text>
+  <!-- Routes are drawn first, so boxes and labels always stay readable. -->
+  <g id="routes">
+    <path d="M278 202 H312" class="line"/>
+    <path d="M570 202 H612" class="line"/>
+    <path d="M445 282 V418" class="softline"/>
+    <path d="M292 508 H612" class="line"/>
+  </g>
 
-  <rect x="342" y="126" width="252" height="148" class="box router"/>
-  <text x="372" y="164" class="label">Capability Router</text>
-  <text x="372" y="196" class="small">1. target: simulator or device</text>
-  <text x="372" y="220" class="small">2. capability: semantic tap, video...</text>
-  <text x="372" y="244" class="small">3. health + explicit preference</text>
-  <text x="372" y="268" class="small">4. lowest deterministic cost wins</text>
+  <rect x="48" y="144" width="230" height="116" class="box agent"/>
+  <text x="76" y="180" class="label">Agent / Flow</text>
+  <text x="76" y="209" class="small">tree, tap, type, wait</text>
+  <text x="76" y="231" class="small">pinch, capture, logs</text>
+  <text x="76" y="253" class="small">video + network evidence</text>
 
-  <path d="M258 200 H334" class="line"/>
-  <text x="278" y="186" class="tiny">one API</text>
+  <rect x="320" y="126" width="250" height="156" class="box router"/>
+  <text x="350" y="164" class="label">Capability Router</text>
+  <text x="350" y="196" class="small">1. target: simulator or device</text>
+  <text x="350" y="220" class="small">2. capability: semantic tap, video...</text>
+  <text x="350" y="244" class="small">3. driver health + preference</text>
+  <text x="350" y="268" class="small">4. lowest deterministic cost wins</text>
 
-  <rect x="682" y="112" width="178" height="72" class="box driver"/>
-  <text x="708" y="142" class="label">AXe</text>
-  <text x="708" y="166" class="small">a11y tree, semantic UI</text>
+  <text x="292" y="188" class="tiny">one API</text>
+  <text x="584" y="188" class="tiny">selected backend</text>
 
-  <rect x="906" y="112" width="178" height="72" class="box sim"/>
-  <text x="932" y="142" class="label">Baguette</text>
-  <text x="932" y="166" class="small">sim multitouch + HID</text>
+  <rect x="612" y="104" width="360" height="220" class="box backend"/>
+  <text x="640" y="142" class="label">Native iOS Driver Backends</text>
 
-  <rect x="682" y="224" width="178" height="72" class="box device"/>
-  <text x="708" y="254" class="label">idb</text>
-  <text x="708" y="278" class="small">device fallback</text>
+  <rect x="640" y="166" width="140" height="56" class="box"/>
+  <text x="658" y="190" class="small">AXe: a11y</text>
+  <text x="658" y="210" class="tiny">semantic UI</text>
 
-  <rect x="906" y="224" width="178" height="72" class="box sim"/>
-  <text x="932" y="254" class="label">simctl</text>
-  <text x="932" y="278" class="small">launch, logs, video</text>
+  <rect x="802" y="166" width="140" height="56" class="box sim"/>
+  <text x="820" y="190" class="small">Baguette</text>
+  <text x="820" y="210" class="tiny">sim HID</text>
 
-  <rect x="794" y="336" width="178" height="72" class="box sim"/>
-  <text x="820" y="366" class="label">mitmproxy</text>
-  <text x="820" y="390" class="small">sim HAR capture</text>
+  <rect x="640" y="242" width="140" height="56" class="box device"/>
+  <text x="658" y="266" class="small">idb</text>
+  <text x="658" y="286" class="tiny">device control</text>
 
-  <path d="M594 176 C628 152 646 148 674 148" class="line"/>
-  <path d="M594 190 C700 158 792 148 898 148" class="line"/>
-  <path d="M594 218 C628 246 646 260 674 260" class="line"/>
-  <path d="M594 232 C704 238 790 260 898 260" class="line"/>
-  <path d="M594 252 C686 332 724 372 786 372" class="line"/>
+  <rect x="802" y="242" width="140" height="56" class="box sim"/>
+  <text x="820" y="266" class="small">simctl</text>
+  <text x="820" y="286" class="tiny">launch + video</text>
 
-  <rect x="116" y="426" width="300" height="168" class="box evidence"/>
-  <text x="146" y="464" class="label">Evidence Window</text>
-  <text x="146" y="496" class="small">video.start / evidence.start</text>
-  <text x="146" y="520" class="small">named screenshots + tree deltas</text>
-  <text x="146" y="544" class="small">logs, crashes, optional HAR</text>
-  <text x="146" y="568" class="small">report.json for the HTML report</text>
+  <rect x="700" y="336" width="190" height="64" class="box network"/>
+  <text x="720" y="374" class="small">mitmproxy: HAR capture</text>
 
-  <rect x="532" y="458" width="270" height="102" class="box"/>
-  <text x="560" y="496" class="label">Verified artifacts</text>
-  <text x="560" y="526" class="small">video.mov / video.mp4</text>
-  <text x="560" y="550" class="small">steps/*.png, logs.txt, network.har</text>
+  <rect x="116" y="418" width="352" height="176" class="box evidence"/>
+  <text x="146" y="458" class="label">Evidence Window</text>
+  <text x="146" y="490" class="small">video.start / evidence.start</text>
+  <text x="146" y="514" class="small">named screenshots + tree snapshots</text>
+  <text x="146" y="538" class="small">logs, crashes, optional network HAR</text>
+  <text x="146" y="562" class="small">report.json for the HTML report</text>
 
-  <path d="M210 258 C210 332 236 368 266 418" class="softline"/>
-  <path d="M416 510 H524" class="line"/>
-  <path d="M804 510 C922 504 978 456 972 408" class="softline"/>
-  <text x="816" y="500" class="tiny">network evidence uses router too</text>
+  <rect x="612" y="452" width="360" height="112" class="box"/>
+  <text x="640" y="492" class="label">Verified artifacts</text>
+  <text x="640" y="524" class="small">video.mov / video.mp4</text>
+  <text x="640" y="548" class="small">steps/*.png, logs.txt, network.har</text>
 
-  <text x="48" y="668" class="subtitle">The router is the product boundary: agents express intent once; MAV chooses the right iOS backend and records proof.</text>
+  <text x="474" y="352" class="tiny">evidence uses the same router decisions</text>
+
+  <text x="48" y="668" class="subtitle">The router is the product boundary: agents express intent once.</text>
+  <text x="48" y="696" class="subtitle">MAV chooses the right iOS backend and records proof.</text>
 </svg>
