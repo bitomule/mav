@@ -53,10 +53,10 @@ func (s ElementSelector) IsZero() bool {
 
 // SwipeSpec describes a single-finger swipe.
 type SwipeSpec struct {
-	Direction        string // "up"|"down"|"left"|"right" or empty when start/end are set
-	StartX, StartY   int
-	EndX, EndY       int
-	DurationMs       int
+	Direction      string // "up"|"down"|"left"|"right" or empty when start/end are set
+	StartX, StartY int
+	EndX, EndY     int
+	DurationMs     int
 }
 
 // PinchSpec is a two-finger pinch centred at (X, Y) with Scale > 1 to zoom in

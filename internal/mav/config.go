@@ -1,7 +1,6 @@
 package mav
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,6 +10,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -44,17 +45,17 @@ type Config struct {
 }
 
 type LaunchConfig struct {
-	Mode     string
-	Commands LaunchCommands
+	Mode     string         `yaml:"mode"`
+	Commands LaunchCommands `yaml:"commands"`
 }
 
 type LaunchCommands struct {
-	Healthcheck string
-	Build       string
-	AppPath     string
-	Install     string
-	Launch      string
-	Cleanup     string
+	Healthcheck string `yaml:"healthcheck"`
+	Build       string `yaml:"build"`
+	AppPath     string `yaml:"app_path"`
+	Install     string `yaml:"install"`
+	Launch      string `yaml:"launch"`
+	Cleanup     string `yaml:"cleanup"`
 }
 
 func DefaultConfig(root string) Config {
@@ -69,105 +70,33 @@ func DefaultConfig(root string) Config {
 
 func LoadConfig(root string) (Config, error) {
 	path := filepath.Join(root, ConfigFile)
-	file, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("config_not_found path=%s run=mav_setup", path)
 	}
-	defer file.Close()
-
 	cfg := DefaultConfig(root)
-	scanner := bufio.NewScanner(file)
-	section := ""
-	for scanner.Scan() {
-		raw := scanner.Text()
-		line := strings.TrimSpace(raw)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		indent := len(raw) - len(strings.TrimLeft(raw, " "))
-		if strings.HasSuffix(line, ":") {
-			key := strings.TrimSuffix(line, ":")
-			switch {
-			case indent == 0:
-				section = key
-			case indent == 2 && section == "launch" && key == "commands":
-				section = "launch.commands"
-			}
-			continue
-		}
-		if section == "app" && indent >= 2 {
-			key, value, ok := splitYAMLKV(line)
-			if ok {
-				switch key {
-				case "bundle_id":
-					cfg.BundleID = value
-				case "process_name":
-					cfg.ProcessName = value
-				}
-			}
-			continue
-		}
-		if section == "launch.commands" && indent >= 4 {
-			key, value, ok := splitYAMLKV(line)
-			if ok {
-				setLaunchCommand(&cfg.Launch.Commands, key, value)
-			}
-			continue
-		}
-		if section == "launch" && indent >= 2 {
-			key, value, ok := splitYAMLKV(line)
-			if ok && key == "mode" {
-				cfg.Launch.Mode = value
-			}
-			continue
-		}
-		if indent == 0 {
-			section = ""
-		}
-		key, value, ok := splitYAMLKV(line)
-		if !ok {
-			continue
-		}
-		switch key {
-		case "project_name":
-			cfg.ProjectName = value
-		case "target_kind":
-			cfg.TargetKind = value
-		case "app_target":
-			cfg.AppTarget = value
-		case "device_target":
-			cfg.DeviceTarget = value
-		case "device_udid":
-			cfg.DeviceUDID = value
-		case "device_name":
-			cfg.DeviceName = value
-		case "bundle_id":
-			cfg.BundleID = value
-		case "process_name":
-			cfg.ProcessName = value
-		case "simulator_udid":
-			cfg.SimulatorUDID = value
-		case "simulator_name":
-			cfg.SimulatorName = value
-		case "simulator_runtime":
-			cfg.SimulatorRuntime = value
-		case "locale":
-			cfg.Locale = value
-		case "language":
-			cfg.Language = value
-		case "log_subsystem":
-			cfg.LogSubsystem = value
-		case "log_category":
-			cfg.LogCategory = value
-		case "preferred_ui_driver":
-			cfg.PreferredUIDriver = value
-		case "allow_shell":
-			cfg.AllowShell = value == "true"
-		}
-	}
-	if err := scanner.Err(); err != nil {
+	var raw configYAML
+	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return Config{}, err
 	}
+	cfg.ProjectName = raw.ProjectName
+	cfg.TargetKind = raw.TargetKind
+	cfg.AppTarget = raw.AppTarget
+	cfg.DeviceTarget = raw.DeviceTarget
+	cfg.DeviceUDID = raw.DeviceUDID
+	cfg.DeviceName = raw.DeviceName
+	cfg.BundleID = firstNonEmpty(raw.App.BundleID, raw.BundleID)
+	cfg.ProcessName = firstNonEmpty(raw.App.ProcessName, raw.ProcessName)
+	cfg.SimulatorUDID = raw.SimulatorUDID
+	cfg.SimulatorName = raw.SimulatorName
+	cfg.SimulatorRuntime = raw.SimulatorRuntime
+	cfg.Locale = raw.Locale
+	cfg.Language = raw.Language
+	cfg.LogSubsystem = raw.LogSubsystem
+	cfg.LogCategory = raw.LogCategory
+	cfg.PreferredUIDriver = raw.PreferredUIDriver
+	cfg.AllowShell = raw.AllowShell
+	cfg.Launch = raw.Launch
 	if cfg.Launch.Mode == "" && hasLaunchCommands(cfg.Launch.Commands) {
 		cfg.Launch.Mode = "custom"
 	}
@@ -175,6 +104,42 @@ func LoadConfig(root string) (Config, error) {
 		cfg.TargetKind = "simulator"
 	}
 	return cfg, nil
+}
+
+type configYAML struct {
+	ProjectName       string        `yaml:"project_name"`
+	TargetKind        string        `yaml:"target_kind"`
+	AppTarget         string        `yaml:"app_target"`
+	DeviceTarget      string        `yaml:"device_target"`
+	DeviceUDID        string        `yaml:"device_udid"`
+	DeviceName        string        `yaml:"device_name"`
+	BundleID          string        `yaml:"bundle_id"`
+	ProcessName       string        `yaml:"process_name"`
+	App               configAppYAML `yaml:"app"`
+	SimulatorUDID     string        `yaml:"simulator_udid"`
+	SimulatorName     string        `yaml:"simulator_name"`
+	SimulatorRuntime  string        `yaml:"simulator_runtime"`
+	Locale            string        `yaml:"locale"`
+	Language          string        `yaml:"language"`
+	LogSubsystem      string        `yaml:"log_subsystem"`
+	LogCategory       string        `yaml:"log_category"`
+	PreferredUIDriver string        `yaml:"preferred_ui_driver"`
+	AllowShell        bool          `yaml:"allow_shell"`
+	Launch            LaunchConfig  `yaml:"launch"`
+}
+
+type configAppYAML struct {
+	BundleID    string `yaml:"bundle_id"`
+	ProcessName string `yaml:"process_name"`
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func SaveConfig(root string, cfg Config) error {

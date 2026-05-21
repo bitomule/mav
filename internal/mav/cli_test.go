@@ -1624,7 +1624,7 @@ func TestDeviceLaunchRecipeUsesIDB(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(runner.commands, "\n")
-	for _, want := range []string{"idb uninstall --udid", "idb install --udid", "idb launch --udid"} {
+	for _, want := range []string{"idb uninstall", "idb install", "idb launch"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing %q in commands:\n%s\noutput=%s", want, joined, out.String())
 		}
@@ -1747,6 +1747,67 @@ func testAtom(kind string, payload []byte) []byte {
 	copy(out[4:8], kind)
 	copy(out[8:], payload)
 	return out
+}
+
+func TestFlowLintReportsWarnings(t *testing.T) {
+	root := t.TempDir()
+	flowPath := filepath.Join(root, "flow.yaml")
+	if err := os.WriteFile(flowPath, []byte("steps:\n  - tap: { text: Settings }\n  - evidence.step: { name: after }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"flow", "lint", flowPath}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "ok cmd=flow.lint") || !strings.Contains(got, "warnings=2") || !strings.Contains(got, "errors=0") {
+		t.Fatalf("lint output=%q", got)
+	}
+}
+
+func TestFlowLintFailsExecWithoutAllowShell(t *testing.T) {
+	root := t.TempDir()
+	flowPath := filepath.Join(root, "flow.yaml")
+	if err := os.WriteFile(flowPath, []byte("steps:\n  - exec: { cmd: echo hi }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"flow", "lint", flowPath}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "fail code=flow_lint_failed") || !strings.Contains(got, "errors=1") {
+		t.Fatalf("lint output=%q", got)
+	}
+}
+
+func TestNetworkStatusSummarizesHAR(t *testing.T) {
+	root := t.TempDir()
+	run, err := NewProjectRunState(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	appendProcess(run, "network", 42, "mitmproxy --listen-port 9000 --hardump "+filepath.Join(run.Dir, "network.har"))
+	har := `{"log":{"entries":[{"request":{"url":"https://api.example.com/a"},"response":{"status":200}},{"request":{"url":"https://api.example.com/b"},"response":{"status":404}},{"request":{"url":"https://cdn.example.com/c"},"response":{"status":502}}]}}`
+	if err := os.WriteFile(filepath.Join(run.Dir, "network.har"), []byte(har), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"network", "status", "--run", run.ID}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{"ok cmd=network.status", "active=true", "pid=42", "requests=3", "responses=3", "status_4xx=1", "status_5xx=1", "unique_domains=2", "listen_port=9000"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in %q", want, got)
+		}
+	}
 }
 
 func TestCountTreeNodes(t *testing.T) {

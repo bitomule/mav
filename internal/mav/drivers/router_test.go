@@ -15,11 +15,15 @@ type fakeDriver struct {
 	health HealthReport
 }
 
-func (f *fakeDriver) ID() string                                 { return f.id }
-func (f *fakeDriver) Provides(_ Target) CapabilitySet            { return f.caps }
-func (f *fakeDriver) Cost(c Capability, _ Target) int            { return f.cost[c] }
-func (f *fakeDriver) Probe(context.Context, Probe) HealthReport  { return f.health }
-func (f *fakeDriver) Warm(context.Context, Target) <-chan error  { ch := make(chan error); close(ch); return ch }
+func (f *fakeDriver) ID() string                                { return f.id }
+func (f *fakeDriver) Provides(_ Target) CapabilitySet           { return f.caps }
+func (f *fakeDriver) Cost(c Capability, _ Target) int           { return f.cost[c] }
+func (f *fakeDriver) Probe(context.Context, Probe) HealthReport { return f.health }
+func (f *fakeDriver) Warm(context.Context, Target) <-chan error {
+	ch := make(chan error)
+	close(ch)
+	return ch
+}
 func (f *fakeDriver) Tap(context.Context, Target, TapSpec) (TapResult, error) {
 	return TapResult{}, nil
 }

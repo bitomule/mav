@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/bitomule/mav/internal/mav/drivers"
 )
 
 type launchStep struct {
@@ -16,34 +18,22 @@ type launchStep struct {
 
 func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clearState bool) (string, *launchStep, CommandResult) {
 	commands := effectiveLaunchCommands(cfg)
-	if !hasLaunchCommands(commands) && cfg.BundleID != "" {
-		if isPhysicalDevice(cfg) {
-			commands.Launch = `idb launch --udid "$MAV_UDID" -f "$MAV_BUNDLE_ID"`
-		} else {
-			commands.Launch = `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`
-		}
-	}
 	steps := []launchStep{
 		{Name: "healthcheck", Command: commands.Healthcheck},
 		{Name: "build", Command: commands.Build},
 		{Name: "app_path", Command: commands.AppPath},
-		{Name: "install", Command: commands.Install},
-		{Name: "launch", Command: commands.Launch},
 	}
 	appPath := ""
-	if strings.TrimSpace(commands.Launch) == "" {
+	driverLaunch := shouldUseDriverLaunch(cfg, commands)
+	if strings.TrimSpace(commands.Launch) == "" && !driverLaunch {
 		return appPath, &launchStep{Name: "launch"}, CommandResult{Stderr: "launch command missing; run mav setup or add launch.commands.launch to .mav/config.yaml", Err: fmt.Errorf("launch_command_missing")}
 	}
-	if clearState && strings.TrimSpace(commands.Install) == "" {
+	if clearState && strings.TrimSpace(commands.Install) == "" && strings.TrimSpace(commands.AppPath) == "" {
 		return appPath, &launchStep{Name: "clear_state"}, CommandResult{Stderr: "clearState requires an install command in the launch recipe; add launch.commands.install to .mav/config.yaml", Err: fmt.Errorf("clear_state_install_missing")}
 	}
 	env := launchEnv(cfg, run, appPath)
 	if clearState && cfg.BundleID != "" {
-		step := launchStep{Name: "clear_state", Command: `xcrun simctl uninstall "$MAV_UDID" "$MAV_BUNDLE_ID" || true`}
-		if isPhysicalDevice(cfg) {
-			step.Command = `idb uninstall --udid "$MAV_UDID" "$MAV_BUNDLE_ID" || true`
-		}
-		_ = c.runLaunchCommand(ctx, cfg, run, step, env)
+		_ = c.runDriverLifecycle(ctx, cfg, run, launchStep{Name: "clear_state"}, appPath)
 	}
 	for _, step := range steps {
 		if strings.TrimSpace(step.Command) == "" {
@@ -73,6 +63,39 @@ func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clea
 			env = launchEnv(cfg, run, appPath)
 		}
 	}
+	if strings.TrimSpace(commands.Install) != "" || appPath != "" {
+		step := launchStep{Name: "install", Command: commands.Install}
+		var result CommandResult
+		if shouldUseDriverInstall(cfg, commands) {
+			result = c.runDriverLifecycle(ctx, cfg, run, step, appPath)
+		} else {
+			result = c.runLaunchCommand(ctx, cfg, run, step, env)
+		}
+		if result.Err != nil {
+			if shouldRetryInstallFromWritableCopy(result, appPath) {
+				if retryResult, retryPath := c.retryInstallFromWritableCopy(ctx, cfg, run, appPath); retryResult.Err == nil {
+					appPath = retryPath
+					env = launchEnv(cfg, run, appPath)
+				} else {
+					return appPath, &step, retryResult
+				}
+			} else {
+				return appPath, &step, result
+			}
+		}
+	}
+	if strings.TrimSpace(commands.Launch) != "" || driverLaunch {
+		step := launchStep{Name: "launch", Command: commands.Launch}
+		var result CommandResult
+		if driverLaunch {
+			result = c.runDriverLifecycle(ctx, cfg, run, step, appPath)
+		} else {
+			result = c.runLaunchCommand(ctx, cfg, run, step, env)
+		}
+		if result.Err != nil {
+			return appPath, &step, result
+		}
+	}
 	if strings.TrimSpace(commands.Cleanup) != "" {
 		step := launchStep{Name: "cleanup", Command: commands.Cleanup}
 		result := c.runLaunchCommand(ctx, cfg, run, step, env)
@@ -81,6 +104,65 @@ func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clea
 		}
 	}
 	return appPath, nil, CommandResult{}
+}
+
+func shouldUseDriverInstall(cfg Config, commands LaunchCommands) bool {
+	command := strings.TrimSpace(commands.Install)
+	return command == "" ||
+		isMAVSimctlInstall(command) ||
+		strings.Contains(command, "idb install") && strings.Contains(command, "MAV_APP_PATH") ||
+		strings.Contains(command, "idb install") && strings.Contains(command, "$MAV_APP_PATH") ||
+		(isPhysicalDevice(cfg) && strings.Contains(command, "simctl install"))
+}
+
+func shouldUseDriverLaunch(cfg Config, commands LaunchCommands) bool {
+	command := strings.TrimSpace(commands.Launch)
+	return command == "" && cfg.BundleID != "" ||
+		isMAVSimctlLaunch(command) ||
+		strings.Contains(command, "idb launch") && strings.Contains(command, "MAV_BUNDLE_ID") ||
+		(isPhysicalDevice(cfg) && strings.Contains(command, "simctl launch"))
+}
+
+func (c CLI) runDriverLifecycle(ctx context.Context, cfg Config, run RunState, step launchStep, appPath string) CommandResult {
+	target := targetFromConfig(cfg)
+	capability := drivers.CapLaunch
+	if step.Name == "install" || step.Name == "install_retry" {
+		capability = drivers.CapInstall
+	}
+	if step.Name == "clear_state" {
+		capability = drivers.CapUninstall
+	}
+	prefer := "simctl"
+	if isPhysicalDevice(cfg) {
+		prefer = "idb"
+	}
+	driver, _, err := c.router().Route(ctx, capability, target, prefer)
+	if err != nil {
+		result := CommandResult{Stderr: err.Error(), Err: err}
+		appendCommand(run, "launch."+step.Name+" driver="+prefer, result)
+		return result
+	}
+	lifecycle, ok := driver.(drivers.LifecycleDriver)
+	if !ok {
+		err := fmt.Errorf("driver %s does not implement lifecycle", driver.ID())
+		result := CommandResult{Stderr: err.Error(), Err: err}
+		appendCommand(run, "launch."+step.Name+" driver="+driver.ID(), result)
+		return result
+	}
+	switch step.Name {
+	case "install", "install_retry":
+		err = lifecycle.Install(ctx, target, drivers.InstallSpec{Path: appPath})
+	case "launch":
+		_, err = lifecycle.Launch(ctx, target, drivers.LaunchSpec{BundleID: cfg.BundleID})
+	case "clear_state":
+		err = lifecycle.Uninstall(ctx, target, cfg.BundleID)
+	}
+	result := CommandResult{}
+	if err != nil {
+		result = CommandResult{Stderr: err.Error(), Err: err}
+	}
+	appendCommand(run, "launch."+step.Name+" driver="+driver.ID(), result)
+	return result
 }
 
 func (c CLI) runLaunchCommand(ctx context.Context, cfg Config, run RunState, step launchStep, env map[string]string) CommandResult {
@@ -151,12 +233,7 @@ func (c CLI) retryInstallFromWritableCopy(ctx context.Context, cfg Config, run R
 	if err := copyDirWritable(appPath, target); err != nil {
 		return CommandResult{Stderr: err.Error(), Err: err}, appPath
 	}
-	env := launchEnv(cfg, run, target)
-	command := `xcrun simctl install "$MAV_UDID" "$MAV_APP_PATH"`
-	if isPhysicalDevice(cfg) {
-		command = `idb install --udid "$MAV_UDID" "$MAV_APP_PATH"`
-	}
-	result := c.runLaunchCommand(ctx, cfg, run, launchStep{Name: "install_retry", Command: command}, env)
+	result := c.runDriverLifecycle(ctx, cfg, run, launchStep{Name: "install_retry"}, target)
 	return result, target
 }
 

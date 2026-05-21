@@ -6,6 +6,8 @@ import (
 	"io"
 	"sort"
 	"strings"
+
+	"github.com/bitomule/mav/internal/mav/codes"
 )
 
 type Output struct {
@@ -21,6 +23,14 @@ func OK(cmd string, fields map[string]string) Output {
 
 func Fail(code string, fields map[string]string) Output {
 	return Output{OK: false, Code: code, Fields: fields}
+}
+
+func FailCode(code codes.Code, fields map[string]string) Output {
+	merged := code.Fields()
+	for key, value := range fields {
+		merged[key] = value
+	}
+	return Output{OK: false, Code: code.ID, Fields: merged}
 }
 
 func (o Output) Write(w io.Writer) error {
