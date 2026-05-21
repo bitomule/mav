@@ -100,6 +100,28 @@ steps:
 	}
 }
 
+func TestParseFlowNetworkEvidenceControls(t *testing.T) {
+	flow, err := ParseFlow([]byte(`
+steps:
+  - evidence.start: { network: true, port: 9092 }
+  - network.start: { port: 9093, har: /tmp/network.har }
+  - network.status: {}
+  - network.stop: {}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(flow.Steps) != 4 {
+		t.Fatalf("steps=%+v", flow.Steps)
+	}
+	if flow.Steps[0].Action != "evidence.start" || flow.Steps[0].Params["network"] != "true" || flow.Steps[0].Params["port"] != "9092" {
+		t.Fatalf("evidence.start=%+v", flow.Steps[0])
+	}
+	if flow.Steps[1].Action != "network.start" || flow.Steps[1].Params["port"] != "9093" || flow.Steps[1].Params["har"] != "/tmp/network.har" {
+		t.Fatalf("network.start=%+v", flow.Steps[1])
+	}
+}
+
 func TestParseFlowRejectsUnknownVersion(t *testing.T) {
 	_, err := ParseFlow([]byte("version: 2\nsteps:\n  - open: {}\n"))
 	if err == nil {

@@ -72,6 +72,9 @@ func TestProvidesAdvertisesSupportedCapsOnly(t *testing.T) {
 		drivers.CapTap,
 		drivers.CapCoordTap,
 		drivers.CapSwipe,
+		drivers.CapTreeSystem,
+		drivers.CapHideKeyboard,
+		drivers.CapErase,
 	} {
 		if !caps.Has(want) {
 			t.Errorf("expected baguette to provide %s on sim", want)
@@ -81,9 +84,6 @@ func TestProvidesAdvertisesSupportedCapsOnly(t *testing.T) {
 	for _, banned := range []drivers.Capability{
 		drivers.CapRotate,
 		drivers.CapW3CActions,
-		drivers.CapHideKeyboard,
-		drivers.CapErase,
-		drivers.CapTreeSystem,
 	} {
 		if caps.Has(banned) {
 			t.Errorf("did not expect baguette to advertise %s — CLI does not expose it", banned)
@@ -290,14 +290,35 @@ func TestScreenshotBuildsArgs(t *testing.T) {
 	}
 }
 
-func TestHideKeyboardAndEraseAndRotateAndW3CReturnUnsupported(t *testing.T) {
+func TestEraseSendsBackspaceKeys(t *testing.T) {
+	exec := newFake()
+	d := New(exec)
+	if err := d.Erase(context.Background(), simTarget(), drivers.TextSpec{Text: "hola", Focused: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(exec.calls) != 32 {
+		t.Fatalf("expected 32 backspaces, got %d", len(exec.calls))
+	}
+	want := "baguette key --udid " + simUDID + " --code Backspace"
+	if exec.calls[0] != want {
+		t.Fatalf("got=%q want=%q", exec.calls[0], want)
+	}
+}
+
+func TestHideKeyboardSendsEscape(t *testing.T) {
+	exec := newFake()
+	d := New(exec)
+	if err := d.HideKeyboard(context.Background(), simTarget()); err != nil {
+		t.Fatal(err)
+	}
+	want := "baguette key --udid " + simUDID + " --code Escape"
+	if exec.calls[0] != want {
+		t.Fatalf("got=%q want=%q", exec.calls[0], want)
+	}
+}
+
+func TestRotateAndW3CReturnUnsupported(t *testing.T) {
 	d := New(newFake())
-	if err := d.HideKeyboard(context.Background(), simTarget()); err == nil {
-		t.Error("HideKeyboard should return unsupported error")
-	}
-	if err := d.Erase(context.Background(), simTarget(), drivers.TextSpec{}); err == nil {
-		t.Error("Erase should return unsupported error")
-	}
 	if err := d.Rotate(context.Background(), simTarget(), drivers.RotateSpec{}); err == nil {
 		t.Error("Rotate should return unsupported error")
 	}

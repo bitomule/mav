@@ -8,22 +8,54 @@
 [![Release](https://img.shields.io/github/v/release/bitomule/mav?display_name=tag)](https://github.com/bitomule/mav/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-The deterministic iOS validation CLI for AI coding agents. Drive a simulator, read the accessibility tree, capture evidence — give your agent eyes.
+The iOS control plane for AI coding agents: one command surface, native drivers underneath, and evidence your agent can hand back to a human.
 
 <p align="center">
   <img src="assets/hero.png" alt="A split screen showing an iOS simulator on the left and a terminal on the right running mav tap, mav axtree, and mav screenshot, with compact agent-readable output" width="820">
 </p>
 
-Mobile Agent Verifier (`mav`) is a small CLI agents call between turns: it runs concrete commands against a simulator (or a real device), returns one compact line per result, and writes evidence to disk so the next turn can act on it.
+Mobile Agent Verifier (`mav`) is the interface between an agent and iOS. The
+agent asks for intent-level operations like `ui tree`, `tap`, `pinch`,
+`network start`, or `evidence report`; MAV routes each operation to the best
+native backend available on that target, records what happened, and returns a
+compact result the next turn can act on.
 
 MAV is intentionally not an autonomous testing agent. It runs the command. The agent decides what to run next.
 
+## What MAV Does Best
+
+MAV has two jobs:
+
+1. Route agent intent to the right iOS driver.
+2. Produce evidence that is useful after the command finishes.
+
+The router is the core value. Agents should not need to know when to use AXe,
+Baguette, idb, simctl, or mitmproxy. They should ask for a capability and get a
+deterministic answer:
+
+- Accessibility tree, semantic taps, waits, and screenshots go through AXe when
+  it is healthy.
+- Simulator multitouch, system UI, hardware buttons, erase, and hideKeyboard go
+  through Baguette.
+- Physical device install, launch, coordinate input, logs, screenshots, and
+  crashes go through idb.
+- Simulator lifecycle, video, and logs go through simctl.
+- Simulator network evidence goes through mitmproxy HAR capture.
+
+The evidence layer makes the result inspectable. A run can include accepted
+video, named screenshots, accessibility tree snapshots, log tails, crash
+reports, command trails, and network HAR summaries. The CLI writes the verified
+manifest; the MAV skill turns it into a visual HTML report for humans.
+
 ## What MAV Is For
 
-- Verifying iOS app changes from an agent without opening Xcode.
-- Driving simulator UI through accessibility trees before screenshots.
-- Building repeatable flows that combine UI actions, waits, screenshots, video,
-  logs, crash checks, and HTML evidence.
+- Giving agents one stable iOS API instead of a pile of tool-specific CLIs.
+- Verifying iOS app changes without opening Xcode or writing a one-off test.
+- Driving simulator and device UI through accessibility trees before falling
+  back to screenshots or coordinates.
+- Capturing proof windows with video, screenshots, logs, crashes, commands, and
+  optional network traffic.
+- Building repeatable flows that are still agent-readable and debuggable.
 
 MAV uses a project-local launch recipe to build, locate, install, and launch
 the app. Bazel, Xcode, Tuist, Make, Just, and project scripts are setup-time
@@ -33,15 +65,15 @@ templates only; runtime executes the configured recipe.
 
 ### vs Maestro
 
-Maestro is for humans: a fluent YAML DSL, a recording mode, a flow file you read top-to-bottom. MAV is for agents: single-shot commands, one compact line per result, no flow language to learn unless you want one. If you already write Maestro flows for human testing, MAV does not replace them — it gives your agent a different kind of access.
+Maestro is for humans: a fluent YAML DSL, a recording mode, a flow file you read top-to-bottom. MAV is for agents: single-shot commands, one compact line per result, native iOS drivers, and evidence artifacts that survive the session. If you already write Maestro flows for human testing, MAV does not replace them — it gives your agent a different kind of access.
 
 ### vs XCUITest
 
-XCUITest knows what the test file says. It does not know what the screen actually looks like right now. MAV reads the live accessibility tree, so the agent can react to whatever state the app reached, not just the states the test author predicted.
+XCUITest knows what the test file says. It does not know what the screen actually looks like right now. MAV reads the live accessibility tree and can attach video, screenshots, logs, crashes, and HAR evidence to the run, so the agent can react to the state the app actually reached.
 
 ### vs Appium
 
-Appium covers Android, iOS, Windows, web, and a long tail of platforms — at the cost of a heavy stack and a slower path to "did the tap happen?". MAV is macOS-only and iOS-only on purpose: it leans on `simctl`, AXe, `idb`, and Baguette directly. The May 2026 driver overhaul removed Appium/WDA from the pipeline entirely; everything runs through native host-side drivers now.
+Appium covers Android, iOS, Windows, web, and a long tail of platforms — at the cost of a heavy stack and a slower path to "did the tap happen?". MAV is macOS-only and iOS-only on purpose: it leans directly on `simctl`, AXe, `idb`, Baguette, and mitmproxy. The May 2026 driver overhaul removed Appium/WDA from the pipeline entirely; everything runs through native host-side drivers now.
 
 ### vs Detox
 
@@ -81,6 +113,8 @@ MAV is early and evolving. The current stable pieces are:
   skill authors the visual HTML report from that data.
 - Filtered unified log capture for explicit MAV probes.
 
+![MAV driver router](assets/router.svg)
+
 ## Requirements
 
 - macOS.
@@ -88,7 +122,7 @@ MAV is early and evolving. The current stable pieces are:
 - Go, for development builds.
 - AXe, for accessibility tree and semantic UI actions.
 - idb, for coordinate taps and device/simulator fallback operations.
-- Baguette, for simulator multitouch (pinch, rotate, two-finger pan), the
+- Baguette, for simulator multitouch (pinch, two-finger pan), the
   SpringBoard / system UI tree, hardware buttons, keyboard erase, and
   hideKeyboard. Sim-only — device multitouch is intentionally unsupported.
 - mitmproxy, optional, for `mav network start|stop` HAR capture on the
@@ -324,9 +358,7 @@ mav ui swipe --start-x 220 --start-y 760 --end-x 220 --end-y 260
 mav ui longPress --x 200 --y 450 --duration 800ms
 mav ui pinch --x 200 --y 450 --scale 0.5
 mav ui pinch --x 200 --y 450 --scale 0.5 --pan-x 80 --pan-y -40
-mav ui rotate --x 200 --y 450 --degrees 30
 mav ui twoFingerPan --x 200 --y 450 --pan-x 80 --pan-y -40
-mav ui actions --file .mav/actions/map-zoom.json
 mav ui wait --id element_id --timeout 5s
 mav ui wait --text "Privacy Policy" --timeout 5s
 mav ui wait --value "Email" --timeout 5s
@@ -355,10 +387,11 @@ simulator. On a physical device they return `erase_unsupported_on_device` and
 `hide_keyboard_unsupported_on_device` respectively. Tap and retype the field,
 or tap outside the input area to dismiss the keyboard.
 
-True multitouch gestures (pinch, rotate, two-finger pan) and W3C Actions go
-through baguette on simulator. On device they return
+True multitouch gestures that Baguette currently exposes (pinch and
+two-finger pan) go through baguette on simulator. On device they return
 `gesture_unsupported_on_device` with a remediation hint — use a simulator for
-multitouch flows.
+multitouch flows. Rotate and W3C Actions remain reserved flow/CLI surfaces
+until MAV adds a reliable Baguette translation for them.
 
 Observation priority:
 
@@ -387,7 +420,7 @@ steps:
   - open: { clearState: true }      # clear-state is also accepted
   - go: { screen: settings }
   - wait: { text: Daily Reminder, timeout: 5s }
-  - video.start: {}
+  - evidence.start: { network: true }
   - evidence.step: { name: before-toggle, note: Daily Reminder before tap }
   - tap: { text: Daily Reminder }
   - type: "Search text"
@@ -412,9 +445,10 @@ steps:
       timeout: 5s
   - evidence.step: { name: after-toggle, note: Result after tapping reminder }
   - pinch: { x: 200, y: 450, scale: 0.5, panX: 80, panY: -40, duration: 800ms }
+  - twoFingerPan: { x: 200, y: 450, panX: 80, panY: -40, duration: 800ms }
   - logs: { key: SettingsReached }
   - crashes: {}
-  - video.stop: {}
+  - evidence.stop: {}
   - report: {}
 ```
 
@@ -442,9 +476,7 @@ erase
 hideKeyboard
 swipe
 pinch
-rotate
 twoFingerPan
-actions
 wait
 waitUntil
 when
@@ -458,6 +490,9 @@ sleep
 logs
 exec
 crashes
+network.start
+network.stop
+network.status
 evidence.start
 evidence.step
 evidence.stop
@@ -549,17 +584,37 @@ For feature behavior, use a flow with named evidence points:
 
 Start recording as late as possible: navigate and wait for the state first when
 navigation is setup, then record the behavior under test. Screenshots should
-prove the behavior itself, not only that the app opened. The supported recording
-flow steps are `video.start` and `video.stop`; `evidence.start` and
-`evidence.stop` remain supported aliases. Flows do not have a `recordVideo`
-option.
+prove the behavior itself, not only that the app opened. The supported video
+recording flow steps are `video.start` and `video.stop`; `evidence.start` and
+`evidence.stop` remain supported aliases. Add `network: true` to
+`evidence.start` when the proof window should also capture a simulator HAR via
+mitmproxy:
+
+```yaml
+- evidence.start: { network: true }
+- tap: { id: refresh_button }
+- wait: { id: loaded_state, timeout: 10s }
+- evidence.stop: {}
+- report: {}
+```
+
+Flows can also control network capture explicitly:
+
+```yaml
+- network.start: {}
+- tap: { id: refresh_button }
+- network.status: {}
+- network.stop: {}
+```
 
 `mav evidence report` writes `.mav/runs/<run-id>/report.json` for project runs
 and prints
 `video=<path>` only when a valid video exists. It prints `video=missing` when
 the run has no recording, and `video=invalid` with `video_issue=...` when the
-file exists but is not acceptable evidence. A report without an accepted video
-does not prove video evidence was captured.
+file exists but is not acceptable evidence. When `network.har` exists, the
+manifest includes request, response, status, and domain counts so the HTML
+report can prove which network traffic happened inside the evidence window. A
+report without an accepted video does not prove video evidence was captured.
 
 The CLI owns the evidence data. The MAV skill owns the visual HTML report: it
 reads the manifest, uses `skills/mav/templates/evidence-report.html` as a

@@ -114,6 +114,30 @@ func TestGenerateReportIncludesEmbeddableMP4(t *testing.T) {
 	}
 }
 
+func TestGenerateReportIncludesNetworkEvidence(t *testing.T) {
+	dir := t.TempDir()
+	run := RunState{ID: "abc", Dir: dir}
+	har := `{"log":{"entries":[{"request":{"url":"https://api.example.com/a"},"response":{"status":200}},{"request":{"url":"https://api.example.com/b"},"response":{"status":500}}]}}`
+	if err := os.WriteFile(filepath.Join(dir, "network.har"), []byte(har), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path, err := GenerateReport(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report ReportData
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatalf("invalid report json: %v\n%s", err, data)
+	}
+	if !report.Network.OK || report.Network.Requests != 2 || report.Network.Status5xx != 1 || report.Network.UniqueDomains != 1 {
+		t.Fatalf("network=%+v", report.Network)
+	}
+}
+
 func TestValidateEvidenceImageRejectsInvalidImage(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "fake.png")

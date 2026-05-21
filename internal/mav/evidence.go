@@ -9,6 +9,7 @@ import (
 	_ "image/png"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -52,6 +53,7 @@ type ReportData struct {
 	VideoDuration      string               `json:"video_duration,omitempty"`
 	VideoFrames        string               `json:"video_frames,omitempty"`
 	Logs               string               `json:"logs,omitempty"`
+	Network            NetworkEvidence      `json:"network,omitempty"`
 	Crashes            []string             `json:"crashes,omitempty"`
 	Commands           []string             `json:"commands,omitempty"`
 	Issues             []ReportIssue        `json:"issues,omitempty"`
@@ -73,6 +75,18 @@ type ImageEvidence struct {
 	Width  int    `json:"width,omitempty"`
 	Height int    `json:"height,omitempty"`
 	Size   int64  `json:"size,omitempty"`
+}
+
+type NetworkEvidence struct {
+	HAR           string `json:"har,omitempty"`
+	OK            bool   `json:"ok"`
+	Issue         string `json:"issue,omitempty"`
+	Requests      int    `json:"requests,omitempty"`
+	Responses     int    `json:"responses,omitempty"`
+	Status4xx     int    `json:"status_4xx,omitempty"`
+	Status5xx     int    `json:"status_5xx,omitempty"`
+	UniqueDomains int    `json:"unique_domains,omitempty"`
+	Active        bool   `json:"active,omitempty"`
 }
 
 type ReportIssue struct {
@@ -188,6 +202,16 @@ func GenerateReport(run RunState) (string, error) {
 		}
 		data.Logs = strings.Join(lines, "\n")
 	}
+	if network := reportNetwork(run); network.HAR != "" || network.Active {
+		data.Network = network
+		if network.Issue != "" {
+			data.Issues = append(data.Issues, ReportIssue{
+				Severity: "warning",
+				Title:    "Network capture needs review",
+				Detail:   network.Issue,
+			})
+		}
+	}
 	crashDir := filepath.Join(run.Dir, "crashes")
 	if entries, err := os.ReadDir(crashDir); err == nil {
 		for _, entry := range entries {
@@ -221,6 +245,38 @@ func GenerateReport(run RunState) (string, error) {
 	encoder := json.NewEncoder(file)
 	encoder.SetIndent("", "  ")
 	return path, encoder.Encode(data)
+}
+
+func reportNetwork(run RunState) NetworkEvidence {
+	har := filepath.Join(run.Dir, "network.har")
+	evidence := NetworkEvidence{HAR: har, Active: findRunningNetworkPID(run) > 0}
+	info, err := os.Stat(har)
+	if err != nil {
+		if evidence.Active {
+			evidence.Issue = "network_capture_active_no_har"
+		}
+		evidence.HAR = ""
+		return evidence
+	}
+	if info.Size() == 0 {
+		evidence.Issue = "har_empty"
+		return evidence
+	}
+	summary := summarizeHAR(har)
+	if summary["har_parse"] == "failed" {
+		evidence.Issue = "har_parse_failed"
+		return evidence
+	}
+	evidence.OK = true
+	evidence.Requests, _ = strconv.Atoi(summary["requests"])
+	evidence.Responses, _ = strconv.Atoi(summary["responses"])
+	evidence.Status4xx, _ = strconv.Atoi(summary["status_4xx"])
+	evidence.Status5xx, _ = strconv.Atoi(summary["status_5xx"])
+	evidence.UniqueDomains, _ = strconv.Atoi(summary["unique_domains"])
+	if evidence.Active {
+		evidence.Issue = "network_capture_still_active"
+	}
+	return evidence
 }
 
 func ValidateEvidenceImage(path string) ImageEvidence {

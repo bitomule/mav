@@ -63,6 +63,39 @@ func TestRouterFallsBackToIdbForCoordTapWhenAxeAbsent(t *testing.T) {
 	}
 }
 
+func TestRouterPicksBaguetteForSimulatorSystemTreeAndKeyboard(t *testing.T) {
+	reg := drivers.NewRegistry()
+	runner := fakeRunner{tools: map[string]bool{"baguette": true}}
+	RegisterDefaultDrivers(reg, NewExecutor(runner))
+
+	router := drivers.NewRouter(reg, NewExecutor(runner), nil)
+	target := drivers.Target{Kind: drivers.KindSim}
+	for _, cap := range []drivers.Capability{drivers.CapTreeSystem, drivers.CapErase, drivers.CapHideKeyboard} {
+		picked, _, err := router.Route(context.Background(), cap, target, "")
+		if err != nil {
+			t.Fatalf("route %s failed: %v", cap, err)
+		}
+		if picked.ID() != "baguette" {
+			t.Fatalf("cap %s: expected baguette, got %s", cap, picked.ID())
+		}
+	}
+}
+
+func TestRouterPicksMitmproxyForSimulatorNetworkCapture(t *testing.T) {
+	reg := drivers.NewRegistry()
+	runner := fakeRunner{tools: map[string]bool{"mitmdump": true}}
+	RegisterDefaultDrivers(reg, NewExecutor(runner))
+
+	router := drivers.NewRouter(reg, NewExecutor(runner), nil)
+	picked, _, err := router.Route(context.Background(), drivers.CapNetworkCapture, drivers.Target{Kind: drivers.KindSim}, "")
+	if err != nil {
+		t.Fatalf("route failed: %v", err)
+	}
+	if picked.ID() != "mitmproxy" {
+		t.Fatalf("expected mitmproxy, got %s", picked.ID())
+	}
+}
+
 func TestRouterReportsNoDriverWhenNothingInstalled(t *testing.T) {
 	reg := drivers.NewRegistry()
 	runner := fakeRunner{} // nothing on PATH

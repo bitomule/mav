@@ -374,6 +374,26 @@
     .issue span { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
     .issue strong { display: block; margin: 4px 0; }
     .issue p { margin: 0; color: var(--muted); line-height: 1.4; }
+    .network-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .network-note {
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel-2);
+      color: var(--muted);
+      line-height: 1.45;
+    }
+    .artifact-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
     .audit-grid {
       display: grid;
       grid-template-columns: 0.9fr 1.1fr;
@@ -466,7 +486,7 @@
         </div>
         <div class="actions">
           <a class="button primary" href="video.mp4" target="_blank" rel="noreferrer">Open</a>
-          <a class="button" href="video.mp4" download>Download</a>
+          <a class="button" href="video.mp4" download>Download video</a>
           <button class="button" data-copy="video.mp4">Copy path</button>
         </div>
       </div>
@@ -495,7 +515,9 @@
           <div class="metric"><span>Video</span><strong>accepted</strong></div>
           <div class="metric"><span>Duration</span><strong>2s</strong></div>
           <div class="metric"><span>Captures</span><strong>3/3</strong></div>
+          <div class="metric"><span>Network</span><strong>12 req</strong></div>
           <div class="metric"><span>Crashes</span><strong>0</strong></div>
+          <div class="metric"><span>Commands</span><strong>8</strong></div>
         </div>
       </div>
       <div class="panel">
@@ -532,6 +554,7 @@
     <a href="#evidence">Evidence</a>
     <a href="#timeline">Captures</a>
     <a href="#integrity">Integrity</a>
+    <a href="#network">Network</a>
     <a href="#logs">Logs</a>
     <a href="#commands">Commands</a>
   </nav>
@@ -562,6 +585,33 @@
       <article class="issue ok"><span>accepted</span><strong>Video accepted</strong><p>Only say this when report.json has video_status=accepted. Include duration and frames.</p></article>
       <article class="issue"><span>warning</span><strong>Missing notes weaken proof</strong><p>If a screenshot note is missing, call it out instead of silently presenting it as strong evidence.</p></article>
       <article class="issue bad"><span>blocker</span><strong>Rejected artifacts stay rejected</strong><p>Invalid videos or screenshots must remain visible as rejected evidence and cannot support a verified claim.</p></article>
+    </div>
+  </section>
+
+  <section id="network">
+    <h2>Network Evidence</h2>
+    <div class="section-body">
+      <div class="network-grid">
+        <div class="metric"><span>HAR status</span><strong class="ok-text">accepted</strong></div>
+        <div class="metric"><span>Requests</span><strong>12</strong></div>
+        <div class="metric"><span>Responses</span><strong>12</strong></div>
+        <div class="metric"><span>4xx / 5xx</span><strong>0 / 0</strong></div>
+        <div class="metric"><span>Domains</span><strong>3</strong></div>
+        <div class="metric"><span>Active</span><strong>false</strong></div>
+      </div>
+      <div class="network-note">
+        Use this section only when <code>report.json</code> includes a
+        <code>network</code> object. State what the HAR proves in this run:
+        traffic was captured inside the evidence window, how many requests were
+        observed, whether any 4xx/5xx statuses occurred, and whether the capture
+        was still active. If <code>network.issue</code> is set, keep the section
+        visibly warning/rejected and surface the issue text here.
+        <div class="artifact-actions">
+          <a class="button primary" href="network.har" target="_blank" rel="noreferrer">Open HAR</a>
+          <a class="button" href="network.har" download>Download HAR</a>
+          <button class="button" data-copy="network.har">Copy HAR path</button>
+        </div>
+      </div>
     </div>
   </section>
 
