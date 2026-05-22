@@ -134,9 +134,7 @@ mav setup --install axe idb baguette
 
 `mav setup --install idb` prefers pipx with Python 3.12/3.13 for `fb-idb` and
 uses Homebrew for `idb-companion`. AXe and Baguette are installed via Homebrew
-(`cameroncooke/axe/axe` and `tddworks/baguette/baguette`). MAV does not require
-Node, npm, Java, or any Appium component (those were dropped in the May 2026
-driver overhaul).
+(`cameroncooke/axe/axe` and `tddworks/baguette/baguette`).
 
 ## Install
 
