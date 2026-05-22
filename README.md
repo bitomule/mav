@@ -363,7 +363,6 @@ tree retry before returning `ui_tree_empty`.
 Use flows for repeatable feature validation:
 
 ```yaml
-version: 1
 name: verify_daily_reminder
 steps:
   - open: { clearState: true }      # clear-state is also accepted

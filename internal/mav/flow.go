@@ -12,9 +12,8 @@ import (
 )
 
 type Flow struct {
-	Version int        `yaml:"version"`
-	Name    string     `yaml:"name"`
-	Steps   []FlowStep `yaml:"steps"`
+	Name  string     `yaml:"name"`
+	Steps []FlowStep `yaml:"steps"`
 }
 
 type FlowStep struct {
@@ -110,20 +109,13 @@ func loadFlow(path string, env map[string]string, stack []string, nestedInWhen b
 
 func ParseFlow(data []byte) (Flow, error) {
 	var raw struct {
-		Version int         `yaml:"version"`
-		Name    string      `yaml:"name"`
-		Steps   []yaml.Node `yaml:"steps"`
+		Name  string      `yaml:"name"`
+		Steps []yaml.Node `yaml:"steps"`
 	}
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return Flow{}, err
 	}
-	flow := Flow{Version: raw.Version, Name: raw.Name}
-	if flow.Version == 0 {
-		flow.Version = 1
-	}
-	if flow.Version != 1 {
-		return Flow{}, fmt.Errorf("unsupported_flow_version version=%d", flow.Version)
-	}
+	flow := Flow{Name: raw.Name}
 	if len(raw.Steps) == 0 {
 		return Flow{}, fmt.Errorf("flow_steps_missing")
 	}
