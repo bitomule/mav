@@ -10,7 +10,6 @@ import (
 
 func TestParseFlowYAML(t *testing.T) {
 	flow, err := ParseFlow([]byte(`
-version: 1
 name: verify_daily_reminder
 steps:
   - open: {}
@@ -122,10 +121,13 @@ steps:
 	}
 }
 
-func TestParseFlowRejectsUnknownVersion(t *testing.T) {
-	_, err := ParseFlow([]byte("version: 2\nsteps:\n  - open: {}\n"))
-	if err == nil {
-		t.Fatal("expected error")
+func TestParseFlowIgnoresLegacyVersion(t *testing.T) {
+	flow, err := ParseFlow([]byte("version: 2\nsteps:\n  - open: {}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(flow.Steps) != 1 || flow.Steps[0].Action != "open" {
+		t.Fatalf("flow=%+v", flow)
 	}
 }
 
