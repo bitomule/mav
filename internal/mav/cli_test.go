@@ -591,17 +591,17 @@ func TestUIHelpShowsSpecificPinchFlags(t *testing.T) {
 	}
 }
 
-func TestNestedHelpAcceptsDashHelp(t *testing.T) {
+func TestNestedHelpAcceptsLongHelp(t *testing.T) {
 	tests := []struct {
 		name string
 		args []string
 		want string
 	}{
-		{name: "flow", args: []string{"flow", "-help"}, want: "mav flow lint flow.yaml"},
-		{name: "flow lint", args: []string{"flow", "lint", "-help"}, want: "Parses and validates"},
-		{name: "ui tap", args: []string{"ui", "tap", "-help"}, want: "mav ui tap --id ID"},
-		{name: "evidence report", args: []string{"evidence", "report", "-help"}, want: "verified evidence manifest"},
-		{name: "network start", args: []string{"network", "start", "-help"}, want: "simulator HAR capture"},
+		{name: "flow", args: []string{"flow", "--help"}, want: "mav flow lint flow.yaml"},
+		{name: "flow lint", args: []string{"flow", "lint", "--help"}, want: "Parses and validates"},
+		{name: "ui tap", args: []string{"ui", "tap", "--help"}, want: "mav ui tap --id ID"},
+		{name: "evidence report", args: []string{"evidence", "report", "--help"}, want: "verified evidence manifest"},
+		{name: "network start", args: []string{"network", "start", "--help"}, want: "simulator HAR capture"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -622,8 +622,8 @@ func TestHelpVerbAliases(t *testing.T) {
 		args []string
 		want string
 	}{
-		{args: []string{"tap", "-help"}, want: "mav ui tap --id ID"},
-		{args: []string{"tree", "-help"}, want: "mav ui tree"},
+		{args: []string{"tap", "--help"}, want: "mav ui tap --id ID"},
+		{args: []string{"tree", "--help"}, want: "mav ui tree"},
 		{args: []string{"help", "screenshot"}, want: "mav capture"},
 	}
 	for _, tc := range tests {

@@ -22,16 +22,11 @@ compact result the next turn can act on.
 
 MAV is intentionally not an autonomous testing agent. It runs the command. The agent decides what to run next.
 
-## What MAV Does Best
+## Why MAV?
 
-MAV has two jobs:
-
-1. Route agent intent to the right iOS driver.
-2. Produce evidence that is useful after the command finishes.
-
-The router is the core value. Agents should not need to know when to use AXe,
-Baguette, idb, simctl, or mitmproxy. They should ask for a capability and get a
-deterministic answer:
+MAV gives agents one stable API over the messy iOS toolchain. Agents ask for a
+capability; MAV picks the driver for the selected simulator or device and
+returns compact output the next turn can parse:
 
 - Accessibility tree, semantic taps, waits, and screenshots go through AXe when
   it is healthy.
@@ -42,42 +37,18 @@ deterministic answer:
 - Simulator lifecycle, video, and logs go through simctl.
 - Simulator network evidence goes through mitmproxy HAR capture.
 
-The evidence layer makes the result inspectable. A run can include accepted
-video, named screenshots, accessibility tree snapshots, log tails, crash
-reports, command trails, and network HAR summaries. The CLI writes the verified
-manifest; the MAV skill turns it into a visual HTML report for humans.
+Runs can record accepted video, named screenshots, accessibility tree snapshots,
+log tails, crash reports, command trails, and optional HAR network traffic.
+`mav evidence report` writes a verified manifest for those artifacts; the MAV
+skill turns the manifest into a visual HTML report for humans.
 
-## What MAV Is For
-
-- Giving agents one stable iOS API instead of a pile of tool-specific CLIs.
-- Verifying iOS app changes without opening Xcode or writing a one-off test.
-- Driving simulator and device UI through accessibility trees before falling
-  back to screenshots or coordinates.
-- Capturing proof windows with video, screenshots, logs, crashes, commands, and
-  optional network traffic.
-- Building repeatable flows that are still agent-readable and debuggable.
+Native MAV YAML flows compose setup, UI actions, waits, assertions, logs,
+crashes, network capture, and report generation without hiding the underlying
+command trail.
 
 MAV uses a project-local launch recipe to build, locate, install, and launch
 the app. Bazel, Xcode, Tuist, Make, Just, and project scripts are setup-time
 templates only; runtime executes the configured recipe.
-
-## Why MAV?
-
-### vs Maestro
-
-Maestro is for humans: a fluent YAML DSL, a recording mode, a flow file you read top-to-bottom. MAV is for agents: single-shot commands, one compact line per result, native iOS drivers, and evidence artifacts that survive the session. If you already write Maestro flows for human testing, MAV does not replace them — it gives your agent a different kind of access.
-
-### vs XCUITest
-
-XCUITest knows what the test file says. It does not know what the screen actually looks like right now. MAV reads the live accessibility tree and can attach video, screenshots, logs, crashes, and HAR evidence to the run, so the agent can react to the state the app actually reached.
-
-### vs Appium
-
-Appium covers Android, iOS, Windows, web, and a long tail of platforms — at the cost of a heavy stack and a slower path to "did the tap happen?". MAV is macOS-only and iOS-only on purpose: it leans directly on `simctl`, AXe, `idb`, Baguette, and mitmproxy. The May 2026 driver overhaul removed Appium/WDA from the pipeline entirely; everything runs through native host-side drivers now.
-
-### vs Detox
-
-Detox is the right answer if you are shipping React Native and want gray-box testing tied to the JS runtime. MAV is app-stack-agnostic — Swift, RN, Flutter, anything that ends up in a `.app` bundle. The price is that MAV does not know about your framework; it only knows what the simulator shows.
 
 ## How an agent uses MAV
 
@@ -87,8 +58,9 @@ Detox is the right answer if you are shipping React Native and want gray-box tes
 
 Each call is one verb. The agent picks the next verb based on the previous
 output. The commands that cover most flows are `mav ui tree`, `mav ui tap`,
-`mav capture`, and `mav logs`. Use `mav -help` and nested help such as
-`mav ui tap -help` or `mav evidence report -help` for the full command surface.
+`mav capture`, and `mav logs`. Use `mav --help` and nested help such as
+`mav ui tap --help` or `mav evidence report --help` for the full command
+surface.
 
 ## Used at
 
@@ -262,11 +234,11 @@ mav --raw ui tree
 ## Help
 
 ```bash
-mav -help
+mav --help
 mav ui --help
-mav ui tap -help
-mav flow lint -help
-mav evidence report -help
+mav ui tap --help
+mav flow lint --help
+mav evidence report --help
 ```
 
 Help is intentionally hierarchical. The README explains the workflow; the CLI
@@ -356,9 +328,9 @@ Prefer stable accessibility ids when possible.
 For exact syntax, ask the command:
 
 ```bash
-mav ui tap -help
-mav ui wait -help
-mav ui pinch -help
+mav ui tap --help
+mav ui wait --help
+mav ui pinch --help
 ```
 
 `mav ui erase` and `mav ui hideKeyboard` dispatch through baguette on

@@ -107,7 +107,7 @@ func parseGlobal(args []string) (GlobalOptions, []string) {
 			opts.Verbose = true
 		case "--raw":
 			opts.Raw = true
-		case "--help", "-h", "-help":
+		case "--help", "-h":
 			opts.Help = true
 		case "--prefer-driver":
 			if i+1 < len(args) {
@@ -178,8 +178,7 @@ Global flags:
   --verbose   Print extra debug details where supported.
   --prefer-driver auto|axe
               Prefer a UI driver for semantic tree/tap commands.
-  --help,-h,-help
-              Show help.
+  --help,-h   Show help.
 `
 	case "setup":
 		return "Usage:\n  mav setup [--non-interactive]\n  mav setup --install axe idb baguette\n"
