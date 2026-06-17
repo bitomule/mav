@@ -34,6 +34,7 @@ returns compact output the next turn can parse:
   through Baguette.
 - Physical device install, launch, coordinate input, logs, screenshots, and
   crashes go through idb.
+- Simulator crash checks read local DiagnosticReports directly.
 - Simulator lifecycle, video, and logs go through simctl.
 - Simulator network evidence goes through mitmproxy HAR capture.
 
@@ -113,8 +114,10 @@ mav doctor
 capability: accessibility and semantic actions use AXe, coordinate taps and
 device fallback use idb, multitouch and system UI use baguette on simulator.
 Physical iOS devices require idb for install, launch, logs, screenshots, and
-crashes. Multitouch gestures, system-UI trees, and hideKeyboard return
-structured errors on device — use a simulator for those flows.
+crashes. Simulator crash checks use local DiagnosticReports directly, avoiding
+idb_companion crash-list parser failures from unrelated malformed reports.
+Multitouch gestures, system-UI trees, and hideKeyboard return structured errors
+on device — use a simulator for those flows.
 
 Configure the project or install supported helper tools:
 

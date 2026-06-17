@@ -19,10 +19,11 @@ type Runner interface {
 }
 
 type CommandResult struct {
-	Stdout string
-	Stderr string
-	Code   int
-	Err    error
+	Stdout                string
+	Stderr                string
+	Code                  int
+	Err                   error
+	IDBCompanionRefreshed bool
 }
 
 type ExecRunner struct{}

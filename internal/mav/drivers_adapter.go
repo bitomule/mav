@@ -20,7 +20,7 @@ func (a runnerAdapter) LookPath(name string) (string, error) {
 }
 
 func (a runnerAdapter) Run(ctx context.Context, name string, args ...string) drivers.ExecResult {
-	res := a.r.Run(ctx, name, args...)
+	res := runWithIDBCompanionRepair(ctx, a.r, name, args...)
 	return drivers.ExecResult{Stdout: res.Stdout, Stderr: res.Stderr, Code: res.Code, Err: res.Err}
 }
 

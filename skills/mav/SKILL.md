@@ -27,7 +27,7 @@ does not explore or repair routes by itself. The agent decides the next action.
    --udid ...` or `mav device select --name ...`. Physical devices require idb
    for install, launch, logs, screenshots, and crashes. Multitouch, system UI,
    and `hideKeyboard` are simulator-only and return structured errors on
-   device.
+   device. Simulator crash checks use local DiagnosticReports directly.
 4. Start the app with `mav open`. Use `mav open --clear-state` for a fresh
    install. Use `mav open --no-relaunch` when the app was launched manually with
    custom `SIMCTL_CHILD_*` environment and MAV should only attach to the app
