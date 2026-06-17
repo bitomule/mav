@@ -1,8 +1,10 @@
 package mav
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -36,6 +38,25 @@ func TestCrashNameNeedlesIncludeBundleComponents(t *testing.T) {
 	}
 	if containsString(got, "debug") {
 		t.Fatalf("should skip build flavor needles: %v", got)
+	}
+}
+
+func TestCrashesFallbackMarksIDBAsDegraded(t *testing.T) {
+	root := t.TempDir()
+	cfg := Config{Root: root, TargetKind: "simulator", BundleID: "com.example.demo"}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Root: root, Runner: fakeRunner{}, Stdout: &out}
+	if err := cli.crashesFromDiagnosticReports("companion refused"); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	for _, want := range []string{"source=diagnostic_reports", "idb_error=", "degraded=true", "next="} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("output %q missing %q", text, want)
+		}
 	}
 }
 

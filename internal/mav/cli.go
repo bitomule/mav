@@ -3350,6 +3350,8 @@ func (c CLI) crashesFromDiagnosticReports(idbError string) error {
 	}
 	if idbError != "" {
 		fields["idb_error"] = idbError
+		fields["degraded"] = "true"
+		fields["next"] = "idb companion unavailable; run idb list-targets to refresh stale companions, or restart idb_companion"
 	}
 	if crashDir != "" && len(matches) > 0 {
 		copied, summarised := copyDiagnosticCrashes(matches, crashDir)
