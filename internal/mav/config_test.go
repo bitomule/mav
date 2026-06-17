@@ -179,6 +179,20 @@ func TestSetupConfigUsesExplicitMAVScripts(t *testing.T) {
 	}
 }
 
+func TestSetupConfigUsesDotMAVLaunchScripts(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "BUILD.bazel"), `ios_application(name = "DemoApp", bundle_id = "com.example.demo")`)
+	mustWrite(t, filepath.Join(root, ".mav", "mav-build.sh"), "#!/bin/sh\ntrue\n")
+	mustWrite(t, filepath.Join(root, ".mav", "mav-app-path.sh"), "#!/bin/sh\nprintf /tmp/App.app\n")
+	cfg, err := SetupConfig(root, fakeRunner{tools: map[string]bool{"bazelisk": true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Launch.Commands.Build != "./.mav/mav-build.sh" || cfg.Launch.Commands.AppPath != "./.mav/mav-app-path.sh" {
+		t.Fatalf("launch=%+v", cfg.Launch.Commands)
+	}
+}
+
 func TestSetupConfigUsesExplicitJustMAVRecipes(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "BUILD.bazel"), `ios_application(name = "DemoApp", bundle_id = "com.example.demo")`)
