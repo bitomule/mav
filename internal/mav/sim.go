@@ -65,7 +65,7 @@ func SelectSimulator(sims []Simulator, name, runtime, udid string) (Simulator, b
 		} else {
 			continue
 		}
-		if runtime == "" || strings.Contains(strings.ToLower(sim.Runtime), strings.ToLower(runtime)) {
+		if runtime == "" || simulatorRuntimeMatches(sim.Runtime, runtime) {
 			score += 10
 		} else {
 			continue
@@ -79,4 +79,17 @@ func SelectSimulator(sims []Simulator, name, runtime, udid string) (Simulator, b
 		}
 	}
 	return best, bestScore >= 0
+}
+
+func simulatorRuntimeMatches(candidate, query string) bool {
+	candidate = strings.ToLower(candidate)
+	query = strings.ToLower(query)
+	if strings.Contains(candidate, query) {
+		return true
+	}
+	normalise := func(value string) string {
+		replacer := strings.NewReplacer(".", "", "-", "", "_", "", " ", "")
+		return replacer.Replace(value)
+	}
+	return strings.Contains(normalise(candidate), normalise(query))
 }

@@ -303,6 +303,15 @@ func containsCall(calls []string, want string) bool {
 	return false
 }
 
+func indexOfCall(calls []string, want string) int {
+	for i, call := range calls {
+		if strings.Contains(call, want) {
+			return i
+		}
+	}
+	return -1
+}
+
 func TestDoctorDoesNotRequireMaestro(t *testing.T) {
 	var out bytes.Buffer
 	cli := CLI{Runner: fakeRunner{tools: map[string]bool{"go": true, "bazelisk": true, "xcrun": true, "axe": true, "idb": true}}, Root: t.TempDir(), Stdout: &out, Stderr: &bytes.Buffer{}}
@@ -925,6 +934,42 @@ func TestOpenNoRelaunchSkipsLaunchRecipe(t *testing.T) {
 	}
 	if containsCall(runner.commands, "make mav-build") || containsCall(runner.commands, "simctl launch") {
 		t.Fatalf("launch recipe should not run: %v", runner.commands)
+	}
+}
+
+func TestOpenBootsSelectedSimulatorBeforeInstall(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.app"
+	cfg.SimulatorUDID = "SIM-1"
+	cfg.Tools = map[string]bool{"xcrun": true}
+	cfg.Launch = LaunchConfig{Mode: "custom", Commands: LaunchCommands{
+		AppPath: "./app-path",
+		Install: `xcrun simctl install "$MAV_UDID" "$MAV_APP_PATH"`,
+		Launch:  `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`,
+	}}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runner := &launchRecipeRunner{
+		tools: cfg.Tools,
+		results: map[string]CommandResult{
+			"./app-path": {Stdout: "/tmp/Demo.app\n"},
+		},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"open"}); err != nil {
+		t.Fatal(err)
+	}
+	boot := indexOfCall(runner.commands, "xcrun simctl boot SIM-1")
+	status := indexOfCall(runner.commands, "xcrun simctl bootstatus SIM-1 -b")
+	install := indexOfCall(runner.commands, "simctl install")
+	if boot < 0 || status < 0 || install < 0 {
+		t.Fatalf("missing boot/status/install in commands=%v output=%s", runner.commands, out.String())
+	}
+	if boot > install || status > install {
+		t.Fatalf("simulator should boot before install: %v", runner.commands)
 	}
 }
 

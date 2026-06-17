@@ -894,6 +894,9 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	if isPhysicalDevice(cfg) && !hasTool(cfg, "idb") {
 		return Fail("tool_missing", map[string]string{"tool": "idb", "target": "device", "next": "mav setup --install idb"}).Write(c.Stdout)
 	}
+	if err := c.ensureOpenSimulatorBooted(ctx, cfg, run); err != nil {
+		return Fail("sim_boot_failed", map[string]string{"run": run.ID, "logs": run.LogsPath, "stderr": err.Error()}).Write(c.Stdout)
+	}
 	probeLogPID, probeLogErr := c.startProbeLogs(ctx, cfg, run)
 	if probeLogErr != nil {
 		appendFile(run.LogsPath, "mav probe log capture failed: "+probeLogErr.Error()+"\n")
@@ -937,6 +940,23 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 		fields["target"] = "booted"
 	}
 	return OK("open", fields).Write(c.Stdout)
+}
+
+func (c CLI) ensureOpenSimulatorBooted(ctx context.Context, cfg Config, run RunState) error {
+	if isPhysicalDevice(cfg) || cfg.SimulatorUDID == "" || !hasTool(cfg, "xcrun") {
+		return nil
+	}
+	boot := c.Runner.Run(ctx, "xcrun", "simctl", "boot", cfg.SimulatorUDID)
+	appendCommand(run, "xcrun simctl boot "+cfg.SimulatorUDID, boot)
+	if boot.Err != nil && !strings.Contains(boot.Stderr, "Unable to boot device in current state") {
+		return fmt.Errorf("%s", firstLine(boot.Stderr))
+	}
+	status := c.Runner.Run(ctx, "xcrun", "simctl", "bootstatus", cfg.SimulatorUDID, "-b")
+	appendCommand(run, "xcrun simctl bootstatus "+cfg.SimulatorUDID+" -b", status)
+	if status.Err != nil {
+		return fmt.Errorf("%s", firstLine(status.Stderr))
+	}
+	return nil
 }
 
 func (c CLI) applyOpenTargetOverrides(ctx context.Context, cfg *Config, args []string) error {
@@ -3248,6 +3268,9 @@ func (c CLI) crashes(ctx context.Context, opts GlobalOptions, args []string) err
 	}
 	c.resolveConfigTools(&cfg)
 	if !hasTool(cfg, "idb") {
+		if !isPhysicalDevice(cfg) {
+			return c.crashesFromDiagnosticReports("")
+		}
 		return Fail("tool_missing", map[string]string{"tool": "idb"}).Write(c.Stdout)
 	}
 	idbArgs := idbTargetArgs(cfg, "crash", "list")
@@ -3260,6 +3283,9 @@ func (c CLI) crashes(ctx context.Context, opts GlobalOptions, args []string) err
 		return nil
 	}
 	if result.Err != nil {
+		if !isPhysicalDevice(cfg) {
+			return c.crashesFromDiagnosticReports(firstLine(result.Stderr))
+		}
 		fields := map[string]string{"stderr": firstLine(result.Stderr)}
 		addSandboxNext(fields, result.Stderr)
 		return Fail("crashes_failed", fields).Write(c.Stdout)
@@ -3300,6 +3326,37 @@ func (c CLI) crashes(ctx context.Context, opts GlobalOptions, args []string) err
 		fields["dir"] = crashDir
 	}
 
+	return OK("crashes", fields).Write(c.Stdout)
+}
+
+func (c CLI) crashesFromDiagnosticReports(idbError string) error {
+	cfg, err := LoadConfig(c.Root)
+	if err != nil {
+		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
+	}
+	since := time.Now().Add(-15 * time.Minute)
+	var crashDir string
+	if run, err := LoadRun(c.Root, ""); err == nil {
+		if info, statErr := os.Stat(run.Dir); statErr == nil {
+			since = info.ModTime()
+		}
+		crashDir = filepath.Join(run.Dir, "crashes")
+	}
+	matches := findRecentIPSFiles(diagnosticCrashRoots(cfg), crashNameNeedles(cfg), since)
+	fields := map[string]string{
+		"count":  strconv.Itoa(len(matches)),
+		"source": "diagnostic_reports",
+		"since":  since.Format(time.RFC3339),
+	}
+	if idbError != "" {
+		fields["idb_error"] = idbError
+	}
+	if crashDir != "" && len(matches) > 0 {
+		copied, summarised := copyDiagnosticCrashes(matches, crashDir)
+		fields["fetched"] = strconv.Itoa(copied)
+		fields["summarised"] = strconv.Itoa(summarised)
+		fields["dir"] = crashDir
+	}
 	return OK("crashes", fields).Write(c.Stdout)
 }
 
