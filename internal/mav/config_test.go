@@ -179,16 +179,17 @@ func TestSetupConfigUsesExplicitMAVScripts(t *testing.T) {
 	}
 }
 
-func TestSetupConfigUsesDotMAVLaunchScripts(t *testing.T) {
+func TestSetupConfigIgnoresDotMAVLaunchScripts(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "BUILD.bazel"), `ios_application(name = "DemoApp", bundle_id = "com.example.demo")`)
+	mustWrite(t, filepath.Join(root, "Makefile"), "mav-build:\n\ttrue\nmav-app-path:\n\tprintf /tmp/App.app\n")
 	mustWrite(t, filepath.Join(root, ".mav", "mav-build.sh"), "#!/bin/sh\ntrue\n")
 	mustWrite(t, filepath.Join(root, ".mav", "mav-app-path.sh"), "#!/bin/sh\nprintf /tmp/App.app\n")
 	cfg, err := SetupConfig(root, fakeRunner{tools: map[string]bool{"bazelisk": true}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Launch.Commands.Build != "./.mav/mav-build.sh" || cfg.Launch.Commands.AppPath != "./.mav/mav-app-path.sh" {
+	if cfg.Launch.Commands.Build != "make mav-build" || cfg.Launch.Commands.AppPath != "make mav-app-path" {
 		t.Fatalf("launch=%+v", cfg.Launch.Commands)
 	}
 }

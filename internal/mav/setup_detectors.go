@@ -40,19 +40,6 @@ func selectLaunchCandidate(root string, cfg Config) (LaunchCandidate, bool) {
 
 func detectCustomLaunchCandidates(root string, cfg Config) []LaunchCandidate {
 	var out []LaunchCandidate
-	if exists(filepath.Join(root, ".mav", "mav-build.sh")) && exists(filepath.Join(root, ".mav", "mav-app-path.sh")) {
-		out = append(out, LaunchCandidate{
-			Source:      "custom",
-			Confidence:  94,
-			Description: "project .mav launch scripts",
-			Launch: LaunchConfig{Mode: "custom", Commands: LaunchCommands{
-				Build:   "./.mav/mav-build.sh",
-				AppPath: "./.mav/mav-app-path.sh",
-				Install: `xcrun simctl install "$MAV_UDID" "$MAV_APP_PATH"`,
-				Launch:  `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`,
-			}},
-		})
-	}
 	if exists(filepath.Join(root, "scripts", "mav-build")) && exists(filepath.Join(root, "scripts", "mav-app-path")) {
 		out = append(out, LaunchCandidate{
 			Source:      "custom",
