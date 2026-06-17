@@ -1288,7 +1288,7 @@ func (c CLI) describeUITree(ctx context.Context, cfg Config, prefer string, incl
 		return describedUITree{}, fmt.Errorf("tree_tool_missing")
 	}
 	if hasTool(cfg, "idb") {
-		result := c.Runner.Run(ctx, "idb", idbTargetArgs(cfg, "ui", "describe-all", "--json", "--nested")...)
+		result := c.runIDBCommand(ctx, idbTargetArgs(cfg, "ui", "describe-all", "--json", "--nested")...)
 		return describedUITree{Driver: "idb", Result: result}, nil
 	}
 	return describedUITree{}, fmt.Errorf("tree_tool_missing")
@@ -3267,17 +3267,17 @@ func (c CLI) crashes(ctx context.Context, opts GlobalOptions, args []string) err
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
 	c.resolveConfigTools(&cfg)
+	if !isPhysicalDevice(cfg) && !opts.Raw {
+		return c.crashesFromDiagnosticReports("")
+	}
 	if !hasTool(cfg, "idb") {
-		if !isPhysicalDevice(cfg) {
-			return c.crashesFromDiagnosticReports("")
-		}
 		return Fail("tool_missing", map[string]string{"tool": "idb"}).Write(c.Stdout)
 	}
 	idbArgs := idbTargetArgs(cfg, "crash", "list")
 	if cfg.BundleID != "" {
 		idbArgs = append(idbArgs, "--bundle-id", cfg.BundleID)
 	}
-	result := c.Runner.Run(ctx, "idb", idbArgs...)
+	result := c.runIDBCommand(ctx, idbArgs...)
 	if opts.Raw {
 		fmt.Fprint(c.Stdout, result.Stdout)
 		return nil
@@ -3292,6 +3292,9 @@ func (c CLI) crashes(ctx context.Context, opts GlobalOptions, args []string) err
 	}
 	names := parseCrashNames(result.Stdout)
 	fields := map[string]string{"count": strconv.Itoa(len(names))}
+	if result.IDBCompanionRefreshed {
+		fields["idb_repaired"] = "true"
+	}
 
 	if len(names) == 0 {
 		return OK("crashes", fields).Write(c.Stdout)
@@ -4074,6 +4077,9 @@ func appendCommand(run RunState, command string, result CommandResult) {
 		"time":    time.Now().Format(time.RFC3339),
 		"command": command,
 		"code":    result.Code,
+	}
+	if result.IDBCompanionRefreshed {
+		record["idb_repaired"] = true
 	}
 	data, _ := json.Marshal(record)
 	appendFile(run.Commands, string(data)+"\n")
