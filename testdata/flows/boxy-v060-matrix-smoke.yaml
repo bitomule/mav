@@ -1,0 +1,13 @@
+name: boxy_v060_matrix_smoke
+steps:
+  - open: {}
+  - waitUntil:
+      any:
+        - { id: onboardingGetStartedButton }
+        - { id: categoriesView }
+        - { id: settingsButton }
+      timeout: 20s
+  - tree:
+      where: { role: button, enabled: true }
+      max: 20
+      agent: true

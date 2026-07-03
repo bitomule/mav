@@ -131,6 +131,75 @@ func TestParseFlowIgnoresLegacyVersion(t *testing.T) {
 	}
 }
 
+func TestParseFlowV060TypedFeatures(t *testing.T) {
+	flow, err := ParseFlow([]byte(`
+params:
+  category: { required: true }
+  timeout: { default: 5s }
+steps:
+  - open: { timeControl: true }
+  - tap:
+      where:
+        id: createCategoryButton
+        textContains: Create
+        role: button
+        enabled: true
+        near:
+          where: { text: Name }
+          direction: below
+          maxDistance: 120
+      after:
+        wait:
+          any:
+            - { id: categoriesView }
+            - { textContains: Error }
+          timeout: 5s
+        observe: delta
+      onFailure:
+        strategy: retry
+        maxAttempts: 3
+        delay: 300ms
+        backoff: 2
+        retryOn: [selector_not_found]
+  - assertCount:
+      where: { role: button, visible: true }
+      count: 2
+  - extract:
+      name: label
+      where: { id: categoryNameTextField }
+      field: value
+      regex: "(.+)"
+  - time.travel: { by: "+8d" }
+  - debug.step: { kind: over }
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !flow.Params["category"].Required || flow.Params["timeout"].Default != "5s" {
+		t.Fatalf("params=%+v", flow.Params)
+	}
+	tap := flow.Steps[1]
+	if tap.Where.ID != "createCategoryButton" || tap.Where.Near == nil || tap.Where.Near.MaxDistance != 120 {
+		t.Fatalf("selector=%+v", tap.Where)
+	}
+	if tap.After == nil || tap.After.Observe != "delta" || len(tap.After.Wait.Any) != 2 {
+		t.Fatalf("after=%+v", tap.After)
+	}
+	if tap.OnFailure.Strategy != "retry" || tap.OnFailure.MaxAttempts != 3 || tap.OnFailure.Backoff != 2 {
+		t.Fatalf("onFailure=%+v", tap.OnFailure)
+	}
+	if flow.Steps[4].Params["by"] != "+8d" || flow.Steps[5].Params["kind"] != "over" {
+		t.Fatalf("new primitives=%+v %+v", flow.Steps[4], flow.Steps[5])
+	}
+}
+
+func TestParseFlowRejectsUnknownTypedField(t *testing.T) {
+	_, err := ParseFlow([]byte("steps:\n  - tap:\n      where: { id: save, typoField: true }\n"))
+	if err == nil || !strings.Contains(err.Error(), "typoField") {
+		t.Fatalf("expected strict unknown-field error, got %v", err)
+	}
+}
+
 func TestParseFlowAcceptsScalarTypeAndDelay(t *testing.T) {
 	flow, err := ParseFlow([]byte(`
 steps:

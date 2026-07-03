@@ -7,6 +7,7 @@ import (
 	"github.com/bitomule/mav/internal/mav/drivers/idb"
 	"github.com/bitomule/mav/internal/mav/drivers/network"
 	"github.com/bitomule/mav/internal/mav/drivers/simctl"
+	"github.com/bitomule/mav/internal/mav/drivers/simtime"
 )
 
 // RegisterDefaultDrivers wires the canonical driver portfolio into reg:
@@ -24,4 +25,5 @@ func RegisterDefaultDrivers(reg *drivers.Registry, exec drivers.Executor) {
 	reg.Register(idb.New(exec))
 	reg.Register(baguette.New(exec))
 	reg.Register(network.New(exec))
+	reg.Register(simtime.New(exec))
 }

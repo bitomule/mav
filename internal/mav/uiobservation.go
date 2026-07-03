@@ -13,17 +13,19 @@ import (
 // `mav ui tap`, flow conditions, gesture helpers, focus probes)
 // can reason in a single vocabulary.
 type Element struct {
-	ID      string `json:"id,omitempty"`
-	Label   string `json:"label,omitempty"`
-	Role    string `json:"role,omitempty"`
-	Value   string `json:"value,omitempty"`
-	Frame   string `json:"frame,omitempty"`
-	Enabled string `json:"enabled,omitempty"`
-	Subrole string `json:"subrole,omitempty"`
-	Title   string `json:"title,omitempty"`
-	PID     string `json:"pid,omitempty"`
-	Focused string `json:"focused,omitempty"`
-	Depth   int    `json:"depth,omitempty"`
+	ID       string `json:"id,omitempty"`
+	Label    string `json:"label,omitempty"`
+	Role     string `json:"role,omitempty"`
+	Value    string `json:"value,omitempty"`
+	Frame    string `json:"frame,omitempty"`
+	Enabled  string `json:"enabled,omitempty"`
+	Selected string `json:"selected,omitempty"`
+	Visible  string `json:"visible,omitempty"`
+	Subrole  string `json:"subrole,omitempty"`
+	Title    string `json:"title,omitempty"`
+	PID      string `json:"pid,omitempty"`
+	Focused  string `json:"focused,omitempty"`
+	Depth    int    `json:"depth,omitempty"`
 }
 
 // ExtractElements parses an AX tree (axe JSON or any structure that
@@ -72,19 +74,21 @@ func walkAX(value any, out *[]Element, depth int) {
 		}
 	case map[string]any:
 		el := Element{
-			ID:      stringField(node, "AXIdentifier", "identifier", "AXUniqueId"),
-			Label:   stringField(node, "AXLabel", "label", "title"),
-			Role:    stringField(node, "role_description", "role", "type"),
-			Value:   stringField(node, "AXValue", "value"),
-			Frame:   stringField(node, "AXFrame", "frame"),
-			Enabled: boolStringField(node, "AXEnabled", "enabled"),
-			Subrole: stringField(node, "AXSubrole", "subrole"),
-			Title:   stringField(node, "AXTitle", "title"),
-			PID:     stringField(node, "AXPid", "AXPID", "pid"),
-			Focused: boolStringField(node, "AXFocused", "focused", "hasFocus"),
-			Depth:   depth,
+			ID:       stringField(node, "AXIdentifier", "identifier", "AXUniqueId"),
+			Label:    stringField(node, "AXLabel", "label", "title"),
+			Role:     stringField(node, "role_description", "role", "type"),
+			Value:    stringField(node, "AXValue", "value"),
+			Frame:    stringField(node, "AXFrame", "frame"),
+			Enabled:  boolStringField(node, "AXEnabled", "enabled"),
+			Selected: boolStringField(node, "AXSelected", "selected"),
+			Visible:  boolStringField(node, "AXVisible", "visible"),
+			Subrole:  stringField(node, "AXSubrole", "subrole"),
+			Title:    stringField(node, "AXTitle", "title"),
+			PID:      stringField(node, "AXPid", "AXPID", "pid"),
+			Focused:  boolStringField(node, "AXFocused", "focused", "hasFocus"),
+			Depth:    depth,
 		}
-		if el.ID != "" || el.Label != "" || el.Role != "" || el.Value != "" || el.Frame != "" || el.Enabled != "" || el.Subrole != "" || el.Title != "" || el.PID != "" {
+		if el.ID != "" || el.Label != "" || el.Role != "" || el.Value != "" || el.Frame != "" || el.Enabled != "" || el.Selected != "" || el.Visible != "" || el.Subrole != "" || el.Title != "" || el.PID != "" {
 			*out = append(*out, el)
 		}
 		for _, childKey := range []string{"children", "Children", "AXChildren"} {
@@ -154,7 +158,7 @@ func dedupElements(elements []Element) []Element {
 	seen := map[string]bool{}
 	out := []Element{}
 	for _, el := range elements {
-		key := el.ID + "\x00" + el.Label + "\x00" + el.Role + "\x00" + el.Value + "\x00" + el.Frame + "\x00" + el.Enabled + "\x00" + el.Subrole + "\x00" + el.Title + "\x00" + el.PID + "\x00" + el.Focused + "\x00" + strconv.Itoa(el.Depth)
+		key := el.ID + "\x00" + el.Label + "\x00" + el.Role + "\x00" + el.Value + "\x00" + el.Frame + "\x00" + el.Enabled + "\x00" + el.Selected + "\x00" + el.Visible + "\x00" + el.Subrole + "\x00" + el.Title + "\x00" + el.PID + "\x00" + el.Focused + "\x00" + strconv.Itoa(el.Depth)
 		if elementEmpty(el) || seen[key] {
 			continue
 		}
@@ -165,7 +169,7 @@ func dedupElements(elements []Element) []Element {
 }
 
 func elementEmpty(el Element) bool {
-	return el.ID == "" && el.Label == "" && el.Role == "" && el.Value == "" && el.Frame == "" && el.Enabled == "" && el.Subrole == "" && el.Title == "" && el.PID == "" && el.Focused == ""
+	return el.ID == "" && el.Label == "" && el.Role == "" && el.Value == "" && el.Frame == "" && el.Enabled == "" && el.Selected == "" && el.Visible == "" && el.Subrole == "" && el.Title == "" && el.PID == "" && el.Focused == ""
 }
 
 // explicitScreenIdentity derives a stable screen id from the AX

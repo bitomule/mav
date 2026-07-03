@@ -22,6 +22,8 @@ type Driver struct {
 	path string // resolved binary path, populated by Probe
 }
 
+var _ drivers.TypeDriver = (*Driver)(nil)
+
 // New constructs a Driver. The Executor is wired through by the parent mav
 // package (see NewExecutor in drivers_adapter.go).
 func New(exec drivers.Executor) *Driver { return &Driver{exec: exec} }

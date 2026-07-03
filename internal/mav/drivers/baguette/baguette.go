@@ -36,8 +36,10 @@ package baguette
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/bitomule/mav/internal/mav/drivers"
 )
@@ -72,17 +74,84 @@ func (d *Driver) Provides(target drivers.Target) drivers.CapabilitySet {
 	}
 	return drivers.NewSet(
 		drivers.CapTap,
+		drivers.CapDoubleTap,
 		drivers.CapCoordTap,
 		drivers.CapSwipe,
 		drivers.CapType,
 		drivers.CapPinch,
 		drivers.CapTwoFingerPan,
+		drivers.CapDrag,
+		drivers.CapDragPath,
 		drivers.CapHardwareBtn,
 		drivers.CapScreenshot,
 		drivers.CapTreeSystem,
 		drivers.CapErase,
 		drivers.CapHideKeyboard,
 	)
+}
+
+func (d *Driver) DoubleTap(ctx context.Context, target drivers.Target, spec drivers.TapSpec) error {
+	w, h := defaultGestureSize()
+	args := []string{
+		"double-tap", "--udid", target.UDID,
+		"--x", strconv.Itoa(spec.X), "--y", strconv.Itoa(spec.Y),
+		"--width", strconv.Itoa(w), "--height", strconv.Itoa(h),
+	}
+	if spec.Duration > 0 {
+		args = append(args, "--duration", floatSeconds(spec.Duration))
+	}
+	return d.runOK(ctx, "double-tap", args)
+}
+
+func (d *Driver) Drag(ctx context.Context, target drivers.Target, spec drivers.DragSpec) error {
+	w, h := defaultGestureSize()
+	args := []string{
+		"swipe", "--udid", target.UDID,
+		"--startX", strconv.Itoa(spec.StartX), "--startY", strconv.Itoa(spec.StartY),
+		"--endX", strconv.Itoa(spec.EndX), "--endY", strconv.Itoa(spec.EndY),
+		"--width", strconv.Itoa(w), "--height", strconv.Itoa(h),
+	}
+	if spec.DurationMs > 0 {
+		args = append(args, "--duration", floatSeconds(spec.DurationMs))
+	}
+	return d.runOK(ctx, "drag", args)
+}
+
+func (d *Driver) DragPath(ctx context.Context, target drivers.Target, spec drivers.DragPathSpec) error {
+	if len(spec.Points) < 2 {
+		return fmt.Errorf("baguette: drag path needs at least two points")
+	}
+	inputExec, ok := d.exec.(drivers.InputExecutor)
+	if !ok {
+		return fmt.Errorf("baguette: input executor unavailable")
+	}
+	w, h := defaultGestureSize()
+	lines := make([]string, 0, len(spec.Points)+1)
+	for i, point := range spec.Points {
+		kind := "touch1-move"
+		if i == 0 {
+			kind = "touch1-down"
+		}
+		body, _ := json.Marshal(map[string]any{
+			"type": kind, "x": point.X, "y": point.Y, "width": w, "height": h,
+		})
+		lines = append(lines, string(body))
+	}
+	last := spec.Points[len(spec.Points)-1]
+	up, _ := json.Marshal(map[string]any{
+		"type": "touch1-up", "x": last.X, "y": last.Y, "width": w, "height": h,
+	})
+	lines = append(lines, string(up))
+	res := inputExec.RunInput(ctx, strings.Join(lines, "\n")+"\n", "baguette", "input", "--udid", target.UDID)
+	if res.Err != nil || res.Code != 0 {
+		return fmt.Errorf("baguette input: %s", firstLine(res.Stderr))
+	}
+	for _, line := range strings.Split(strings.TrimSpace(res.Stdout), "\n") {
+		if line != "" && !strings.Contains(line, `"ok":true`) {
+			return fmt.Errorf("baguette input rejected gesture: %s", line)
+		}
+	}
+	return nil
 }
 
 // Cost favours baguette for the multitouch / hardware-button capabilities it

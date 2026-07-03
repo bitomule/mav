@@ -14,6 +14,12 @@ Commands:
   open        Build, install, launch, and start run logs.
   ui          Inspect and control the current UI.
   capture     Capture the current screen.
+  app         List or terminate apps.
+  openURL     Open a URL on the target.
+  location    Set or reset simulated location.
+  clipboard   Copy or read target clipboard.
+  time        Control app wall-clock time (simulator only).
+  debug       Attach and control LLDB (simulator only).
   run         Execute a native MAV YAML flow.
   flow        Lint native MAV YAML flows.
   logs        Read captured run logs.

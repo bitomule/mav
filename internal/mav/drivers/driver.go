@@ -71,6 +71,11 @@ type TextDriver interface {
 	HideKeyboard(ctx context.Context, target Target) error
 }
 
+type TypeDriver interface {
+	Driver
+	Type(ctx context.Context, target Target, spec TextSpec) error
+}
+
 type ScreenshotDriver interface {
 	Driver
 	Screenshot(ctx context.Context, target Target, spec ScreenshotSpec) error
@@ -110,4 +115,32 @@ type NetworkDriver interface {
 type HardwareButtonDriver interface {
 	Driver
 	PressButton(ctx context.Context, target Target, btn HardwareButton) error
+}
+
+type AdvancedGestureDriver interface {
+	Driver
+	DoubleTap(ctx context.Context, target Target, spec TapSpec) error
+	Drag(ctx context.Context, target Target, spec DragSpec) error
+	DragPath(ctx context.Context, target Target, spec DragPathSpec) error
+}
+
+type DeviceUtilityDriver interface {
+	Driver
+	ListApps(ctx context.Context, target Target) (string, error)
+	Terminate(ctx context.Context, target Target, bundleID string) error
+	OpenURL(ctx context.Context, target Target, url string) error
+	SetLocation(ctx context.Context, target Target, latitude, longitude float64) error
+	ResetLocation(ctx context.Context, target Target) error
+	ClipboardWrite(ctx context.Context, target Target, text string) error
+	ClipboardRead(ctx context.Context, target Target) (string, error)
+}
+
+type WallClockDriver interface {
+	Driver
+	InjectTimeControl(ctx context.Context, target Target) error
+	FreezeTime(ctx context.Context, target Target, at string) (string, error)
+	TravelTime(ctx context.Context, target Target, by string) (string, error)
+	ScaleTime(ctx context.Context, target Target, factor float64) (string, error)
+	TimeStatus(ctx context.Context, target Target) (string, error)
+	ResetTime(ctx context.Context, target Target) error
 }

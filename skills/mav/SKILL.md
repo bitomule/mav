@@ -441,3 +441,17 @@ unrelated waiting or setup.
 
 Use `--raw` only when the underlying tool output is needed, and `--verbose`
 only for debugging MAV itself.
+# MAV v0.6 additions
+
+- Prefer an action fast path when the next observation is known:
+  `mav ui tap --id save --wait-id detailView --wait-timeout 5s --observe delta`.
+- Use typed `where` selectors and combine predicates to make actions unique.
+- Pass flow inputs with `mav run flow.yaml --param name=value`.
+- Run a flow on exact targets with repeated `--target` and limit concurrency
+  with `--jobs`.
+- Enable optional simulator wall-clock control with
+  `mav setup --install simtime`, then `mav open --time-control`; use
+  `mav time ...` only after injection.
+- Run `mav setup --install lldb-dap` to verify the selected Xcode debugger.
+  Use `mav debug ...` only for simulator debug builds with dSYM; unresolved
+  source breakpoints fail with `debug_symbols_missing`.

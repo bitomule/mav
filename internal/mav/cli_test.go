@@ -19,6 +19,18 @@ type recordingRunner struct {
 	result  CommandResult
 }
 
+func TestSetupLLDBDAPVerifiesSelectedXcodeTool(t *testing.T) {
+	runner := &recordingRunner{result: CommandResult{Stdout: "/Applications/Xcode.app/Contents/Developer/usr/bin/lldb-dap\n"}}
+	cli := CLI{Runner: runner, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	ok, err := cli.setupLLDBDAP(context.Background())
+	if err != nil || !ok {
+		t.Fatalf("ok=%v err=%v", ok, err)
+	}
+	if runner.command != "xcrun lldb-dap --help" {
+		t.Fatalf("last command=%q", runner.command)
+	}
+}
+
 func (r *recordingRunner) LookPath(file string) (string, error) {
 	if r.tools[file] {
 		return "/usr/bin/" + file, nil

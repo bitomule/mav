@@ -36,6 +36,9 @@ func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clea
 		_ = c.runDriverLifecycle(ctx, cfg, run, launchStep{Name: "clear_state"}, appPath)
 	}
 	for _, step := range steps {
+		if step.Name == "build" && os.Getenv("MAV_SKIP_BUILD") == "1" {
+			continue
+		}
 		if strings.TrimSpace(step.Command) == "" {
 			continue
 		}

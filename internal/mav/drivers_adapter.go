@@ -1,7 +1,10 @@
 package mav
 
 import (
+	"bytes"
 	"context"
+	"os/exec"
+	"strings"
 
 	"github.com/bitomule/mav/internal/mav/drivers"
 )
@@ -17,6 +20,22 @@ func NewExecutor(r Runner) drivers.Executor { return runnerAdapter{r: r} }
 
 func (a runnerAdapter) LookPath(name string) (string, error) {
 	return a.r.LookPath(name)
+}
+
+func (a runnerAdapter) RunInput(ctx context.Context, input string, name string, args ...string) drivers.ExecResult {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdin = strings.NewReader(input)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	code := 0
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		code = exitErr.ExitCode()
+	} else if err != nil {
+		code = 1
+	}
+	return drivers.ExecResult{Stdout: stdout.String(), Stderr: stderr.String(), Code: code, Err: err}
 }
 
 func (a runnerAdapter) Run(ctx context.Context, name string, args ...string) drivers.ExecResult {

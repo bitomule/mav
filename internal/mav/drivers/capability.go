@@ -12,7 +12,8 @@ type Capability string
 
 const (
 	// Input
-	CapTap          Capability = "tap"            // tap by target (coord or semantic) — meta
+	CapTap          Capability = "tap" // tap by target (coord or semantic) — meta
+	CapDoubleTap    Capability = "double_tap"
 	CapSemanticTap  Capability = "tap.semantic"   // tap by accessibility id/text/value
 	CapCoordTap     Capability = "tap.coord"      // tap by (x, y)
 	CapType         Capability = "type"           // type text via keyboard
@@ -22,8 +23,10 @@ const (
 	CapPinch        Capability = "pinch"          // two-finger pinch
 	CapRotate       Capability = "rotate"         // two-finger rotate
 	CapTwoFingerPan Capability = "two_finger_pan" // two-finger pan
-	CapW3CActions   Capability = "w3c_actions"    // W3C Actions JSON dispatch
-	CapHardwareBtn  Capability = "hardware_btn"   // home/volume/lock
+	CapDrag         Capability = "drag"
+	CapDragPath     Capability = "drag_path"
+	CapW3CActions   Capability = "w3c_actions"  // W3C Actions JSON dispatch
+	CapHardwareBtn  Capability = "hardware_btn" // home/volume/lock
 
 	// Introspection
 	CapTreeAX     Capability = "tree.accessibility" // app accessibility tree
@@ -36,6 +39,13 @@ const (
 	CapUninstall Capability = "lifecycle.uninstall"
 	CapBoot      Capability = "lifecycle.boot"
 	CapLocale    Capability = "lifecycle.locale"
+	CapAppList   Capability = "lifecycle.list"
+	CapTerminate Capability = "lifecycle.terminate"
+	CapOpenURL   Capability = "lifecycle.open_url"
+	CapLocation  Capability = "device.location"
+	CapClipboard Capability = "device.clipboard"
+	CapWallClock Capability = "device.wall_clock"
+	CapDebug     Capability = "debug.dap"
 
 	// Evidence / observation
 	CapVideo          Capability = "video"
