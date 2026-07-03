@@ -19,6 +19,8 @@ type Capabilities struct {
 	MultitouchDriver     string
 	NetworkCapture       bool
 	NetworkCaptureDriver string
+	WallClock            bool
+	Debug                bool
 	IDBIssue             string
 	IDBNext              string
 }
@@ -58,11 +60,15 @@ func (c CLI) resolveCapabilities(ctx context.Context, cfg Config) Capabilities {
 		caps.NetworkCapture = true
 		caps.NetworkCaptureDriver = "mitmproxy"
 	}
+	caps.WallClock = tools["simtime"]
+	if tools["xcrun"] {
+		caps.Debug = c.Runner.Run(ctx, "xcrun", "--find", "lldb-dap").Err == nil
+	}
 	return caps
 }
 
 func knownTools() []string {
-	return []string{"go", "bazelisk", "xcrun", "axe", "idb", "baguette", "mitmdump", "pipx", "python3.12", "python3.13", "python3.14"}
+	return []string{"go", "bazelisk", "xcrun", "axe", "idb", "baguette", "simtime", "lldb-dap", "mitmdump", "pipx", "python3.12", "python3.13", "python3.14"}
 }
 
 func (c CLI) resolveConfigTools(cfg *Config) {
@@ -122,6 +128,20 @@ func (caps Capabilities) fields() map[string]string {
 	} else {
 		fields["network_capture"] = "missing"
 		fields["network_capture_next"] = "mav setup --install mitmproxy"
+	}
+	if caps.WallClock {
+		fields["wall_clock"] = "ok"
+		fields["wall_clock_driver"] = "simtime"
+	} else {
+		fields["wall_clock"] = "missing"
+		fields["wall_clock_next"] = "mav setup --install simtime"
+	}
+	if caps.Debug {
+		fields["debug"] = "ok"
+		fields["debug_driver"] = "lldb-dap"
+	} else {
+		fields["debug"] = "missing"
+		fields["debug_next"] = "mav setup --install lldb-dap"
 	}
 	if caps.IDBIssue != "" {
 		fields["idb_issue"] = caps.IDBIssue

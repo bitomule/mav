@@ -11,7 +11,7 @@ func TestRegisterDefaultDriversWiresAllBridges(t *testing.T) {
 	reg := drivers.NewRegistry()
 	RegisterDefaultDrivers(reg, NewExecutor(fakeRunner{}))
 
-	want := []string{"axe", "baguette", "idb", "mitmproxy", "simctl"}
+	want := []string{"axe", "baguette", "idb", "mitmproxy", "simctl", "simtime"}
 	got := reg.All()
 	if len(got) != len(want) {
 		t.Fatalf("expected %d drivers, got %d", len(want), len(got))

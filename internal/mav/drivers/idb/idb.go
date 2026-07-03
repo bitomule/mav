@@ -44,7 +44,57 @@ func (d *Driver) Provides(_ drivers.Target) drivers.CapabilitySet {
 		drivers.CapInstall,
 		drivers.CapLaunch,
 		drivers.CapUninstall,
+		drivers.CapAppList,
+		drivers.CapTerminate,
+		drivers.CapOpenURL,
+		drivers.CapLocation,
 	)
+}
+
+func (d *Driver) ListApps(ctx context.Context, target drivers.Target) (string, error) {
+	res := d.exec.Run(ctx, "idb", targetArgs(target, "list-apps", "--json")...)
+	if res.Err != nil {
+		return "", errors.New(firstLine(res.Stderr))
+	}
+	return res.Stdout, nil
+}
+
+func (d *Driver) Terminate(ctx context.Context, target drivers.Target, bundleID string) error {
+	res := d.exec.Run(ctx, "idb", targetArgs(target, "terminate", bundleID)...)
+	if res.Err != nil {
+		return errors.New(firstLine(res.Stderr))
+	}
+	return nil
+}
+
+func (d *Driver) OpenURL(ctx context.Context, target drivers.Target, url string) error {
+	res := d.exec.Run(ctx, "idb", targetArgs(target, "open", url)...)
+	if res.Err != nil {
+		return errors.New(firstLine(res.Stderr))
+	}
+	return nil
+}
+
+func (d *Driver) SetLocation(ctx context.Context, target drivers.Target, latitude, longitude float64) error {
+	res := d.exec.Run(ctx, "idb", targetArgs(target, "set-location",
+		strconv.FormatFloat(latitude, 'f', 6, 64),
+		strconv.FormatFloat(longitude, 'f', 6, 64))...)
+	if res.Err != nil {
+		return errors.New(firstLine(res.Stderr))
+	}
+	return nil
+}
+
+func (d *Driver) ResetLocation(context.Context, drivers.Target) error {
+	return errors.New("idb: resetting device location is unsupported")
+}
+
+func (d *Driver) ClipboardWrite(context.Context, drivers.Target, string) error {
+	return errors.New("idb: clipboard write is unsupported")
+}
+
+func (d *Driver) ClipboardRead(context.Context, drivers.Target) (string, error) {
+	return "", errors.New("idb: clipboard read is unsupported")
 }
 
 // Cost is canonical (0) for the device-only capabilities idb owns; medium (50)

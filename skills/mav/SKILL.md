@@ -70,8 +70,12 @@ does not explore or repair routes by itself. The agent decides the next action.
    `View`-suffix identifier, such as `SettingsView` → `settings-view`. This is
    a labelling/observability signal only. Selectors for tapping still work
    regardless.
-9. For ad-hoc sessions started with `mav open`, run `mav stop` when validation
-   is done. `mav run` stops run-owned streams automatically.
+9. Sessions started with `mav open` have a renewable 15-minute inactivity
+   lease. Each MAV command keeps the lease alive, including heartbeats during
+   long commands. Expiration automatically stops run-owned streams, resets
+   non-preserved time control, and releases the simulator lock. Use `mav stop`
+   only for immediate cleanup. `mav run` stops run-owned streams
+   deterministically.
 
 For evidence flows that need mitmproxy on macOS 26+, remember that mitmproxy's
 local Network Extension may take several seconds to become ready after launch.
@@ -441,3 +445,17 @@ unrelated waiting or setup.
 
 Use `--raw` only when the underlying tool output is needed, and `--verbose`
 only for debugging MAV itself.
+# MAV v0.6 additions
+
+- Prefer an action fast path when the next observation is known:
+  `mav ui tap --id save --wait-id detailView --wait-timeout 5s --observe delta`.
+- Use typed `where` selectors and combine predicates to make actions unique.
+- Pass flow inputs with `mav run flow.yaml --param name=value`.
+- Run a flow on exact targets with repeated `--target` and limit concurrency
+  with `--jobs`.
+- Enable optional simulator wall-clock control with
+  `mav setup --install simtime`, then `mav open --time-control`; use
+  `mav time ...` only after injection.
+- Run `mav setup --install lldb-dap` to verify the selected Xcode debugger.
+  Use `mav debug ...` only for simulator debug builds with dSYM; unresolved
+  source breakpoints fail with `debug_symbols_missing`.

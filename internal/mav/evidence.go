@@ -60,6 +60,7 @@ type ReportData struct {
 	ValidStepCount     int                  `json:"valid_step_count"`
 	InvalidStepCount   int                  `json:"invalid_step_count"`
 	Verdict            string               `json:"verdict"`
+	Outputs            map[string]string    `json:"outputs,omitempty"`
 }
 
 type ReportEvidenceStep struct {
@@ -228,6 +229,9 @@ func GenerateReport(run RunState) (string, error) {
 				data.Commands = append(data.Commands, line)
 			}
 		}
+	}
+	if outputData, err := os.ReadFile(filepath.Join(run.Dir, "outputs.json")); err == nil {
+		_ = json.Unmarshal(outputData, &data.Outputs)
 	}
 	data.Verdict = "needs review"
 	if data.InvalidStepCount == 0 && data.VideoStatus == "accepted" && len(data.Steps) > 0 {

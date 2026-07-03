@@ -59,6 +59,23 @@ type SwipeSpec struct {
 	DurationMs     int
 }
 
+type DragSpec struct {
+	StartX, StartY int
+	EndX, EndY     int
+	DurationMs     int
+	PressMs        int
+	HoldMs         int
+}
+
+type PathPoint struct {
+	X, Y       int
+	DurationMs int
+}
+
+type DragPathSpec struct {
+	Points []PathPoint
+}
+
 // PinchSpec is a two-finger pinch centred at (X, Y) with Scale > 1 to zoom in
 // and Scale < 1 to zoom out.
 type PinchSpec struct {

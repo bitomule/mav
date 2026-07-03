@@ -1,0 +1,40 @@
+name: boxy_v060_create_category
+params:
+  category:
+    required: true
+steps:
+  - tap:
+      where:
+        id: categoryNameTextField
+        role: text field
+        near:
+          where: { text: NAME }
+          direction: below
+          maxDistance: 200
+  - erase: { focused: true }
+  - type: { text: "${params.category}" }
+  - tap: { where: { id: shippingbox, role: button } }
+  - tap:
+      x: 363
+      y: 100
+      after:
+        wait:
+          any:
+            - { text: "${params.category}" }
+            - { id: categoriesView }
+            - { textContains: Error }
+          timeout: 5s
+        observe: delta
+      onFailure:
+        strategy: retry
+        maxAttempts: 2
+        delay: 300ms
+        retryOn: [selector_not_found, ui_not_stable]
+  - extract:
+      name: categoryLabel
+      where: { text: "${params.category}" }
+      field: text
+      regex: "(.+)"
+  - assertCount:
+      where: { text: "${params.category}", visible: true }
+      count: 1

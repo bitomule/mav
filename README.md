@@ -711,14 +711,19 @@ writable copy at `/tmp/mav/<run-id>/app.tmp/<App>.app`.
 
 ## Cleanup
 
-Ad-hoc `mav open` sessions keep log capture running for the current run. Stop
-them when done:
+`mav open` uses a 15-minute inactivity lease. Every command renews it, including
+heartbeats while a long command is running. When the lease expires, MAV stops
+the worker, Baguette, logs and LLDB, resets non-preserved time control, and
+releases the simulator lock automatically.
+
+Use `mav stop` only when immediate cleanup is useful:
 
 ```bash
 mav stop
 ```
 
-`mav run` stops run-owned streams automatically.
+`mav run` stops run-owned streams deterministically without waiting for the
+lease. Starting a new `mav open` also cleans the previous run.
 
 ## Troubleshooting
 
@@ -757,6 +762,45 @@ sandbox, do that instead of retrying the same command in the sandbox.
 
 Make sure the app logs with `OSLog.Logger` using the configured MAV subsystem
 and category, and make sure the behavior happened after MAV started the run.
+
+# MAV v0.6: fast agent loops
+
+`mav open` starts a transparent per-run worker over a private Unix socket and
+falls back to `session=direct` if it cannot start. Actions can wait and observe
+in one invocation:
+
+```sh
+mav ui tap --id createCategoryButton \
+  --wait-id categoriesView --wait-timeout 5s --observe delta
+```
+
+Flow YAML supports strict typed selectors, parameters, extraction, retries,
+boolean conditions, count assertions and tree deltas. Unknown fields fail
+linting.
+
+```yaml
+params:
+  category: { required: true }
+steps:
+  - tap:
+      where: { id: createCategoryButton, role: button, enabled: true }
+      after:
+        wait:
+          any: [{ id: categoriesView }, { textContains: Error }]
+          timeout: 5s
+        observe: delta
+```
+
+Use repeated `--target` plus `--jobs` for isolated concurrent runs. Install and
+verify optional runtime dependencies with
+`mav setup --install simtime lldb-dap`; this checks both
+`libsimtime.dylib` and the `lldb-dap` bundled with the selected Xcode.
+Simulator time control is enabled by `mav open --time-control`. Simulator
+debug builds with dSYM support `mav debug
+attach|wait|state|break|eval|pause|step|detach`.
+
+Legacy swipe/drag fields `startX/startY/endX/endY` remain accepted. New flows
+should use `from: {x, y}` and `to: {x, y}`.
 
 ## Development
 

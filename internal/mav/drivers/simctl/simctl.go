@@ -7,6 +7,8 @@ package simctl
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/bitomule/mav/internal/mav/drivers"
@@ -20,6 +22,8 @@ type Driver struct {
 	exec drivers.Executor
 	path string
 }
+
+var _ drivers.DeviceUtilityDriver = (*Driver)(nil)
 
 // New constructs a Driver.
 func New(exec drivers.Executor) *Driver { return &Driver{exec: exec} }
@@ -40,7 +44,73 @@ func (d *Driver) Provides(target drivers.Target) drivers.CapabilitySet {
 		drivers.CapScreenshot, // fallback path; axe is cheaper
 		drivers.CapVideo,
 		drivers.CapLogStream,
+		drivers.CapAppList,
+		drivers.CapTerminate,
+		drivers.CapOpenURL,
+		drivers.CapLocation,
+		drivers.CapClipboard,
 	)
+}
+
+func (d *Driver) ListApps(ctx context.Context, target drivers.Target) (string, error) {
+	res := d.exec.Run(ctx, "xcrun", "simctl", "listapps", simUDID(target))
+	if res.Err != nil {
+		return "", errors.New(firstLine(res.Stderr))
+	}
+	return res.Stdout, nil
+}
+
+func (d *Driver) Terminate(ctx context.Context, target drivers.Target, bundleID string) error {
+	res := d.exec.Run(ctx, "xcrun", "simctl", "terminate", simUDID(target), bundleID)
+	if res.Err != nil {
+		return errors.New(firstLine(res.Stderr))
+	}
+	return nil
+}
+
+func (d *Driver) OpenURL(ctx context.Context, target drivers.Target, url string) error {
+	res := d.exec.Run(ctx, "xcrun", "simctl", "openurl", simUDID(target), url)
+	if res.Err != nil {
+		return errors.New(firstLine(res.Stderr))
+	}
+	return nil
+}
+
+func (d *Driver) SetLocation(ctx context.Context, target drivers.Target, latitude, longitude float64) error {
+	value := strconv.FormatFloat(latitude, 'f', 6, 64) + "," + strconv.FormatFloat(longitude, 'f', 6, 64)
+	res := d.exec.Run(ctx, "xcrun", "simctl", "location", simUDID(target), "set", value)
+	if res.Err != nil {
+		return errors.New(firstLine(res.Stderr))
+	}
+	return nil
+}
+
+func (d *Driver) ResetLocation(ctx context.Context, target drivers.Target) error {
+	res := d.exec.Run(ctx, "xcrun", "simctl", "location", simUDID(target), "clear")
+	if res.Err != nil {
+		return errors.New(firstLine(res.Stderr))
+	}
+	return nil
+}
+
+func (d *Driver) ClipboardWrite(ctx context.Context, target drivers.Target, text string) error {
+	input, ok := d.exec.(drivers.InputExecutor)
+	if !ok {
+		return fmt.Errorf("simctl: input executor unavailable")
+	}
+	res := input.RunInput(ctx, text, "xcrun", "simctl", "pbcopy", simUDID(target))
+	if res.Err != nil {
+		return errors.New(firstLine(res.Stderr))
+	}
+	return nil
+}
+
+func (d *Driver) ClipboardRead(ctx context.Context, target drivers.Target) (string, error) {
+	res := d.exec.Run(ctx, "xcrun", "simctl", "pbpaste", simUDID(target))
+	if res.Err != nil {
+		return "", errors.New(firstLine(res.Stderr))
+	}
+	return res.Stdout, nil
 }
 
 // Cost ranks simctl as authoritative for lifecycle/video/logs on sim, and as a

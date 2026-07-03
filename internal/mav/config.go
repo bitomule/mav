@@ -103,6 +103,16 @@ func LoadConfig(root string) (Config, error) {
 	if cfg.TargetKind == "" {
 		cfg.TargetKind = "simulator"
 	}
+	if kind := os.Getenv("MAV_TARGET_KIND"); kind != "" {
+		cfg.TargetKind = kind
+		cfg.SimulatorUDID = os.Getenv("MAV_TARGET_UDID")
+		cfg.SimulatorName = os.Getenv("MAV_TARGET_NAME")
+		cfg.SimulatorRuntime = os.Getenv("MAV_TARGET_RUNTIME")
+		if kind == "device" {
+			cfg.DeviceUDID = os.Getenv("MAV_TARGET_UDID")
+			cfg.DeviceName = os.Getenv("MAV_TARGET_NAME")
+		}
+	}
 	return cfg, nil
 }
 

@@ -17,6 +17,12 @@ type Output struct {
 	Fields map[string]string `json:"fields,omitempty"`
 }
 
+// CommandFailed requests a non-zero process exit after a structured failure
+// line has already been written. It avoids duplicating the failure on stderr.
+type CommandFailed struct{}
+
+func (CommandFailed) Error() string { return "command failed" }
+
 func OK(cmd string, fields map[string]string) Output {
 	return Output{OK: true, Cmd: cmd, Fields: fields}
 }

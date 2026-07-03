@@ -4,15 +4,20 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -61,7 +66,11 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 	if opts.Help {
 		return c.help(opts, strings.Join(rest, " "))
 	}
+	stopLeaseHeartbeat := c.keepRunLeaseAlive(rest[0])
+	defer stopLeaseHeartbeat()
 	switch rest[0] {
+	case "__worker":
+		return c.runInternalWorker(ctx, rest[1:])
 	case "doctor":
 		return c.doctor(ctx, opts)
 	case "setup":
@@ -78,6 +87,18 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 		return c.ui(ctx, opts, rest[1:])
 	case "capture":
 		return c.capture(ctx, opts, rest[1:])
+	case "app":
+		return c.app(ctx, opts, rest[1:])
+	case "openURL":
+		return c.openURL(ctx, opts, rest[1:])
+	case "location":
+		return c.location(ctx, opts, rest[1:])
+	case "clipboard":
+		return c.clipboard(ctx, opts, rest[1:])
+	case "time":
+		return c.timeControl(ctx, opts, rest[1:])
+	case "debug":
+		return c.debug(ctx, opts, rest[1:])
 	case "run":
 		return c.runFlow(ctx, opts, rest[1:])
 	case "flow":
@@ -165,10 +186,16 @@ Commands:
   open        Build, install, launch, and start run logs.
   ui          Inspect and control the current UI.
   capture     Capture the current screen.
+  app         List or terminate apps.
+  openURL     Open a URL on the target.
+  location    Set or reset simulated location.
+  clipboard   Copy or read target clipboard.
+  time        Control app wall-clock time (simulator only).
+  debug       Attach and control LLDB (simulator only).
   run         Execute a native MAV YAML flow.
   flow        Lint native MAV YAML flows.
   logs        Read captured run logs.
-  stop        Stop run-owned background processes.
+  stop        Stop a run immediately (normally automatic).
   crashes     List crashes for the configured app.
   evidence    Start/step/stop/report evidence.
   network     Start/stop a HAR network capture (sim only).
@@ -181,7 +208,7 @@ Global flags:
   --help,-h   Show help.
 `
 	case "setup":
-		return "Usage:\n  mav setup [--non-interactive]\n  mav setup --install axe idb baguette\n"
+		return "Usage:\n  mav setup [--non-interactive]\n  mav setup --install axe idb baguette simtime lldb-dap\n"
 	case "install-skills":
 		return "Usage: mav install-skills\n"
 	case "sim":
@@ -219,7 +246,7 @@ Selects a physical iOS device and switches target_kind to device.
 `
 	case "open":
 		return `Usage:
-  mav open [--device NAME] [--ios VERSION] [--udid UDID] [--locale LOCALE] [--language LANG] [--clear-state] [--no-relaunch] [--force]
+  mav open [--device NAME] [--ios VERSION] [--udid UDID] [--locale LOCALE] [--language LANG] [--clear-state] [--time-control] [--no-relaunch] [--force]
 
 --no-relaunch reuses the app already running on the selected target. It starts or reuses a MAV run without executing the launch recipe.
 --force ignores a fresh MAV simulator lock when you know the run is yours.
@@ -285,7 +312,11 @@ Prefer accessibility ids. Use coordinates only when the tree is insufficient and
 	case "ui scrollUntil":
 		return "Usage: mav ui scrollUntil --id ID [--direction up] [--max-swipes 5]\n"
 	case "run":
-		return "Usage: mav run flow.yaml\n"
+		return "Usage:\n  mav run flow.yaml [--param name=value]\n  mav run flow.yaml --target UDID --target \"Exact Name\" [--jobs N]\n"
+	case "time":
+		return "Usage:\n  mav time freeze --at 2032-01-15T10:00:00Z\n  mav time travel --by +8d\n  mav time scale --factor 60\n  mav time status\n  mav time reset\n"
+	case "debug":
+		return "Usage:\n  mav debug attach [--breakpoint File.swift:42]\n  mav debug wait [--timeout 10s]\n  mav debug state [--stack --locals --threads] [--raw]\n  mav debug break add File.swift:42\n  mav debug eval 'po store'\n  mav debug pause\n  mav debug step in|over|out|continue\n  mav debug detach [--kill]\n"
 	case "flow":
 		return "Usage:\n  mav flow lint flow.yaml [--raw]\n"
 	case "flow lint":
@@ -464,8 +495,38 @@ func (c CLI) setup(ctx context.Context, opts GlobalOptions, args []string) error
 		"axe":       {"brew", "install", "cameroncooke/axe/axe"},
 		"baguette":  {"brew", "install", "tddworks/tap/baguette"},
 		"mitmproxy": {"brew", "install", "mitmproxy"},
+		"simtime":   {"brew", "install", "mobai-app/tap/simtime"},
 	}
 	for _, tool := range tools {
+		if tool == "simtime" {
+			if _, lookErr := c.Runner.LookPath("simtime"); lookErr != nil {
+				cmd := commands[tool]
+				if opts.Verbose {
+					fmt.Fprintln(c.Stderr, strings.Join(cmd, " "))
+				}
+				result := c.Runner.Run(ctx, cmd[0], cmd[1:]...)
+				if result.Err != nil {
+					return Fail("setup_failed", map[string]string{"tool": tool, "stderr": firstLine(result.Stderr)}).Write(c.Stdout)
+				}
+			}
+			if err := c.verifySimtime(ctx); err != nil {
+				return Fail("setup_failed", map[string]string{
+					"tool": "simtime", "stderr": err.Error(),
+					"next": "brew reinstall mobai-app/tap/simtime",
+				}).Write(c.Stdout)
+			}
+			continue
+		}
+		if tool == "lldb" || tool == "lldb-dap" {
+			ok, err := c.setupLLDBDAP(ctx)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return nil
+			}
+			continue
+		}
 		if tool == "idb" {
 			ok, err := c.setupIDB(ctx, opts)
 			if err != nil {
@@ -489,6 +550,45 @@ func (c CLI) setup(ctx context.Context, opts GlobalOptions, args []string) error
 		}
 	}
 	return OK("setup", map[string]string{"installed": strings.Join(tools, ",")}).Write(c.Stdout)
+}
+
+func (c CLI) verifySimtime(ctx context.Context) error {
+	binary, err := c.Runner.LookPath("simtime")
+	if err != nil {
+		return fmt.Errorf("simtime binary is not on PATH")
+	}
+	probe := c.Runner.Run(ctx, binary, "--help")
+	if probe.Err != nil {
+		return fmt.Errorf("simtime --help failed: %s", firstLine(probe.Stderr))
+	}
+	resolved, err := filepath.EvalSymlinks(binary)
+	if err != nil {
+		return fmt.Errorf("resolve simtime binary: %w", err)
+	}
+	dylib := filepath.Join(filepath.Dir(filepath.Dir(resolved)), "libexec", "libsimtime.dylib")
+	if info, statErr := os.Stat(dylib); statErr != nil || info.IsDir() {
+		return fmt.Errorf("libsimtime.dylib is missing at %s", dylib)
+	}
+	return nil
+}
+
+func (c CLI) setupLLDBDAP(ctx context.Context) (bool, error) {
+	result := c.Runner.Run(ctx, "xcrun", "--find", "lldb-dap")
+	if result.Err != nil || strings.TrimSpace(result.Stdout) == "" {
+		return false, Fail("setup_failed", map[string]string{
+			"tool":   "lldb-dap",
+			"stderr": firstNonEmpty(firstLine(result.Stderr), "lldb-dap is not bundled with the selected Xcode"),
+			"next":   "install/select a full Xcode with xcode-select, then rerun mav setup --install lldb-dap",
+		}).Write(c.Stdout)
+	}
+	probe := c.Runner.Run(ctx, "xcrun", "lldb-dap", "--help")
+	if probe.Err != nil {
+		return false, Fail("setup_failed", map[string]string{
+			"tool": "lldb-dap", "stderr": firstLine(probe.Stderr),
+			"next": "select a healthy Xcode with sudo xcode-select -s /Applications/Xcode.app",
+		}).Write(c.Stdout)
+	}
+	return true, nil
 }
 
 func (c CLI) setupIDB(ctx context.Context, opts GlobalOptions) (bool, error) {
@@ -914,6 +1014,26 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 			return Fail("launch_step_failed", fields).Write(c.Stdout)
 		}
 	}
+	if hasFlag(args, "--time-control") {
+		if isPhysicalDevice(cfg) {
+			return Fail("time_control_unsupported_on_device", nil).Write(c.Stdout)
+		}
+		driver, _, routeErr := c.router().Route(ctx, drivers.CapWallClock, targetFromConfig(cfg), "simtime")
+		if routeErr != nil {
+			return Fail("tool_missing", map[string]string{"tool": "simtime", "next": "mav setup --install simtime"}).Write(c.Stdout)
+		}
+		clock, ok := driver.(drivers.WallClockDriver)
+		if !ok {
+			return Fail("time_control_unavailable", nil).Write(c.Stdout)
+		}
+		if injectErr := clock.InjectTimeControl(ctx, targetFromConfig(cfg)); injectErr != nil {
+			return Fail("time_control_inject_failed", map[string]string{"stderr": firstLine(injectErr.Error())}).Write(c.Stdout)
+		}
+		_ = os.WriteFile(filepath.Join(run.Dir, "time-control.enabled"), []byte(cfg.BundleID+"\n"), 0o600)
+		if hasFlag(args, "--preserve-time") {
+			_ = os.WriteFile(filepath.Join(run.Dir, "time-control.preserve"), []byte("true\n"), 0o600)
+		}
+	}
 	fields := map[string]string{"run": run.ID, "logs": run.LogsPath, "dir": run.Dir}
 	if noRelaunch {
 		fields["relaunch"] = "false"
@@ -932,6 +1052,14 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 		}
 	}
 	fields["target_kind"] = normalizedTargetKind(cfg)
+	fields["session"] = "direct"
+	if _, ok := c.Runner.(ExecRunner); ok {
+		if session, workerErr := startRunWorker(c.Root, run); workerErr == nil {
+			fields["session"] = session
+		} else {
+			appendFile(run.LogsPath, "mav worker fallback: "+workerErr.Error()+"\n")
+		}
+	}
 	fields["target"] = targetName(cfg)
 	if fields["target"] == "" {
 		fields["target"] = targetUDID(cfg)
@@ -940,6 +1068,89 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 		fields["target"] = "booted"
 	}
 	return OK("open", fields).Write(c.Stdout)
+}
+
+func (c CLI) timeControl(ctx context.Context, opts GlobalOptions, args []string) error {
+	_ = opts
+	if len(args) == 0 {
+		return Fail("time_command_missing", map[string]string{"usage": "mav time freeze|travel|scale|status|reset"}).Write(c.Stdout)
+	}
+	cfg, err := LoadConfig(c.Root)
+	if err != nil {
+		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
+	}
+	if isPhysicalDevice(cfg) {
+		return Fail("time_control_unsupported_on_device", nil).Write(c.Stdout)
+	}
+	run, runErr := LoadRun(c.Root, "")
+	if runErr != nil || !exists(filepath.Join(run.Dir, "time-control.enabled")) {
+		return Fail("time_control_not_loaded", map[string]string{"next": "mav open --time-control"}).Write(c.Stdout)
+	}
+	driver, _, routeErr := c.router().Route(ctx, drivers.CapWallClock, targetFromConfig(cfg), "simtime")
+	if routeErr != nil {
+		return Fail("tool_missing", map[string]string{"tool": "simtime", "next": "mav setup --install simtime"}).Write(c.Stdout)
+	}
+	clock, ok := driver.(drivers.WallClockDriver)
+	if !ok {
+		return Fail("time_control_unavailable", nil).Write(c.Stdout)
+	}
+	fields := map[string]string{"driver": driver.ID()}
+	switch args[0] {
+	case "freeze":
+		at := flagValue(args[1:], "--at")
+		if at == "" && len(args) > 1 {
+			at = args[1]
+		}
+		if at == "" {
+			return Fail("time_at_missing", nil).Write(c.Stdout)
+		}
+		status, err := clock.FreezeTime(ctx, targetFromConfig(cfg), at)
+		if err != nil {
+			return Fail("time_freeze_failed", map[string]string{"stderr": firstLine(err.Error())}).Write(c.Stdout)
+		}
+		fields["at"], fields["status"] = at, status
+	case "travel":
+		by := flagValue(args[1:], "--by")
+		if by == "" && len(args) > 1 {
+			by = args[1]
+		}
+		if by == "" {
+			return Fail("time_by_missing", nil).Write(c.Stdout)
+		}
+		status, err := clock.TravelTime(ctx, targetFromConfig(cfg), by)
+		if err != nil {
+			return Fail("time_travel_failed", map[string]string{"stderr": firstLine(err.Error())}).Write(c.Stdout)
+		}
+		fields["by"], fields["status"] = by, status
+	case "scale":
+		raw := flagValue(args[1:], "--factor")
+		if raw == "" && len(args) > 1 {
+			raw = args[1]
+		}
+		factor, parseErr := strconv.ParseFloat(raw, 64)
+		if parseErr != nil || factor <= 0 {
+			return Fail("time_factor_invalid", map[string]string{"factor": raw}).Write(c.Stdout)
+		}
+		status, err := clock.ScaleTime(ctx, targetFromConfig(cfg), factor)
+		if err != nil {
+			return Fail("time_scale_failed", map[string]string{"stderr": firstLine(err.Error())}).Write(c.Stdout)
+		}
+		fields["factor"], fields["status"] = raw, status
+	case "status":
+		status, err := clock.TimeStatus(ctx, targetFromConfig(cfg))
+		if err != nil {
+			return Fail("time_status_failed", map[string]string{"stderr": firstLine(err.Error())}).Write(c.Stdout)
+		}
+		fields["status"] = status
+	case "reset":
+		if err := clock.ResetTime(ctx, targetFromConfig(cfg)); err != nil {
+			return Fail("time_reset_failed", map[string]string{"stderr": firstLine(err.Error())}).Write(c.Stdout)
+		}
+		fields["reset"] = "true"
+	default:
+		return Fail("time_unknown_command", map[string]string{"command": args[0]}).Write(c.Stdout)
+	}
+	return OK("time."+args[0], fields).Write(c.Stdout)
 }
 
 func (c CLI) ensureOpenSimulatorBooted(ctx context.Context, cfg Config, run RunState) error {
@@ -1070,7 +1281,7 @@ func probeLogPredicate(cfg Config) string {
 
 func (c CLI) ui(ctx context.Context, opts GlobalOptions, args []string) error {
 	if len(args) == 0 {
-		return Fail("ui_command_missing", map[string]string{"usage": "mav ui tree|tap|type|erase|hideKeyboard|swipe|longPress|pinch|rotate|twoFingerPan|actions|wait|scrollUntil"}).Write(c.Stdout)
+		return Fail("ui_command_missing", map[string]string{"usage": "mav ui tree|tap|doubleTap|type|erase|hideKeyboard|swipe|drag|dragPath|toggle|press|longPress|pinch|rotate|twoFingerPan|actions|wait|scrollUntil"}).Write(c.Stdout)
 	}
 	cfg, err := LoadConfig(c.Root)
 	if err != nil {
@@ -1082,6 +1293,8 @@ func (c CLI) ui(ctx context.Context, opts GlobalOptions, args []string) error {
 		return c.uiTree(ctx, opts, cfg, args[1:])
 	case "tap":
 		return c.uiTap(ctx, opts, cfg, args[1:])
+	case "doubleTap":
+		return c.uiDoubleTap(ctx, opts, cfg, args[1:])
 	case "type":
 		return c.uiType(ctx, opts, cfg, args[1:])
 	case "erase":
@@ -1090,6 +1303,14 @@ func (c CLI) ui(ctx context.Context, opts GlobalOptions, args []string) error {
 		return c.uiHideKeyboard(ctx, opts, cfg, args[1:])
 	case "swipe":
 		return c.uiSwipe(ctx, opts, cfg, args[1:])
+	case "drag":
+		return c.uiDrag(ctx, opts, cfg, args[1:])
+	case "dragPath":
+		return c.uiDragPath(ctx, opts, cfg, args[1:])
+	case "toggle":
+		return c.uiToggle(ctx, opts, cfg, args[1:])
+	case "press":
+		return c.uiPress(ctx, opts, cfg, args[1:])
 	case "longPress":
 		return c.uiLongPress(ctx, opts, cfg, args[1:])
 	case "pinch":
@@ -1370,9 +1591,13 @@ func (c CLI) waitForTreeReady(ctx context.Context, cfg Config, timeout time.Dura
 }
 
 func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
-	id := flagValue(args, "--id")
-	text := flagValue(args, "--text")
-	value := flagValue(args, "--value")
+	selector, selectorErr := selectorFromCLI(args)
+	if selectorErr != nil {
+		return Fail("selector_invalid", map[string]string{"error": selectorErr.Error()}).Write(c.Stdout)
+	}
+	id := selector.ID
+	text := selector.Text
+	value := selector.Value
 	x := flagValue(args, "--x")
 	y := flagValue(args, "--y")
 	prefer, err := normalizePreferDriver(opts.PreferDriver)
@@ -1380,7 +1605,7 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		return Fail("prefer_driver_invalid", map[string]string{"usage": "--prefer-driver auto|axe"}).Write(c.Stdout)
 	}
 	caps := c.resolveCapabilities(ctx, cfg)
-	if id != "" || text != "" || value != "" {
+	if !selector.IsZero() {
 		fields := map[string]string{}
 		command := "mav ui tap"
 		if id != "" {
@@ -1396,8 +1621,23 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		if !caps.Tools["axe"] {
 			return Fail("tool_missing", map[string]string{"tool": "axe", "next": "use mav ui tap --x X --y Y when AXe is unavailable"}).Write(c.Stdout)
 		}
-		if value != "" {
-			return Fail("tap_target_missing", map[string]string{"usage": "mav ui tap --value VALUE not supported; use --id or --text"}).Write(c.Stdout)
+		if isSimpleSemanticSelector(selector) && value != "" {
+			return Fail("tap_target_missing", map[string]string{"usage": "mav ui tap --value VALUE requires another predicate or a stable --id"}).Write(c.Stdout)
+		}
+		if !isSimpleSemanticSelector(selector) {
+			matched, matchErr := c.resolveSelector(ctx, cfg, selector, prefer)
+			if matchErr != nil {
+				return Fail(matchErr.Error(), selectorDiagnosticFields(selector, matched)).Write(c.Stdout)
+			}
+			fields["matched_id"] = matched.ID
+			fields["matched_text"] = elementText(matched)
+			fields["role"] = matched.Role
+			mx, my, mw, mh, ok := parseElementFrame(matched.Frame)
+			if !ok {
+				return Fail("selector_frame_missing", selectorDiagnosticFields(selector, matched)).Write(c.Stdout)
+			}
+			return c.uiTap(ctx, opts, cfg, append(onlyFastPathArgs(args),
+				"--x", strconv.Itoa(int(mx+mw/2)), "--y", strconv.Itoa(int(my+mh/2))))
 		}
 		_ = prefer
 		target := targetFromConfig(cfg)
@@ -1421,7 +1661,7 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		}
 		fields["driver"] = driver.ID()
 		c.appendCurrentCommand(command, result)
-		return OK("ui.tap", fields).Write(c.Stdout)
+		return c.writeFastPathResult(ctx, cfg, args, "ui.tap", fields)
 	}
 	if x != "" && y != "" {
 		if !caps.CoordinateTap {
@@ -1450,9 +1690,241 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			return Fail("ui_tap_failed", map[string]string{"stderr": firstLine(result.Stderr)}).Write(c.Stdout)
 		}
 		c.appendCurrentCommand("mav ui tap --x "+x+" --y "+y, result)
-		return OK("ui.tap", map[string]string{"x": x, "y": y, "driver": driver.ID(), "route_recorded": "false"}).Write(c.Stdout)
+		return c.writeFastPathResult(ctx, cfg, args, "ui.tap", map[string]string{"x": x, "y": y, "driver": driver.ID(), "route_recorded": "false"})
 	}
 	return Fail("tap_target_missing", map[string]string{"usage": "mav ui tap --id ID | --x X --y Y | --text TEXT"}).Write(c.Stdout)
+}
+
+func isSimpleSemanticSelector(selector Selector) bool {
+	copy := selector
+	copy.ID, copy.Text, copy.Value = "", "", ""
+	return copy.IsZero()
+}
+
+func selectorDiagnosticFields(selector Selector, matched Element) map[string]string {
+	fields := map[string]string{}
+	if selector.ID != "" {
+		fields["id"] = selector.ID
+	}
+	if selector.Text != "" {
+		fields["text"] = selector.Text
+	}
+	if selector.TextContains != "" {
+		fields["text_contains"] = selector.TextContains
+	}
+	if selector.Role != "" {
+		fields["role"] = selector.Role
+	}
+	if matched.ID != "" {
+		fields["candidate_id"] = matched.ID
+	}
+	return fields
+}
+
+func (c CLI) resolveSelector(ctx context.Context, cfg Config, selector Selector, prefer string) (Element, error) {
+	described, err := c.describeUITree(ctx, cfg, prefer, false)
+	if err != nil || described.Result.Err != nil {
+		return Element{}, fmt.Errorf("tree_failed")
+	}
+	matches, err := MatchElements(ExtractElementsRaw(described.Result.Stdout), selector)
+	if err != nil {
+		return Element{}, err
+	}
+	if len(matches) == 0 {
+		return Element{}, fmt.Errorf("selector_not_found")
+	}
+	if len(matches) > 1 {
+		return matches[0], fmt.Errorf("selector_ambiguous")
+	}
+	return matches[0], nil
+}
+
+func fastPathArgs(args []string) []string {
+	out := make([]string, 0, len(args))
+	skipNext := false
+	for i, arg := range args {
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		if strings.HasPrefix(arg, "--wait-") || arg == "--observe" {
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "--") {
+				skipNext = true
+			}
+			continue
+		}
+		out = append(out, arg)
+	}
+	return out
+}
+
+func onlyFastPathArgs(args []string) []string {
+	out := []string{}
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if !strings.HasPrefix(arg, "--wait-") && arg != "--observe" {
+			continue
+		}
+		out = append(out, arg)
+		if i+1 < len(args) && !strings.HasPrefix(args[i+1], "--") {
+			out = append(out, args[i+1])
+			i++
+		}
+	}
+	return out
+}
+
+func (c CLI) writeFastPathResult(ctx context.Context, cfg Config, args []string, command string, fields map[string]string) error {
+	waitID := flagValue(args, "--wait-id")
+	waitText := flagValue(args, "--wait-text")
+	waitValue := flagValue(args, "--wait-value")
+	waitChanged := flagValue(args, "--wait-changed-from")
+	waitStable := hasFlag(args, "--wait-stable")
+	observe := flagValue(args, "--observe")
+	if observe == "" {
+		observe = "none"
+	}
+	switch observe {
+	case "none", "agent", "tree", "delta":
+	default:
+		return Fail("observe_invalid", map[string]string{"observe": observe}).Write(c.Stdout)
+	}
+	timeout := parseFlowDuration(flagValue(args, "--wait-timeout"), 5*time.Second)
+	if timeout <= 0 {
+		return Fail("wait_timeout_invalid", nil).Write(c.Stdout)
+	}
+	if waitID != "" || waitText != "" || waitValue != "" || waitChanged != "" || waitStable {
+		deadline := time.Now().Add(timeout)
+		var lastHash string
+		var lastElements []Element
+		stableCount := 0
+		for {
+			if waitChanged != "" {
+				ok, err := c.screenshotChangedFrom(ctx, waitChanged)
+				if err == nil && ok {
+					break
+				}
+			} else {
+				described, err := c.describeUITree(ctx, cfg, "auto", false)
+				if err == nil && described.Result.Err == nil {
+					elements := ExtractElementsRaw(described.Result.Stdout)
+					lastElements = elements
+					if waitStable {
+						hash := hashElements(elements)
+						if hash == lastHash && hash != "" {
+							stableCount++
+						} else {
+							stableCount = 0
+							lastHash = hash
+						}
+						if stableCount >= 1 {
+							break
+						}
+					} else if flowConditionMatchesElements(elements, FlowCondition{ID: waitID, Text: waitText, Value: waitValue}) {
+						break
+					}
+				}
+			}
+			if time.Now().After(deadline) {
+				diagnostics := map[string]string{"action": command, "timeout": timeout.String()}
+				if path := c.captureFastPathFailure(ctx, cfg); path != "" {
+					diagnostics["screenshot"] = path
+				}
+				if len(lastElements) > 0 {
+					if run, runErr := c.currentOrNewRun(); runErr == nil {
+						treePath := filepath.Join(run.Dir, "failure-fast-path-tree.json")
+						data, _ := json.MarshalIndent(Compact(lastElements), "", "  ")
+						_ = os.WriteFile(treePath, data, 0o644)
+						diagnostics["tree"] = treePath
+					}
+					var candidates []string
+					for _, element := range AgentTree(lastElements, AgentTreeOptions{}) {
+						if text := firstNonEmpty(element.ID, element.Label, element.Title); text != "" {
+							candidates = append(candidates, text)
+						}
+						if len(candidates) == 5 {
+							break
+						}
+					}
+					diagnostics["candidates"] = strings.Join(candidates, ",")
+				}
+				return Fail("wait_timeout", diagnostics).Write(c.Stdout)
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		fields["wait"] = "ok"
+		fields["wait_timeout"] = timeout.String()
+	}
+	if observe == "none" {
+		return OK(command, fields).Write(c.Stdout)
+	}
+	described, err := c.describeUITree(ctx, cfg, "auto", false)
+	if err != nil || described.Result.Err != nil {
+		return Fail("tree_failed", fields).Write(c.Stdout)
+	}
+	elements := ExtractElementsRaw(described.Result.Stdout)
+	fields["observe"] = observe
+	fields["nodes"] = strconv.Itoa(len(elements))
+	if err := OK(command, fields).Write(c.Stdout); err != nil {
+		return err
+	}
+	switch observe {
+	case "agent":
+		return writeAgentElementLines(c.Stdout, AgentTree(elements, AgentTreeOptions{}))
+	case "tree":
+		return writeElementLines(c.Stdout, Compact(elements))
+	case "delta":
+		run, _ := LoadRun(c.Root, "")
+		previous := loadFastPathTree(run)
+		delta := TreeDiff(previous, elements)
+		data, _ := json.Marshal(delta)
+		_, err := fmt.Fprintf(c.Stdout, "tree_delta json=%s\n", quoteIfNeeded(string(data)))
+		if run.Dir != "" {
+			_ = saveFastPathTree(run, elements)
+		}
+		return err
+	}
+	return nil
+}
+
+func hashElements(elements []Element) string {
+	data, _ := json.Marshal(elements)
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func (c CLI) captureFastPathFailure(ctx context.Context, cfg Config) string {
+	run, err := c.currentOrNewRun()
+	if err != nil {
+		return ""
+	}
+	path := filepath.Join(run.Dir, "failure-fast-path.png")
+	result, err := c.captureScreenshot(ctx, cfg, path)
+	if err != nil || result.Err != nil {
+		return ""
+	}
+	return path
+}
+
+func loadFastPathTree(run RunState) []Element {
+	if run.Dir == "" {
+		return nil
+	}
+	data, err := os.ReadFile(filepath.Join(run.Dir, "fast-path-tree.json"))
+	if err != nil {
+		return nil
+	}
+	var elements []Element
+	_ = json.Unmarshal(data, &elements)
+	return elements
+}
+
+func saveFastPathTree(run RunState, elements []Element) error {
+	data, err := json.Marshal(elements)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(run.Dir, "fast-path-tree.json"), data, 0o644)
 }
 
 func (c CLI) diagnoseTextTapFailure(ctx context.Context, cfg Config, text, stderr string) (map[string]string, bool) {
@@ -1503,13 +1975,36 @@ func (c CLI) uiType(ctx context.Context, opts GlobalOptions, cfg Config, args []
 	if err != nil {
 		return Fail("prefer_driver_invalid", map[string]string{"usage": "--prefer-driver auto|axe"}).Write(c.Stdout)
 	}
-	text := strings.Join(args, " ")
+	selector, selectorErr := selectorFromCLI(args)
+	if selectorErr != nil {
+		return Fail("selector_invalid", map[string]string{"error": selectorErr.Error()}).Write(c.Stdout)
+	}
+	textArgs := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		if strings.HasPrefix(args[i], "--wait-") || args[i] == "--observe" || isSelectorCLIFlag(args[i]) {
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "--") {
+				i++
+			}
+			continue
+		}
+		textArgs = append(textArgs, args[i])
+	}
+	text := strings.Join(textArgs, " ")
+	if text == "" {
+		return Fail("type_text_missing", nil).Write(c.Stdout)
+	}
+	if !selector.IsZero() {
+		var tapOutput bytes.Buffer
+		if err := c.withStdout(&tapOutput).uiTap(ctx, opts, cfg, selectorCLIArgs(selector)); err != nil || strings.HasPrefix(strings.TrimSpace(tapOutput.String()), "fail ") {
+			return Fail("ui_type_target_failed", map[string]string{"result": firstLine(tapOutput.String())}).Write(c.Stdout)
+		}
+	}
 	target := targetFromConfig(cfg)
 	driver, _, err := c.router().Route(ctx, drivers.CapType, target, "axe")
 	if err != nil {
 		return Fail("tool_missing", map[string]string{"tool": "axe", "next": "mav setup --install axe"}).Write(c.Stdout)
 	}
-	td, ok := driver.(drivers.TextDriver)
+	td, ok := driver.(drivers.TypeDriver)
 	if !ok {
 		return Fail("tool_missing", map[string]string{"tool": "axe"}).Write(c.Stdout)
 	}
@@ -1521,7 +2016,19 @@ func (c CLI) uiType(ctx context.Context, opts GlobalOptions, cfg Config, args []
 		"chars_sent": strconv.Itoa(len(text)),
 		"driver":     driver.ID(),
 	}
-	return OK("ui.type", fields).Write(c.Stdout)
+	return c.writeFastPathResult(ctx, cfg, args, "ui.type", fields)
+}
+
+func isSelectorCLIFlag(value string) bool {
+	switch value {
+	case "--id", "--text", "--text-contains", "--text-starts-with", "--text-regex",
+		"--value", "--value-contains", "--role", "--enabled", "--selected", "--focused",
+		"--visible", "--index", "--bounds", "--near-id", "--near-text",
+		"--near-direction", "--near-distance", "--where-json":
+		return true
+	default:
+		return false
+	}
 }
 
 func (c CLI) uiErase(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
@@ -1632,7 +2139,362 @@ func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args [
 		fields["end_x"] = endX
 		fields["end_y"] = endY
 	}
-	return OK("ui.swipe", fields).Write(c.Stdout)
+	return c.writeFastPathResult(ctx, cfg, args, "ui.swipe", fields)
+}
+
+func (c CLI) uiDoubleTap(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
+	if isPhysicalDevice(cfg) {
+		return Fail("double_tap_unsupported_on_device", nil).Write(c.Stdout)
+	}
+	x, y, err := c.actionCoordinates(ctx, cfg, opts, args)
+	if err != nil {
+		return Fail(err.Error(), nil).Write(c.Stdout)
+	}
+	target := targetFromConfig(cfg)
+	driver, _, err := c.router().Route(ctx, drivers.CapDoubleTap, target, "baguette")
+	if err != nil {
+		return Fail("tool_missing", map[string]string{"tool": "baguette"}).Write(c.Stdout)
+	}
+	advanced, ok := driver.(drivers.AdvancedGestureDriver)
+	if !ok {
+		return Fail("double_tap_unsupported", nil).Write(c.Stdout)
+	}
+	duration := parseFlowDuration(flagValue(args, "--duration"), 80*time.Millisecond)
+	screenWidth, screenHeight := c.targetScreenSize(ctx, cfg)
+	if sendErr := c.sendWorkerGestureWithRestart(target.UDID, tapWorkerEvents(x, y, screenWidth, screenHeight, int(duration.Milliseconds()), 2)); sendErr == nil {
+		return c.writeFastPathResult(ctx, cfg, args, "ui.doubleTap", map[string]string{
+			"x": strconv.Itoa(x), "y": strconv.Itoa(y), "driver": "baguette", "session": "worker",
+		})
+	}
+	if err := advanced.DoubleTap(ctx, target, drivers.TapSpec{X: x, Y: y, Duration: int(duration.Milliseconds())}); err != nil {
+		return Fail("ui_double_tap_failed", map[string]string{"stderr": firstLine(err.Error())}).Write(c.Stdout)
+	}
+	return c.writeFastPathResult(ctx, cfg, args, "ui.doubleTap", map[string]string{
+		"x": strconv.Itoa(x), "y": strconv.Itoa(y), "driver": driver.ID(), "session": "direct",
+	})
+}
+
+func (c CLI) actionCoordinates(ctx context.Context, cfg Config, opts GlobalOptions, args []string) (int, int, error) {
+	if xRaw, yRaw := flagValue(args, "--x"), flagValue(args, "--y"); xRaw != "" && yRaw != "" {
+		x, xErr := strconv.Atoi(xRaw)
+		y, yErr := strconv.Atoi(yRaw)
+		if xErr != nil || yErr != nil {
+			return 0, 0, fmt.Errorf("gesture_invalid")
+		}
+		return x, y, nil
+	}
+	selector, err := selectorFromCLI(args)
+	if err != nil || selector.IsZero() {
+		return 0, 0, fmt.Errorf("selector_invalid")
+	}
+	prefer, _ := normalizePreferDriver(opts.PreferDriver)
+	matched, err := c.resolveSelector(ctx, cfg, selector, prefer)
+	if err != nil {
+		return 0, 0, err
+	}
+	x, y, width, height, ok := parseElementFrame(matched.Frame)
+	if !ok {
+		return 0, 0, fmt.Errorf("selector_frame_missing")
+	}
+	return int(x + width/2), int(y + height/2), nil
+}
+
+func (c CLI) uiDrag(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
+	_ = opts
+	if isPhysicalDevice(cfg) {
+		return Fail("drag_unsupported_on_device", nil).Write(c.Stdout)
+	}
+	sx, err1 := strconv.Atoi(flagValue(args, "--start-x"))
+	sy, err2 := strconv.Atoi(flagValue(args, "--start-y"))
+	ex, err3 := strconv.Atoi(flagValue(args, "--end-x"))
+	ey, err4 := strconv.Atoi(flagValue(args, "--end-y"))
+	if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
+		return Fail("drag_invalid", map[string]string{"usage": "mav ui drag --start-x X --start-y Y --end-x X --end-y Y"}).Write(c.Stdout)
+	}
+	duration := parseFlowDuration(flagValue(args, "--duration"), 500*time.Millisecond)
+	target := targetFromConfig(cfg)
+	screenWidth, screenHeight := c.targetScreenSize(ctx, cfg)
+	if sendErr := c.sendWorkerGestureWithRestart(target.UDID, dragPathWorkerEvents([]drivers.PathPoint{
+		{X: sx, Y: sy}, {X: ex, Y: ey, DurationMs: int(duration.Milliseconds())},
+	}, screenWidth, screenHeight)); sendErr == nil {
+		return c.writeFastPathResult(ctx, cfg, args, "ui.drag", map[string]string{"driver": "baguette", "session": "worker"})
+	}
+	driver, _, err := c.router().Route(ctx, drivers.CapDrag, target, "baguette")
+	if err != nil {
+		return Fail("tool_missing", map[string]string{"tool": "baguette"}).Write(c.Stdout)
+	}
+	advanced, ok := driver.(drivers.AdvancedGestureDriver)
+	if !ok {
+		return Fail("drag_unsupported", nil).Write(c.Stdout)
+	}
+	if err := advanced.Drag(ctx, target, drivers.DragSpec{
+		StartX: sx, StartY: sy, EndX: ex, EndY: ey, DurationMs: int(duration.Milliseconds()),
+	}); err != nil {
+		return Fail("ui_drag_failed", map[string]string{"stderr": firstLine(err.Error())}).Write(c.Stdout)
+	}
+	return c.writeFastPathResult(ctx, cfg, args, "ui.drag", map[string]string{"driver": driver.ID(), "session": "direct"})
+}
+
+func (c CLI) uiDragPath(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
+	_ = opts
+	if isPhysicalDevice(cfg) {
+		return Fail("drag_path_unsupported_on_device", nil).Write(c.Stdout)
+	}
+	var points []drivers.PathPoint
+	for _, raw := range repeatedFlagValues(args, "--point") {
+		point, err := parseDragPathPoint(raw)
+		if err != nil {
+			return Fail("drag_path_invalid", map[string]string{"point": raw}).Write(c.Stdout)
+		}
+		points = append(points, point)
+	}
+	if len(points) < 2 {
+		return Fail("drag_path_invalid", map[string]string{"usage": "mav ui dragPath --point x,y --point x,y:duration"}).Write(c.Stdout)
+	}
+	target := targetFromConfig(cfg)
+	screenWidth, screenHeight := c.targetScreenSize(ctx, cfg)
+	if err := c.sendWorkerGestureWithRestart(target.UDID, dragPathWorkerEvents(points, screenWidth, screenHeight)); err == nil {
+		return c.writeFastPathResult(ctx, cfg, args, "ui.dragPath", map[string]string{
+			"driver": "baguette", "session": "worker", "points": strconv.Itoa(len(points)),
+		})
+	}
+	driver, _, err := c.router().Route(ctx, drivers.CapDragPath, target, "baguette")
+	if err != nil {
+		return Fail("tool_missing", map[string]string{"tool": "baguette"}).Write(c.Stdout)
+	}
+	advanced, ok := driver.(drivers.AdvancedGestureDriver)
+	if !ok {
+		return Fail("drag_path_unsupported", nil).Write(c.Stdout)
+	}
+	if err := advanced.DragPath(ctx, target, drivers.DragPathSpec{Points: points}); err != nil {
+		return Fail("ui_drag_path_failed", map[string]string{"stderr": firstLine(err.Error())}).Write(c.Stdout)
+	}
+	return c.writeFastPathResult(ctx, cfg, args, "ui.dragPath", map[string]string{
+		"driver": driver.ID(), "points": strconv.Itoa(len(points)), "session": "direct",
+	})
+}
+
+func (c CLI) sendWorkerGestureWithRestart(udid string, events []workerGestureEvent) error {
+	run, err := LoadRun(c.Root, "")
+	if err != nil {
+		return err
+	}
+	if !workerPing(run) {
+		if _, err := startRunWorker(c.Root, run); err != nil {
+			return err
+		}
+	}
+	if err := sendWorkerGesture(run, udid, events); err == nil {
+		return nil
+	}
+	if err := sendWorkerGesture(run, udid, events); err == nil {
+		return nil
+	}
+	_, _ = sendWorkerRequest(run, workerRequest{Command: "stop"})
+	_ = os.Remove(workerSocket(run))
+	if _, err := startRunWorker(c.Root, run); err != nil {
+		return err
+	}
+	return sendWorkerGesture(run, udid, events)
+}
+
+// fallbackScreenWidth/Height are used only when the target's real point
+// size cannot be determined (e.g. the AX tree is unavailable). They match
+// the iPhone 17 Pro simulator and are not accurate for other targets.
+const fallbackScreenWidth, fallbackScreenHeight = 402, 874
+
+// targetScreenSizeCache memoizes the resolved screen size per target UDID
+// for the life of the process. A target's screen size never changes, so
+// this avoids paying for a full AX-tree fetch on every single doubleTap/
+// drag/dragPath gesture in a flow - only the first such gesture per target
+// fetches the tree; the rest reuse the cached value.
+var (
+	targetScreenSizeCacheMu sync.Mutex
+	targetScreenSizeCache   = map[string][2]int{}
+)
+
+// targetScreenSize returns the target's screen size in points, derived from
+// the maximum element bounds in the current accessibility tree (baguette
+// input events must be sized to the real screen to land taps/drags
+// correctly - it normalizes x/width and y/height). Falls back to the
+// iPhone 17 Pro's point size if the tree cannot be fetched.
+func (c CLI) targetScreenSize(ctx context.Context, cfg Config) (int, int) {
+	udid := targetFromConfig(cfg).UDID
+	if udid != "" {
+		targetScreenSizeCacheMu.Lock()
+		cached, ok := targetScreenSizeCache[udid]
+		targetScreenSizeCacheMu.Unlock()
+		if ok {
+			return cached[0], cached[1]
+		}
+	}
+	described, err := c.describeUITree(ctx, cfg, "auto", false)
+	if err != nil || described.Result.Err != nil {
+		return fallbackScreenWidth, fallbackScreenHeight
+	}
+	elements := ExtractElementsRaw(described.Result.Stdout)
+	width, height := 0.0, 0.0
+	for _, el := range elements {
+		x, y, w, h, ok := parseElementFrame(el.Frame)
+		if !ok {
+			continue
+		}
+		width = math.Max(width, x+w)
+		height = math.Max(height, y+h)
+	}
+	if width <= 0 || height <= 0 {
+		return fallbackScreenWidth, fallbackScreenHeight
+	}
+	resolvedWidth, resolvedHeight := int(width), int(height)
+	if udid != "" {
+		targetScreenSizeCacheMu.Lock()
+		targetScreenSizeCache[udid] = [2]int{resolvedWidth, resolvedHeight}
+		targetScreenSizeCacheMu.Unlock()
+	}
+	return resolvedWidth, resolvedHeight
+}
+
+func tapWorkerEvents(x, y, width, height, durationMs, count int) []workerGestureEvent {
+	var events []workerGestureEvent
+	for i := 0; i < count; i++ {
+		down, _ := json.Marshal(map[string]any{"type": "touch1-down", "x": x, "y": y, "width": width, "height": height})
+		up, _ := json.Marshal(map[string]any{"type": "touch1-up", "x": x, "y": y, "width": width, "height": height})
+		events = append(events, workerGestureEvent{JSON: string(down)})
+		events = append(events, workerGestureEvent{JSON: string(up), DelayMs: durationMs})
+	}
+	return events
+}
+
+func dragPathWorkerEvents(points []drivers.PathPoint, width, height int) []workerGestureEvent {
+	events := make([]workerGestureEvent, 0, len(points)+1)
+	for i, point := range points {
+		kind := "touch1-move"
+		if i == 0 {
+			kind = "touch1-down"
+		}
+		body, _ := json.Marshal(map[string]any{
+			"type": kind, "x": point.X, "y": point.Y, "width": width, "height": height,
+		})
+		events = append(events, workerGestureEvent{JSON: string(body), DelayMs: point.DurationMs})
+	}
+	last := points[len(points)-1]
+	body, _ := json.Marshal(map[string]any{
+		"type": "touch1-up", "x": last.X, "y": last.Y, "width": width, "height": height,
+	})
+	events = append(events, workerGestureEvent{JSON: string(body)})
+	return events
+}
+
+func repeatedFlagValues(args []string, name string) []string {
+	var values []string
+	for i := 0; i < len(args); i++ {
+		if args[i] == name && i+1 < len(args) {
+			values = append(values, args[i+1])
+			i++
+			continue
+		}
+		if strings.HasPrefix(args[i], name+"=") {
+			values = append(values, strings.TrimPrefix(args[i], name+"="))
+		}
+	}
+	return values
+}
+
+func parseDragPathPoint(raw string) (drivers.PathPoint, error) {
+	duration := 0
+	parts := strings.SplitN(raw, ":", 2)
+	if len(parts) == 2 {
+		parsed := parseFlowDuration(parts[1], 0)
+		if parsed <= 0 {
+			return drivers.PathPoint{}, fmt.Errorf("duration_invalid")
+		}
+		duration = int(parsed.Milliseconds())
+	}
+	coords := strings.Split(parts[0], ",")
+	if len(coords) != 2 {
+		return drivers.PathPoint{}, fmt.Errorf("coordinates_invalid")
+	}
+	x, xErr := strconv.Atoi(coords[0])
+	y, yErr := strconv.Atoi(coords[1])
+	if xErr != nil || yErr != nil {
+		return drivers.PathPoint{}, fmt.Errorf("coordinates_invalid")
+	}
+	return drivers.PathPoint{X: x, Y: y, DurationMs: duration}, nil
+}
+
+func (c CLI) uiToggle(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
+	selector, err := selectorFromCLI(args)
+	if err != nil || selector.IsZero() {
+		return Fail("selector_invalid", nil).Write(c.Stdout)
+	}
+	desired := strings.ToLower(flagValue(args, "--state"))
+	if desired != "" && desired != "on" && desired != "off" {
+		return Fail("toggle_state_invalid", map[string]string{"state": desired}).Write(c.Stdout)
+	}
+	prefer, _ := normalizePreferDriver(opts.PreferDriver)
+	matched, err := c.resolveSelector(ctx, cfg, selector, prefer)
+	if err != nil {
+		return Fail(err.Error(), selectorDiagnosticFields(selector, matched)).Write(c.Stdout)
+	}
+	current, known := elementToggleState(matched)
+	if desired != "" && known && (desired == "on") == current {
+		return c.writeFastPathResult(ctx, cfg, args, "ui.toggle", map[string]string{
+			"state": desired, "changed": "false",
+		})
+	}
+	x, y, width, height, ok := parseElementFrame(matched.Frame)
+	if !ok {
+		return Fail("selector_frame_missing", nil).Write(c.Stdout)
+	}
+	tapArgs := []string{"--x", strconv.Itoa(int(x + width/2)), "--y", strconv.Itoa(int(y + height/2))}
+	var out bytes.Buffer
+	if err := c.withStdout(&out).uiTap(ctx, opts, cfg, tapArgs); err != nil || strings.HasPrefix(strings.TrimSpace(out.String()), "fail ") {
+		return Fail("ui_toggle_failed", map[string]string{"result": firstLine(out.String())}).Write(c.Stdout)
+	}
+	return c.writeFastPathResult(ctx, cfg, args, "ui.toggle", map[string]string{
+		"state": desired, "changed": "true",
+	})
+}
+
+func elementToggleState(el Element) (bool, bool) {
+	for _, raw := range []string{el.Value, el.Selected} {
+		switch strings.ToLower(strings.TrimSpace(raw)) {
+		case "1", "true", "on", "yes", "checked", "selected":
+			return true, true
+		case "0", "false", "off", "no", "unchecked":
+			return false, true
+		}
+	}
+	return false, false
+}
+
+func (c CLI) uiPress(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
+	_ = opts
+	if isPhysicalDevice(cfg) {
+		return Fail("press_unsupported_on_device", nil).Write(c.Stdout)
+	}
+	button := strings.ToLower(flagValue(args, "--button"))
+	mapping := map[string]drivers.HardwareButton{
+		"home": drivers.BtnHome, "lock": drivers.BtnLock,
+		"volume_up": drivers.BtnVolumeUp, "volume_down": drivers.BtnVolumeDown,
+	}
+	btn, ok := mapping[button]
+	if !ok {
+		return Fail("button_invalid", map[string]string{"button": button}).Write(c.Stdout)
+	}
+	target := targetFromConfig(cfg)
+	driver, _, err := c.router().Route(ctx, drivers.CapHardwareBtn, target, "baguette")
+	if err != nil {
+		return Fail("tool_missing", map[string]string{"tool": "baguette"}).Write(c.Stdout)
+	}
+	hardware, ok := driver.(drivers.HardwareButtonDriver)
+	if !ok {
+		return Fail("press_unsupported", nil).Write(c.Stdout)
+	}
+	if err := hardware.PressButton(ctx, target, btn); err != nil {
+		return Fail("ui_press_failed", map[string]string{"stderr": firstLine(err.Error())}).Write(c.Stdout)
+	}
+	return OK("ui.press", map[string]string{"button": button, "driver": driver.ID()}).Write(c.Stdout)
 }
 
 func (c CLI) uiLongPress(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
@@ -1916,6 +2778,164 @@ func (c CLI) uiScrollUntil(ctx context.Context, opts GlobalOptions, args []strin
 	return OK("ui.scrollUntil", fields).Write(c.Stdout)
 }
 
+func (c CLI) app(ctx context.Context, opts GlobalOptions, args []string) error {
+	_ = opts
+	if len(args) == 0 {
+		return Fail("app_command_missing", map[string]string{"usage": "mav app list|kill"}).Write(c.Stdout)
+	}
+	cfg := c.mustLoadConfig()
+	target := targetFromConfig(cfg)
+	switch args[0] {
+	case "list":
+		driver, _, err := c.router().Route(ctx, drivers.CapAppList, target, "")
+		if err != nil {
+			return Fail("app_list_unsupported", nil).Write(c.Stdout)
+		}
+		utility, ok := driver.(drivers.DeviceUtilityDriver)
+		if !ok {
+			return Fail("app_list_unsupported", nil).Write(c.Stdout)
+		}
+		raw, err := utility.ListApps(ctx, target)
+		if err != nil {
+			return Fail("app_list_failed", map[string]string{"stderr": firstLine(err.Error())}).Write(c.Stdout)
+		}
+		if opts.Raw {
+			_, err = fmt.Fprint(c.Stdout, raw)
+			return err
+		}
+		return OK("app.list", map[string]string{"driver": driver.ID(), "bytes": strconv.Itoa(len(raw))}).Write(c.Stdout)
+	case "kill":
+		bundle := flagValue(args[1:], "--bundle")
+		if bundle == "" {
+			bundle = cfg.BundleID
+		}
+		driver, _, err := c.router().Route(ctx, drivers.CapTerminate, target, "")
+		if err != nil {
+			return Fail("app_kill_unsupported", nil).Write(c.Stdout)
+		}
+		utility, ok := driver.(drivers.DeviceUtilityDriver)
+		if !ok {
+			return Fail("app_kill_unsupported", nil).Write(c.Stdout)
+		}
+		if err := utility.Terminate(ctx, target, bundle); err != nil {
+			return Fail("app_kill_failed", map[string]string{"stderr": firstLine(err.Error())}).Write(c.Stdout)
+		}
+		return OK("app.kill", map[string]string{"bundle": bundle, "driver": driver.ID()}).Write(c.Stdout)
+	default:
+		return Fail("app_unknown_command", map[string]string{"command": args[0]}).Write(c.Stdout)
+	}
+}
+
+func (c CLI) openURL(ctx context.Context, opts GlobalOptions, args []string) error {
+	_ = opts
+	if len(args) == 0 || strings.HasPrefix(args[0], "--") {
+		return Fail("url_missing", map[string]string{"usage": "mav openURL URL"}).Write(c.Stdout)
+	}
+	cfg := c.mustLoadConfig()
+	target := targetFromConfig(cfg)
+	driver, _, err := c.router().Route(ctx, drivers.CapOpenURL, target, "")
+	if err != nil {
+		return Fail("open_url_unsupported", nil).Write(c.Stdout)
+	}
+	utility, ok := driver.(drivers.DeviceUtilityDriver)
+	if !ok {
+		return Fail("open_url_unsupported", nil).Write(c.Stdout)
+	}
+	if err := utility.OpenURL(ctx, target, args[0]); err != nil {
+		return Fail("open_url_failed", map[string]string{"stderr": firstLine(err.Error())}).Write(c.Stdout)
+	}
+	return OK("openURL", map[string]string{"url": args[0], "driver": driver.ID()}).Write(c.Stdout)
+}
+
+func (c CLI) location(ctx context.Context, opts GlobalOptions, args []string) error {
+	_ = opts
+	if len(args) == 0 {
+		return Fail("location_command_missing", map[string]string{"usage": "mav location set LAT LON | reset"}).Write(c.Stdout)
+	}
+	cfg := c.mustLoadConfig()
+	target := targetFromConfig(cfg)
+	if isPhysicalDevice(cfg) && len(args) > 0 && args[0] == "reset" {
+		return Fail("location_reset_unsupported_on_device", nil).Write(c.Stdout)
+	}
+	driver, _, err := c.router().Route(ctx, drivers.CapLocation, target, "")
+	if err != nil {
+		return Fail("location_unsupported", nil).Write(c.Stdout)
+	}
+	utility, ok := driver.(drivers.DeviceUtilityDriver)
+	if !ok {
+		return Fail("location_unsupported", nil).Write(c.Stdout)
+	}
+	switch args[0] {
+	case "set":
+		if len(args) < 3 {
+			return Fail("location_invalid", nil).Write(c.Stdout)
+		}
+		latitude, latErr := strconv.ParseFloat(args[1], 64)
+		longitude, lonErr := strconv.ParseFloat(args[2], 64)
+		if latErr != nil || lonErr != nil || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180 {
+			return Fail("location_invalid", nil).Write(c.Stdout)
+		}
+		if err := utility.SetLocation(ctx, target, latitude, longitude); err != nil {
+			return Fail("location_set_failed", map[string]string{"stderr": firstLine(err.Error())}).Write(c.Stdout)
+		}
+		return OK("location.set", map[string]string{"latitude": args[1], "longitude": args[2], "driver": driver.ID()}).Write(c.Stdout)
+	case "reset":
+		if err := utility.ResetLocation(ctx, target); err != nil {
+			code := "location_reset_failed"
+			if isPhysicalDevice(cfg) {
+				code = "location_reset_unsupported_on_device"
+			}
+			return Fail(code, map[string]string{"stderr": firstLine(err.Error())}).Write(c.Stdout)
+		}
+		return OK("location.reset", map[string]string{"driver": driver.ID()}).Write(c.Stdout)
+	default:
+		return Fail("location_unknown_command", map[string]string{"command": args[0]}).Write(c.Stdout)
+	}
+}
+
+func (c CLI) clipboard(ctx context.Context, opts GlobalOptions, args []string) error {
+	_ = opts
+	if isPhysicalDevice(c.mustLoadConfig()) {
+		return Fail("clipboard_unsupported_on_device", nil).Write(c.Stdout)
+	}
+	if len(args) == 0 {
+		return Fail("clipboard_command_missing", map[string]string{"usage": "mav clipboard copy TEXT | read"}).Write(c.Stdout)
+	}
+	cfg := c.mustLoadConfig()
+	target := targetFromConfig(cfg)
+	driver, _, err := c.router().Route(ctx, drivers.CapClipboard, target, "simctl")
+	if err != nil {
+		return Fail("clipboard_unsupported", nil).Write(c.Stdout)
+	}
+	utility, ok := driver.(drivers.DeviceUtilityDriver)
+	if !ok {
+		return Fail("clipboard_unsupported", nil).Write(c.Stdout)
+	}
+	switch args[0] {
+	case "copy":
+		if len(args) < 2 {
+			return Fail("clipboard_text_missing", nil).Write(c.Stdout)
+		}
+		text := strings.Join(args[1:], " ")
+		if err := utility.ClipboardWrite(ctx, target, text); err != nil {
+			return Fail("clipboard_copy_failed", map[string]string{"stderr": firstLine(err.Error())}).Write(c.Stdout)
+		}
+		return OK("clipboard.copy", map[string]string{"chars": strconv.Itoa(len(text)), "driver": driver.ID()}).Write(c.Stdout)
+	case "read":
+		text, err := utility.ClipboardRead(ctx, target)
+		if err != nil {
+			return Fail("clipboard_read_failed", map[string]string{"stderr": firstLine(err.Error())}).Write(c.Stdout)
+		}
+		if opts.Raw {
+			_, err = fmt.Fprint(c.Stdout, text)
+			return err
+		}
+		return OK("clipboard.read", map[string]string{"value": text, "driver": driver.ID()}).Write(c.Stdout)
+	default:
+		return Fail("clipboard_unknown_command", map[string]string{"command": args[0]}).Write(c.Stdout)
+	}
+}
+
 func (c CLI) capture(ctx context.Context, opts GlobalOptions, args []string) error {
 	cfg, err := LoadConfig(c.Root)
 	if err != nil {
@@ -1996,6 +3016,9 @@ func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) err
 	if len(args) == 0 {
 		return Fail("flow_missing", map[string]string{"usage": "mav run flow.yaml"}).Write(c.Stdout)
 	}
+	if os.Getenv("MAV_MATRIX_CHILD") == "" && len(repeatedFlagValues(args[1:], "--target")) > 0 {
+		return c.runFlowMatrix(ctx, opts, args)
+	}
 	flow, err := LoadFlow(args[0])
 	if err != nil {
 		return Fail("flow_invalid", map[string]string{"error": err.Error()}).Write(c.Stdout)
@@ -2005,6 +3028,10 @@ func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) err
 		return err
 	}
 	bindings := flowExecBindings{}
+	if err := bindFlowParameters(flow, args[1:], bindings); err != nil {
+		return Fail("flow_params_invalid", map[string]string{"error": err.Error()}).Write(c.Stdout)
+	}
+	bindFlowTarget(c.mustLoadConfig(), bindings)
 	start := time.Now()
 	for index, step := range flow.Steps {
 		stepStart := time.Now()
@@ -2021,6 +3048,12 @@ func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) err
 			for key, value := range fields {
 				failFields[key] = value
 			}
+			runData, _ := json.MarshalIndent(map[string]any{
+				"id": run.ID, "name": flow.Name, "status": "failed", "step": index + 1,
+				"action": step.Action, "code": err.Error(), "elapsed": time.Since(start).String(),
+				"outputs": flowVariableOutputs(bindings),
+			}, "", "  ")
+			_ = os.WriteFile(filepath.Join(run.Dir, "run.json"), runData, 0o644)
 			c.cleanupFailedFlow(ctx, run, failFields)
 			return Fail(err.Error(), failFields).Write(c.Stdout)
 		}
@@ -2032,8 +3065,83 @@ func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) err
 		}
 		appendFlowStep(run, index+1, step.Action, elapsed, "ok", fields)
 	}
+	for _, step := range flow.Steps {
+		if step.Action == "open" && step.Params["timeControl"] == "true" && step.Params["preserve"] != "true" {
+			_ = c.withStdout(io.Discard).timeControl(ctx, GlobalOptions{}, []string{"reset"})
+			break
+		}
+	}
 	_ = c.withStdout(io.Discard).stop(ctx, GlobalOptions{}, []string{"--run", run.ID})
-	return OK("run", map[string]string{"name": flow.Name, "run": run.ID, "steps": strconv.Itoa(len(flow.Steps)), "elapsed": time.Since(start).String()}).Write(c.Stdout)
+	outputs := flowVariableOutputs(bindings)
+	if len(outputs) > 0 {
+		data, _ := json.MarshalIndent(outputs, "", "  ")
+		_ = os.WriteFile(filepath.Join(run.Dir, "outputs.json"), data, 0o644)
+	}
+	runData, _ := json.MarshalIndent(map[string]any{
+		"id": run.ID, "name": flow.Name, "status": "passed", "steps": len(flow.Steps),
+		"elapsed": time.Since(start).String(), "outputs": outputs,
+	}, "", "  ")
+	_ = os.WriteFile(filepath.Join(run.Dir, "run.json"), runData, 0o644)
+	fields := map[string]string{"name": flow.Name, "run": run.ID, "steps": strconv.Itoa(len(flow.Steps)), "elapsed": time.Since(start).String()}
+	if len(outputs) > 0 {
+		fields["outputs"] = filepath.Join(run.Dir, "outputs.json")
+	}
+	return OK("run", fields).Write(c.Stdout)
+}
+
+func bindFlowParameters(flow Flow, args []string, bindings flowExecBindings) error {
+	values := map[string]string{}
+	for name, param := range flow.Params {
+		values[name] = param.Default
+	}
+	for i := 0; i < len(args); i++ {
+		var raw string
+		switch {
+		case args[i] == "--param":
+			if i+1 >= len(args) {
+				return fmt.Errorf("param_value_missing")
+			}
+			i++
+			raw = args[i]
+		case strings.HasPrefix(args[i], "--param="):
+			raw = strings.TrimPrefix(args[i], "--param=")
+		default:
+			continue
+		}
+		pair := strings.SplitN(raw, "=", 2)
+		if len(pair) != 2 || pair[0] == "" {
+			return fmt.Errorf("param_invalid")
+		}
+		if _, ok := flow.Params[pair[0]]; !ok {
+			return fmt.Errorf("param_unknown name=%s", pair[0])
+		}
+		values[pair[0]] = pair[1]
+	}
+	for name, param := range flow.Params {
+		if param.Required && values[name] == "" {
+			return fmt.Errorf("param_required name=%s", name)
+		}
+		bindings["params."+name] = newFlowExecBinding(values[name])
+	}
+	return nil
+}
+
+func bindFlowTarget(cfg Config, bindings flowExecBindings) {
+	target := targetFromConfig(cfg)
+	bindings["target.udid"] = newFlowExecBinding(target.UDID)
+	bindings["target.name"] = newFlowExecBinding(target.Name)
+	bindings["target.runtime"] = newFlowExecBinding(target.Runtime)
+	bindings["target.kind"] = newFlowExecBinding(string(target.Kind))
+}
+
+func flowVariableOutputs(bindings flowExecBindings) map[string]string {
+	out := map[string]string{}
+	for key, binding := range bindings {
+		if strings.HasPrefix(key, "vars.") {
+			out[strings.TrimPrefix(key, "vars.")] = binding.Raw
+		}
+	}
+	return out
 }
 
 type flowExecBinding struct {
@@ -2063,6 +3171,48 @@ func substituteExecBindingsInStepHeader(step FlowStep, bindings flowExecBindings
 	return substituteExecBindingsInStepFields(step, bindings, false)
 }
 
+func substituteExecBindingsInAfter(after *FlowAfter, bindings flowExecBindings) (*FlowAfter, error) {
+	if after == nil {
+		return nil, nil
+	}
+	prepared := *after
+	var err error
+	prepared.Observe, err = substituteExecBindings(after.Observe, bindings)
+	if err != nil {
+		return nil, err
+	}
+	if after.Wait != nil {
+		wait := *after.Wait
+		for _, field := range []*string{&wait.ID, &wait.Text, &wait.TextContains, &wait.Value, &wait.ChangedFrom, &wait.Timeout} {
+			*field, err = substituteExecBindings(*field, bindings)
+			if err != nil {
+				return nil, err
+			}
+		}
+		for i := range wait.Any {
+			wait.Any[i], err = substituteExecBindingsInCondition(wait.Any[i], bindings)
+			if err != nil {
+				return nil, err
+			}
+		}
+		for i := range wait.All {
+			wait.All[i], err = substituteExecBindingsInCondition(wait.All[i], bindings)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if wait.Not != nil {
+			value, subErr := substituteExecBindingsInCondition(*wait.Not, bindings)
+			if subErr != nil {
+				return nil, subErr
+			}
+			wait.Not = &value
+		}
+		prepared.Wait = &wait
+	}
+	return &prepared, nil
+}
+
 func substituteExecBindingsInStepFields(step FlowStep, bindings flowExecBindings, includeDo bool) (FlowStep, error) {
 	prepared := step
 	var err error
@@ -2075,6 +3225,14 @@ func substituteExecBindingsInStepFields(step FlowStep, bindings flowExecBindings
 			return FlowStep{}, err
 		}
 	}
+	prepared.Where, err = substituteBindingsInSelector(step.Where, bindings)
+	if err != nil {
+		return FlowStep{}, err
+	}
+	prepared.After, err = substituteExecBindingsInAfter(step.After, bindings)
+	if err != nil {
+		return FlowStep{}, err
+	}
 	if step.Any != nil {
 		prepared.Any = make([]FlowCondition, len(step.Any))
 	}
@@ -2083,6 +3241,22 @@ func substituteExecBindingsInStepFields(step FlowStep, bindings flowExecBindings
 		if err != nil {
 			return FlowStep{}, err
 		}
+	}
+	if step.All != nil {
+		prepared.All = make([]FlowCondition, len(step.All))
+	}
+	for i := range step.All {
+		prepared.All[i], err = substituteExecBindingsInCondition(step.All[i], bindings)
+		if err != nil {
+			return FlowStep{}, err
+		}
+	}
+	if step.Not != nil {
+		value, subErr := substituteExecBindingsInCondition(*step.Not, bindings)
+		if subErr != nil {
+			return FlowStep{}, subErr
+		}
+		prepared.Not = &value
 	}
 	if includeDo {
 		if step.Do != nil {
@@ -2112,7 +3286,53 @@ func substituteExecBindingsInCondition(condition FlowCondition, bindings flowExe
 	if condition.ChangedFrom, err = substituteExecBindings(condition.ChangedFrom, bindings); err != nil {
 		return FlowCondition{}, err
 	}
+	selector, err := substituteBindingsInSelector(condition.Selector(), bindings)
+	if err != nil {
+		return FlowCondition{}, err
+	}
+	condition.ID = selector.ID
+	condition.Text = selector.Text
+	condition.TextContains = selector.TextContains
+	condition.TextStartsWith = selector.TextStartsWith
+	condition.TextRegex = selector.TextRegex
+	condition.Value = selector.Value
+	condition.ValueContains = selector.ValueContains
+	condition.Role = selector.Role
+	condition.Bounds = selector.Bounds
+	condition.Near = selector.Near
+	condition.ParentOf = selector.ParentOf
 	return condition, nil
+}
+
+func substituteBindingsInSelector(selector Selector, bindings flowExecBindings) (Selector, error) {
+	var err error
+	fields := []*string{
+		&selector.ID, &selector.Text, &selector.TextContains, &selector.TextStartsWith,
+		&selector.TextRegex, &selector.Value, &selector.ValueContains, &selector.Role,
+		&selector.Bounds,
+	}
+	for _, field := range fields {
+		*field, err = substituteExecBindings(*field, bindings)
+		if err != nil {
+			return Selector{}, err
+		}
+	}
+	if selector.Near != nil {
+		near := *selector.Near
+		near.Where, err = substituteBindingsInSelector(near.Where, bindings)
+		if err != nil {
+			return Selector{}, err
+		}
+		selector.Near = &near
+	}
+	if selector.ParentOf != nil {
+		parent, subErr := substituteBindingsInSelector(*selector.ParentOf, bindings)
+		if subErr != nil {
+			return Selector{}, subErr
+		}
+		selector.ParentOf = &parent
+	}
+	return selector, nil
 }
 
 func substituteExecBindings(value string, bindings flowExecBindings) (string, error) {
@@ -2122,7 +3342,7 @@ func substituteExecBindings(value string, bindings flowExecBindings) (string, er
 		if searchFrom >= len(out) {
 			return out, nil
 		}
-		start := strings.Index(out[searchFrom:], "${exec.")
+		start := strings.Index(out[searchFrom:], "${")
 		if start < 0 {
 			return out, nil
 		}
@@ -2132,14 +3352,38 @@ func substituteExecBindings(value string, bindings flowExecBindings) (string, er
 			return "", fmt.Errorf("exec_binding_invalid")
 		}
 		end += start
-		expr := out[start+len("${exec.") : end]
-		replacement, err := resolveExecBinding(expr, bindings)
+		expr := out[start+len("${") : end]
+		replacement, known, err := resolveFlowBinding(expr, bindings)
 		if err != nil {
 			return "", err
+		}
+		if !known {
+			// Not a recognized flow binding (e.g. a shell variable meant
+			// for an exec step) - leave the literal ${...} untouched.
+			searchFrom = end + 1
+			continue
 		}
 		out = out[:start] + replacement + out[end+1:]
 		searchFrom = start + len(replacement)
 	}
+}
+
+// resolveFlowBinding resolves ${expr} against known flow bindings. The
+// second return value reports whether expr was recognized as a binding at
+// all; unrecognized expressions (e.g. plain shell variables used in an exec
+// step) are left untouched by the caller instead of failing the flow.
+func resolveFlowBinding(expr string, bindings flowExecBindings) (string, bool, error) {
+	if strings.HasPrefix(expr, "exec.") {
+		value, err := resolveExecBinding(strings.TrimPrefix(expr, "exec."), bindings)
+		return value, true, err
+	}
+	if binding, ok := bindings[expr]; ok {
+		return binding.Raw, true, nil
+	}
+	if strings.HasPrefix(expr, "params.") || strings.HasPrefix(expr, "vars.") || strings.HasPrefix(expr, "target.") {
+		return "", true, fmt.Errorf("flow_binding_missing name=%s", expr)
+	}
+	return "", false, nil
 }
 
 func resolveExecBinding(expr string, bindings flowExecBindings) (string, error) {
@@ -2238,6 +3482,92 @@ func flowStepPreferDriver(opts GlobalOptions, step FlowStep) (string, error) {
 }
 
 func (c CLI) executeFlowStepBoundWithOptions(ctx context.Context, opts GlobalOptions, run RunState, index int, step FlowStep, bindings flowExecBindings) (map[string]string, error) {
+	policy := step.OnFailure
+	if policy.Strategy == "" {
+		if step.Params["optional"] == "true" {
+			policy.Strategy = "skip"
+		} else {
+			policy.Strategy = "abort"
+		}
+	}
+	attempts := 1
+	if policy.Strategy == "retry" {
+		attempts = policy.MaxAttempts
+		if attempts <= 0 {
+			attempts = 3
+		}
+	}
+	delay := parseFlowDuration(policy.Delay, 300*time.Millisecond)
+	if delay < 0 {
+		delay = 0
+	}
+	backoff := policy.Backoff
+	if backoff == 0 {
+		backoff = 1
+	}
+	var fields map[string]string
+	var err error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		fields, err = c.executeFlowStepBoundOnceWithOptions(ctx, opts, run, index, step, bindings)
+		if err == nil {
+			if fields == nil {
+				fields = map[string]string{}
+			}
+			fields["attempts"] = strconv.Itoa(attempt)
+			if step.After != nil {
+				after, afterErr := substituteExecBindingsInAfter(step.After, bindings)
+				if afterErr != nil {
+					return fields, afterErr
+				}
+				afterFields, afterErr := c.executeFlowAfter(ctx, run, after)
+				for key, value := range afterFields {
+					fields["after_"+key] = value
+				}
+				err = afterErr
+			}
+			if err == nil {
+				return fields, nil
+			}
+		}
+		if policy.Strategy == "skip" {
+			if fields == nil {
+				fields = map[string]string{}
+			}
+			fields["skipped"] = "true"
+			fields["error"] = err.Error()
+			return fields, nil
+		}
+		if policy.Strategy != "retry" || !retryPolicyMatches(policy, err) || attempt == attempts {
+			break
+		}
+		appendFlowStep(run, index, step.Action+".retry", 0, "retry", map[string]string{
+			"attempt": strconv.Itoa(attempt), "code": err.Error(),
+		})
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fields, ctx.Err()
+		case <-timer.C:
+		}
+		delay = time.Duration(float64(delay) * backoff)
+	}
+	return fields, err
+}
+
+func retryPolicyMatches(policy FailurePolicy, err error) bool {
+	if err == nil || len(policy.RetryOn) == 0 {
+		return err != nil
+	}
+	for _, code := range policy.RetryOn {
+		if err.Error() == code || strings.Contains(err.Error(), code) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c CLI) executeFlowStepBoundOnceWithOptions(ctx context.Context, opts GlobalOptions, run RunState, index int, step FlowStep, bindings flowExecBindings) (map[string]string, error) {
 	if step.Action == "when" {
 		prepared, err := substituteExecBindingsInStepHeader(step, bindings)
 		if err != nil {
@@ -2282,9 +3612,127 @@ func (c CLI) executeFlowStepBoundWithOptions(ctx context.Context, opts GlobalOpt
 			fields["out"] = out
 		}
 		return fields, nil
+	case "extract":
+		fields, value, err := c.extractFlowValue(ctx, prepared)
+		if err != nil {
+			return fields, err
+		}
+		name := prepared.Params["name"]
+		if !validExecBindingName(name) {
+			return fields, fmt.Errorf("extract_name_invalid")
+		}
+		bindings["vars."+name] = newFlowExecBinding(value)
+		fields["name"] = name
+		return fields, nil
 	default:
 		return c.executeFlowStepWithOptions(ctx, opts, run, index, prepared)
 	}
+}
+
+func (c CLI) extractFlowValue(ctx context.Context, step FlowStep) (map[string]string, string, error) {
+	cfg := c.mustLoadConfig()
+	described, err := c.describeUITree(ctx, cfg, "auto", false)
+	if err != nil || described.Result.Err != nil {
+		return nil, "", fmt.Errorf("tree_failed")
+	}
+	matches, err := MatchElements(ExtractElementsRaw(described.Result.Stdout), flowStepSelector(step))
+	if err != nil {
+		return nil, "", err
+	}
+	if len(matches) == 0 {
+		return nil, "", fmt.Errorf("selector_not_found")
+	}
+	if len(matches) > 1 {
+		return map[string]string{"matches": strconv.Itoa(len(matches))}, "", fmt.Errorf("selector_ambiguous")
+	}
+	el := matches[0]
+	var value string
+	switch step.Params["field"] {
+	case "", "text":
+		value = elementText(el)
+	case "id":
+		value = el.ID
+	case "value":
+		value = el.Value
+	case "role":
+		value = el.Role
+	case "frame":
+		value = el.Frame
+	default:
+		return nil, "", fmt.Errorf("extract_field_invalid")
+	}
+	if pattern := step.Params["regex"]; pattern != "" {
+		rx, compileErr := regexp.Compile(pattern)
+		if compileErr != nil {
+			return nil, "", fmt.Errorf("extract_regex_invalid")
+		}
+		match := rx.FindStringSubmatch(value)
+		if len(match) == 0 {
+			return nil, "", fmt.Errorf("extract_regex_no_match")
+		}
+		if len(match) > 1 {
+			value = match[1]
+		} else {
+			value = match[0]
+		}
+	}
+	return map[string]string{"field": step.Params["field"], "value": value}, value, nil
+}
+
+func flowStepSelector(step FlowStep) Selector {
+	if !step.Where.IsZero() {
+		return step.Where
+	}
+	return selectorFromLegacy(step.Params)
+}
+
+func (c CLI) executeFlowAfter(ctx context.Context, run RunState, after *FlowAfter) (map[string]string, error) {
+	fields := map[string]string{}
+	if after == nil {
+		return fields, nil
+	}
+	if after.Wait != nil {
+		params := map[string]string{
+			"id": after.Wait.ID, "text": after.Wait.Text,
+			"value": after.Wait.Value, "changedFrom": after.Wait.ChangedFrom,
+			"timeout": after.Wait.Timeout,
+		}
+		all := after.Wait.All
+		if after.Wait.TextContains != "" {
+			all = append(all, FlowCondition{TextContains: after.Wait.TextContains})
+		}
+		if after.Wait.Stable {
+			all = append(all, FlowCondition{Stable: true})
+		}
+		if err := c.waitForConditionSet(ctx, params, after.Wait.Any, all, after.Wait.Not, "auto"); err != nil {
+			return fields, err
+		}
+		fields["wait"] = "ok"
+	}
+	switch after.Observe {
+	case "", "none":
+	case "agent", "tree", "delta":
+		cfg := c.mustLoadConfig()
+		described, err := c.describeUITree(ctx, cfg, "auto", false)
+		if err != nil || described.Result.Err != nil {
+			return fields, fmt.Errorf("tree_failed")
+		}
+		elements := ExtractElementsRaw(described.Result.Stdout)
+		fields["observe"] = after.Observe
+		fields["nodes"] = strconv.Itoa(len(elements))
+		if after.Observe == "delta" {
+			previous := loadFastPathTree(run)
+			delta := TreeDiff(previous, elements)
+			data, _ := json.Marshal(delta)
+			path := filepath.Join(run.Dir, fmt.Sprintf("step-%d-delta.json", len(LoadEvidenceSteps(run))+1))
+			_ = os.WriteFile(path, data, 0o644)
+			fields["delta"] = path
+			_ = saveFastPathTree(run, elements)
+		}
+	default:
+		return fields, fmt.Errorf("observe_invalid")
+	}
+	return fields, nil
 }
 
 func (c CLI) executeFlowStep(ctx context.Context, run RunState, index int, step FlowStep) (map[string]string, error) {
@@ -2302,6 +3750,12 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 		if step.Params["clearState"] == "true" {
 			args = append(args, "--clear-state")
 		}
+		if step.Params["timeControl"] == "true" {
+			args = append(args, "--time-control")
+			if step.Params["preserve"] == "true" {
+				args = append(args, "--preserve-time")
+			}
+		}
 		var out bytes.Buffer
 		err := c.withStdout(&out).open(ctx, GlobalOptions{}, args)
 		return map[string]string{"run": run.ID}, commandOutputErr(err, out.String(), "open_failed")
@@ -2310,10 +3764,42 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 	case "whileNotVisible":
 		return c.executeWhileNotVisibleFlowStepBoundWithOptions(ctx, opts, run, index, step, nil)
 	case "tree":
-		err := c.withStdout(io.Discard).ui(ctx, GlobalOptions{PreferDriver: prefer}, []string{"tree"})
-		return map[string]string{"driver": prefer}, outputErr(err, "tree_failed")
+		cfg := c.mustLoadConfig()
+		described, err := c.describeUITree(ctx, cfg, prefer, false)
+		if err != nil || described.Result.Err != nil {
+			return map[string]string{"driver": prefer}, fmt.Errorf("tree_failed")
+		}
+		elements := ExtractElementsRaw(described.Result.Stdout)
+		selector := flowStepSelector(step)
+		if !selector.IsZero() {
+			elements, err = MatchElements(elements, selector)
+			if err != nil {
+				return nil, err
+			}
+		}
+		max := len(elements)
+		if raw := step.Params["max"]; raw != "" {
+			if parsed, parseErr := strconv.Atoi(raw); parseErr == nil && parsed >= 0 && parsed < max {
+				max = parsed
+			}
+		}
+		fields := map[string]string{"driver": described.Driver, "nodes": strconv.Itoa(max)}
+		treeData, _ := json.MarshalIndent(elements[:max], "", "  ")
+		treePath := filepath.Join(run.Dir, fmt.Sprintf("step-%d-tree.json", index))
+		_ = os.WriteFile(treePath, treeData, 0o644)
+		fields["tree"] = treePath
+		if step.Params["since"] != "" {
+			previous := loadFastPathTree(run)
+			delta := TreeDiff(previous, elements[:max])
+			data, _ := json.Marshal(delta)
+			path := filepath.Join(run.Dir, fmt.Sprintf("step-%d-tree-delta.json", index))
+			_ = os.WriteFile(path, data, 0o644)
+			fields["delta"] = path
+		}
+		_ = saveFastPathTree(run, elements[:max])
+		return fields, nil
 	case "tap":
-		args := flowArgs(step.Params, "--id", "id", "--text", "text", "--value", "value", "--x", "x", "--y", "y")
+		args := append(selectorCLIArgs(flowStepSelector(step)), flowArgs(step.Params, "--x", "x", "--y", "y")...)
 		var out bytes.Buffer
 		err := c.withStdout(&out).uiTap(ctx, GlobalOptions{PreferDriver: prefer}, c.mustLoadConfig(), args)
 		cmdErr := commandOutputErr(err, out.String(), "tap_failed")
@@ -2323,10 +3809,19 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 			return fields, nil
 		}
 		return copyParams(step.Params), cmdErr
+	case "doubleTap":
+		args := append(selectorCLIArgs(flowStepSelector(step)), flowArgs(step.Params, "--x", "x", "--y", "y", "--duration", "duration")...)
+		var out bytes.Buffer
+		err := c.withStdout(&out).uiDoubleTap(ctx, GlobalOptions{PreferDriver: prefer}, c.mustLoadConfig(), args)
+		return copyParams(step.Params), commandOutputErr(err, out.String(), "double_tap_failed")
 	case "type":
 		text := step.Params["text"]
 		var out bytes.Buffer
-		err := c.withStdout(&out).uiType(ctx, GlobalOptions{PreferDriver: prefer}, c.mustLoadConfig(), []string{text})
+		// Only an explicit selector targets a tap before typing; the legacy
+		// params fallback would resurrect "text" (the content to type) as a
+		// tap target here.
+		args := append([]string{text}, selectorCLIArgs(step.Where)...)
+		err := c.withStdout(&out).uiType(ctx, GlobalOptions{PreferDriver: prefer}, c.mustLoadConfig(), args)
 		fields := map[string]string{"chars": strconv.Itoa(len(text))}
 		if prefer != "" {
 			fields["driver"] = prefer
@@ -2342,9 +3837,36 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 		err := c.withStdout(&out).uiHideKeyboard(ctx, GlobalOptions{}, c.mustLoadConfig(), nil)
 		return map[string]string{"driver": "baguette"}, commandOutputErr(err, out.String(), "hide_keyboard_failed")
 	case "swipe":
-		args := flowArgs(step.Params, "--direction", "direction", "--start-x", "start-x", "--start-y", "start-y", "--end-x", "end-x", "--end-y", "end-y")
+		args := flowArgs(step.Params, "--direction", "direction", "--start-x", "startX", "--start-y", "startY", "--end-x", "endX", "--end-y", "endY")
 		err := c.withStdout(io.Discard).uiSwipe(ctx, GlobalOptions{PreferDriver: prefer}, c.mustLoadConfig(), args)
 		return copyParams(step.Params), outputErr(err, "swipe_failed")
+	case "drag":
+		args := flowArgs(step.Params, "--start-x", "startX", "--start-y", "startY", "--end-x", "endX", "--end-y", "endY", "--duration", "duration")
+		err := c.withStdout(io.Discard).uiDrag(ctx, GlobalOptions{}, c.mustLoadConfig(), args)
+		return copyParams(step.Params), outputErr(err, "drag_failed")
+	case "dragPath":
+		args := []string{}
+		for _, point := range step.Points {
+			raw := strconv.Itoa(point.X) + "," + strconv.Itoa(point.Y)
+			duration := point.Duration
+			if duration == "" && point.DurationMs > 0 {
+				duration = strconv.Itoa(point.DurationMs) + "ms"
+			}
+			if duration != "" {
+				raw += ":" + duration
+			}
+			args = append(args, "--point", raw)
+		}
+		err := c.withStdout(io.Discard).uiDragPath(ctx, GlobalOptions{}, c.mustLoadConfig(), args)
+		return map[string]string{"points": strconv.Itoa(len(step.Points))}, outputErr(err, "drag_path_failed")
+	case "toggle":
+		args := append(selectorCLIArgs(flowStepSelector(step)), flowArgs(step.Params, "--state", "state")...)
+		err := c.withStdout(io.Discard).uiToggle(ctx, GlobalOptions{PreferDriver: prefer}, c.mustLoadConfig(), args)
+		return copyParams(step.Params), outputErr(err, "toggle_failed")
+	case "press":
+		args := flowArgs(step.Params, "--button", "button")
+		err := c.withStdout(io.Discard).uiPress(ctx, GlobalOptions{}, c.mustLoadConfig(), args)
+		return copyParams(step.Params), outputErr(err, "press_failed")
 	case "longPress":
 		args := flowArgs(step.Params, "--x", "x", "--y", "y", "--duration", "duration")
 		err := c.withStdout(io.Discard).uiLongPress(ctx, GlobalOptions{}, c.mustLoadConfig(), args)
@@ -2373,13 +3895,23 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 		time.Sleep(duration)
 		return map[string]string{"duration": duration.String()}, nil
 	case "wait", "assert":
-		err := c.waitForFlowConditionWithPrefer(ctx, step.Params, nil, prefer)
+		all := step.All
+		if !step.Where.IsZero() {
+			all = append(all, flowConditionFromSelector(step.Where))
+		}
+		err := c.waitForConditionSet(ctx, step.Params, nil, all, step.Not, prefer)
 		return copyParams(step.Params), err
 	case "waitUntil":
-		err := c.waitForFlowConditionWithPrefer(ctx, step.Params, step.Any, prefer)
+		all := step.All
+		if !step.Where.IsZero() {
+			all = append(all, flowConditionFromSelector(step.Where))
+		}
+		err := c.waitForConditionSet(ctx, step.Params, step.Any, all, step.Not, prefer)
 		return map[string]string{"conditions": strconv.Itoa(len(step.Any))}, err
+	case "assertCount":
+		return c.assertFlowCount(ctx, step, prefer)
 	case "scrollUntil":
-		return c.scrollUntilFlowConditionWithPrefer(ctx, step.Params, prefer)
+		return c.scrollUntilFlowConditionWithSelector(ctx, step.Params, flowStepSelector(step), prefer)
 	case "capture":
 		name := step.Params["name"]
 		if name != "" {
@@ -2433,6 +3965,77 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 		args = append(args, "--run", run.ID)
 		err := c.withStdout(io.Discard).networkStatus(GlobalOptions{}, args)
 		return copyParams(step.Params), outputErr(err, "network_status_failed")
+	case "app.list":
+		err := c.withStdout(io.Discard).app(ctx, GlobalOptions{}, []string{"list"})
+		return map[string]string{}, outputErr(err, "app_list_failed")
+	case "app.kill":
+		args := []string{"kill"}
+		if bundle := step.Params["bundle"]; bundle != "" {
+			args = append(args, "--bundle", bundle)
+		}
+		err := c.withStdout(io.Discard).app(ctx, GlobalOptions{}, args)
+		return copyParams(step.Params), outputErr(err, "app_kill_failed")
+	case "openURL":
+		err := c.withStdout(io.Discard).openURL(ctx, GlobalOptions{}, []string{step.Params["url"]})
+		return copyParams(step.Params), outputErr(err, "open_url_failed")
+	case "location.set":
+		err := c.withStdout(io.Discard).location(ctx, GlobalOptions{}, []string{"set", step.Params["latitude"], step.Params["longitude"]})
+		return copyParams(step.Params), outputErr(err, "location_set_failed")
+	case "location.reset":
+		err := c.withStdout(io.Discard).location(ctx, GlobalOptions{}, []string{"reset"})
+		return map[string]string{}, outputErr(err, "location_reset_failed")
+	case "clipboard.copy":
+		err := c.withStdout(io.Discard).clipboard(ctx, GlobalOptions{}, []string{"copy", step.Params["text"]})
+		return map[string]string{"chars": strconv.Itoa(len(step.Params["text"]))}, outputErr(err, "clipboard_copy_failed")
+	case "clipboard.read":
+		var out bytes.Buffer
+		err := c.withStdout(&out).clipboard(ctx, GlobalOptions{Raw: true}, []string{"read"})
+		return map[string]string{"value": out.String()}, outputErr(err, "clipboard_read_failed")
+	case "time.freeze":
+		err := c.withStdout(io.Discard).timeControl(ctx, GlobalOptions{}, []string{"freeze", "--at", step.Params["at"]})
+		return copyParams(step.Params), outputErr(err, "time_freeze_failed")
+	case "time.travel":
+		err := c.withStdout(io.Discard).timeControl(ctx, GlobalOptions{}, []string{"travel", "--by", step.Params["by"]})
+		return copyParams(step.Params), outputErr(err, "time_travel_failed")
+	case "time.scale":
+		err := c.withStdout(io.Discard).timeControl(ctx, GlobalOptions{}, []string{"scale", "--factor", step.Params["factor"]})
+		return copyParams(step.Params), outputErr(err, "time_scale_failed")
+	case "time.status":
+		var out bytes.Buffer
+		err := c.withStdout(&out).timeControl(ctx, GlobalOptions{}, []string{"status"})
+		return map[string]string{"status": out.String()}, outputErr(err, "time_status_failed")
+	case "time.reset":
+		err := c.withStdout(io.Discard).timeControl(ctx, GlobalOptions{}, []string{"reset"})
+		return map[string]string{"reset": "true"}, outputErr(err, "time_reset_failed")
+	case "debug.attach":
+		args := []string{"attach"}
+		if breakpoint := step.Params["breakpoint"]; breakpoint != "" {
+			args = append(args, "--breakpoint", breakpoint)
+		}
+		err := c.withStdout(io.Discard).debug(ctx, GlobalOptions{}, args)
+		return copyParams(step.Params), outputErr(err, "debug_attach_failed")
+	case "debug.wait":
+		args := flowArgs(step.Params, "--timeout", "timeout")
+		args = append([]string{"wait"}, args...)
+		err := c.withStdout(io.Discard).debug(ctx, GlobalOptions{}, args)
+		return copyParams(step.Params), outputErr(err, "debug_wait_failed")
+	case "debug.break":
+		err := c.withStdout(io.Discard).debug(ctx, GlobalOptions{}, []string{"break", "add", step.Params["breakpoint"]})
+		return copyParams(step.Params), outputErr(err, "debug_break_failed")
+	case "debug.eval":
+		err := c.withStdout(io.Discard).debug(ctx, GlobalOptions{}, []string{"eval", step.Params["expression"]})
+		return copyParams(step.Params), outputErr(err, "debug_eval_failed")
+	case "debug.step":
+		kind := firstNonEmpty(step.Params["kind"], step.Params["debugDirection"], step.Params["direction"])
+		err := c.withStdout(io.Discard).debug(ctx, GlobalOptions{}, []string{"step", kind})
+		return copyParams(step.Params), outputErr(err, "debug_step_failed")
+	case "debug.detach":
+		args := []string{"detach"}
+		if step.Params["kill"] == "true" {
+			args = append(args, "--kill")
+		}
+		err := c.withStdout(io.Discard).debug(ctx, GlobalOptions{}, args)
+		return copyParams(step.Params), outputErr(err, "debug_detach_failed")
 	case "logs":
 		args := flowArgs(step.Params, "--contains", "contains", "--key", "key", "--level", "level")
 		args = append(args, "--run", run.ID)
@@ -2463,7 +4066,7 @@ func (c CLI) executeWhenFlowStepWithOptions(ctx context.Context, opts GlobalOpti
 	if preferErr != nil {
 		return copyParams(step.Params), preferErr
 	}
-	matched, err := c.evaluateFlowConditionWithPrefer(ctx, step.Params, step.Any, prefer)
+	matched, err := c.evaluateConditionSet(ctx, step.Params, step.Any, step.All, step.Not, prefer)
 	if err != nil {
 		return copyParams(step.Params), err
 	}
@@ -2505,7 +4108,7 @@ func (c CLI) executeWhenFlowStepBoundWithOptions(ctx context.Context, opts Globa
 	if preferErr != nil {
 		return copyParams(step.Params), preferErr
 	}
-	matched, err := c.evaluateFlowConditionWithPrefer(ctx, step.Params, step.Any, prefer)
+	matched, err := c.evaluateConditionSet(ctx, step.Params, step.Any, step.All, step.Not, prefer)
 	if err != nil {
 		return copyParams(step.Params), err
 	}
@@ -2552,7 +4155,7 @@ func (c CLI) executeWhileNotVisibleFlowStepBoundWithOptions(ctx context.Context,
 	iterations := 0
 	executed := 0
 	for {
-		matched, err := c.evaluateFlowConditionWithPrefer(ctx, step.Params, step.Any, prefer)
+		matched, err := c.evaluateConditionSet(ctx, step.Params, step.Any, step.All, step.Not, prefer)
 		if err != nil {
 			return fields, err
 		}
@@ -2613,6 +4216,41 @@ func (c CLI) currentOrNewRun() (RunState, error) {
 func (c CLI) withStdout(stdout io.Writer) CLI {
 	c.Stdout = stdout
 	return c
+}
+
+func (c CLI) keepRunLeaseAlive(command string) func() {
+	switch command {
+	case "__worker", "stop":
+		return func() {}
+	}
+	renew := func() {
+		run, err := LoadRun(c.Root, "")
+		if err == nil {
+			_, _ = sendWorkerRequest(run, workerRequest{Command: "renew"})
+		}
+	}
+	// Fire-and-forget: the worker may be mid-request for tens of seconds
+	// (debug wait/eval, long gesture sequences), and this runs before every
+	// command dispatches. Renewing synchronously here would stall unrelated
+	// mav invocations behind whatever the worker happens to be doing.
+	go renew()
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(workerHeartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				renew()
+			case <-done:
+				return
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		renew()
+	}
 }
 
 func outputErr(err error, code string) error {
@@ -2899,15 +4537,22 @@ func (c CLI) waitForFlowCondition(ctx context.Context, params map[string]string,
 }
 
 func (c CLI) waitForFlowConditionWithPrefer(ctx context.Context, params map[string]string, any []FlowCondition, prefer string) error {
+	return c.waitForConditionSet(ctx, params, any, nil, nil, prefer)
+}
+
+func (c CLI) waitForConditionSet(ctx context.Context, params map[string]string, any, all []FlowCondition, not *FlowCondition, prefer string) error {
 	timeout := parseFlowDuration(params["timeout"], 5*time.Second)
 	if timeout <= 0 {
 		timeout = time.Millisecond
 	}
 	deadline := time.Now().Add(timeout)
 	for {
-		ok, err := c.evaluateFlowConditionWithPrefer(ctx, params, any, prefer)
+		ok, err := c.evaluateConditionSet(ctx, params, any, all, not, prefer)
 		if err != nil {
-			return err
+			if err.Error() != "tree_failed" && err.Error() != "ui_not_stable" {
+				return err
+			}
+			ok = false
 		}
 		if ok {
 			return nil
@@ -2924,6 +4569,10 @@ func (c CLI) scrollUntilFlowCondition(ctx context.Context, params map[string]str
 }
 
 func (c CLI) scrollUntilFlowConditionWithPrefer(ctx context.Context, params map[string]string, prefer string) (map[string]string, error) {
+	return c.scrollUntilFlowConditionWithSelector(ctx, params, selectorFromLegacy(params), prefer)
+}
+
+func (c CLI) scrollUntilFlowConditionWithSelector(ctx context.Context, params map[string]string, selector Selector, prefer string) (map[string]string, error) {
 	maxSwipes := 5
 	if raw := params["maxSwipes"]; raw != "" {
 		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
@@ -2934,8 +4583,9 @@ func (c CLI) scrollUntilFlowConditionWithPrefer(ctx context.Context, params map[
 	if direction == "" {
 		direction = "up"
 	}
+	condition := flowConditionFromSelector(selector)
 	for i := 0; i <= maxSwipes; i++ {
-		ok, err := c.evaluateSingleConditionWithPrefer(ctx, FlowCondition{Text: params["text"], ID: params["id"], Value: params["value"]}, prefer)
+		ok, err := c.evaluateSingleConditionWithPrefer(ctx, condition, prefer)
 		if err != nil {
 			return nil, err
 		}
@@ -3027,19 +4677,55 @@ func (c CLI) evaluateFlowCondition(ctx context.Context, params map[string]string
 }
 
 func (c CLI) evaluateFlowConditionWithPrefer(ctx context.Context, params map[string]string, any []FlowCondition, prefer string) (bool, error) {
+	return c.evaluateConditionSet(ctx, params, any, nil, nil, prefer)
+}
+
+func (c CLI) evaluateConditionSet(ctx context.Context, params map[string]string, any, all []FlowCondition, not *FlowCondition, prefer string) (bool, error) {
+	base := FlowCondition{
+		Text: params["text"], ID: params["id"], Value: params["value"],
+		ChangedFrom: params["changedFrom"],
+	}
+	if !base.Selector().IsZero() || base.ChangedFrom != "" {
+		all = append(append([]FlowCondition{}, all...), base)
+	}
 	if len(any) > 0 {
+		anyMatched := false
 		for _, condition := range any {
 			ok, err := c.evaluateSingleConditionWithPrefer(ctx, condition, prefer)
 			if err != nil {
 				return false, err
 			}
 			if ok {
-				return true, nil
+				anyMatched = true
+				break
 			}
 		}
-		return false, nil
+		if !anyMatched {
+			return false, nil
+		}
 	}
-	return c.evaluateSingleConditionWithPrefer(ctx, FlowCondition{Text: params["text"], ID: params["id"], Value: params["value"], ChangedFrom: params["changedFrom"]}, prefer)
+	if len(all) > 0 {
+		for _, condition := range all {
+			ok, err := c.evaluateSingleConditionWithPrefer(ctx, condition, prefer)
+			if err != nil || !ok {
+				return false, err
+			}
+		}
+	}
+	if not != nil {
+		ok, err := c.evaluateSingleConditionWithPrefer(ctx, *not, prefer)
+		if err != nil {
+			return false, err
+		}
+		if ok {
+			return false, nil
+		}
+	}
+	if len(any) > 0 || len(all) > 0 || not != nil {
+		return true, nil
+	}
+	// No conditions at all (base params, any, all, not are all empty).
+	return false, nil
 }
 
 func (c CLI) evaluateSingleCondition(ctx context.Context, condition FlowCondition) (bool, error) {
@@ -3047,6 +4733,9 @@ func (c CLI) evaluateSingleCondition(ctx context.Context, condition FlowConditio
 }
 
 func (c CLI) evaluateSingleConditionWithPrefer(ctx context.Context, condition FlowCondition, prefer string) (bool, error) {
+	if len(condition.Any) > 0 || len(condition.All) > 0 || condition.Not != nil {
+		return c.evaluateConditionSet(ctx, nil, condition.Any, condition.All, condition.Not, prefer)
+	}
 	if condition.ChangedFrom != "" {
 		return c.screenshotChangedFrom(ctx, condition.ChangedFrom)
 	}
@@ -3063,26 +4752,47 @@ func (c CLI) evaluateSingleConditionWithPrefer(ctx context.Context, condition Fl
 	if result.Err != nil {
 		return false, fmt.Errorf("tree_failed")
 	}
-	return flowConditionMatchesElements(ExtractElements(result.Stdout), condition), nil
+	elements := ExtractElementsRaw(result.Stdout)
+	if condition.Stable {
+		first := hashElements(elements)
+		time.Sleep(200 * time.Millisecond)
+		secondTree, secondErr := c.describeUITree(ctx, cfg, prefer, false)
+		if secondErr != nil || secondTree.Result.Err != nil {
+			return false, fmt.Errorf("tree_failed")
+		}
+		return first != "" && first == hashElements(ExtractElementsRaw(secondTree.Result.Stdout)), nil
+	}
+	return flowConditionMatchesElements(elements, condition), nil
 }
 
 func flowConditionMatchesElements(elements []Element, condition FlowCondition) bool {
-	if condition.Text == "" && condition.ID == "" && condition.Value == "" {
+	selector := condition.Selector()
+	if selector.IsZero() {
 		return false
 	}
-	for _, el := range elements {
-		if condition.ID != "" && el.ID != condition.ID {
-			continue
-		}
-		if condition.Text != "" && el.Label != condition.Text && el.Title != condition.Text {
-			continue
-		}
-		if condition.Value != "" && el.Value != condition.Value {
-			continue
-		}
-		return true
+	matches, err := MatchElements(elements, selector)
+	return err == nil && len(matches) > 0
+}
+
+func (c CLI) assertFlowCount(ctx context.Context, step FlowStep, prefer string) (map[string]string, error) {
+	expected, err := strconv.Atoi(step.Params["count"])
+	if err != nil || expected < 0 {
+		return nil, fmt.Errorf("assert_count_invalid")
 	}
-	return false
+	cfg := c.mustLoadConfig()
+	described, err := c.describeUITree(ctx, cfg, prefer, false)
+	if err != nil || described.Result.Err != nil {
+		return nil, fmt.Errorf("tree_failed")
+	}
+	matches, err := MatchElements(ExtractElementsRaw(described.Result.Stdout), flowStepSelector(step))
+	if err != nil {
+		return nil, err
+	}
+	fields := map[string]string{"expected": strconv.Itoa(expected), "actual": strconv.Itoa(len(matches))}
+	if len(matches) != expected {
+		return fields, fmt.Errorf("assert_count_failed")
+	}
+	return fields, nil
 }
 
 func parseElementFrame(frame string) (float64, float64, float64, float64, bool) {
@@ -3162,16 +4872,25 @@ func (c CLI) logs(opts GlobalOptions, args []string) error {
 }
 
 func (c CLI) stop(ctx context.Context, opts GlobalOptions, args []string) error {
-	_ = ctx
 	run, err := LoadRun(c.Root, flagValue(args, "--run"))
 	if err != nil {
 		return Fail("run_not_found", nil).Write(c.Stdout)
 	}
+	if exists(filepath.Join(run.Dir, "time-control.enabled")) && !exists(filepath.Join(run.Dir, "time-control.preserve")) {
+		_ = c.withStdout(io.Discard).timeControl(ctx, GlobalOptions{}, []string{"reset"})
+		_ = os.Remove(filepath.Join(run.Dir, "time-control.enabled"))
+	}
 	records := loadProcessRecords(run)
+	if workerPing(run) {
+		_, _ = sendWorkerRequest(run, workerRequest{Command: "stop"})
+	}
 	stopped := 0
 	failed := 0
 	for _, record := range records {
 		if record.PID <= 0 {
+			continue
+		}
+		if record.PID == os.Getpid() {
 			continue
 		}
 		if record.Kind == "video" && fileExists(filepath.Join(run.Dir, "video.pid")) {

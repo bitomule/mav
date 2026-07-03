@@ -25,3 +25,9 @@ type Executor interface {
 	Run(ctx context.Context, name string, args ...string) ExecResult
 	Start(ctx context.Context, logPath string, name string, args ...string) (int, error)
 }
+
+// InputExecutor is an optional extension for tools with a streaming/stdin
+// protocol, such as `baguette input`.
+type InputExecutor interface {
+	RunInput(ctx context.Context, input string, name string, args ...string) ExecResult
+}

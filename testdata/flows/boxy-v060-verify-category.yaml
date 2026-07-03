@@ -1,0 +1,13 @@
+name: boxy_v060_verify_category
+params:
+  category:
+    required: true
+steps:
+  - extract:
+      name: categoryLabel
+      where: { text: "${params.category}", visible: true }
+      field: text
+      regex: "(.+)"
+  - assertCount:
+      where: { text: "${params.category}", visible: true }
+      count: 1
