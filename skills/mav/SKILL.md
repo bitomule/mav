@@ -70,8 +70,12 @@ does not explore or repair routes by itself. The agent decides the next action.
    `View`-suffix identifier, such as `SettingsView` → `settings-view`. This is
    a labelling/observability signal only. Selectors for tapping still work
    regardless.
-9. For ad-hoc sessions started with `mav open`, run `mav stop` when validation
-   is done. `mav run` stops run-owned streams automatically.
+9. Sessions started with `mav open` have a renewable 15-minute inactivity
+   lease. Each MAV command keeps the lease alive, including heartbeats during
+   long commands. Expiration automatically stops run-owned streams, resets
+   non-preserved time control, and releases the simulator lock. Use `mav stop`
+   only for immediate cleanup. `mav run` stops run-owned streams
+   deterministically.
 
 For evidence flows that need mitmproxy on macOS 26+, remember that mitmproxy's
 local Network Extension may take several seconds to become ready after launch.

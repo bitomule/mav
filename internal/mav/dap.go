@@ -426,7 +426,7 @@ func (c CLI) debug(ctx context.Context, opts GlobalOptions, args []string) error
 		return Fail("run_not_found", map[string]string{"next": "mav open"}).Write(c.Stdout)
 	}
 	if !workerPing(run) {
-		if _, err := startRunWorker(run); err != nil {
+		if _, err := startRunWorker(c.Root, run); err != nil {
 			return Fail("debug_worker_unavailable", map[string]string{"stderr": err.Error()}).Write(c.Stdout)
 		}
 	}

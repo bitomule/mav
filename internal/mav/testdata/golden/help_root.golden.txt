@@ -23,7 +23,7 @@ Commands:
   run         Execute a native MAV YAML flow.
   flow        Lint native MAV YAML flows.
   logs        Read captured run logs.
-  stop        Stop run-owned background processes.
+  stop        Stop a run immediately (normally automatic).
   crashes     List crashes for the configured app.
   evidence    Start/step/stop/report evidence.
   network     Start/stop a HAR network capture (sim only).

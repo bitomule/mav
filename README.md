@@ -711,14 +711,19 @@ writable copy at `/tmp/mav/<run-id>/app.tmp/<App>.app`.
 
 ## Cleanup
 
-Ad-hoc `mav open` sessions keep log capture running for the current run. Stop
-them when done:
+`mav open` uses a 15-minute inactivity lease. Every command renews it, including
+heartbeats while a long command is running. When the lease expires, MAV stops
+the worker, Baguette, logs and LLDB, resets non-preserved time control, and
+releases the simulator lock automatically.
+
+Use `mav stop` only when immediate cleanup is useful:
 
 ```bash
 mav stop
 ```
 
-`mav run` stops run-owned streams automatically.
+`mav run` stops run-owned streams deterministically without waiting for the
+lease. Starting a new `mav open` also cleans the previous run.
 
 ## Troubleshooting
 

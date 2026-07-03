@@ -45,12 +45,19 @@ type runWorker struct {
 	listener net.Listener
 	sessions map[string]*baguetteInputSession
 	debug    *dapClient
+	lease    time.Duration
+	lastSeen time.Time
 	mu       sync.Mutex
 }
 
+const (
+	defaultWorkerLease      = 15 * time.Minute
+	workerHeartbeatInterval = time.Minute
+)
+
 func workerSocket(run RunState) string { return filepath.Join(run.Dir, "worker.sock") }
 
-func startRunWorker(run RunState) (string, error) {
+func startRunWorker(root string, run RunState) (string, error) {
 	if workerPing(run) {
 		return "worker", nil
 	}
@@ -64,7 +71,14 @@ func startRunWorker(run RunState) (string, error) {
 	if err != nil {
 		return "direct", err
 	}
-	cmd := exec.Command(executable, "__worker", "--socket", workerSocket(run))
+	cmd := exec.Command(
+		executable,
+		"__worker",
+		"--socket", workerSocket(run),
+		"--root", root,
+		"--run", run.ID,
+		"--lease", defaultWorkerLease.String(),
+	)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Stdout = log
 	cmd.Stderr = log
@@ -125,6 +139,14 @@ func (c CLI) runInternalWorker(ctx context.Context, args []string) error {
 	if socket == "" {
 		return fmt.Errorf("worker_socket_missing")
 	}
+	lease := defaultWorkerLease
+	if value := flagValue(args, "--lease"); value != "" {
+		parsed, err := time.ParseDuration(value)
+		if err != nil || parsed <= 0 {
+			return fmt.Errorf("worker_lease_invalid")
+		}
+		lease = parsed
+	}
 	_ = os.Remove(socket)
 	listener, err := net.Listen("unix", socket)
 	if err != nil {
@@ -134,24 +156,55 @@ func (c CLI) runInternalWorker(ctx context.Context, args []string) error {
 		_ = listener.Close()
 		return err
 	}
-	worker := &runWorker{socket: socket, listener: listener, sessions: map[string]*baguetteInputSession{}}
-	defer worker.close()
+	worker := &runWorker{
+		socket: socket, listener: listener, sessions: map[string]*baguetteInputSession{},
+		lease: lease, lastSeen: time.Now(),
+	}
+	expired := false
 	for {
+		if unixListener, ok := listener.(*net.UnixListener); ok {
+			_ = unixListener.SetDeadline(worker.leaseDeadline())
+		}
 		conn, err := listener.Accept()
 		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				if worker.leaseExpired() {
+					expired = true
+					break
+				}
+				continue
+			}
 			select {
 			case <-ctx.Done():
+				worker.close()
 				return nil
 			default:
+				worker.close()
 				return err
 			}
 		}
+		worker.renewLease()
 		stop := worker.handle(conn)
+		worker.renewLease()
 		_ = conn.Close()
 		if stop {
-			return nil
+			break
 		}
 	}
+	worker.close()
+	if expired {
+		root := flagValue(args, "--root")
+		runID := flagValue(args, "--run")
+		if root != "" && runID != "" {
+			run, loadErr := LoadRun(root, runID)
+			if loadErr == nil {
+				appendFile(run.LogsPath, "mav worker lease expired after "+lease.String()+"; cleaning run\n")
+				_ = os.WriteFile(filepath.Join(run.Dir, "lease.expired"), []byte(time.Now().Format(time.RFC3339)+"\n"), 0o600)
+				_ = c.withStdout(io.Discard).stop(ctx, GlobalOptions{}, []string{"--run", run.ID})
+			}
+		}
+	}
+	return nil
 }
 
 func (w *runWorker) handle(conn net.Conn) bool {
@@ -163,7 +216,7 @@ func (w *runWorker) handle(conn net.Conn) bool {
 	response := workerResponse{OK: true}
 	stop := false
 	switch request.Command {
-	case "ping":
+	case "ping", "renew":
 	case "stop":
 		stop = true
 	case "baguette":
@@ -188,6 +241,22 @@ func (w *runWorker) handle(conn net.Conn) bool {
 	}
 	_ = json.NewEncoder(conn).Encode(response)
 	return stop
+}
+
+func (w *runWorker) renewLease() {
+	w.mu.Lock()
+	w.lastSeen = time.Now()
+	w.mu.Unlock()
+}
+
+func (w *runWorker) leaseDeadline() time.Time {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.lastSeen.Add(w.lease)
+}
+
+func (w *runWorker) leaseExpired() bool {
+	return !time.Now().Before(w.leaseDeadline())
 }
 
 func (w *runWorker) sendBaguette(udid string, events []workerGestureEvent) ([]string, error) {

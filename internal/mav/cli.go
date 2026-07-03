@@ -64,6 +64,8 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 	if opts.Help {
 		return c.help(opts, strings.Join(rest, " "))
 	}
+	stopLeaseHeartbeat := c.keepRunLeaseAlive(rest[0])
+	defer stopLeaseHeartbeat()
 	switch rest[0] {
 	case "__worker":
 		return c.runInternalWorker(ctx, rest[1:])
@@ -191,7 +193,7 @@ Commands:
   run         Execute a native MAV YAML flow.
   flow        Lint native MAV YAML flows.
   logs        Read captured run logs.
-  stop        Stop run-owned background processes.
+  stop        Stop a run immediately (normally automatic).
   crashes     List crashes for the configured app.
   evidence    Start/step/stop/report evidence.
   network     Start/stop a HAR network capture (sim only).
@@ -1050,7 +1052,7 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	fields["target_kind"] = normalizedTargetKind(cfg)
 	fields["session"] = "direct"
 	if _, ok := c.Runner.(ExecRunner); ok {
-		if session, workerErr := startRunWorker(run); workerErr == nil {
+		if session, workerErr := startRunWorker(c.Root, run); workerErr == nil {
 			fields["session"] = session
 		} else {
 			appendFile(run.LogsPath, "mav worker fallback: "+workerErr.Error()+"\n")
@@ -2273,7 +2275,7 @@ func (c CLI) sendWorkerGestureWithRestart(udid string, events []workerGestureEve
 		return err
 	}
 	if !workerPing(run) {
-		if _, err := startRunWorker(run); err != nil {
+		if _, err := startRunWorker(c.Root, run); err != nil {
 			return err
 		}
 	}
@@ -2285,7 +2287,7 @@ func (c CLI) sendWorkerGestureWithRestart(udid string, events []workerGestureEve
 	}
 	_, _ = sendWorkerRequest(run, workerRequest{Command: "stop"})
 	_ = os.Remove(workerSocket(run))
-	if _, err := startRunWorker(run); err != nil {
+	if _, err := startRunWorker(c.Root, run); err != nil {
 		return err
 	}
 	return sendWorkerGesture(run, udid, events)
@@ -4113,6 +4115,37 @@ func (c CLI) withStdout(stdout io.Writer) CLI {
 	return c
 }
 
+func (c CLI) keepRunLeaseAlive(command string) func() {
+	switch command {
+	case "__worker", "stop":
+		return func() {}
+	}
+	renew := func() {
+		run, err := LoadRun(c.Root, "")
+		if err == nil {
+			_, _ = sendWorkerRequest(run, workerRequest{Command: "renew"})
+		}
+	}
+	renew()
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(workerHeartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				renew()
+			case <-done:
+				return
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		renew()
+	}
+}
+
 func outputErr(err error, code string) error {
 	if err != nil {
 		return fmt.Errorf("%s", code)
@@ -4738,6 +4771,9 @@ func (c CLI) stop(ctx context.Context, opts GlobalOptions, args []string) error 
 	failed := 0
 	for _, record := range records {
 		if record.PID <= 0 {
+			continue
+		}
+		if record.PID == os.Getpid() {
 			continue
 		}
 		if record.Kind == "video" && fileExists(filepath.Join(run.Dir, "video.pid")) {
