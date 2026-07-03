@@ -698,6 +698,36 @@ func TestUITreePrintsNodeDetailsByDefault(t *testing.T) {
 	}
 }
 
+func TestTargetScreenSizeCachesPerUDID(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.Tools = map[string]bool{"axe": true}
+	cfg.SimulatorUDID = "SIM-SCREEN-CACHE-TEST"
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	key := "axe describe-ui --udid " + cfg.SimulatorUDID
+	first := `[{"AXLabel":"Root","role":"window","AXFrame":"{{0, 0}, {100, 200}}"}]`
+	second := `[{"AXLabel":"Root","role":"window","AXFrame":"{{0, 0}, {999, 999}}"}]`
+	runner := fakeRunner{
+		tools: cfg.Tools,
+		seq:   map[string][]string{key: {first, second}},
+		calls: map[string]int{},
+	}
+	cli := CLI{Runner: runner, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	w1, h1 := cli.targetScreenSize(context.Background(), cfg)
+	if w1 != 100 || h1 != 200 {
+		t.Fatalf("first call got (%d,%d), want (100,200)", w1, h1)
+	}
+	w2, h2 := cli.targetScreenSize(context.Background(), cfg)
+	if w2 != w1 || h2 != h1 {
+		t.Fatalf("expected cached screen size (%d,%d), got (%d,%d)", w1, h1, w2, h2)
+	}
+	if got := runner.calls[key]; got != 1 {
+		t.Fatalf("expected axe describe-ui invoked once (cached on second call), got %d calls", got)
+	}
+}
+
 func TestSandboxHintForUITreeFailure(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
@@ -2045,6 +2075,29 @@ func TestCaptureScreenshotUsesIDBForDevice(t *testing.T) {
 	}
 }
 
+func TestCaptureCommandAllowedOnPhysicalDevice(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.TargetKind = "device"
+	cfg.DeviceUDID = "REAL-1"
+	cfg.Tools = map[string]bool{"idb": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runner := &sequenceRecordingRunner{tools: map[string]bool{"idb": true}}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"capture", "--name", "probe"}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "clipboard_unsupported_on_device") {
+		t.Fatalf("capture must not reuse the clipboard device guard, got %q", out.String())
+	}
+	if !strings.Contains(out.String(), "ok cmd=capture") {
+		t.Fatalf("got %q", out.String())
+	}
+}
+
 func TestCrashesUsesDeviceUDID(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
@@ -2194,3 +2247,26 @@ func TestCountTreeNodes(t *testing.T) {
 
 // Silence import-unused complaint when this file is the only consumer of strconv.
 var _ = strconv.Itoa
+
+func TestSelectorCLIFlagRecognizesWhereJSON(t *testing.T) {
+	if !isSelectorCLIFlag("--where-json") {
+		t.Fatal("--where-json must be scrubbed from ui type text args, or its JSON payload leaks into the typed text")
+	}
+}
+
+func TestFlowTypeStepArgsExcludeLegacyTextSelector(t *testing.T) {
+	flow, err := ParseFlow([]byte(`
+steps:
+  - type: { text: "hello world" }
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	step := flow.Steps[0]
+	if !step.Where.IsZero() {
+		t.Fatalf("expected zero Where for text-only type step, got %+v", step.Where)
+	}
+	if args := selectorCLIArgs(step.Where); len(args) != 0 {
+		t.Fatalf("text-only type step must not produce tap-target args, got %v", args)
+	}
+}

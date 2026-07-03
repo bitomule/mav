@@ -56,6 +56,42 @@ func TestWorkerSocketIsPrivateAndStopsCleanly(t *testing.T) {
 	}
 }
 
+func TestAcquireWorkerLockStealsStaleLock(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "mav-worker-lock-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	lockPath := filepath.Join(dir, "worker.starting")
+	if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stale := time.Now().Add(-(workerLockStaleAge + time.Second))
+	if err := os.Chtimes(lockPath, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := acquireWorkerLock(lockPath)
+	if err != nil {
+		t.Fatalf("expected stale lock to be stolen, got err: %v", err)
+	}
+	defer lock.Close()
+}
+
+func TestAcquireWorkerLockRespectsFreshLock(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "mav-worker-lock-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	lockPath := filepath.Join(dir, "worker.starting")
+	if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := acquireWorkerLock(lockPath); err == nil {
+		t.Fatal("expected fresh lock to be respected, got no error")
+	}
+}
+
 func TestWorkerLeaseRenewsThenExpires(t *testing.T) {
 	root, err := os.MkdirTemp("/tmp", "mav-worker-lease-")
 	if err != nil {

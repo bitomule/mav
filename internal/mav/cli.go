@@ -10,12 +10,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -2022,7 +2024,7 @@ func isSelectorCLIFlag(value string) bool {
 	case "--id", "--text", "--text-contains", "--text-starts-with", "--text-regex",
 		"--value", "--value-contains", "--role", "--enabled", "--selected", "--focused",
 		"--visible", "--index", "--bounds", "--near-id", "--near-text",
-		"--near-direction", "--near-distance":
+		"--near-direction", "--near-distance", "--where-json":
 		return true
 	default:
 		return false
@@ -2158,7 +2160,8 @@ func (c CLI) uiDoubleTap(ctx context.Context, opts GlobalOptions, cfg Config, ar
 		return Fail("double_tap_unsupported", nil).Write(c.Stdout)
 	}
 	duration := parseFlowDuration(flagValue(args, "--duration"), 80*time.Millisecond)
-	if sendErr := c.sendWorkerGestureWithRestart(target.UDID, tapWorkerEvents(x, y, int(duration.Milliseconds()), 2)); sendErr == nil {
+	screenWidth, screenHeight := c.targetScreenSize(ctx, cfg)
+	if sendErr := c.sendWorkerGestureWithRestart(target.UDID, tapWorkerEvents(x, y, screenWidth, screenHeight, int(duration.Milliseconds()), 2)); sendErr == nil {
 		return c.writeFastPathResult(ctx, cfg, args, "ui.doubleTap", map[string]string{
 			"x": strconv.Itoa(x), "y": strconv.Itoa(y), "driver": "baguette", "session": "worker",
 		})
@@ -2210,9 +2213,10 @@ func (c CLI) uiDrag(ctx context.Context, opts GlobalOptions, cfg Config, args []
 	}
 	duration := parseFlowDuration(flagValue(args, "--duration"), 500*time.Millisecond)
 	target := targetFromConfig(cfg)
+	screenWidth, screenHeight := c.targetScreenSize(ctx, cfg)
 	if sendErr := c.sendWorkerGestureWithRestart(target.UDID, dragPathWorkerEvents([]drivers.PathPoint{
 		{X: sx, Y: sy}, {X: ex, Y: ey, DurationMs: int(duration.Milliseconds())},
-	})); sendErr == nil {
+	}, screenWidth, screenHeight)); sendErr == nil {
 		return c.writeFastPathResult(ctx, cfg, args, "ui.drag", map[string]string{"driver": "baguette", "session": "worker"})
 	}
 	driver, _, err := c.router().Route(ctx, drivers.CapDrag, target, "baguette")
@@ -2248,7 +2252,8 @@ func (c CLI) uiDragPath(ctx context.Context, opts GlobalOptions, cfg Config, arg
 		return Fail("drag_path_invalid", map[string]string{"usage": "mav ui dragPath --point x,y --point x,y:duration"}).Write(c.Stdout)
 	}
 	target := targetFromConfig(cfg)
-	if err := c.sendWorkerGestureWithRestart(target.UDID, dragPathWorkerEvents(points)); err == nil {
+	screenWidth, screenHeight := c.targetScreenSize(ctx, cfg)
+	if err := c.sendWorkerGestureWithRestart(target.UDID, dragPathWorkerEvents(points, screenWidth, screenHeight)); err == nil {
 		return c.writeFastPathResult(ctx, cfg, args, "ui.dragPath", map[string]string{
 			"driver": "baguette", "session": "worker", "points": strconv.Itoa(len(points)),
 		})
@@ -2293,8 +2298,63 @@ func (c CLI) sendWorkerGestureWithRestart(udid string, events []workerGestureEve
 	return sendWorkerGesture(run, udid, events)
 }
 
-func tapWorkerEvents(x, y, durationMs, count int) []workerGestureEvent {
-	const width, height = 402, 874
+// fallbackScreenWidth/Height are used only when the target's real point
+// size cannot be determined (e.g. the AX tree is unavailable). They match
+// the iPhone 17 Pro simulator and are not accurate for other targets.
+const fallbackScreenWidth, fallbackScreenHeight = 402, 874
+
+// targetScreenSizeCache memoizes the resolved screen size per target UDID
+// for the life of the process. A target's screen size never changes, so
+// this avoids paying for a full AX-tree fetch on every single doubleTap/
+// drag/dragPath gesture in a flow - only the first such gesture per target
+// fetches the tree; the rest reuse the cached value.
+var (
+	targetScreenSizeCacheMu sync.Mutex
+	targetScreenSizeCache   = map[string][2]int{}
+)
+
+// targetScreenSize returns the target's screen size in points, derived from
+// the maximum element bounds in the current accessibility tree (baguette
+// input events must be sized to the real screen to land taps/drags
+// correctly - it normalizes x/width and y/height). Falls back to the
+// iPhone 17 Pro's point size if the tree cannot be fetched.
+func (c CLI) targetScreenSize(ctx context.Context, cfg Config) (int, int) {
+	udid := targetFromConfig(cfg).UDID
+	if udid != "" {
+		targetScreenSizeCacheMu.Lock()
+		cached, ok := targetScreenSizeCache[udid]
+		targetScreenSizeCacheMu.Unlock()
+		if ok {
+			return cached[0], cached[1]
+		}
+	}
+	described, err := c.describeUITree(ctx, cfg, "auto", false)
+	if err != nil || described.Result.Err != nil {
+		return fallbackScreenWidth, fallbackScreenHeight
+	}
+	elements := ExtractElementsRaw(described.Result.Stdout)
+	width, height := 0.0, 0.0
+	for _, el := range elements {
+		x, y, w, h, ok := parseElementFrame(el.Frame)
+		if !ok {
+			continue
+		}
+		width = math.Max(width, x+w)
+		height = math.Max(height, y+h)
+	}
+	if width <= 0 || height <= 0 {
+		return fallbackScreenWidth, fallbackScreenHeight
+	}
+	resolvedWidth, resolvedHeight := int(width), int(height)
+	if udid != "" {
+		targetScreenSizeCacheMu.Lock()
+		targetScreenSizeCache[udid] = [2]int{resolvedWidth, resolvedHeight}
+		targetScreenSizeCacheMu.Unlock()
+	}
+	return resolvedWidth, resolvedHeight
+}
+
+func tapWorkerEvents(x, y, width, height, durationMs, count int) []workerGestureEvent {
 	var events []workerGestureEvent
 	for i := 0; i < count; i++ {
 		down, _ := json.Marshal(map[string]any{"type": "touch1-down", "x": x, "y": y, "width": width, "height": height})
@@ -2305,8 +2365,7 @@ func tapWorkerEvents(x, y, durationMs, count int) []workerGestureEvent {
 	return events
 }
 
-func dragPathWorkerEvents(points []drivers.PathPoint) []workerGestureEvent {
-	const width, height = 402, 874
+func dragPathWorkerEvents(points []drivers.PathPoint, width, height int) []workerGestureEvent {
 	events := make([]workerGestureEvent, 0, len(points)+1)
 	for i, point := range points {
 		kind := "touch1-move"
@@ -2328,10 +2387,14 @@ func dragPathWorkerEvents(points []drivers.PathPoint) []workerGestureEvent {
 
 func repeatedFlagValues(args []string, name string) []string {
 	var values []string
-	for i := 0; i+1 < len(args); i++ {
-		if args[i] == name {
+	for i := 0; i < len(args); i++ {
+		if args[i] == name && i+1 < len(args) {
 			values = append(values, args[i+1])
 			i++
+			continue
+		}
+		if strings.HasPrefix(args[i], name+"=") {
+			values = append(values, strings.TrimPrefix(args[i], name+"="))
 		}
 	}
 	return values
@@ -2879,9 +2942,6 @@ func (c CLI) capture(ctx context.Context, opts GlobalOptions, args []string) err
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
 	c.resolveConfigTools(&cfg)
-	if isPhysicalDevice(cfg) {
-		return Fail("clipboard_unsupported_on_device", nil).Write(c.Stdout)
-	}
 	run, err := LoadRun(c.Root, flagValue(args, "--run"))
 	if err != nil {
 		run, err = NewProjectRunState(c.Root)
@@ -3035,14 +3095,20 @@ func bindFlowParameters(flow Flow, args []string, bindings flowExecBindings) err
 		values[name] = param.Default
 	}
 	for i := 0; i < len(args); i++ {
-		if args[i] != "--param" {
+		var raw string
+		switch {
+		case args[i] == "--param":
+			if i+1 >= len(args) {
+				return fmt.Errorf("param_value_missing")
+			}
+			i++
+			raw = args[i]
+		case strings.HasPrefix(args[i], "--param="):
+			raw = strings.TrimPrefix(args[i], "--param=")
+		default:
 			continue
 		}
-		if i+1 >= len(args) {
-			return fmt.Errorf("param_value_missing")
-		}
-		i++
-		pair := strings.SplitN(args[i], "=", 2)
+		pair := strings.SplitN(raw, "=", 2)
 		if len(pair) != 2 || pair[0] == "" {
 			return fmt.Errorf("param_invalid")
 		}
@@ -3105,6 +3171,48 @@ func substituteExecBindingsInStepHeader(step FlowStep, bindings flowExecBindings
 	return substituteExecBindingsInStepFields(step, bindings, false)
 }
 
+func substituteExecBindingsInAfter(after *FlowAfter, bindings flowExecBindings) (*FlowAfter, error) {
+	if after == nil {
+		return nil, nil
+	}
+	prepared := *after
+	var err error
+	prepared.Observe, err = substituteExecBindings(after.Observe, bindings)
+	if err != nil {
+		return nil, err
+	}
+	if after.Wait != nil {
+		wait := *after.Wait
+		for _, field := range []*string{&wait.ID, &wait.Text, &wait.TextContains, &wait.Value, &wait.ChangedFrom, &wait.Timeout} {
+			*field, err = substituteExecBindings(*field, bindings)
+			if err != nil {
+				return nil, err
+			}
+		}
+		for i := range wait.Any {
+			wait.Any[i], err = substituteExecBindingsInCondition(wait.Any[i], bindings)
+			if err != nil {
+				return nil, err
+			}
+		}
+		for i := range wait.All {
+			wait.All[i], err = substituteExecBindingsInCondition(wait.All[i], bindings)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if wait.Not != nil {
+			value, subErr := substituteExecBindingsInCondition(*wait.Not, bindings)
+			if subErr != nil {
+				return nil, subErr
+			}
+			wait.Not = &value
+		}
+		prepared.Wait = &wait
+	}
+	return &prepared, nil
+}
+
 func substituteExecBindingsInStepFields(step FlowStep, bindings flowExecBindings, includeDo bool) (FlowStep, error) {
 	prepared := step
 	var err error
@@ -3121,42 +3229,9 @@ func substituteExecBindingsInStepFields(step FlowStep, bindings flowExecBindings
 	if err != nil {
 		return FlowStep{}, err
 	}
-	if step.After != nil {
-		after := *step.After
-		after.Observe, err = substituteExecBindings(after.Observe, bindings)
-		if err != nil {
-			return FlowStep{}, err
-		}
-		if step.After.Wait != nil {
-			wait := *step.After.Wait
-			for _, field := range []*string{&wait.ID, &wait.Text, &wait.TextContains, &wait.Value, &wait.ChangedFrom, &wait.Timeout} {
-				*field, err = substituteExecBindings(*field, bindings)
-				if err != nil {
-					return FlowStep{}, err
-				}
-			}
-			for i := range wait.Any {
-				wait.Any[i], err = substituteExecBindingsInCondition(wait.Any[i], bindings)
-				if err != nil {
-					return FlowStep{}, err
-				}
-			}
-			for i := range wait.All {
-				wait.All[i], err = substituteExecBindingsInCondition(wait.All[i], bindings)
-				if err != nil {
-					return FlowStep{}, err
-				}
-			}
-			if wait.Not != nil {
-				value, subErr := substituteExecBindingsInCondition(*wait.Not, bindings)
-				if subErr != nil {
-					return FlowStep{}, subErr
-				}
-				wait.Not = &value
-			}
-			after.Wait = &wait
-		}
-		prepared.After = &after
+	prepared.After, err = substituteExecBindingsInAfter(step.After, bindings)
+	if err != nil {
+		return FlowStep{}, err
 	}
 	if step.Any != nil {
 		prepared.Any = make([]FlowCondition, len(step.Any))
@@ -3278,24 +3353,37 @@ func substituteExecBindings(value string, bindings flowExecBindings) (string, er
 		}
 		end += start
 		expr := out[start+len("${") : end]
-		replacement, err := resolveFlowBinding(expr, bindings)
+		replacement, known, err := resolveFlowBinding(expr, bindings)
 		if err != nil {
 			return "", err
+		}
+		if !known {
+			// Not a recognized flow binding (e.g. a shell variable meant
+			// for an exec step) - leave the literal ${...} untouched.
+			searchFrom = end + 1
+			continue
 		}
 		out = out[:start] + replacement + out[end+1:]
 		searchFrom = start + len(replacement)
 	}
 }
 
-func resolveFlowBinding(expr string, bindings flowExecBindings) (string, error) {
+// resolveFlowBinding resolves ${expr} against known flow bindings. The
+// second return value reports whether expr was recognized as a binding at
+// all; unrecognized expressions (e.g. plain shell variables used in an exec
+// step) are left untouched by the caller instead of failing the flow.
+func resolveFlowBinding(expr string, bindings flowExecBindings) (string, bool, error) {
 	if strings.HasPrefix(expr, "exec.") {
-		return resolveExecBinding(strings.TrimPrefix(expr, "exec."), bindings)
+		value, err := resolveExecBinding(strings.TrimPrefix(expr, "exec."), bindings)
+		return value, true, err
 	}
-	binding, ok := bindings[expr]
-	if !ok {
-		return "", fmt.Errorf("flow_binding_missing name=%s", expr)
+	if binding, ok := bindings[expr]; ok {
+		return binding.Raw, true, nil
 	}
-	return binding.Raw, nil
+	if strings.HasPrefix(expr, "params.") || strings.HasPrefix(expr, "vars.") || strings.HasPrefix(expr, "target.") {
+		return "", true, fmt.Errorf("flow_binding_missing name=%s", expr)
+	}
+	return "", false, nil
 }
 
 func resolveExecBinding(expr string, bindings flowExecBindings) (string, error) {
@@ -3427,7 +3515,11 @@ func (c CLI) executeFlowStepBoundWithOptions(ctx context.Context, opts GlobalOpt
 			}
 			fields["attempts"] = strconv.Itoa(attempt)
 			if step.After != nil {
-				afterFields, afterErr := c.executeFlowAfter(ctx, run, step.After)
+				after, afterErr := substituteExecBindingsInAfter(step.After, bindings)
+				if afterErr != nil {
+					return fields, afterErr
+				}
+				afterFields, afterErr := c.executeFlowAfter(ctx, run, after)
 				for key, value := range afterFields {
 					fields["after_"+key] = value
 				}
@@ -3605,14 +3697,14 @@ func (c CLI) executeFlowAfter(ctx context.Context, run RunState, after *FlowAfte
 			"value": after.Wait.Value, "changedFrom": after.Wait.ChangedFrom,
 			"timeout": after.Wait.Timeout,
 		}
-		any := after.Wait.Any
+		all := after.Wait.All
 		if after.Wait.TextContains != "" {
-			any = append(any, FlowCondition{TextContains: after.Wait.TextContains})
+			all = append(all, FlowCondition{TextContains: after.Wait.TextContains})
 		}
 		if after.Wait.Stable {
-			any = append(any, FlowCondition{Stable: true})
+			all = append(all, FlowCondition{Stable: true})
 		}
-		if err := c.waitForConditionSet(ctx, params, any, after.Wait.All, after.Wait.Not, "auto"); err != nil {
+		if err := c.waitForConditionSet(ctx, params, after.Wait.Any, all, after.Wait.Not, "auto"); err != nil {
 			return fields, err
 		}
 		fields["wait"] = "ok"
@@ -3725,7 +3817,10 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 	case "type":
 		text := step.Params["text"]
 		var out bytes.Buffer
-		args := append([]string{text}, selectorCLIArgs(flowStepSelector(step))...)
+		// Only an explicit selector targets a tap before typing; the legacy
+		// params fallback would resurrect "text" (the content to type) as a
+		// tap target here.
+		args := append([]string{text}, selectorCLIArgs(step.Where)...)
 		err := c.withStdout(&out).uiType(ctx, GlobalOptions{PreferDriver: prefer}, c.mustLoadConfig(), args)
 		fields := map[string]string{"chars": strconv.Itoa(len(text))}
 		if prefer != "" {
@@ -3800,15 +3895,23 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 		time.Sleep(duration)
 		return map[string]string{"duration": duration.String()}, nil
 	case "wait", "assert":
-		err := c.waitForConditionSet(ctx, step.Params, nil, step.All, step.Not, prefer)
+		all := step.All
+		if !step.Where.IsZero() {
+			all = append(all, flowConditionFromSelector(step.Where))
+		}
+		err := c.waitForConditionSet(ctx, step.Params, nil, all, step.Not, prefer)
 		return copyParams(step.Params), err
 	case "waitUntil":
-		err := c.waitForConditionSet(ctx, step.Params, step.Any, step.All, step.Not, prefer)
+		all := step.All
+		if !step.Where.IsZero() {
+			all = append(all, flowConditionFromSelector(step.Where))
+		}
+		err := c.waitForConditionSet(ctx, step.Params, step.Any, all, step.Not, prefer)
 		return map[string]string{"conditions": strconv.Itoa(len(step.Any))}, err
 	case "assertCount":
 		return c.assertFlowCount(ctx, step, prefer)
 	case "scrollUntil":
-		return c.scrollUntilFlowConditionWithPrefer(ctx, step.Params, prefer)
+		return c.scrollUntilFlowConditionWithSelector(ctx, step.Params, flowStepSelector(step), prefer)
 	case "capture":
 		name := step.Params["name"]
 		if name != "" {
@@ -4126,7 +4229,11 @@ func (c CLI) keepRunLeaseAlive(command string) func() {
 			_, _ = sendWorkerRequest(run, workerRequest{Command: "renew"})
 		}
 	}
-	renew()
+	// Fire-and-forget: the worker may be mid-request for tens of seconds
+	// (debug wait/eval, long gesture sequences), and this runs before every
+	// command dispatches. Renewing synchronously here would stall unrelated
+	// mav invocations behind whatever the worker happens to be doing.
+	go renew()
 	done := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(workerHeartbeatInterval)
@@ -4462,6 +4569,10 @@ func (c CLI) scrollUntilFlowCondition(ctx context.Context, params map[string]str
 }
 
 func (c CLI) scrollUntilFlowConditionWithPrefer(ctx context.Context, params map[string]string, prefer string) (map[string]string, error) {
+	return c.scrollUntilFlowConditionWithSelector(ctx, params, selectorFromLegacy(params), prefer)
+}
+
+func (c CLI) scrollUntilFlowConditionWithSelector(ctx context.Context, params map[string]string, selector Selector, prefer string) (map[string]string, error) {
 	maxSwipes := 5
 	if raw := params["maxSwipes"]; raw != "" {
 		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
@@ -4472,8 +4583,9 @@ func (c CLI) scrollUntilFlowConditionWithPrefer(ctx context.Context, params map[
 	if direction == "" {
 		direction = "up"
 	}
+	condition := flowConditionFromSelector(selector)
 	for i := 0; i <= maxSwipes; i++ {
-		ok, err := c.evaluateSingleConditionWithPrefer(ctx, FlowCondition{Text: params["text"], ID: params["id"], Value: params["value"]}, prefer)
+		ok, err := c.evaluateSingleConditionWithPrefer(ctx, condition, prefer)
 		if err != nil {
 			return nil, err
 		}
@@ -4569,6 +4681,13 @@ func (c CLI) evaluateFlowConditionWithPrefer(ctx context.Context, params map[str
 }
 
 func (c CLI) evaluateConditionSet(ctx context.Context, params map[string]string, any, all []FlowCondition, not *FlowCondition, prefer string) (bool, error) {
+	base := FlowCondition{
+		Text: params["text"], ID: params["id"], Value: params["value"],
+		ChangedFrom: params["changedFrom"],
+	}
+	if !base.Selector().IsZero() || base.ChangedFrom != "" {
+		all = append(append([]FlowCondition{}, all...), base)
+	}
 	if len(any) > 0 {
 		anyMatched := false
 		for _, condition := range any {
@@ -4605,10 +4724,8 @@ func (c CLI) evaluateConditionSet(ctx context.Context, params map[string]string,
 	if len(any) > 0 || len(all) > 0 || not != nil {
 		return true, nil
 	}
-	return c.evaluateSingleConditionWithPrefer(ctx, FlowCondition{
-		Text: params["text"], ID: params["id"], Value: params["value"],
-		ChangedFrom: params["changedFrom"],
-	}, prefer)
+	// No conditions at all (base params, any, all, not are all empty).
+	return false, nil
 }
 
 func (c CLI) evaluateSingleCondition(ctx context.Context, condition FlowCondition) (bool, error) {

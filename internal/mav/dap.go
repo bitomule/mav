@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -14,6 +15,13 @@ import (
 	"time"
 )
 
+// dapIOTimeout bounds every blocking read from lldb-dap so a wedged adapter
+// (or a never-terminating evaluated expression) cannot hang the worker's
+// single-threaded accept loop, or the client's own shutdown path, forever.
+const dapIOTimeout = 30 * time.Second
+
+var errDAPTimeout = errors.New("dap_read_timeout")
+
 type dapClient struct {
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
@@ -23,6 +31,7 @@ type dapClient struct {
 	paused bool
 	thread int
 	breaks map[int]dapBreakpoint
+	dead   bool
 }
 
 type dapBreakpoint struct {
@@ -66,6 +75,9 @@ func newDAPClient() (*dapClient, error) {
 func (d *dapClient) request(command string, arguments any) (json.RawMessage, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.dead {
+		return nil, fmt.Errorf("dap_session_dead")
+	}
 	d.seq++
 	seq := d.seq
 	payload, _ := json.Marshal(map[string]any{"seq": seq, "type": "request", "command": command, "arguments": arguments})
@@ -75,6 +87,9 @@ func (d *dapClient) request(command string, arguments any) (json.RawMessage, err
 	for {
 		message, err := d.readMessage()
 		if err != nil {
+			if errors.Is(err, errDAPTimeout) {
+				d.killLocked()
+			}
 			return nil, err
 		}
 		if message.Type == "event" && message.Event == "stopped" {
@@ -102,6 +117,9 @@ func (d *dapClient) request(command string, arguments any) (json.RawMessage, err
 func (d *dapClient) attach(arguments any) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.dead {
+		return fmt.Errorf("dap_session_dead")
+	}
 	d.seq++
 	seq := d.seq
 	payload, _ := json.Marshal(map[string]any{"seq": seq, "type": "request", "command": "attach", "arguments": arguments})
@@ -111,6 +129,9 @@ func (d *dapClient) attach(arguments any) error {
 	for {
 		message, err := d.readMessage()
 		if err != nil {
+			if errors.Is(err, errDAPTimeout) {
+				d.killLocked()
+			}
 			return err
 		}
 		if message.Type == "event" && message.Event == "initialized" {
@@ -125,7 +146,30 @@ func (d *dapClient) attach(arguments any) error {
 	}
 }
 
+// readMessage blocks on the lldb-dap stdout pipe behind a goroutine so a
+// wedged adapter cannot hang the caller (and, through it, the worker's
+// single-threaded accept loop) forever. On timeout the caller kills the
+// adapter process; the abandoned goroutine's result is dropped once it
+// eventually unblocks (the closed pipe/killed process ensures it does).
 func (d *dapClient) readMessage() (dapMessage, error) {
+	type result struct {
+		message dapMessage
+		err     error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		message, err := d.readMessageBlocking()
+		ch <- result{message, err}
+	}()
+	select {
+	case r := <-ch:
+		return r.message, r.err
+	case <-time.After(dapIOTimeout):
+		return dapMessage{}, errDAPTimeout
+	}
+}
+
+func (d *dapClient) readMessageBlocking() (dapMessage, error) {
 	length := 0
 	for {
 		line, err := d.reader.ReadString('\n')
@@ -154,6 +198,16 @@ func (d *dapClient) readMessage() (dapMessage, error) {
 	return message, nil
 }
 
+// killLocked terminates the adapter process and marks the session dead so
+// subsequent request()/attach() calls fail fast instead of writing to a
+// stdin nobody is reading. Callers must hold d.mu.
+func (d *dapClient) killLocked() {
+	d.dead = true
+	if d.cmd.Process != nil {
+		_ = d.cmd.Process.Kill()
+	}
+}
+
 func (d *dapClient) waitPaused(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -170,7 +224,13 @@ func (d *dapClient) close() error {
 	if d == nil {
 		return nil
 	}
-	_, _ = d.request("disconnect", map[string]any{"terminateDebuggee": false})
+	d.mu.Lock()
+	dead := d.dead
+	d.mu.Unlock()
+	if !dead {
+		// Bounded by dapIOTimeout via request()/readMessage - never hangs.
+		_, _ = d.request("disconnect", map[string]any{"terminateDebuggee": false})
+	}
 	_ = d.stdin.Close()
 	if d.cmd.Process != nil {
 		_ = d.cmd.Process.Kill()
@@ -272,15 +332,20 @@ func (w *runWorker) handleDebug(args map[string]string) ([]string, error) {
 			return nil, err
 		}
 		w.debug = client
+		var breakpointErr error
 		if file, line := args["file"], args["line"]; file != "" && line != "" {
 			lineNumber, _ := strconv.Atoi(line)
-			_, err = client.addBreakpoint(file, lineNumber)
-			if err != nil {
-				return nil, err
-			}
+			_, breakpointErr = client.addBreakpoint(file, lineNumber)
 		}
+		// Always send configurationDone even if the breakpoint failed, so the
+		// stopOnEntry'd debuggee resumes instead of hanging forever.
 		if _, err := client.request("configurationDone", map[string]any{}); err != nil {
+			_ = client.close()
+			w.debug = nil
 			return nil, err
+		}
+		if breakpointErr != nil {
+			return nil, breakpointErr
 		}
 		return []string{`{"attached":true}`}, nil
 	case "detach":
@@ -434,9 +499,9 @@ func (c CLI) debug(ctx context.Context, opts GlobalOptions, args []string) error
 	command := args[0]
 	switch command {
 	case "attach":
-		process := cfg.ProcessName
+		process := flagValue(args[1:], "--process")
 		if process == "" {
-			process = flagValue(args[1:], "--process")
+			process = cfg.ProcessName
 		}
 		bundle := flagValue(args[1:], "--bundle")
 		if process == "" && bundle == "" {

@@ -369,7 +369,13 @@ func parseFlowStepNode(node yaml.Node) (FlowStep, error) {
 	put("focused", payload.Focused)
 	where := payload.Where
 	if where.IsZero() {
-		where = selectorFromLegacy(params)
+		if action == "type" {
+			// For type steps, "text" is the content to type, not a tap
+			// target selector, so it must not feed the legacy fallback.
+			where = selectorFromLegacy(map[string]string{"id": params["id"], "value": params["value"]})
+		} else {
+			where = selectorFromLegacy(params)
+		}
 	}
 	if !where.IsZero() {
 		if err := where.Validate(); err != nil {
@@ -710,12 +716,40 @@ func expandFlowStepEnv(step FlowStep, baseDir string, env map[string]string, sta
 		}
 		step.Params[key] = expanded
 	}
+	where, err := expandSelectorEnv(step.Where, env)
+	if err != nil {
+		return FlowStep{}, err
+	}
+	step.Where = where
 	for i := range step.Any {
 		condition, err := expandFlowConditionEnv(step.Any[i], env)
 		if err != nil {
 			return FlowStep{}, err
 		}
 		step.Any[i] = condition
+	}
+	for i := range step.All {
+		condition, err := expandFlowConditionEnv(step.All[i], env)
+		if err != nil {
+			return FlowStep{}, err
+		}
+		step.All[i] = condition
+	}
+	if step.Not != nil {
+		condition, err := expandFlowConditionEnv(*step.Not, env)
+		if err != nil {
+			return FlowStep{}, err
+		}
+		step.Not = &condition
+	}
+	if step.After != nil && step.After.Wait != nil {
+		wait, err := expandFlowWaitEnv(*step.After.Wait, env)
+		if err != nil {
+			return FlowStep{}, err
+		}
+		after := *step.After
+		after.Wait = &wait
+		step.After = &after
 	}
 	if len(step.Do) > 0 {
 		do, err := expandFlowSteps(step.Do, baseDir, env, stack, true)
@@ -732,16 +766,154 @@ func expandFlowConditionEnv(condition FlowCondition, env map[string]string) (Flo
 	if condition.Text, err = expandEnvString(condition.Text, env); err != nil {
 		return FlowCondition{}, err
 	}
+	if condition.TextContains, err = expandEnvString(condition.TextContains, env); err != nil {
+		return FlowCondition{}, err
+	}
+	if condition.TextStartsWith, err = expandEnvString(condition.TextStartsWith, env); err != nil {
+		return FlowCondition{}, err
+	}
+	if condition.TextRegex, err = expandEnvString(condition.TextRegex, env); err != nil {
+		return FlowCondition{}, err
+	}
 	if condition.ID, err = expandEnvString(condition.ID, env); err != nil {
 		return FlowCondition{}, err
 	}
 	if condition.Value, err = expandEnvString(condition.Value, env); err != nil {
 		return FlowCondition{}, err
 	}
+	if condition.ValueContains, err = expandEnvString(condition.ValueContains, env); err != nil {
+		return FlowCondition{}, err
+	}
+	if condition.Bounds, err = expandEnvString(condition.Bounds, env); err != nil {
+		return FlowCondition{}, err
+	}
 	if condition.ChangedFrom, err = expandEnvString(condition.ChangedFrom, env); err != nil {
 		return FlowCondition{}, err
 	}
+	if condition.Near != nil {
+		near := *condition.Near
+		where, err := expandSelectorEnv(near.Where, env)
+		if err != nil {
+			return FlowCondition{}, err
+		}
+		near.Where = where
+		condition.Near = &near
+	}
+	if condition.ParentOf != nil {
+		parent, err := expandSelectorEnv(*condition.ParentOf, env)
+		if err != nil {
+			return FlowCondition{}, err
+		}
+		condition.ParentOf = &parent
+	}
+	for i := range condition.Any {
+		child, err := expandFlowConditionEnv(condition.Any[i], env)
+		if err != nil {
+			return FlowCondition{}, err
+		}
+		condition.Any[i] = child
+	}
+	for i := range condition.All {
+		child, err := expandFlowConditionEnv(condition.All[i], env)
+		if err != nil {
+			return FlowCondition{}, err
+		}
+		condition.All[i] = child
+	}
+	if condition.Not != nil {
+		child, err := expandFlowConditionEnv(*condition.Not, env)
+		if err != nil {
+			return FlowCondition{}, err
+		}
+		condition.Not = &child
+	}
 	return condition, nil
+}
+
+func expandSelectorEnv(selector Selector, env map[string]string) (Selector, error) {
+	var err error
+	if selector.ID, err = expandEnvString(selector.ID, env); err != nil {
+		return Selector{}, err
+	}
+	if selector.Text, err = expandEnvString(selector.Text, env); err != nil {
+		return Selector{}, err
+	}
+	if selector.TextContains, err = expandEnvString(selector.TextContains, env); err != nil {
+		return Selector{}, err
+	}
+	if selector.TextStartsWith, err = expandEnvString(selector.TextStartsWith, env); err != nil {
+		return Selector{}, err
+	}
+	if selector.TextRegex, err = expandEnvString(selector.TextRegex, env); err != nil {
+		return Selector{}, err
+	}
+	if selector.Value, err = expandEnvString(selector.Value, env); err != nil {
+		return Selector{}, err
+	}
+	if selector.ValueContains, err = expandEnvString(selector.ValueContains, env); err != nil {
+		return Selector{}, err
+	}
+	if selector.Bounds, err = expandEnvString(selector.Bounds, env); err != nil {
+		return Selector{}, err
+	}
+	if selector.Near != nil {
+		near := *selector.Near
+		where, err := expandSelectorEnv(near.Where, env)
+		if err != nil {
+			return Selector{}, err
+		}
+		near.Where = where
+		selector.Near = &near
+	}
+	if selector.ParentOf != nil {
+		parent, err := expandSelectorEnv(*selector.ParentOf, env)
+		if err != nil {
+			return Selector{}, err
+		}
+		selector.ParentOf = &parent
+	}
+	return selector, nil
+}
+
+func expandFlowWaitEnv(wait FlowWait, env map[string]string) (FlowWait, error) {
+	var err error
+	if wait.ID, err = expandEnvString(wait.ID, env); err != nil {
+		return FlowWait{}, err
+	}
+	if wait.Text, err = expandEnvString(wait.Text, env); err != nil {
+		return FlowWait{}, err
+	}
+	if wait.TextContains, err = expandEnvString(wait.TextContains, env); err != nil {
+		return FlowWait{}, err
+	}
+	if wait.Value, err = expandEnvString(wait.Value, env); err != nil {
+		return FlowWait{}, err
+	}
+	if wait.ChangedFrom, err = expandEnvString(wait.ChangedFrom, env); err != nil {
+		return FlowWait{}, err
+	}
+	for i := range wait.Any {
+		condition, err := expandFlowConditionEnv(wait.Any[i], env)
+		if err != nil {
+			return FlowWait{}, err
+		}
+		wait.Any[i] = condition
+	}
+	for i := range wait.All {
+		condition, err := expandFlowConditionEnv(wait.All[i], env)
+		if err != nil {
+			return FlowWait{}, err
+		}
+		wait.All[i] = condition
+	}
+	if wait.Not != nil {
+		condition, err := expandFlowConditionEnv(*wait.Not, env)
+		if err != nil {
+			return FlowWait{}, err
+		}
+		wait.Not = &condition
+	}
+	return wait, nil
 }
 
 func mergeIncludeEnv(parent map[string]string, include map[string]string) (map[string]string, error) {

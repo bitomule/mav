@@ -1,6 +1,7 @@
 package mav
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"regexp"
@@ -9,6 +10,13 @@ import (
 )
 
 func selectorFromCLI(args []string) (Selector, error) {
+	if raw := flagValue(args, "--where-json"); raw != "" {
+		var selector Selector
+		if err := json.Unmarshal([]byte(raw), &selector); err != nil {
+			return Selector{}, fmt.Errorf("selector_where_json_invalid")
+		}
+		return selector, selector.Validate()
+	}
 	selector := Selector{
 		ID:             flagValue(args, "--id"),
 		Text:           flagValue(args, "--text"),
@@ -68,6 +76,19 @@ func optionalBoolFlag(args []string, name string) (*bool, error) {
 		return nil, fmt.Errorf("selector_bool_invalid field=%s", strings.TrimPrefix(name, "--"))
 	}
 	return &value, nil
+}
+
+// flowConditionFromSelector converts a typed selector into a FlowCondition
+// carrying the same predicates, the inverse of FlowCondition.Selector().
+func flowConditionFromSelector(selector Selector) FlowCondition {
+	return FlowCondition{
+		ID: selector.ID, Text: selector.Text, TextContains: selector.TextContains,
+		TextStartsWith: selector.TextStartsWith, TextRegex: selector.TextRegex,
+		Value: selector.Value, ValueContains: selector.ValueContains, Role: selector.Role,
+		Enabled: selector.Enabled, Selected: selector.Selected, Focused: selector.Focused,
+		Visible: selector.Visible, Index: selector.Index, Bounds: selector.Bounds,
+		Near: selector.Near, ParentOf: selector.ParentOf,
+	}
 }
 
 func (c FlowCondition) Selector() Selector {
@@ -385,8 +406,19 @@ func selectorFromLegacy(params map[string]string) Selector {
 	}
 }
 
+// selectorCLIArgs serializes selector for round-tripping through the ui*
+// subcommands' flag parsers. It carries the full selector as JSON (parsed
+// back by selectorFromCLI in preference to the individual flags below) so
+// predicates that have no flag representation - ParentOf and rich near.where
+// constraints - are not silently dropped; the individual flags are kept for
+// direct CLI callers and readability.
 func selectorCLIArgs(selector Selector) []string {
 	args := []string{}
+	if !selector.IsZero() {
+		if data, err := json.Marshal(selector); err == nil {
+			args = append(args, "--where-json", string(data))
+		}
+	}
 	appendValue := func(flag, value string) {
 		if value != "" {
 			args = append(args, flag, value)

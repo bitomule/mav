@@ -48,6 +48,8 @@ type runWorker struct {
 	lease    time.Duration
 	lastSeen time.Time
 	mu       sync.Mutex
+	inode    uint64
+	hasInode bool
 }
 
 const (
@@ -57,7 +59,59 @@ const (
 
 func workerSocket(run RunState) string { return filepath.Join(run.Dir, "worker.sock") }
 
+func workerStartLock(run RunState) string { return filepath.Join(run.Dir, "worker.starting") }
+
+// workerLockStaleAge bounds how long a worker.starting lock file is honored
+// before it is treated as abandoned and stolen. A legitimate holder only
+// needs it for the ~2s of cmd.Start()+ping polling below, so this is set well
+// above that: if the holder was killed (SIGKILL/OOM/crash) before its defer
+// ran, the lock would otherwise sit on disk forever and permanently force
+// every future startRunWorker call for that run into "direct" mode.
+const workerLockStaleAge = 10 * time.Second
+
+func acquireWorkerLock(lockPath string) (*os.File, error) {
+	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err == nil {
+		return lock, nil
+	}
+	if !os.IsExist(err) {
+		return nil, err
+	}
+	info, statErr := os.Stat(lockPath)
+	if statErr != nil || time.Since(info.ModTime()) < workerLockStaleAge {
+		return nil, err
+	}
+	// The lock is older than any legitimate holder should need; assume its
+	// owner died mid-start and steal it.
+	_ = os.Remove(lockPath)
+	return os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+}
+
 func startRunWorker(root string, run RunState) (string, error) {
+	if workerPing(run) {
+		return "worker", nil
+	}
+	// Serialize concurrent spawns (e.g. two mav commands racing after both
+	// see a dead socket) with an exclusive lock file, so only one process
+	// removes the stale socket and starts a replacement worker.
+	lockPath := workerStartLock(run)
+	lock, err := acquireWorkerLock(lockPath)
+	if err != nil {
+		// Another mav process is already starting a worker; give it time to
+		// come up rather than racing to spawn a second one.
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if workerPing(run) {
+				return "worker", nil
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+		return "direct", fmt.Errorf("worker_start_timeout")
+	}
+	defer func() {
+		_ = lock.Close()
+		_ = os.Remove(lockPath)
+	}()
 	if workerPing(run) {
 		return "worker", nil
 	}
@@ -160,6 +214,9 @@ func (c CLI) runInternalWorker(ctx context.Context, args []string) error {
 		socket: socket, listener: listener, sessions: map[string]*baguetteInputSession{},
 		lease: lease, lastSeen: time.Now(),
 	}
+	if ino, ok := socketInode(socket); ok {
+		worker.inode, worker.hasInode = ino, true
+	}
 	expired := false
 	for {
 		if unixListener, ok := listener.(*net.UnixListener); ok {
@@ -191,8 +248,13 @@ func (c CLI) runInternalWorker(ctx context.Context, args []string) error {
 			break
 		}
 	}
+	// Check ownership before close() removes the socket, so a worker that
+	// has already been superseded by a replacement (its socket path now
+	// resolves to someone else's listener) never tears down a run that is
+	// actively being served by that replacement.
+	owned := worker.ownsSocket()
 	worker.close()
-	if expired {
+	if expired && owned {
 		root := flagValue(args, "--root")
 		runID := flagValue(args, "--run")
 		if root != "" && runID != "" {
@@ -259,6 +321,33 @@ func (w *runWorker) leaseExpired() bool {
 	return !time.Now().Before(w.leaseDeadline())
 }
 
+// baguetteAckTimeout bounds each wait for a baguette input ack line, so a
+// wedged simulator or stuck FB framework call cannot hang the worker's
+// single-threaded accept loop (and defeat lease-expiry cleanup) forever.
+const baguetteAckTimeout = 30 * time.Second
+
+// scanBaguetteAck reads one ack line from scanner behind a goroutine so the
+// caller never blocks past timeout. The abandoned goroutine's result is
+// simply dropped if it arrives late; the caller is expected to kill the
+// underlying process on timeout, which unblocks it.
+func scanBaguetteAck(scanner *bufio.Scanner, timeout time.Duration) (string, bool) {
+	type result struct {
+		ok   bool
+		line string
+	}
+	ch := make(chan result, 1)
+	go func() {
+		ok := scanner.Scan()
+		ch <- result{ok: ok, line: scanner.Text()}
+	}()
+	select {
+	case r := <-ch:
+		return r.line, r.ok
+	case <-time.After(timeout):
+		return "", false
+	}
+}
+
 func (w *runWorker) sendBaguette(udid string, events []workerGestureEvent) ([]string, error) {
 	if udid == "" || len(events) == 0 {
 		return nil, fmt.Errorf("worker_gesture_invalid")
@@ -278,11 +367,11 @@ func (w *runWorker) sendBaguette(udid string, events []workerGestureEvent) ([]st
 			w.dropSession(udid)
 			return nil, err
 		}
-		if !session.scanner.Scan() {
+		line, ok := scanBaguetteAck(session.scanner, baguetteAckTimeout)
+		if !ok {
 			w.dropSession(udid)
 			return nil, fmt.Errorf("baguette_input_closed")
 		}
-		line := session.scanner.Text()
 		results = append(results, line)
 		var ack struct {
 			OK    bool   `json:"ok"`
@@ -327,8 +416,35 @@ func (w *runWorker) dropSession(udid string) {
 		if session.cmd.Process != nil {
 			_ = session.cmd.Process.Kill()
 		}
+		go func() { _ = session.cmd.Wait() }()
 		delete(w.sessions, udid)
 	}
+}
+
+// socketInode stats path and returns the inode backing it, so callers can
+// tell whether the path still refers to the same socket file they bound
+// (as opposed to one a replacement worker has since created in its place).
+func socketInode(path string) (uint64, bool) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, false
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, false
+	}
+	return stat.Ino, true
+}
+
+// ownsSocket reports whether w.socket still resolves to the file this
+// worker originally bound. It returns true when no baseline inode was
+// captured (best effort, e.g. on platforms without syscall.Stat_t).
+func (w *runWorker) ownsSocket() bool {
+	if !w.hasInode {
+		return true
+	}
+	ino, ok := socketInode(w.socket)
+	return ok && ino == w.inode
 }
 
 func (w *runWorker) close() {
@@ -338,6 +454,7 @@ func (w *runWorker) close() {
 		if session.cmd.Process != nil {
 			_ = session.cmd.Process.Kill()
 		}
+		go func(s *baguetteInputSession) { _ = s.cmd.Wait() }(session)
 	}
 	w.sessions = map[string]*baguetteInputSession{}
 	w.mu.Unlock()
@@ -345,5 +462,10 @@ func (w *runWorker) close() {
 		_ = w.debug.close()
 	}
 	_ = w.listener.Close()
-	_ = os.Remove(w.socket)
+	// Only unlink the socket path if it still points at the file we bound;
+	// otherwise a replacement worker has already taken over this path and
+	// removing it would orphan that worker instead.
+	if w.ownsSocket() {
+		_ = os.Remove(w.socket)
+	}
 }

@@ -236,6 +236,26 @@ steps:
 	if flow.Steps[6].Params["text"] != "Legacy shape still works" || flow.Steps[7].Params["duration"] != "1s" {
 		t.Fatalf("legacy steps=%+v %+v", flow.Steps[6], flow.Steps[7])
 	}
+	if !flow.Steps[6].Where.IsZero() {
+		t.Fatalf("type step must not derive a tap target from the text to type, got where=%+v", flow.Steps[6].Where)
+	}
+}
+
+func TestParseFlowTypeStepDoesNotSelectByText(t *testing.T) {
+	flow, err := ParseFlow([]byte(`
+steps:
+  - type: { id: emailField, text: "user@example.com" }
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	where := flow.Steps[0].Where
+	if where.ID != "emailField" {
+		t.Fatalf("expected id-based tap target, got where=%+v", where)
+	}
+	if where.Text != "" {
+		t.Fatalf("type step must not select by the text being typed, got where=%+v", where)
+	}
 }
 
 func TestParseFlowWhenConditional(t *testing.T) {
@@ -334,8 +354,51 @@ steps:
 	if flow.Steps[1].Action != "tap" || flow.Steps[1].Params["id"] != "sellersXp_email" {
 		t.Fatalf("included tap=%+v", flow.Steps[1])
 	}
+	if flow.Steps[1].Where.ID != "sellersXp_email" {
+		t.Fatalf("included tap Where must also have env expanded, got where=%+v", flow.Steps[1].Where)
+	}
 	if flow.Steps[2].Action != "type" || flow.Steps[2].Params["text"] != "fresh=true" {
 		t.Fatalf("included type=%+v", flow.Steps[2])
+	}
+}
+
+func TestLoadFlowExpandsEnvInWhereAllNotAndAfterWait(t *testing.T) {
+	root := t.TempDir()
+	writeTestFlow(t, filepath.Join(root, "main.yaml"), `
+steps:
+  - include:
+      file: components/login.yaml
+      env:
+        USER: sellersXp
+`)
+	writeTestFlow(t, filepath.Join(root, "components", "login.yaml"), `
+steps:
+  - tap:
+      where: { text: "${env.USER}_button" }
+  - wait:
+      all:
+        - id: "${env.USER}_field"
+      not:
+        text: "${env.USER}_error"
+      after:
+        wait:
+          id: "${env.USER}_done"
+`)
+	flow, err := LoadFlow(filepath.Join(root, "main.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flow.Steps[0].Where.Text != "sellersXp_button" {
+		t.Fatalf("where.text=%+v", flow.Steps[0].Where)
+	}
+	if flow.Steps[1].All[0].ID != "sellersXp_field" {
+		t.Fatalf("all[0].id=%+v", flow.Steps[1].All[0])
+	}
+	if flow.Steps[1].Not.Text != "sellersXp_error" {
+		t.Fatalf("not.text=%+v", flow.Steps[1].Not)
+	}
+	if flow.Steps[1].After.Wait.ID != "sellersXp_done" {
+		t.Fatalf("after.wait.id=%+v", flow.Steps[1].After.Wait)
 	}
 }
 
