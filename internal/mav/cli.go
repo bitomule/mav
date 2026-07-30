@@ -973,9 +973,17 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	if noRelaunch && hasFlag(args, "--clear-state") {
 		return Fail("open_flags_invalid", map[string]string{"usage": "--no-relaunch cannot be combined with --clear-state"}).Write(c.Stdout)
 	}
+	// A run bound via withRun (i.e. this open is a step inside a flow that
+	// already allocated its own run) is authoritative: open neither reads
+	// nor kills whatever .mav/current-run happens to name, and never
+	// overwrites it. Only a standalone `mav open` -- no bound run -- touches
+	// the pointer, preserving its existing kill-the-previous-run semantics.
 	var previousRunID string
 	var run RunState
-	if noRelaunch {
+	bound, hasBoundRun := c.boundRun()
+	if hasBoundRun {
+		run = bound
+	} else if noRelaunch {
 		run, err = c.currentOrNewRun()
 	} else {
 		if existing, err := LoadRun(c.Root, ""); err == nil && existing.ID != "" {
@@ -989,14 +997,26 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	if previousRunID != "" {
 		_ = c.withStdout(io.Discard).stop(ctx, GlobalOptions{}, []string{"--run", previousRunID})
 	}
-	if err := SaveCurrentRun(c.Root, run); err != nil {
-		return err
+	if !hasBoundRun {
+		if err := SaveCurrentRun(c.Root, run); err != nil {
+			return err
+		}
 	}
 	if isPhysicalDevice(cfg) && !hasTool(cfg, "idb") {
 		return Fail("tool_missing", map[string]string{"tool": "idb", "target": "device", "next": "mav setup --install idb"}).Write(c.Stdout)
 	}
 	if err := c.ensureOpenSimulatorBooted(ctx, cfg, run); err != nil {
 		return Fail("sim_boot_failed", map[string]string{"run": run.ID, "logs": run.LogsPath, "stderr": err.Error()}).Write(c.Stdout)
+	}
+	// A second `open` step later in the same bound-run flow would otherwise
+	// leave the first probe-logs `log stream` running forever: with the run
+	// reused (not recreated), nothing else ever stops it, and a duplicate
+	// log stream would start writing into the same logs.txt. Deliberately
+	// scoped to just probe-logs -- not a full `stop` of the run -- so this
+	// doesn't tear down the video recording, worker, or sim-lock that
+	// evidence.start / other earlier steps may have set up for this run.
+	if hasBoundRun && !noRelaunch {
+		stopProbeLogs(run)
 	}
 	probeLogPID, probeLogErr := c.startProbeLogs(ctx, cfg, run)
 	if probeLogErr != nil {
@@ -5026,6 +5046,20 @@ func removeProcess(run RunState, pid int) {
 		}
 	}
 	_ = os.WriteFile(run.Processes, []byte(b.String()), 0o644)
+}
+
+// stopProbeLogs kills only the "probe-logs" log-stream processes recorded
+// for run. Used by open when it's about to start a fresh probe-logs capture
+// on a run it's reusing (a flow's second open step), so the previous log
+// stream doesn't keep writing into the same logs.txt forever.
+func stopProbeLogs(run RunState) {
+	for _, record := range loadProcessRecords(run) {
+		if record.Kind != "probe-logs" || record.PID <= 0 {
+			continue
+		}
+		_ = stopProcess(record.PID)
+		removeProcess(run, record.PID)
+	}
 }
 
 func (c CLI) crashes(ctx context.Context, opts GlobalOptions, args []string) error {
