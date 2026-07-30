@@ -313,7 +313,7 @@ Prefer accessibility ids. Use coordinates only when the tree is insufficient and
 	case "ui scrollUntil":
 		return "Usage: mav ui scrollUntil --id ID [--direction up] [--max-swipes 5]\n"
 	case "run":
-		return "Usage:\n  mav run flow.yaml [--param name=value]\n  mav run flow.yaml --target UDID --target \"Exact Name\" [--jobs N]\n"
+		return "Usage:\n  mav run flow.yaml [--param name=value]\n  mav run flow.yaml --run RUN_ID\n  mav run flow.yaml --target UDID --target \"Exact Name\" [--jobs N]\n"
 	case "time":
 		return "Usage:\n  mav time freeze --at 2032-01-15T10:00:00Z\n  mav time travel --by +8d\n  mav time scale --factor 60\n  mav time status\n  mav time reset\n"
 	case "debug":
@@ -3024,10 +3024,22 @@ func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) err
 	if err != nil {
 		return Fail("flow_invalid", map[string]string{"error": err.Error()}).Write(c.Stdout)
 	}
-	run, err := c.currentOrNewRun()
+	// runFlow never reads .mav/current-run: an explicit --run reuses that run
+	// (e.g. a second flow continuing evidence collection on a run a caller
+	// already opened); otherwise it always creates a fresh run, so two
+	// concurrent `mav run` invocations in the same repo never adopt each
+	// other's run. The run is bound to c so every step this flow dispatches
+	// (including `open`) resolves against it instead of the disk pointer.
+	var run RunState
+	if id := flagValue(args[1:], "--run"); id != "" {
+		run, err = c.resolveRun(id)
+	} else {
+		run, err = NewProjectRunState(c.Root)
+	}
 	if err != nil {
 		return err
 	}
+	c = c.withRun(run)
 	bindings := flowExecBindings{}
 	if err := bindFlowParameters(flow, args[1:], bindings); err != nil {
 		return Fail("flow_params_invalid", map[string]string{"error": err.Error()}).Write(c.Stdout)
@@ -3058,12 +3070,6 @@ func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) err
 			c.cleanupFailedFlow(ctx, run, failFields)
 			return Fail(err.Error(), failFields).Write(c.Stdout)
 		}
-		if step.Action == "open" {
-			if openedRun, err := LoadRun(c.Root, ""); err == nil && openedRun.ID != "" {
-				run = openedRun
-				fields["run"] = run.ID
-			}
-		}
 		appendFlowStep(run, index+1, step.Action, elapsed, "ok", fields)
 	}
 	for _, step := range flow.Steps {
@@ -3083,10 +3089,16 @@ func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) err
 		"elapsed": time.Since(start).String(), "outputs": outputs,
 	}, "", "  ")
 	_ = os.WriteFile(filepath.Join(run.Dir, "run.json"), runData, 0o644)
-	fields := map[string]string{"name": flow.Name, "run": run.ID, "steps": strconv.Itoa(len(flow.Steps)), "elapsed": time.Since(start).String()}
+	fields := map[string]string{"name": flow.Name, "run": run.ID, "dir": run.Dir, "steps": strconv.Itoa(len(flow.Steps)), "elapsed": time.Since(start).String()}
 	if len(outputs) > 0 {
 		fields["outputs"] = filepath.Join(run.Dir, "outputs.json")
 	}
+	// Publish current-run as a best-effort convenience for manual follow-up
+	// commands (mav logs / evidence report / crashes without --run). Written
+	// at the end, after the run is fully done, not read at the start: two
+	// concurrent flows never adopt each other's run, and whichever finishes
+	// last simply wins the pointer for manual use.
+	_ = SaveCurrentRun(c.Root, run)
 	return OK("run", fields).Write(c.Stdout)
 }
 
@@ -4471,6 +4483,10 @@ func (c CLI) cleanupFailedFlow(ctx context.Context, run RunState, fields map[str
 		}
 	}
 	_, _ = GenerateReport(run)
+	// Same best-effort publication as the success path (see runFlow): a
+	// failed run should still be reachable by manual mav commands without
+	// --run.
+	_ = SaveCurrentRun(c.Root, run)
 }
 
 func (c CLI) captureEvidenceStep(ctx context.Context, run RunState, name, note string) (map[string]string, error) {
