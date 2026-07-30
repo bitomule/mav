@@ -30,6 +30,7 @@ type CLI struct {
 	Stdout io.Writer
 	Stderr io.Writer
 	Root   string
+	run    *RunState // nil = fall back to reading .mav/current-run from disk
 }
 
 type GlobalOptions struct {
@@ -1082,7 +1083,7 @@ func (c CLI) timeControl(ctx context.Context, opts GlobalOptions, args []string)
 	if isPhysicalDevice(cfg) {
 		return Fail("time_control_unsupported_on_device", nil).Write(c.Stdout)
 	}
-	run, runErr := LoadRun(c.Root, "")
+	run, runErr := c.resolveRun("")
 	if runErr != nil || !exists(filepath.Join(run.Dir, "time-control.enabled")) {
 		return Fail("time_control_not_loaded", map[string]string{"next": "mav open --time-control"}).Write(c.Stdout)
 	}
@@ -1522,7 +1523,7 @@ func (c CLI) recoverEmptyAXTree(ctx context.Context, cfg Config) error {
 	if !hasTool(cfg, "xcrun") || cfg.SimulatorUDID == "" {
 		return fmt.Errorf("simulator_recovery_unavailable")
 	}
-	run, _ := LoadRun(c.Root, "")
+	run, _ := c.resolveRun("")
 	shutdown := c.Runner.Run(ctx, "xcrun", "simctl", "shutdown", cfg.SimulatorUDID)
 	if run.ID != "" {
 		appendCommand(run, "xcrun simctl shutdown "+cfg.SimulatorUDID, shutdown)
@@ -1874,7 +1875,7 @@ func (c CLI) writeFastPathResult(ctx context.Context, cfg Config, args []string,
 	case "tree":
 		return writeElementLines(c.Stdout, Compact(elements))
 	case "delta":
-		run, _ := LoadRun(c.Root, "")
+		run, _ := c.resolveRun("")
 		previous := loadFastPathTree(run)
 		delta := TreeDiff(previous, elements)
 		data, _ := json.Marshal(delta)
@@ -1961,7 +1962,7 @@ func (c CLI) diagnoseTextTapFailure(ctx context.Context, cfg Config, text, stder
 }
 
 func (c CLI) appendCurrentCommand(command string, result CommandResult) {
-	run, err := LoadRun(c.Root, "")
+	run, err := c.resolveRun("")
 	if err == nil && run.ID != "" {
 		appendCommand(run, command, result)
 	}
@@ -2275,7 +2276,7 @@ func (c CLI) uiDragPath(ctx context.Context, opts GlobalOptions, cfg Config, arg
 }
 
 func (c CLI) sendWorkerGestureWithRestart(udid string, events []workerGestureEvent) error {
-	run, err := LoadRun(c.Root, "")
+	run, err := c.resolveRun("")
 	if err != nil {
 		return err
 	}
@@ -2942,7 +2943,7 @@ func (c CLI) capture(ctx context.Context, opts GlobalOptions, args []string) err
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
 	c.resolveConfigTools(&cfg)
-	run, err := LoadRun(c.Root, flagValue(args, "--run"))
+	run, err := c.resolveRun(flagValue(args, "--run"))
 	if err != nil {
 		run, err = NewProjectRunState(c.Root)
 		if err != nil {
@@ -4202,7 +4203,7 @@ func (c CLI) executeWhileNotVisibleFlowStepBoundWithOptions(ctx context.Context,
 }
 
 func (c CLI) currentOrNewRun() (RunState, error) {
-	run, err := LoadRun(c.Root, "")
+	run, err := c.resolveRun("")
 	if err == nil && run.ID != "" {
 		return run, nil
 	}
@@ -4211,6 +4212,37 @@ func (c CLI) currentOrNewRun() (RunState, error) {
 		return RunState{}, err
 	}
 	return run, SaveCurrentRun(c.Root, run)
+}
+
+// withRun binds run to this CLI value so every command it dispatches to
+// resolves against it instead of the on-disk .mav/current-run pointer. Since
+// CLI is passed by value, the binding is local to the copy it's called on
+// and everything that copy calls transitively (withStdout, flow steps, ...).
+func (c CLI) withRun(run RunState) CLI {
+	c.run = &run
+	return c
+}
+
+// boundRun reports the run bound via withRun, if any.
+func (c CLI) boundRun() (RunState, bool) {
+	if c.run == nil {
+		return RunState{}, false
+	}
+	return *c.run, true
+}
+
+// resolveRun is the single place that decides which run a command targets.
+// An explicit id (--run) always wins; otherwise a bound run is used without
+// touching disk; only with neither does it fall back to the manual
+// .mav/current-run pointer.
+func (c CLI) resolveRun(id string) (RunState, error) {
+	if id != "" {
+		return LoadRun(c.Root, id)
+	}
+	if bound, ok := c.boundRun(); ok {
+		return bound, nil
+	}
+	return LoadRun(c.Root, "")
 }
 
 func (c CLI) withStdout(stdout io.Writer) CLI {
@@ -4224,7 +4256,7 @@ func (c CLI) keepRunLeaseAlive(command string) func() {
 		return func() {}
 	}
 	renew := func() {
-		run, err := LoadRun(c.Root, "")
+		run, err := c.resolveRun("")
 		if err == nil {
 			_, _ = sendWorkerRequest(run, workerRequest{Command: "renew"})
 		}
@@ -4808,7 +4840,7 @@ func parseElementFrame(frame string) (float64, float64, float64, float64, bool) 
 }
 
 func (c CLI) screenshotChangedFrom(ctx context.Context, name string) (bool, error) {
-	run, err := LoadRun(c.Root, "")
+	run, err := c.resolveRun("")
 	if err != nil {
 		return false, fmt.Errorf("run_not_found")
 	}
@@ -4843,7 +4875,7 @@ func (c CLI) screenshotChangedFrom(ctx context.Context, name string) (bool, erro
 }
 
 func (c CLI) logs(opts GlobalOptions, args []string) error {
-	run, err := LoadRun(c.Root, flagValue(args, "--run"))
+	run, err := c.resolveRun(flagValue(args, "--run"))
 	if err != nil {
 		return Fail("run_not_found", nil).Write(c.Stdout)
 	}
@@ -4872,7 +4904,7 @@ func (c CLI) logs(opts GlobalOptions, args []string) error {
 }
 
 func (c CLI) stop(ctx context.Context, opts GlobalOptions, args []string) error {
-	run, err := LoadRun(c.Root, flagValue(args, "--run"))
+	run, err := c.resolveRun(flagValue(args, "--run"))
 	if err != nil {
 		return Fail("run_not_found", nil).Write(c.Stdout)
 	}
@@ -5019,7 +5051,7 @@ func (c CLI) crashes(ctx context.Context, opts GlobalOptions, args []string) err
 		return OK("crashes", fields).Write(c.Stdout)
 	}
 
-	if run, err := LoadRun(c.Root, ""); err == nil {
+	if run, err := c.resolveRun(""); err == nil {
 		crashDir := filepath.Join(run.Dir, "crashes")
 		driver, _, err := c.router().Route(ctx, drivers.CapCrashFetch, targetFromConfig(cfg), "idb")
 		if err != nil {
@@ -5058,7 +5090,7 @@ func (c CLI) crashesFromDiagnosticReports(idbError string) error {
 	}
 	since := time.Now().Add(-15 * time.Minute)
 	var crashDir string
-	if run, err := LoadRun(c.Root, ""); err == nil {
+	if run, err := c.resolveRun(""); err == nil {
 		if info, statErr := os.Stat(run.Dir); statErr == nil {
 			since = info.ModTime()
 		}
@@ -5130,7 +5162,7 @@ func (c CLI) evidence(opts GlobalOptions, args []string) error {
 }
 
 func (c CLI) evidenceReport(opts GlobalOptions, args []string) error {
-	run, err := LoadRun(c.Root, flagValue(args, "--run"))
+	run, err := c.resolveRun(flagValue(args, "--run"))
 	if err != nil {
 		return Fail("run_not_found", nil).Write(c.Stdout)
 	}
@@ -5170,7 +5202,7 @@ func (c CLI) evidenceStart(ctx context.Context, opts GlobalOptions, args []strin
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
 	c.resolveConfigTools(&cfg)
-	run, err := LoadRun(c.Root, flagValue(args, "--run"))
+	run, err := c.resolveRun(flagValue(args, "--run"))
 	if err != nil {
 		return Fail("run_not_found", nil).Write(c.Stdout)
 	}
@@ -5220,7 +5252,7 @@ func (c CLI) evidenceStep(ctx context.Context, opts GlobalOptions, args []string
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
 	c.resolveConfigTools(&cfg)
-	run, err := LoadRun(c.Root, flagValue(args, "--run"))
+	run, err := c.resolveRun(flagValue(args, "--run"))
 	if err != nil {
 		return Fail("run_not_found", nil).Write(c.Stdout)
 	}
@@ -5257,7 +5289,7 @@ func (c CLI) evidenceStep(ctx context.Context, opts GlobalOptions, args []string
 }
 
 func (c CLI) evidenceStop(ctx context.Context, opts GlobalOptions, args []string) error {
-	run, err := LoadRun(c.Root, flagValue(args, "--run"))
+	run, err := c.resolveRun(flagValue(args, "--run"))
 	if err != nil {
 		return Fail("run_not_found", nil).Write(c.Stdout)
 	}
