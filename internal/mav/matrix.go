@@ -39,14 +39,20 @@ type matrixManifest struct {
 	Results []matrixResult `json:"results"`
 }
 
+// stripMatrixFlags removes matrix-only flags before re-exec'ing each target
+// as its own `mav run` child. --run is stripped too: each child already gets
+// a unique, unambiguous run directory via MAV_EXACT_RUN_DIR (set per target
+// below), and forwarding --run as-is would make every child adopt the same
+// run.ID while writing to different directories -- distinct runs on disk
+// that look identical by id to anything comparing runs by ID.
 func stripMatrixFlags(args []string) []string {
 	out := []string{}
 	for i := 0; i < len(args); i++ {
-		if args[i] == "--target" || args[i] == "--jobs" {
+		if args[i] == "--target" || args[i] == "--jobs" || args[i] == "--run" {
 			i++
 			continue
 		}
-		if strings.HasPrefix(args[i], "--target=") || strings.HasPrefix(args[i], "--jobs=") {
+		if strings.HasPrefix(args[i], "--target=") || strings.HasPrefix(args[i], "--jobs=") || strings.HasPrefix(args[i], "--run=") {
 			continue
 		}
 		out = append(out, args[i])
