@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -531,6 +532,19 @@ func TestFlowRunPublishesCurrentRunOnCompletion(t *testing.T) {
 // Unlike the process-pair tests above this needs no real xcrun/probe-logs
 // simulation -- fakeRunner is enough, since the only thing under test is
 // whether runFlow's open step ever calls LoadRun(root, "") at all.
+//
+// processAlive is kill(pid, 0) (simlock.go), which reports true for a zombie
+// -- a process that already died but hasn't been reaped -- because the PID
+// stays valid in the process table until something calls wait() on it. The
+// stale "sleep 30" here is started directly by this test process, and
+// nothing reaps it until t.Cleanup, so a naive processAlive(stalePID) check
+// after the flow runs would read true whether or not the flow actually
+// killed it: not a passing test, a non-test. To make that assertion mean
+// something, a background goroutine calls Wait() on the child itself,
+// racing the flow to reap it; only a real kill makes that goroutine finish
+// before the flow does. Setpgid mirrors how startProbeLogs actually spawns
+// probe-logs (own process group), and lets cleanup kill the whole group
+// instead of guessing whether Wait() already reaped it.
 func TestFlowOpenIgnoresStaleCurrentRun(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
@@ -548,14 +562,20 @@ func TestFlowOpenIgnoresStaleCurrentRun(t *testing.T) {
 	}
 
 	sleep := exec.Command("sleep", "30")
+	sleep.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := sleep.Start(); err != nil {
 		t.Fatalf("start stale sleep: %v", err)
 	}
-	t.Cleanup(func() {
-		_ = sleep.Process.Kill()
-		_ = sleep.Wait()
-	})
 	stalePID := sleep.Process.Pid
+	reaped := make(chan struct{})
+	go func() {
+		_ = sleep.Wait()
+		close(reaped)
+	}()
+	t.Cleanup(func() {
+		_ = syscall.Kill(-stalePID, syscall.SIGKILL)
+		<-reaped
+	})
 
 	bogus, err := NewProjectRunState(root)
 	if err != nil {
@@ -586,7 +606,181 @@ func TestFlowOpenIgnoresStaleCurrentRun(t *testing.T) {
 	if runID == bogus.ID {
 		t.Fatalf("flow adopted the stale current-run: %s", bogus.ID)
 	}
+
+	select {
+	case <-reaped:
+		t.Fatalf("flow's open killed the stale run's registered process (pid %d): it must never read or touch .mav/current-run", stalePID)
+	default:
+	}
 	if !processAlive(stalePID) {
 		t.Fatalf("flow's open killed the stale run's registered process (pid %d): it must never read or touch .mav/current-run", stalePID)
+	}
+
+	// Discriminates against the exact pre-M1 bug: main's `open` always read
+	// .mav/current-run and unconditionally overwrote it with the new run's
+	// id as one of its first actions, regardless of whether the run it
+	// named was still alive. Post-fix, runFlow's own end-of-flow publish
+	// (publishCurrentRunIfSafe) must not steal the pointer from bogus either,
+	// since bogus's probe-logs process is still alive throughout.
+	stillCurrent, err := LoadRun(root, "")
+	if err != nil {
+		t.Fatalf("LoadRun after flow: %v", err)
+	}
+	if stillCurrent.ID != bogus.ID {
+		t.Fatalf(".mav/current-run=%s after the flow, want unchanged %s (bogus's process is still alive)", stillCurrent.ID, bogus.ID)
+	}
+}
+
+func concurrencyTestCLI(t *testing.T, root string) (CLI, *bytes.Buffer) {
+	t.Helper()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.app"
+	cfg.SimulatorUDID = "SIM"
+	cfg.SimulatorName = "iPhone"
+	cfg.Launch = LaunchConfig{Mode: "custom", Commands: LaunchCommands{
+		Build:   "true",
+		AppPath: "echo /tmp/App.app",
+		Install: "true",
+		Launch:  "true",
+	}}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runner := &launchRecipeRunner{
+		tools:   map[string]bool{"xcrun": true},
+		results: map[string]CommandResult{"echo /tmp/App.app": {Stdout: "/tmp/App.app\n"}},
+	}
+	var out bytes.Buffer
+	return CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}, &out
+}
+
+// TestFlowRunRejectsUnknownRunID is the regression test for the silent
+// verde-falso reported against M1: `mav run flow.yaml --run <typo'd id>`
+// used to exit 0 against a run.Dir that LoadRun handed back without ever
+// stat'ing it, so the whole flow "succeeded" while writing to a directory
+// nothing else would ever look at, and left .mav/current-run pointing at
+// an id that names nothing on disk.
+func TestFlowRunRejectsUnknownRunID(t *testing.T) {
+	root := t.TempDir()
+	cli, out := concurrencyTestCLI(t, root)
+
+	flowPath := filepath.Join(root, "flow.yaml")
+	if err := os.WriteFile(flowPath, []byte("name: t\nsteps:\n  - exec: { cmd: 'echo hi' }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.AllowShell = true
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	err = cli.Run(context.Background(), []string{"run", flowPath, "--run", "bogus123"})
+	if err != nil {
+		t.Fatalf("runFlow returned a Go error instead of a Fail() payload: %v", err)
+	}
+	if !strings.Contains(out.String(), "fail code=run_not_found") {
+		t.Fatalf("expected fail code=run_not_found, got: %s", out.String())
+	}
+	if _, statErr := os.Stat(filepath.Join(root, MavDir, "runs", "bogus123")); statErr == nil {
+		t.Fatalf("run_not_found should mean nothing was ever written for bogus123")
+	}
+	if _, loadErr := LoadRun(root, ""); loadErr == nil {
+		t.Fatalf(".mav/current-run must stay unset when --run fails validation")
+	}
+}
+
+// TestFlowRunContinuesExistingRunID is the compatibility canary for the same
+// fix: a valid --run naming a run that genuinely exists on disk (the
+// documented "continue evidence collection on an already-open run" use
+// case) must still work exactly as before.
+func TestFlowRunContinuesExistingRunID(t *testing.T) {
+	root := t.TempDir()
+	cli, out := concurrencyTestCLI(t, root)
+
+	existing, err := NewProjectRunState(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	flowPath := filepath.Join(root, "flow.yaml")
+	if err := os.WriteFile(flowPath, []byte("name: t\nsteps:\n  - open: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cli.Run(context.Background(), []string{"run", flowPath, "--run", existing.ID}); err != nil {
+		t.Fatalf("mav run --run <existing>: %v", err)
+	}
+	if !strings.Contains(out.String(), "ok cmd=run") {
+		t.Fatalf("flow did not succeed: %s", out.String())
+	}
+	runID := extractField(t, out.String(), "run")
+	if runID != existing.ID {
+		t.Fatalf("flow reported run=%s, want it to continue the existing run=%s", runID, existing.ID)
+	}
+}
+
+// TestFlowRunDoesNotStealLiveManualRunPointer covers the write-side
+// collision left behind by the read-side M1 fix: runFlow no longer *reads*
+// .mav/current-run to decide which run to use, but it still *writes* it on
+// entry and on completion, and an unconditional write would silently
+// redirect a different agent's live manual `mav open` session (still
+// running, its own probe-logs process alive) onto this flow's run.
+func TestFlowRunDoesNotStealLiveManualRunPointer(t *testing.T) {
+	root := t.TempDir()
+	cli, out := concurrencyTestCLI(t, root)
+
+	sleep := exec.Command("sleep", "30")
+	sleep.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := sleep.Start(); err != nil {
+		t.Fatalf("start manual-session sleep: %v", err)
+	}
+	manualPID := sleep.Process.Pid
+	t.Cleanup(func() {
+		_ = syscall.Kill(-manualPID, syscall.SIGKILL)
+		_ = sleep.Wait()
+	})
+
+	manual, err := NewProjectRunState(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendProcess(manual, "probe-logs", manualPID, "sleep 30")
+	if err := SaveCurrentRun(root, manual); err != nil {
+		t.Fatal(err)
+	}
+
+	flowPath := filepath.Join(root, "flow.yaml")
+	if err := os.WriteFile(flowPath, []byte("name: t\nsteps:\n  - exec: { cmd: 'echo hi' }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.AllowShell = true
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cli.Run(context.Background(), []string{"run", flowPath}); err != nil {
+		t.Fatalf("mav run: %v", err)
+	}
+	if !strings.Contains(out.String(), "ok cmd=run") {
+		t.Fatalf("flow did not succeed: %s", out.String())
+	}
+	flowRunID := extractField(t, out.String(), "run")
+	if flowRunID == manual.ID {
+		t.Fatalf("flow reused the manual session's run id: %s", manual.ID)
+	}
+
+	stillCurrent, err := LoadRun(root, "")
+	if err != nil {
+		t.Fatalf("LoadRun after flow: %v", err)
+	}
+	if stillCurrent.ID != manual.ID {
+		t.Fatalf(".mav/current-run=%s after the flow, want unchanged %s: the flow stole the pointer from a still-live manual session", stillCurrent.ID, manual.ID)
 	}
 }

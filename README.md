@@ -723,7 +723,22 @@ mav stop
 ```
 
 `mav run` stops run-owned streams deterministically without waiting for the
-lease. Starting a new `mav open` also cleans the previous run.
+lease. Each `mav run flow.yaml` always creates its own run and never reads or
+kills whatever `.mav/current-run` currently names -- two concurrent `mav run`
+invocations against the same repo never adopt or tear down each other's run.
+It still writes `.mav/current-run` for manual follow-up commands (`mav logs`,
+`mav stop`, `mav evidence report` without `--run`), but only when the pointer
+doesn't already name a run that's still alive, so it never steals it from a
+different agent's live session. A standalone `mav open` (outside a flow) keeps
+the older behavior: it reads `.mav/current-run`, stops whatever it names, and
+overwrites it with the newly opened run.
+
+`mav run flow.yaml --run RUN_ID` continues an existing run instead of creating
+a new one -- e.g. a second flow appending evidence to a run a caller already
+opened. `RUN_ID` must name a run that already exists on disk (under
+`.mav/runs/<id>` or the temp fallback); an unknown or typo'd id fails with
+`run_not_found` rather than silently running against a directory nothing else
+will ever read.
 
 ## Troubleshooting
 

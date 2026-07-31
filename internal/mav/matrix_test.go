@@ -13,6 +13,18 @@ func TestStripMatrixFlagsPreservesFlowParams(t *testing.T) {
 	}
 }
 
+// TestStripMatrixFlagsDropsRun guards against every matrix child adopting
+// the same run.ID: each child already gets a unique run directory through
+// MAV_EXACT_RUN_DIR, so a forwarded --run would make N distinct runs on
+// disk report the same id in matrix.json / simulator locks / report.html.
+func TestStripMatrixFlagsDropsRun(t *testing.T) {
+	got := stripMatrixFlags([]string{"flow.yaml", "--run", "abc123", "--param", "category=Travel", "--run=def456"})
+	want := []string{"flow.yaml", "--param", "category=Travel"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got=%v want=%v", got, want)
+	}
+}
+
 func TestApplyMatrixTarget(t *testing.T) {
 	cfg := Config{}
 	applyMatrixTarget(&cfg, matrixTarget{Kind: "simulator", UDID: "SIM-1", Name: "iPhone", Runtime: "iOS-26-3"})

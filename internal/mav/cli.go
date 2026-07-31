@@ -1011,11 +1011,14 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	// A second `open` step later in the same bound-run flow would otherwise
 	// leave the first probe-logs `log stream` running forever: with the run
 	// reused (not recreated), nothing else ever stops it, and a duplicate
-	// log stream would start writing into the same logs.txt. Deliberately
-	// scoped to just probe-logs -- not a full `stop` of the run -- so this
-	// doesn't tear down the video recording, worker, or sim-lock that
+	// log stream would start writing into the same logs.txt. This applies
+	// regardless of --no-relaunch: startProbeLogs below always starts a new
+	// stream, so a stale one from an earlier open in this same run must
+	// always be stopped first, not just on relaunch. Deliberately scoped to
+	// just probe-logs -- not a full `stop` of the run -- so this doesn't
+	// tear down the video recording, worker, or sim-lock that
 	// evidence.start / other earlier steps may have set up for this run.
-	if hasBoundRun && !noRelaunch {
+	if hasBoundRun {
 		stopProbeLogs(run)
 	}
 	probeLogPID, probeLogErr := c.startProbeLogs(ctx, cfg, run)
@@ -3051,8 +3054,20 @@ func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) err
 	// other's run. The run is bound to c so every step this flow dispatches
 	// (including `open`) resolves against it instead of the disk pointer.
 	var run RunState
-	if id := flagValue(args[1:], "--run"); id != "" {
-		run, err = c.resolveRun(id)
+	requestedRunID := flagValue(args[1:], "--run")
+	if requestedRunID != "" {
+		run, err = c.resolveRun(requestedRunID)
+		// LoadRun never stats an explicit id: it happily returns a RunState
+		// pointing at a directory that was never created (a typo'd id,
+		// a --run for a run that was never opened). Left unchecked, the
+		// flow would "succeed" against a directory nothing ever writes to
+		// -- exit 0, zero logs, zero commands.jsonl, zero run.json -- and
+		// still clobber .mav/current-run with the bogus id on the way out.
+		if err == nil {
+			if _, statErr := os.Stat(run.Dir); statErr != nil {
+				return Fail("run_not_found", map[string]string{"run": requestedRunID}).Write(c.Stdout)
+			}
+		}
 	} else {
 		run, err = NewProjectRunState(c.Root)
 	}
@@ -3060,6 +3075,14 @@ func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) err
 		return err
 	}
 	c = c.withRun(run)
+	// Publish current-run as soon as this run exists, not only on a clean
+	// exit: a flow killed mid-run (Ctrl-C, SIGKILL, a hung step) must still
+	// leave a pointer manual follow-up commands (mav logs/stop without
+	// --run) can find, matching the pre-M1 behavior where `open` published
+	// the pointer immediately. Guarded by publishCurrentRunIfSafe so it
+	// never steals the pointer from a different run that's still live (see
+	// its doc comment).
+	c.publishCurrentRunIfSafe(run)
 	bindings := flowExecBindings{}
 	if err := bindFlowParameters(flow, args[1:], bindings); err != nil {
 		return Fail("flow_params_invalid", map[string]string{"error": err.Error()}).Write(c.Stdout)
@@ -3113,12 +3136,11 @@ func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) err
 	if len(outputs) > 0 {
 		fields["outputs"] = filepath.Join(run.Dir, "outputs.json")
 	}
-	// Publish current-run as a best-effort convenience for manual follow-up
-	// commands (mav logs / evidence report / crashes without --run). Written
-	// at the end, after the run is fully done, not read at the start: two
-	// concurrent flows never adopt each other's run, and whichever finishes
-	// last simply wins the pointer for manual use.
-	_ = SaveCurrentRun(c.Root, run)
+	// Re-publish current-run now that the run is fully done (already
+	// published on entry above; see that comment). Reasserts ownership of
+	// the pointer in case whatever it named when this run started has since
+	// gone quiet, without ever stealing it from a run that's still live.
+	c.publishCurrentRunIfSafe(run)
 	return OK("run", fields).Write(c.Stdout)
 }
 
@@ -4263,6 +4285,26 @@ func (c CLI) boundRun() (RunState, bool) {
 	return *c.run, true
 }
 
+// publishCurrentRunIfSafe points .mav/current-run at run, unless it already
+// names a *different* run that still has live processes recorded against it
+// -- e.g. another agent's manual `mav open` session in the same repo.
+// Overwriting that pointer wouldn't kill anything (M1 already stopped
+// runFlow from doing that), but it would silently redirect the other
+// agent's next `mav ui tap` / `mav logs` / `mav stop` (all resolveRun("")
+// when called without --run) onto this run instead -- a quieter version of
+// the same cross-agent corruption M1 exists to close. Safe to call
+// repeatedly and a no-op once run is already published.
+func (c CLI) publishCurrentRunIfSafe(run RunState) {
+	if existing, err := LoadRun(c.Root, ""); err == nil && existing.ID != "" && existing.ID != run.ID {
+		for _, record := range loadProcessRecords(existing) {
+			if processAlive(record.PID) {
+				return
+			}
+		}
+	}
+	_ = SaveCurrentRun(c.Root, run)
+}
+
 // resolveRun is the single place that decides which run a command targets.
 // An explicit id (--run) always wins; otherwise a bound run is used without
 // touching disk; only with neither does it fall back to the manual
@@ -4505,8 +4547,9 @@ func (c CLI) cleanupFailedFlow(ctx context.Context, run RunState, fields map[str
 	_, _ = GenerateReport(run)
 	// Same best-effort publication as the success path (see runFlow): a
 	// failed run should still be reachable by manual mav commands without
-	// --run.
-	_ = SaveCurrentRun(c.Root, run)
+	// --run. publishCurrentRunIfSafe still won't steal the pointer from a
+	// different run that's still live.
+	c.publishCurrentRunIfSafe(run)
 }
 
 func (c CLI) captureEvidenceStep(ctx context.Context, run RunState, name, note string) (map[string]string, error) {

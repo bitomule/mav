@@ -76,6 +76,14 @@ does not explore or repair routes by itself. The agent decides the next action.
    non-preserved time control, and releases the simulator lock. Use `mav stop`
    only for immediate cleanup. `mav run` stops run-owned streams
    deterministically.
+10. `mav run flow.yaml` always creates its own run and never adopts or kills
+    whatever `.mav/current-run` names -- safe to run concurrently against the
+    same repo from separate agents. It still publishes `.mav/current-run` for
+    manual follow-up (`mav logs` / `mav stop` / `mav evidence report` without
+    `--run`), but never by stealing the pointer from a different run that's
+    still alive. Pass `--run RUN_ID` to continue an existing run (e.g. a
+    second flow appending evidence to a run already opened); an id that
+    doesn't name a real run fails with `run_not_found`.
 
 For evidence flows that need mitmproxy on macOS 26+, remember that mitmproxy's
 local Network Extension may take several seconds to become ready after launch.
