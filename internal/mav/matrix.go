@@ -249,7 +249,7 @@ func (c CLI) runFlowMatrix(ctx context.Context, opts GlobalOptions, args []strin
 		}
 		return CommandFailed{}
 	}
-	return OK("run.matrix", fields).Write(c.Stdout)
+	return c.OK("run.matrix", fields).Write(c.Stdout)
 }
 
 func matrixOutputFailed(output string) bool {

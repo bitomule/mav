@@ -56,7 +56,7 @@ func (c CLI) flowLint(opts GlobalOptions, args []string) error {
 	if errors > 0 {
 		return FailCode(codes.FlowLintFailed, fields).Write(c.Stdout)
 	}
-	return OK("flow.lint", fields).Write(c.Stdout)
+	return c.OK("flow.lint", fields).Write(c.Stdout)
 }
 
 func lintFlow(flow Flow, cfg Config) []flowLintIssue {

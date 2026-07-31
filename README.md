@@ -258,10 +258,14 @@ fail code=<error_code> key=value key=value
 Examples:
 
 ```text
-ok cmd=capture file=/tmp/mav/7fd/captures/20260503T120000.000.png run=7fd
-ok cmd=logs file=/tmp/mav/7fd/logs.txt matches=1 run=7fd
+ok cmd=capture file=/tmp/mav/7fd/captures/20260503T120000.000.png run=7fd target_kind=simulator udid=E4C10E36-2C4E-4B2B-9C9C-1F4C6A9B7A11
+ok cmd=logs file=/tmp/mav/7fd/logs.txt matches=1 run=7fd target_kind=simulator udid=E4C10E36-2C4E-4B2B-9C9C-1F4C6A9B7A11
 fail code=ui_tree_empty driver=axe reason=simulator_accessibility_unavailable recovered=false
 ```
+
+Commands that acted on a simulator or device add `udid`/`target_kind` to
+their success fields -- see [Knowing which target you just
+used](#knowing-which-target-you-just-used).
 
 The goal is to give agents the minimum useful fields: what happened, where the
 artifact is, and what to do next when the command failed.
@@ -285,6 +289,7 @@ Run state:
 .mav/runs/<run-id>/video.mov
 .mav/runs/<run-id>/crashes/
 .mav/runs/<run-id>/report.json
+.mav/runs/<run-id>/booted-simulator.json
 ```
 
 `/tmp` may resolve to a macOS per-user temporary directory such as
@@ -648,6 +653,41 @@ You can also pass simulator selection flags to `mav open`:
 ```bash
 mav open --device "iPhone 17 Pro Max" --ios 26 --locale es_ES --language es
 ```
+
+### Knowing which target you just used
+
+Every command that acts on a simulator or device reports `udid` (and
+`target_kind`) in its success output, not just `sim.select` / `sim.boot`:
+
+```bash
+$ mav open
+ok cmd=open target=booted target_kind=simulator udid=E4C10E36-2C4E-4B2B-9C9C-1F4C6A9B7A11 session=worker run=7fd
+
+$ mav open --udid E4C10E36-2C4E-4B2B-9C9C-1F4C6A9B7A11   # next agent/run: pin the same device
+```
+
+In hot-path usage -- an agent driving `mav` command-by-command
+(`mav open`, `mav ui tap`, `mav logs`, ...) rather than only through `mav run
+flow.yaml` -- this is how the next call knows which device to keep targeting
+instead of guessing. With several agents on one machine, guessing wrong means
+silently driving someone else's simulator: taps still succeed and assertions
+still pass, so nothing looks wrong until the evidence doesn't match.
+
+Most project configs no longer pin `simulator_udid`, so absent an explicit
+target most commands actually target "whatever simulator is booted". The
+reported `udid` is resolved for real in that case too, so it reflects the
+concrete device a command acted on instead of staying blank.
+
+Resolving "whatever's booted" costs about 0.75s -- that's inherent to asking
+CoreSimulator, not to any particular way of asking it -- and mav starts a new
+process per command, so paying it on every command in a hot-path navigation
+would add tens of seconds per session. MAV resolves it once per run and
+caches the result in `.mav/runs/<run-id>/booted-simulator.json` (see
+[Project And Run State](#project-and-run-state)), trusted for a couple of
+minutes -- generous for a normal navigation, bounded so a run resumed much
+later doesn't keep reporting a simulator that's since been rebooted or
+swapped outside mav. A 30-command navigation against an unpinned simulator
+went from ~23s of resolution overhead to under a second with this cached.
 
 ## Physical Devices
 
