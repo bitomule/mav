@@ -289,6 +289,7 @@ Run state:
 .mav/runs/<run-id>/video.mov
 .mav/runs/<run-id>/crashes/
 .mav/runs/<run-id>/report.json
+.mav/runs/<run-id>/booted-simulator.json
 ```
 
 `/tmp` may resolve to a macOS per-user temporary directory such as
@@ -676,6 +677,17 @@ Most project configs no longer pin `simulator_udid`, so absent an explicit
 target most commands actually target "whatever simulator is booted". The
 reported `udid` is resolved for real in that case too, so it reflects the
 concrete device a command acted on instead of staying blank.
+
+Resolving "whatever's booted" costs about 0.75s -- that's inherent to asking
+CoreSimulator, not to any particular way of asking it -- and mav starts a new
+process per command, so paying it on every command in a hot-path navigation
+would add tens of seconds per session. MAV resolves it once per run and
+caches the result in `.mav/runs/<run-id>/booted-simulator.json` (see
+[Project And Run State](#project-and-run-state)), trusted for a couple of
+minutes -- generous for a normal navigation, bounded so a run resumed much
+later doesn't keep reporting a simulator that's since been rebooted or
+swapped outside mav. A 30-command navigation against an unpinned simulator
+went from ~23s of resolution overhead to under a second with this cached.
 
 ## Physical Devices
 
