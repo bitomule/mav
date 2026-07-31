@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.8.0
+
+- Toda respuesta de exito reporta ahora el objetivo sobre el que se actuo: `udid`, `target_kind`
+  y `target_name`. En uso en caliente —un agente llamando al CLI comando a comando— eso permite
+  fijar las llamadas siguientes al mismo simulador en vez de adivinarlo. Con varios agentes en la
+  misma maquina, adivinar significa conducir la app de otro, y el fallo es silencioso porque los
+  taps funcionan y las aserciones pasan.
+- Cuando no hay objetivo fijado, el UDID reportado revela a que simulador se cayo por defecto:
+  convierte un comportamiento implicito en algo observable.
+- La resolucion del simulador arrancado se cachea por run (`booted-simulator.json`, TTL de 2 min).
+  Sin ella cada comando pagaba ~0,78 s: 30 comandos pasaban de 23,2 s a 0,9 s.
+- Los procesos auxiliares de grabacion de video ya no quedan huerfanos cuando `mav` muere de forma
+  abrupta. El reaper de expiracion de lease los recoge, y `evidence start`, `network start` y la
+  captura de logs garantizan que exista un vigilante aunque se invoquen sueltos, sin `mav open`.
+
 ## v0.7.0
 
 - `mav run` ya no comparte el puntero global `.mav/current-run`: cada invocación crea y posee su propio run.
