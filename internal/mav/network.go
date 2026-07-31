@@ -91,6 +91,9 @@ func (c CLI) networkStart(ctx context.Context, _ GlobalOptions, args []string) e
 	}
 
 	appendProcess(run, "network", result.PID, fmt.Sprintf("%s --listen-port %d --hardump %s", driver.ID(), result.ListenPort, result.OutPath))
+	// See ensureRunWorker: guarantees a lease-expiry watchdog exists for this
+	// run even when mitmdump was started without ever going through open().
+	c.ensureRunWorker(run)
 
 	return OK("network.start", map[string]string{
 		"driver":      driver.ID(),

@@ -262,7 +262,11 @@ func (c CLI) runInternalWorker(ctx context.Context, args []string) error {
 			if loadErr == nil {
 				appendFile(run.LogsPath, "mav worker lease expired after "+lease.String()+"; cleaning run\n")
 				_ = os.WriteFile(filepath.Join(run.Dir, "lease.expired"), []byte(time.Now().Format(time.RFC3339)+"\n"), 0o600)
-				_ = c.withStdout(io.Discard).stop(ctx, GlobalOptions{}, []string{"--run", run.ID})
+				// reapAbandonedRun, not stop: this is the one place a run's
+				// owner is confirmed gone (nobody renewed the lease), so an
+				// in-flight video recording -- which stop() alone leaves
+				// running -- must be killed here too, or it never dies.
+				c.withStdout(io.Discard).reapAbandonedRun(ctx, run)
 			}
 		}
 	}

@@ -1244,6 +1244,10 @@ func simctlLaunchLanguageArgs(cfg Config) []string {
 }
 
 func (c CLI) startProbeLogs(ctx context.Context, cfg Config, run RunState) (int, error) {
+	// Guarantee a watchdog worker exists for this run before starting a
+	// long-lived log stream, even when the caller reaches startProbeLogs
+	// without ever going through open() -- see ensureRunWorker.
+	defer c.ensureRunWorker(run)
 	predicate := probeLogPredicate(cfg)
 	if isPhysicalDevice(cfg) {
 		if !hasTool(cfg, "idb") {
@@ -4531,12 +4535,51 @@ func appendFlowStep(run RunState, index int, action string, elapsed time.Duratio
 	appendFile(run.Commands, string(data)+"\n")
 }
 
-func (c CLI) cleanupFailedFlow(ctx context.Context, run RunState, fields map[string]string) {
-	_ = c.withStdout(io.Discard).stop(ctx, GlobalOptions{}, []string{"--run", run.ID})
-	if pid, err := readPID(filepath.Join(run.Dir, "video.pid")); err == nil {
-		_ = stopProcess(pid)
-		_ = os.Remove(filepath.Join(run.Dir, "video.pid"))
+// stopVideoRecording terminates a still-registered video recorder and clears
+// its pid marker. stop() deliberately leaves an active recording running
+// while video.pid exists, so it doesn't race a caller that's about to
+// finalize it through evidenceStop's wait/validate/transcode sequence.
+// Abandonment and failure cleanup call this afterward, because for them
+// there is no such caller coming -- if they don't kill it here, nothing
+// ever will.
+func stopVideoRecording(run RunState) {
+	pid, err := readPID(filepath.Join(run.Dir, "video.pid"))
+	if err != nil {
+		return
 	}
+	_ = stopProcess(pid)
+	_ = os.Remove(filepath.Join(run.Dir, "video.pid"))
+	removeProcess(run, pid)
+}
+
+// reapAbandonedRun stops every process ever registered for run, including an
+// in-flight video recording that generic stop() skips (see stop and
+// stopVideoRecording). Use this specifically when the run's owner is gone or
+// has given up -- worker lease expiry (nobody has touched the run in a
+// while) and failed-flow cleanup -- so a recorder started by `mav evidence
+// start` whose caller never comes back to stop it doesn't run forever and
+// hold a simulator the run's owner can no longer release.
+func (c CLI) reapAbandonedRun(ctx context.Context, run RunState) {
+	_ = c.withStdout(io.Discard).stop(ctx, GlobalOptions{}, []string{"--run", run.ID})
+	stopVideoRecording(run)
+}
+
+// ensureRunWorker best-effort starts (or confirms) the run's watchdog worker,
+// so a background recorder registered without ever going through `mav open`
+// -- a bare `mav evidence start`, `mav network start`, or a probe-logs
+// capture on its own -- still gets a lease-expiry safety net that reaps it
+// via reapAbandonedRun if its caller never comes back. Errors are swallowed:
+// the caller's real job already succeeded, and the recorder was already
+// meant to keep running fire-and-forget either way.
+func (c CLI) ensureRunWorker(run RunState) {
+	if _, ok := c.Runner.(ExecRunner); !ok {
+		return
+	}
+	_, _ = startRunWorker(c.Root, run)
+}
+
+func (c CLI) cleanupFailedFlow(ctx context.Context, run RunState, fields map[string]string) {
+	c.reapAbandonedRun(ctx, run)
 	if cfg, err := LoadConfig(c.Root); err == nil {
 		c.resolveConfigTools(&cfg)
 		path := filepath.Join(run.Dir, "failure.png")
@@ -5715,6 +5758,7 @@ func (c CLI) startVideoRecording(ctx context.Context, cfg Config, run RunState) 
 	pid, err := c.Runner.Start(ctx, filepath.Join(run.Dir, "video.log"), "xcrun", args...)
 	if err == nil {
 		appendProcess(run, "video", pid, "xcrun "+strings.Join(args, " "))
+		c.ensureRunWorker(run)
 	}
 	return videoPath, pid, err
 }
