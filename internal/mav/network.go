@@ -92,7 +92,7 @@ func (c CLI) networkStart(ctx context.Context, _ GlobalOptions, args []string) e
 
 	appendProcess(run, "network", result.PID, fmt.Sprintf("%s --listen-port %d --hardump %s", driver.ID(), result.ListenPort, result.OutPath))
 
-	return OK("network.start", map[string]string{
+	return c.OK("network.start", map[string]string{
 		"driver":      driver.ID(),
 		"pid":         strconv.Itoa(result.PID),
 		"har":         result.OutPath,
@@ -139,7 +139,7 @@ func (c CLI) networkStop(ctx context.Context, _ GlobalOptions, args []string) er
 		}).Write(c.Stdout)
 	}
 	removeProcess(run, pid)
-	return OK("network.stop", map[string]string{
+	return c.OK("network.stop", map[string]string{
 		"pid": strconv.Itoa(pid),
 		"run": run.ID,
 	}).Write(c.Stdout)
@@ -194,7 +194,7 @@ func (c CLI) networkStatus(opts GlobalOptions, args []string) error {
 			fmt.Fprintf(c.Stdout, "%s=%s\n", key, value)
 		}
 	}
-	return OK("network.status", fields).Write(c.Stdout)
+	return c.OK("network.status", fields).Write(c.Stdout)
 }
 
 // networkHARPath resolves --har: explicit value wins, otherwise default to

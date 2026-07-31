@@ -457,7 +457,7 @@ func (c CLI) doctor(ctx context.Context, opts GlobalOptions) error {
 			}
 		}
 	}
-	return OK("doctor", fields).Write(c.Stdout)
+	return c.OK("doctor", fields).Write(c.Stdout)
 }
 
 func addDoctorMatrixFields(fields map[string]string, caps Capabilities) {
@@ -550,7 +550,7 @@ func (c CLI) setup(ctx context.Context, opts GlobalOptions, args []string) error
 			return Fail("setup_failed", map[string]string{"tool": tool, "stderr": firstLine(result.Stderr)}).Write(c.Stdout)
 		}
 	}
-	return OK("setup", map[string]string{"installed": strings.Join(tools, ",")}).Write(c.Stdout)
+	return c.OK("setup", map[string]string{"installed": strings.Join(tools, ",")}).Write(c.Stdout)
 }
 
 func (c CLI) verifySimtime(ctx context.Context) error {
@@ -645,7 +645,7 @@ func (c CLI) installSkills(ctx context.Context) error {
 		}
 		return Fail("install_skills_failed", fields).Write(c.Stdout)
 	}
-	return OK("install-skills", map[string]string{"skill": "mav", "scope": "global"}).Write(c.Stdout)
+	return c.OK("install-skills", map[string]string{"skill": "mav", "scope": "global"}).Write(c.Stdout)
 }
 
 func (c CLI) setupProject(opts GlobalOptions, args []string) error {
@@ -687,7 +687,7 @@ func (c CLI) setupProject(opts GlobalOptions, args []string) error {
 		fields["multitouch"] = "missing"
 		fields["multitouch_next"] = "mav setup --install baguette"
 	}
-	return OK("setup", fields).Write(c.Stdout)
+	return c.OK("setup", fields).Write(c.Stdout)
 }
 
 func (c CLI) promptSetupConfig(cfg Config) (Config, error) {
@@ -836,7 +836,7 @@ func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 			addSandboxNext(fields, err.Error())
 			return Fail("sim_list_failed", fields).Write(c.Stdout)
 		}
-		if err := OK("sim.list", map[string]string{"count": strconv.Itoa(len(sims))}).Write(c.Stdout); err != nil {
+		if err := c.OK("sim.list", map[string]string{"count": strconv.Itoa(len(sims))}).Write(c.Stdout); err != nil {
 			return err
 		}
 		for _, sim := range sims {
@@ -878,7 +878,7 @@ func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 		if err := SaveConfig(c.Root, cfg); err != nil {
 			return err
 		}
-		return OK("sim.select", map[string]string{"udid": sim.UDID, "name": sim.Name, "runtime": sim.Runtime}).Write(c.Stdout)
+		return c.OK("sim.select", map[string]string{"udid": sim.UDID, "name": sim.Name, "runtime": sim.Runtime}).Write(c.Stdout)
 	case "boot":
 		cfg, err := LoadConfig(c.Root)
 		if err != nil {
@@ -899,7 +899,7 @@ func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 		if status.Err != nil {
 			return Fail("sim_bootstatus_failed", map[string]string{"stderr": firstLine(status.Stderr)}).Write(c.Stdout)
 		}
-		return OK("sim.boot", map[string]string{"udid": cfg.SimulatorUDID, "name": cfg.SimulatorName}).Write(c.Stdout)
+		return c.OK("sim.boot", map[string]string{"udid": cfg.SimulatorUDID, "name": cfg.SimulatorName}).Write(c.Stdout)
 	default:
 		return Fail("sim_unknown_command", map[string]string{"command": args[0]}).Write(c.Stdout)
 	}
@@ -918,7 +918,7 @@ func (c CLI) device(ctx context.Context, opts GlobalOptions, args []string) erro
 			addSandboxNext(fields, err.Error())
 			return Fail("device_list_failed", fields).Write(c.Stdout)
 		}
-		if err := OK("device.list", map[string]string{"count": strconv.Itoa(len(devices))}).Write(c.Stdout); err != nil {
+		if err := c.OK("device.list", map[string]string{"count": strconv.Itoa(len(devices))}).Write(c.Stdout); err != nil {
 			return err
 		}
 		for _, device := range devices {
@@ -949,7 +949,7 @@ func (c CLI) device(ctx context.Context, opts GlobalOptions, args []string) erro
 		if err := SaveConfig(c.Root, cfg); err != nil {
 			return err
 		}
-		return OK("device.select", map[string]string{"udid": device.UDID, "name": device.Name}).Write(c.Stdout)
+		return c.OK("device.select", map[string]string{"udid": device.UDID, "name": device.Name}).Write(c.Stdout)
 	default:
 		return Fail("device_unknown_command", map[string]string{"command": args[0]}).Write(c.Stdout)
 	}
@@ -1091,7 +1091,7 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	if fields["target"] == "" {
 		fields["target"] = "booted"
 	}
-	return OK("open", fields).Write(c.Stdout)
+	return c.OK("open", fields).Write(c.Stdout)
 }
 
 func (c CLI) timeControl(ctx context.Context, opts GlobalOptions, args []string) error {
@@ -1174,7 +1174,7 @@ func (c CLI) timeControl(ctx context.Context, opts GlobalOptions, args []string)
 	default:
 		return Fail("time_unknown_command", map[string]string{"command": args[0]}).Write(c.Stdout)
 	}
-	return OK("time."+args[0], fields).Write(c.Stdout)
+	return c.OK("time."+args[0], fields).Write(c.Stdout)
 }
 
 func (c CLI) ensureOpenSimulatorBooted(ctx context.Context, cfg Config, run RunState) error {
@@ -1412,7 +1412,7 @@ func (c CLI) uiTree(ctx context.Context, opts GlobalOptions, cfg Config, args []
 	if agentMode {
 		fields["agent"] = "true"
 	}
-	if err := OK("ui.tree", fields).Write(c.Stdout); err != nil {
+	if err := c.OK("ui.tree", fields).Write(c.Stdout); err != nil {
 		return err
 	}
 	if agentMode {
@@ -1880,7 +1880,7 @@ func (c CLI) writeFastPathResult(ctx context.Context, cfg Config, args []string,
 		fields["wait_timeout"] = timeout.String()
 	}
 	if observe == "none" {
-		return OK(command, fields).Write(c.Stdout)
+		return c.OK(command, fields).Write(c.Stdout)
 	}
 	described, err := c.describeUITree(ctx, cfg, "auto", false)
 	if err != nil || described.Result.Err != nil {
@@ -1889,7 +1889,7 @@ func (c CLI) writeFastPathResult(ctx context.Context, cfg Config, args []string,
 	elements := ExtractElementsRaw(described.Result.Stdout)
 	fields["observe"] = observe
 	fields["nodes"] = strconv.Itoa(len(elements))
-	if err := OK(command, fields).Write(c.Stdout); err != nil {
+	if err := c.OK(command, fields).Write(c.Stdout); err != nil {
 		return err
 	}
 	switch observe {
@@ -2081,7 +2081,7 @@ func (c CLI) uiErase(ctx context.Context, opts GlobalOptions, cfg Config, args [
 	if focused {
 		fields["focused"] = "true"
 	}
-	return OK("ui.erase", fields).Write(c.Stdout)
+	return c.OK("ui.erase", fields).Write(c.Stdout)
 }
 
 func (c CLI) uiHideKeyboard(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
@@ -2094,7 +2094,7 @@ func (c CLI) uiHideKeyboard(ctx context.Context, opts GlobalOptions, cfg Config,
 	if err := baguetteHideKeyboard(ctx, c.router(), target); err != nil {
 		return Fail("ui_hide_keyboard_failed", map[string]string{"driver": "baguette", "stderr": err.Error()}).Write(c.Stdout)
 	}
-	return OK("ui.hideKeyboard", map[string]string{"driver": "baguette"}).Write(c.Stdout)
+	return c.OK("ui.hideKeyboard", map[string]string{"driver": "baguette"}).Write(c.Stdout)
 }
 
 func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
@@ -2518,7 +2518,7 @@ func (c CLI) uiPress(ctx context.Context, opts GlobalOptions, cfg Config, args [
 	if err := hardware.PressButton(ctx, target, btn); err != nil {
 		return Fail("ui_press_failed", map[string]string{"stderr": firstLine(err.Error())}).Write(c.Stdout)
 	}
-	return OK("ui.press", map[string]string{"button": button, "driver": driver.ID()}).Write(c.Stdout)
+	return c.OK("ui.press", map[string]string{"button": button, "driver": driver.ID()}).Write(c.Stdout)
 }
 
 func (c CLI) uiLongPress(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
@@ -2554,7 +2554,7 @@ func (c CLI) uiLongPress(ctx context.Context, opts GlobalOptions, cfg Config, ar
 		"driver":   "baguette",
 	}
 	c.appendCurrentCommand("mav ui longPress "+strings.Join(args, " "), CommandResult{})
-	return OK("ui.longPress", fields).Write(c.Stdout)
+	return c.OK("ui.longPress", fields).Write(c.Stdout)
 }
 
 func (c CLI) uiPinch(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
@@ -2611,7 +2611,7 @@ func (c CLI) uiPinch(ctx context.Context, opts GlobalOptions, cfg Config, args [
 		fields["pan_y"] = formatNumber(panY)
 	}
 	c.appendCurrentCommand("mav ui pinch "+strings.Join(args, " "), CommandResult{})
-	return OK("ui.pinch", fields).Write(c.Stdout)
+	return c.OK("ui.pinch", fields).Write(c.Stdout)
 }
 
 func (c CLI) uiRotate(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
@@ -2653,7 +2653,7 @@ func (c CLI) uiRotate(ctx context.Context, opts GlobalOptions, cfg Config, args 
 		"driver":   "baguette",
 	}
 	c.appendCurrentCommand("mav ui rotate "+strings.Join(args, " "), CommandResult{})
-	return OK("ui.rotate", fields).Write(c.Stdout)
+	return c.OK("ui.rotate", fields).Write(c.Stdout)
 }
 
 func (c CLI) uiTwoFingerPan(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
@@ -2705,7 +2705,7 @@ func (c CLI) uiTwoFingerPan(ctx context.Context, opts GlobalOptions, cfg Config,
 		fields["hold"] = strconv.Itoa(holdMs) + "ms"
 	}
 	c.appendCurrentCommand("mav ui twoFingerPan "+strings.Join(args, " "), CommandResult{})
-	return OK("ui.twoFingerPan", fields).Write(c.Stdout)
+	return c.OK("ui.twoFingerPan", fields).Write(c.Stdout)
 }
 
 func (c CLI) uiActions(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
@@ -2726,7 +2726,7 @@ func (c CLI) uiActions(ctx context.Context, opts GlobalOptions, cfg Config, args
 		return c.writeGestureError(err)
 	}
 	c.appendCurrentCommand("mav ui actions --file "+path, CommandResult{})
-	return OK("ui.actions", map[string]string{"driver": "baguette", "file": path}).Write(c.Stdout)
+	return c.OK("ui.actions", map[string]string{"driver": "baguette", "file": path}).Write(c.Stdout)
 }
 
 func (c CLI) writeGestureError(err error) error {
@@ -2767,7 +2767,7 @@ func (c CLI) uiWait(ctx context.Context, opts GlobalOptions, cfg Config, args []
 			fields[key] = raw
 		}
 	}
-	return OK("ui.wait", fields).Write(c.Stdout)
+	return c.OK("ui.wait", fields).Write(c.Stdout)
 }
 
 func (c CLI) uiScrollUntil(ctx context.Context, opts GlobalOptions, args []string) error {
@@ -2799,7 +2799,7 @@ func (c CLI) uiScrollUntil(ctx context.Context, opts GlobalOptions, args []strin
 			fields[key] = value
 		}
 	}
-	return OK("ui.scrollUntil", fields).Write(c.Stdout)
+	return c.OK("ui.scrollUntil", fields).Write(c.Stdout)
 }
 
 func (c CLI) app(ctx context.Context, opts GlobalOptions, args []string) error {
@@ -2827,7 +2827,7 @@ func (c CLI) app(ctx context.Context, opts GlobalOptions, args []string) error {
 			_, err = fmt.Fprint(c.Stdout, raw)
 			return err
 		}
-		return OK("app.list", map[string]string{"driver": driver.ID(), "bytes": strconv.Itoa(len(raw))}).Write(c.Stdout)
+		return c.OK("app.list", map[string]string{"driver": driver.ID(), "bytes": strconv.Itoa(len(raw))}).Write(c.Stdout)
 	case "kill":
 		bundle := flagValue(args[1:], "--bundle")
 		if bundle == "" {
@@ -2844,7 +2844,7 @@ func (c CLI) app(ctx context.Context, opts GlobalOptions, args []string) error {
 		if err := utility.Terminate(ctx, target, bundle); err != nil {
 			return Fail("app_kill_failed", map[string]string{"stderr": firstLine(err.Error())}).Write(c.Stdout)
 		}
-		return OK("app.kill", map[string]string{"bundle": bundle, "driver": driver.ID()}).Write(c.Stdout)
+		return c.OK("app.kill", map[string]string{"bundle": bundle, "driver": driver.ID()}).Write(c.Stdout)
 	default:
 		return Fail("app_unknown_command", map[string]string{"command": args[0]}).Write(c.Stdout)
 	}
@@ -2868,7 +2868,7 @@ func (c CLI) openURL(ctx context.Context, opts GlobalOptions, args []string) err
 	if err := utility.OpenURL(ctx, target, args[0]); err != nil {
 		return Fail("open_url_failed", map[string]string{"stderr": firstLine(err.Error())}).Write(c.Stdout)
 	}
-	return OK("openURL", map[string]string{"url": args[0], "driver": driver.ID()}).Write(c.Stdout)
+	return c.OK("openURL", map[string]string{"url": args[0], "driver": driver.ID()}).Write(c.Stdout)
 }
 
 func (c CLI) location(ctx context.Context, opts GlobalOptions, args []string) error {
@@ -2902,7 +2902,7 @@ func (c CLI) location(ctx context.Context, opts GlobalOptions, args []string) er
 		if err := utility.SetLocation(ctx, target, latitude, longitude); err != nil {
 			return Fail("location_set_failed", map[string]string{"stderr": firstLine(err.Error())}).Write(c.Stdout)
 		}
-		return OK("location.set", map[string]string{"latitude": args[1], "longitude": args[2], "driver": driver.ID()}).Write(c.Stdout)
+		return c.OK("location.set", map[string]string{"latitude": args[1], "longitude": args[2], "driver": driver.ID()}).Write(c.Stdout)
 	case "reset":
 		if err := utility.ResetLocation(ctx, target); err != nil {
 			code := "location_reset_failed"
@@ -2911,7 +2911,7 @@ func (c CLI) location(ctx context.Context, opts GlobalOptions, args []string) er
 			}
 			return Fail(code, map[string]string{"stderr": firstLine(err.Error())}).Write(c.Stdout)
 		}
-		return OK("location.reset", map[string]string{"driver": driver.ID()}).Write(c.Stdout)
+		return c.OK("location.reset", map[string]string{"driver": driver.ID()}).Write(c.Stdout)
 	default:
 		return Fail("location_unknown_command", map[string]string{"command": args[0]}).Write(c.Stdout)
 	}
@@ -2944,7 +2944,7 @@ func (c CLI) clipboard(ctx context.Context, opts GlobalOptions, args []string) e
 		if err := utility.ClipboardWrite(ctx, target, text); err != nil {
 			return Fail("clipboard_copy_failed", map[string]string{"stderr": firstLine(err.Error())}).Write(c.Stdout)
 		}
-		return OK("clipboard.copy", map[string]string{"chars": strconv.Itoa(len(text)), "driver": driver.ID()}).Write(c.Stdout)
+		return c.OK("clipboard.copy", map[string]string{"chars": strconv.Itoa(len(text)), "driver": driver.ID()}).Write(c.Stdout)
 	case "read":
 		text, err := utility.ClipboardRead(ctx, target)
 		if err != nil {
@@ -2954,7 +2954,7 @@ func (c CLI) clipboard(ctx context.Context, opts GlobalOptions, args []string) e
 			_, err = fmt.Fprint(c.Stdout, text)
 			return err
 		}
-		return OK("clipboard.read", map[string]string{"value": text, "driver": driver.ID()}).Write(c.Stdout)
+		return c.OK("clipboard.read", map[string]string{"value": text, "driver": driver.ID()}).Write(c.Stdout)
 	default:
 		return Fail("clipboard_unknown_command", map[string]string{"command": args[0]}).Write(c.Stdout)
 	}
@@ -2985,7 +2985,7 @@ func (c CLI) capture(ctx context.Context, opts GlobalOptions, args []string) err
 		return Fail("capture_failed", fields).Write(c.Stdout)
 	}
 	_ = os.WriteFile(filepath.Join(run.Dir, "latest_capture.txt"), []byte(path+"\n"), 0o644)
-	return OK("capture", map[string]string{"file": path, "run": run.ID}).Write(c.Stdout)
+	return c.OK("capture", map[string]string{"file": path, "run": run.ID}).Write(c.Stdout)
 }
 
 func uniqueCapturePath(run RunState, name string) string {
@@ -3141,7 +3141,7 @@ func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) err
 	// the pointer in case whatever it named when this run started has since
 	// gone quiet, without ever stealing it from a run that's still live.
 	c.publishCurrentRunIfSafe(run)
-	return OK("run", fields).Write(c.Stdout)
+	return c.OK("run", fields).Write(c.Stdout)
 }
 
 func bindFlowParameters(flow Flow, args []string, bindings flowExecBindings) error {
@@ -4979,7 +4979,7 @@ func (c CLI) logs(opts GlobalOptions, args []string) error {
 	if key != "" {
 		fields["key"] = key
 	}
-	return OK("logs", fields).Write(c.Stdout)
+	return c.OK("logs", fields).Write(c.Stdout)
 }
 
 func (c CLI) stop(ctx context.Context, opts GlobalOptions, args []string) error {
@@ -5022,7 +5022,7 @@ func (c CLI) stop(ctx context.Context, opts GlobalOptions, args []string) error 
 	if failed > 0 {
 		return Fail("stop_failed", fields).Write(c.Stdout)
 	}
-	return OK("stop", fields).Write(c.Stdout)
+	return c.OK("stop", fields).Write(c.Stdout)
 }
 
 func filterLogKey(lines []string, key string) []string {
@@ -5141,7 +5141,7 @@ func (c CLI) crashes(ctx context.Context, opts GlobalOptions, args []string) err
 	}
 
 	if len(names) == 0 {
-		return OK("crashes", fields).Write(c.Stdout)
+		return c.OK("crashes", fields).Write(c.Stdout)
 	}
 
 	if run, err := c.resolveRun(""); err == nil {
@@ -5173,7 +5173,7 @@ func (c CLI) crashes(ctx context.Context, opts GlobalOptions, args []string) err
 		fields["dir"] = crashDir
 	}
 
-	return OK("crashes", fields).Write(c.Stdout)
+	return c.OK("crashes", fields).Write(c.Stdout)
 }
 
 func (c CLI) crashesFromDiagnosticReports(idbError string) error {
@@ -5206,7 +5206,7 @@ func (c CLI) crashesFromDiagnosticReports(idbError string) error {
 		fields["summarised"] = strconv.Itoa(summarised)
 		fields["dir"] = crashDir
 	}
-	return OK("crashes", fields).Write(c.Stdout)
+	return c.OK("crashes", fields).Write(c.Stdout)
 }
 
 // parseCrashNames extracts crash report names from `idb crash list` stdout.
@@ -5286,7 +5286,7 @@ func (c CLI) evidenceReport(opts GlobalOptions, args []string) error {
 		}
 	}
 	fields["next"] = "author " + filepath.Join(run.Dir, "report.html") + " from report.json; the JSON manifest is not the deliverable"
-	return OK("evidence.report", fields).Write(c.Stdout)
+	return c.OK("evidence.report", fields).Write(c.Stdout)
 }
 
 func (c CLI) evidenceStart(ctx context.Context, opts GlobalOptions, args []string) error {
@@ -5336,7 +5336,7 @@ func (c CLI) evidenceStart(ctx context.Context, opts GlobalOptions, args []strin
 		}
 		fields["network"] = filepath.Join(run.Dir, "network.har")
 	}
-	return OK("evidence.start", fields).Write(c.Stdout)
+	return c.OK("evidence.start", fields).Write(c.Stdout)
 }
 
 func (c CLI) evidenceStep(ctx context.Context, opts GlobalOptions, args []string) error {
@@ -5378,7 +5378,7 @@ func (c CLI) evidenceStep(ctx context.Context, opts GlobalOptions, args []string
 	if step.DeltaPath != "" {
 		fields["tree_delta"] = step.DeltaPath
 	}
-	return OK("evidence.step", fields).Write(c.Stdout)
+	return c.OK("evidence.step", fields).Write(c.Stdout)
 }
 
 func (c CLI) evidenceStop(ctx context.Context, opts GlobalOptions, args []string) error {
@@ -5437,7 +5437,7 @@ func (c CLI) evidenceStop(ctx context.Context, opts GlobalOptions, args []string
 		}
 	}
 	appendCommand(run, "mav evidence stop", CommandResult{})
-	return OK("evidence.stop", fields).Write(c.Stdout)
+	return c.OK("evidence.stop", fields).Write(c.Stdout)
 }
 
 func (c CLI) transcodeEvidenceVideo(ctx context.Context, source string) (string, error) {

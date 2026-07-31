@@ -600,5 +600,5 @@ func (c CLI) debug(ctx context.Context, opts GlobalOptions, args []string) error
 		_, err = fmt.Fprintln(c.Stdout, raw)
 		return err
 	}
-	return OK("debug."+command, map[string]string{"result": raw}).Write(c.Stdout)
+	return c.OK("debug."+command, map[string]string{"result": raw}).Write(c.Stdout)
 }

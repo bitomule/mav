@@ -1176,6 +1176,80 @@ func TestLogsReadsCurrentRunFile(t *testing.T) {
 	}
 }
 
+// TestLogsReportsPinnedTargetUDID covers the MAV_TARGET_UDID / explicitly
+// selected simulator case: cfg.SimulatorUDID is set, and any command's
+// success output -- not just sim.select/sim.boot, which already reported it
+// -- should say which target it acted on, so a hot-path agent driving mav
+// command-by-command can keep pinning its next calls to the same device
+// instead of guessing.
+func TestLogsReportsPinnedTargetUDID(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM-PINNED"
+	cfg.SimulatorName = "iPhone 17 Pro"
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewProjectRunState(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(run.LogsPath, []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"logs", "--run", run.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "udid=SIM-PINNED") {
+		t.Fatalf("got %q, want udid=SIM-PINNED", out.String())
+	}
+	if !strings.Contains(out.String(), "target_kind=simulator") {
+		t.Fatalf("got %q, want target_kind=simulator", out.String())
+	}
+}
+
+// TestLogsResolvesBootedSimulatorUDIDWhenUnset covers the now-common case
+// (see config.go's MAV_TARGET_KIND/MAV_TARGET_UDID handling) where a
+// project's config carries no simulator_udid at all, so every command
+// implicitly targets "whatever simulator is booted". The report should
+// resolve and show the concrete UDID that fell out of, rather than leaving
+// that implicit.
+func TestLogsResolvesBootedSimulatorUDIDWhenUnset(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewProjectRunState(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(run.LogsPath, []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bootedJSON := `{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-26-0":[` +
+		`{"udid":"BOOTED-FALLBACK","name":"iPhone 17","state":"Booted"}]}}`
+	runner := fakeRunner{out: map[string]string{
+		"xcrun simctl list devices booted -j": bootedJSON,
+	}}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"logs", "--run", run.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "udid=BOOTED-FALLBACK") {
+		t.Fatalf("got %q, want udid=BOOTED-FALLBACK", out.String())
+	}
+}
+
 func TestLogsFiltersMAVKey(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
