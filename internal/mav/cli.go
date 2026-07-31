@@ -30,7 +30,6 @@ type CLI struct {
 	Stdout io.Writer
 	Stderr io.Writer
 	Root   string
-	run    *RunState // nil = fall back to reading .mav/current-run from disk
 }
 
 type GlobalOptions struct {
@@ -313,7 +312,7 @@ Prefer accessibility ids. Use coordinates only when the tree is insufficient and
 	case "ui scrollUntil":
 		return "Usage: mav ui scrollUntil --id ID [--direction up] [--max-swipes 5]\n"
 	case "run":
-		return "Usage:\n  mav run flow.yaml [--param name=value]\n  mav run flow.yaml --run RUN_ID\n  mav run flow.yaml --target UDID --target \"Exact Name\" [--jobs N]\n"
+		return "Usage:\n  mav run flow.yaml [--param name=value]\n  mav run flow.yaml --target UDID --target \"Exact Name\" [--jobs N]\n"
 	case "time":
 		return "Usage:\n  mav time freeze --at 2032-01-15T10:00:00Z\n  mav time travel --by +8d\n  mav time scale --factor 60\n  mav time status\n  mav time reset\n"
 	case "debug":
@@ -973,17 +972,9 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	if noRelaunch && hasFlag(args, "--clear-state") {
 		return Fail("open_flags_invalid", map[string]string{"usage": "--no-relaunch cannot be combined with --clear-state"}).Write(c.Stdout)
 	}
-	// A run bound via withRun (i.e. this open is a step inside a flow that
-	// already allocated its own run) is authoritative: open neither reads
-	// nor kills whatever .mav/current-run happens to name, and never
-	// overwrites it. Only a standalone `mav open` -- no bound run -- touches
-	// the pointer, preserving its existing kill-the-previous-run semantics.
 	var previousRunID string
 	var run RunState
-	bound, hasBoundRun := c.boundRun()
-	if hasBoundRun {
-		run = bound
-	} else if noRelaunch {
+	if noRelaunch {
 		run, err = c.currentOrNewRun()
 	} else {
 		if existing, err := LoadRun(c.Root, ""); err == nil && existing.ID != "" {
@@ -997,26 +988,14 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	if previousRunID != "" {
 		_ = c.withStdout(io.Discard).stop(ctx, GlobalOptions{}, []string{"--run", previousRunID})
 	}
-	if !hasBoundRun {
-		if err := SaveCurrentRun(c.Root, run); err != nil {
-			return err
-		}
+	if err := SaveCurrentRun(c.Root, run); err != nil {
+		return err
 	}
 	if isPhysicalDevice(cfg) && !hasTool(cfg, "idb") {
 		return Fail("tool_missing", map[string]string{"tool": "idb", "target": "device", "next": "mav setup --install idb"}).Write(c.Stdout)
 	}
 	if err := c.ensureOpenSimulatorBooted(ctx, cfg, run); err != nil {
 		return Fail("sim_boot_failed", map[string]string{"run": run.ID, "logs": run.LogsPath, "stderr": err.Error()}).Write(c.Stdout)
-	}
-	// A second `open` step later in the same bound-run flow would otherwise
-	// leave the first probe-logs `log stream` running forever: with the run
-	// reused (not recreated), nothing else ever stops it, and a duplicate
-	// log stream would start writing into the same logs.txt. Deliberately
-	// scoped to just probe-logs -- not a full `stop` of the run -- so this
-	// doesn't tear down the video recording, worker, or sim-lock that
-	// evidence.start / other earlier steps may have set up for this run.
-	if hasBoundRun && !noRelaunch {
-		stopProbeLogs(run)
 	}
 	probeLogPID, probeLogErr := c.startProbeLogs(ctx, cfg, run)
 	if probeLogErr != nil {
@@ -1103,7 +1082,7 @@ func (c CLI) timeControl(ctx context.Context, opts GlobalOptions, args []string)
 	if isPhysicalDevice(cfg) {
 		return Fail("time_control_unsupported_on_device", nil).Write(c.Stdout)
 	}
-	run, runErr := c.resolveRun("")
+	run, runErr := LoadRun(c.Root, "")
 	if runErr != nil || !exists(filepath.Join(run.Dir, "time-control.enabled")) {
 		return Fail("time_control_not_loaded", map[string]string{"next": "mav open --time-control"}).Write(c.Stdout)
 	}
@@ -1543,7 +1522,7 @@ func (c CLI) recoverEmptyAXTree(ctx context.Context, cfg Config) error {
 	if !hasTool(cfg, "xcrun") || cfg.SimulatorUDID == "" {
 		return fmt.Errorf("simulator_recovery_unavailable")
 	}
-	run, _ := c.resolveRun("")
+	run, _ := LoadRun(c.Root, "")
 	shutdown := c.Runner.Run(ctx, "xcrun", "simctl", "shutdown", cfg.SimulatorUDID)
 	if run.ID != "" {
 		appendCommand(run, "xcrun simctl shutdown "+cfg.SimulatorUDID, shutdown)
@@ -1895,7 +1874,7 @@ func (c CLI) writeFastPathResult(ctx context.Context, cfg Config, args []string,
 	case "tree":
 		return writeElementLines(c.Stdout, Compact(elements))
 	case "delta":
-		run, _ := c.resolveRun("")
+		run, _ := LoadRun(c.Root, "")
 		previous := loadFastPathTree(run)
 		delta := TreeDiff(previous, elements)
 		data, _ := json.Marshal(delta)
@@ -1982,7 +1961,7 @@ func (c CLI) diagnoseTextTapFailure(ctx context.Context, cfg Config, text, stder
 }
 
 func (c CLI) appendCurrentCommand(command string, result CommandResult) {
-	run, err := c.resolveRun("")
+	run, err := LoadRun(c.Root, "")
 	if err == nil && run.ID != "" {
 		appendCommand(run, command, result)
 	}
@@ -2296,7 +2275,7 @@ func (c CLI) uiDragPath(ctx context.Context, opts GlobalOptions, cfg Config, arg
 }
 
 func (c CLI) sendWorkerGestureWithRestart(udid string, events []workerGestureEvent) error {
-	run, err := c.resolveRun("")
+	run, err := LoadRun(c.Root, "")
 	if err != nil {
 		return err
 	}
@@ -2963,7 +2942,7 @@ func (c CLI) capture(ctx context.Context, opts GlobalOptions, args []string) err
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
 	c.resolveConfigTools(&cfg)
-	run, err := c.resolveRun(flagValue(args, "--run"))
+	run, err := LoadRun(c.Root, flagValue(args, "--run"))
 	if err != nil {
 		run, err = NewProjectRunState(c.Root)
 		if err != nil {
@@ -3044,22 +3023,10 @@ func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) err
 	if err != nil {
 		return Fail("flow_invalid", map[string]string{"error": err.Error()}).Write(c.Stdout)
 	}
-	// runFlow never reads .mav/current-run: an explicit --run reuses that run
-	// (e.g. a second flow continuing evidence collection on a run a caller
-	// already opened); otherwise it always creates a fresh run, so two
-	// concurrent `mav run` invocations in the same repo never adopt each
-	// other's run. The run is bound to c so every step this flow dispatches
-	// (including `open`) resolves against it instead of the disk pointer.
-	var run RunState
-	if id := flagValue(args[1:], "--run"); id != "" {
-		run, err = c.resolveRun(id)
-	} else {
-		run, err = NewProjectRunState(c.Root)
-	}
+	run, err := c.currentOrNewRun()
 	if err != nil {
 		return err
 	}
-	c = c.withRun(run)
 	bindings := flowExecBindings{}
 	if err := bindFlowParameters(flow, args[1:], bindings); err != nil {
 		return Fail("flow_params_invalid", map[string]string{"error": err.Error()}).Write(c.Stdout)
@@ -3090,6 +3057,12 @@ func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) err
 			c.cleanupFailedFlow(ctx, run, failFields)
 			return Fail(err.Error(), failFields).Write(c.Stdout)
 		}
+		if step.Action == "open" {
+			if openedRun, err := LoadRun(c.Root, ""); err == nil && openedRun.ID != "" {
+				run = openedRun
+				fields["run"] = run.ID
+			}
+		}
 		appendFlowStep(run, index+1, step.Action, elapsed, "ok", fields)
 	}
 	for _, step := range flow.Steps {
@@ -3109,16 +3082,10 @@ func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) err
 		"elapsed": time.Since(start).String(), "outputs": outputs,
 	}, "", "  ")
 	_ = os.WriteFile(filepath.Join(run.Dir, "run.json"), runData, 0o644)
-	fields := map[string]string{"name": flow.Name, "run": run.ID, "dir": run.Dir, "steps": strconv.Itoa(len(flow.Steps)), "elapsed": time.Since(start).String()}
+	fields := map[string]string{"name": flow.Name, "run": run.ID, "steps": strconv.Itoa(len(flow.Steps)), "elapsed": time.Since(start).String()}
 	if len(outputs) > 0 {
 		fields["outputs"] = filepath.Join(run.Dir, "outputs.json")
 	}
-	// Publish current-run as a best-effort convenience for manual follow-up
-	// commands (mav logs / evidence report / crashes without --run). Written
-	// at the end, after the run is fully done, not read at the start: two
-	// concurrent flows never adopt each other's run, and whichever finishes
-	// last simply wins the pointer for manual use.
-	_ = SaveCurrentRun(c.Root, run)
 	return OK("run", fields).Write(c.Stdout)
 }
 
@@ -4235,7 +4202,7 @@ func (c CLI) executeWhileNotVisibleFlowStepBoundWithOptions(ctx context.Context,
 }
 
 func (c CLI) currentOrNewRun() (RunState, error) {
-	run, err := c.resolveRun("")
+	run, err := LoadRun(c.Root, "")
 	if err == nil && run.ID != "" {
 		return run, nil
 	}
@@ -4244,37 +4211,6 @@ func (c CLI) currentOrNewRun() (RunState, error) {
 		return RunState{}, err
 	}
 	return run, SaveCurrentRun(c.Root, run)
-}
-
-// withRun binds run to this CLI value so every command it dispatches to
-// resolves against it instead of the on-disk .mav/current-run pointer. Since
-// CLI is passed by value, the binding is local to the copy it's called on
-// and everything that copy calls transitively (withStdout, flow steps, ...).
-func (c CLI) withRun(run RunState) CLI {
-	c.run = &run
-	return c
-}
-
-// boundRun reports the run bound via withRun, if any.
-func (c CLI) boundRun() (RunState, bool) {
-	if c.run == nil {
-		return RunState{}, false
-	}
-	return *c.run, true
-}
-
-// resolveRun is the single place that decides which run a command targets.
-// An explicit id (--run) always wins; otherwise a bound run is used without
-// touching disk; only with neither does it fall back to the manual
-// .mav/current-run pointer.
-func (c CLI) resolveRun(id string) (RunState, error) {
-	if id != "" {
-		return LoadRun(c.Root, id)
-	}
-	if bound, ok := c.boundRun(); ok {
-		return bound, nil
-	}
-	return LoadRun(c.Root, "")
 }
 
 func (c CLI) withStdout(stdout io.Writer) CLI {
@@ -4288,7 +4224,7 @@ func (c CLI) keepRunLeaseAlive(command string) func() {
 		return func() {}
 	}
 	renew := func() {
-		run, err := c.resolveRun("")
+		run, err := LoadRun(c.Root, "")
 		if err == nil {
 			_, _ = sendWorkerRequest(run, workerRequest{Command: "renew"})
 		}
@@ -4503,10 +4439,6 @@ func (c CLI) cleanupFailedFlow(ctx context.Context, run RunState, fields map[str
 		}
 	}
 	_, _ = GenerateReport(run)
-	// Same best-effort publication as the success path (see runFlow): a
-	// failed run should still be reachable by manual mav commands without
-	// --run.
-	_ = SaveCurrentRun(c.Root, run)
 }
 
 func (c CLI) captureEvidenceStep(ctx context.Context, run RunState, name, note string) (map[string]string, error) {
@@ -4876,7 +4808,7 @@ func parseElementFrame(frame string) (float64, float64, float64, float64, bool) 
 }
 
 func (c CLI) screenshotChangedFrom(ctx context.Context, name string) (bool, error) {
-	run, err := c.resolveRun("")
+	run, err := LoadRun(c.Root, "")
 	if err != nil {
 		return false, fmt.Errorf("run_not_found")
 	}
@@ -4911,7 +4843,7 @@ func (c CLI) screenshotChangedFrom(ctx context.Context, name string) (bool, erro
 }
 
 func (c CLI) logs(opts GlobalOptions, args []string) error {
-	run, err := c.resolveRun(flagValue(args, "--run"))
+	run, err := LoadRun(c.Root, flagValue(args, "--run"))
 	if err != nil {
 		return Fail("run_not_found", nil).Write(c.Stdout)
 	}
@@ -4940,7 +4872,7 @@ func (c CLI) logs(opts GlobalOptions, args []string) error {
 }
 
 func (c CLI) stop(ctx context.Context, opts GlobalOptions, args []string) error {
-	run, err := c.resolveRun(flagValue(args, "--run"))
+	run, err := LoadRun(c.Root, flagValue(args, "--run"))
 	if err != nil {
 		return Fail("run_not_found", nil).Write(c.Stdout)
 	}
@@ -5048,20 +4980,6 @@ func removeProcess(run RunState, pid int) {
 	_ = os.WriteFile(run.Processes, []byte(b.String()), 0o644)
 }
 
-// stopProbeLogs kills only the "probe-logs" log-stream processes recorded
-// for run. Used by open when it's about to start a fresh probe-logs capture
-// on a run it's reusing (a flow's second open step), so the previous log
-// stream doesn't keep writing into the same logs.txt forever.
-func stopProbeLogs(run RunState) {
-	for _, record := range loadProcessRecords(run) {
-		if record.Kind != "probe-logs" || record.PID <= 0 {
-			continue
-		}
-		_ = stopProcess(record.PID)
-		removeProcess(run, record.PID)
-	}
-}
-
 func (c CLI) crashes(ctx context.Context, opts GlobalOptions, args []string) error {
 	cfg, err := LoadConfig(c.Root)
 	if err != nil {
@@ -5101,7 +5019,7 @@ func (c CLI) crashes(ctx context.Context, opts GlobalOptions, args []string) err
 		return OK("crashes", fields).Write(c.Stdout)
 	}
 
-	if run, err := c.resolveRun(""); err == nil {
+	if run, err := LoadRun(c.Root, ""); err == nil {
 		crashDir := filepath.Join(run.Dir, "crashes")
 		driver, _, err := c.router().Route(ctx, drivers.CapCrashFetch, targetFromConfig(cfg), "idb")
 		if err != nil {
@@ -5140,7 +5058,7 @@ func (c CLI) crashesFromDiagnosticReports(idbError string) error {
 	}
 	since := time.Now().Add(-15 * time.Minute)
 	var crashDir string
-	if run, err := c.resolveRun(""); err == nil {
+	if run, err := LoadRun(c.Root, ""); err == nil {
 		if info, statErr := os.Stat(run.Dir); statErr == nil {
 			since = info.ModTime()
 		}
@@ -5212,7 +5130,7 @@ func (c CLI) evidence(opts GlobalOptions, args []string) error {
 }
 
 func (c CLI) evidenceReport(opts GlobalOptions, args []string) error {
-	run, err := c.resolveRun(flagValue(args, "--run"))
+	run, err := LoadRun(c.Root, flagValue(args, "--run"))
 	if err != nil {
 		return Fail("run_not_found", nil).Write(c.Stdout)
 	}
@@ -5252,7 +5170,7 @@ func (c CLI) evidenceStart(ctx context.Context, opts GlobalOptions, args []strin
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
 	c.resolveConfigTools(&cfg)
-	run, err := c.resolveRun(flagValue(args, "--run"))
+	run, err := LoadRun(c.Root, flagValue(args, "--run"))
 	if err != nil {
 		return Fail("run_not_found", nil).Write(c.Stdout)
 	}
@@ -5302,7 +5220,7 @@ func (c CLI) evidenceStep(ctx context.Context, opts GlobalOptions, args []string
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
 	c.resolveConfigTools(&cfg)
-	run, err := c.resolveRun(flagValue(args, "--run"))
+	run, err := LoadRun(c.Root, flagValue(args, "--run"))
 	if err != nil {
 		return Fail("run_not_found", nil).Write(c.Stdout)
 	}
@@ -5339,7 +5257,7 @@ func (c CLI) evidenceStep(ctx context.Context, opts GlobalOptions, args []string
 }
 
 func (c CLI) evidenceStop(ctx context.Context, opts GlobalOptions, args []string) error {
-	run, err := c.resolveRun(flagValue(args, "--run"))
+	run, err := LoadRun(c.Root, flagValue(args, "--run"))
 	if err != nil {
 		return Fail("run_not_found", nil).Write(c.Stdout)
 	}

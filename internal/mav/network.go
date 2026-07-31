@@ -38,7 +38,7 @@ func (c CLI) networkStart(ctx context.Context, _ GlobalOptions, args []string) e
 	if err != nil {
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
-	run, err := c.resolveRun(flagValue(args, "--run"))
+	run, err := LoadRun(c.Root, flagValue(args, "--run"))
 	if err != nil {
 		return Fail("run_not_found", nil).Write(c.Stdout)
 	}
@@ -106,7 +106,7 @@ func (c CLI) networkStart(ctx context.Context, _ GlobalOptions, args []string) e
 // The HAR file flushes incrementally so the partial recording is usable
 // even if mitmdump never receives the SIGTERM (e.g. a crashed run).
 func (c CLI) networkStop(ctx context.Context, _ GlobalOptions, args []string) error {
-	run, err := c.resolveRun(flagValue(args, "--run"))
+	run, err := LoadRun(c.Root, flagValue(args, "--run"))
 	if err != nil {
 		return Fail("run_not_found", nil).Write(c.Stdout)
 	}
@@ -168,7 +168,7 @@ func latestNetworkRecord(run RunState) processRecord {
 }
 
 func (c CLI) networkStatus(opts GlobalOptions, args []string) error {
-	run, err := c.resolveRun(flagValue(args, "--run"))
+	run, err := LoadRun(c.Root, flagValue(args, "--run"))
 	if err != nil {
 		return Fail("run_not_found", nil).Write(c.Stdout)
 	}

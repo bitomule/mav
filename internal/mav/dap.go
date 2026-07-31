@@ -486,7 +486,7 @@ func (c CLI) debug(ctx context.Context, opts GlobalOptions, args []string) error
 	if isPhysicalDevice(cfg) {
 		return Fail("debug_unsupported_on_device", nil).Write(c.Stdout)
 	}
-	run, err := c.resolveRun("")
+	run, err := LoadRun(c.Root, "")
 	if err != nil {
 		return Fail("run_not_found", map[string]string{"next": "mav open"}).Write(c.Stdout)
 	}
