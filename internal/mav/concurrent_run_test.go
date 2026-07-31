@@ -565,9 +565,6 @@ func TestFlowOpenIgnoresStaleCurrentRun(t *testing.T) {
 	if err := SaveCurrentRun(root, bogus); err != nil {
 		t.Fatal(err)
 	}
-	if sanity, sErr := LoadRun(root, ""); sErr != nil || sanity.ID != bogus.ID {
-		t.Fatalf("DEBUG sanity LoadRun mismatch: got=%+v err=%v want=%s MAV_EXACT_RUN_DIR=%q", sanity, sErr, bogus.ID, os.Getenv("MAV_EXACT_RUN_DIR"))
-	}
 
 	flowPath := filepath.Join(root, "flow.yaml")
 	if err := os.WriteFile(flowPath, []byte("steps:\n  - open: {}\n"), 0o644); err != nil {
@@ -582,8 +579,6 @@ func TestFlowOpenIgnoresStaleCurrentRun(t *testing.T) {
 	if err := cli.Run(context.Background(), []string{"run", flowPath}); err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("DEBUG out=%s", out.String())
-	t.Logf("DEBUG bogus.ID=%s stalePID=%d commands=%v", bogus.ID, stalePID, runner.commands)
 	if !strings.Contains(out.String(), "ok cmd=run") {
 		t.Fatalf("flow did not succeed: %s", out.String())
 	}
