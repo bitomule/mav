@@ -689,6 +689,55 @@ later doesn't keep reporting a simulator that's since been rebooted or
 swapped outside mav. A 30-command navigation against an unpinned simulator
 went from ~23s of resolution overhead to under a second with this cached.
 
+### Routing to a specific simulator automatically
+
+Hot-path usage is dozens of standalone commands (`mav tap`, `mav swipe`,
+`mav screenshot`, ...), not one wrapped invocation, so there is no single
+place to prefix a pool-manager command by hand -- and an agent driving mav
+command-by-command has no way to know it should. When several simulators are
+booted at once (several agents, several worktrees, on one machine), set
+`target_command` in `.mav/config.yaml` to a command that prints the UDID to
+target on stdout:
+
+```yaml
+target_command: simpool with --print-udid
+```
+
+`target_command` is generic: mav never imports or knows about simpool or any
+other pool manager. It is exactly one possible value for a field that just
+runs a shell command and reads a UDID off stdout -- a project-local script, a
+different pool tool, anything. It runs from the project root (like launch
+commands) with `MAV_ROOT` exported, so a repo-relative script works.
+
+Precedence, most to least specific:
+
+1. An explicit `--target` on `mav run` (and the `MAV_TARGET_KIND` /
+   `MAV_TARGET_UDID` / `MAV_TARGET_NAME` / `MAV_TARGET_RUNTIME` env vars it
+   sets on matrix children).
+2. `MAV_TARGET_KIND` / `MAV_TARGET_UDID` set directly in the environment.
+3. `simulator_udid` pinned in `.mav/config.yaml` (`mav sim select`).
+4. `target_command`.
+5. The pre-existing fallback: whatever simulator is booted.
+
+`target_command` only fires for case 5 -- the case that used to mean "guess
+the booted simulator" -- so it never overrides an explicit flag, env var, or
+pinned selection.
+
+It is cached per run the same way the booted-simulator fallback already is
+(`.mav/runs/<run-id>/target-command.json`, same couple-of-minutes TTL): a hot
+navigation of dozens of commands runs it once, not once per command, and a
+new `mav` process per command still finds the cached result on disk.
+
+If `target_command` fails or prints nothing, mav falls back to the booted
+simulator (case 5 above) and reports an actionable
+`target_command_warn=<reason and next step>` field on the command's success
+output instead of failing the command or hanging:
+
+```bash
+$ mav ui tap --id save
+ok cmd=ui.tap driver=axe target_kind=simulator udid=... target_command_warn="target_command_failed: simpool: no free slot (next: fix or remove target_command in .mav/config.yaml; falling back to the booted simulator)"
+```
+
 ## Physical Devices
 
 List and select connected iOS devices:

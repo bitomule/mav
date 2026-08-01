@@ -9,11 +9,12 @@ import (
 )
 
 type fakeRunner struct {
-	tools map[string]bool
-	runs  []string
-	out   map[string]string
-	seq   map[string][]string
-	calls map[string]int
+	tools   map[string]bool
+	runs    []string
+	out     map[string]string
+	seq     map[string][]string
+	calls   map[string]int
+	results map[string]CommandResult
 }
 
 func (f fakeRunner) LookPath(file string) (string, error) {
@@ -49,6 +50,12 @@ func (f fakeRunner) Run(ctx context.Context, name string, args ...string) Comman
 	key := name
 	for _, arg := range args {
 		key += " " + arg
+	}
+	if result, ok := f.results[key]; ok {
+		if f.calls != nil {
+			f.calls[key]++
+		}
+		return result
 	}
 	if values := f.seq[key]; len(values) > 0 {
 		index := 0

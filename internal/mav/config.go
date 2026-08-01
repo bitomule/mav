@@ -40,6 +40,7 @@ type Config struct {
 	LogCategory       string
 	PreferredUIDriver string
 	AllowShell        bool
+	TargetCommand     string
 	Launch            LaunchConfig
 	Tools             map[string]bool
 }
@@ -96,6 +97,7 @@ func LoadConfig(root string) (Config, error) {
 	cfg.LogCategory = raw.LogCategory
 	cfg.PreferredUIDriver = raw.PreferredUIDriver
 	cfg.AllowShell = raw.AllowShell
+	cfg.TargetCommand = raw.TargetCommand
 	cfg.Launch = raw.Launch
 	if cfg.Launch.Mode == "" && hasLaunchCommands(cfg.Launch.Commands) {
 		cfg.Launch.Mode = "custom"
@@ -135,6 +137,7 @@ type configYAML struct {
 	LogCategory       string        `yaml:"log_category"`
 	PreferredUIDriver string        `yaml:"preferred_ui_driver"`
 	AllowShell        bool          `yaml:"allow_shell"`
+	TargetCommand     string        `yaml:"target_command"`
 	Launch            LaunchConfig  `yaml:"launch"`
 }
 
@@ -196,6 +199,9 @@ func SaveConfig(root string, cfg Config) error {
 	writeKV("preferred_ui_driver", cfg.PreferredUIDriver)
 	if cfg.AllowShell {
 		b.WriteString("allow_shell: true\n")
+	}
+	if strings.TrimSpace(cfg.TargetCommand) != "" {
+		writeKV("target_command", cfg.TargetCommand)
 	}
 	if cfg.Launch.Mode != "" || hasLaunchCommands(cfg.Launch.Commands) {
 		mode := cfg.Launch.Mode
@@ -380,6 +386,9 @@ func mergeSetupConfig(existing, detected Config) Config {
 	}
 	if existing.AllowShell {
 		merged.AllowShell = true
+	}
+	if existing.TargetCommand != "" {
+		merged.TargetCommand = existing.TargetCommand
 	}
 	if existing.AppTarget != "" {
 		merged.AppTarget = existing.AppTarget

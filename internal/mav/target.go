@@ -1,9 +1,12 @@
 package mav
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -70,6 +73,9 @@ func (c CLI) withResolvedTarget(fields map[string]string) map[string]string {
 	cfg, err := LoadConfig(c.Root)
 	if err != nil {
 		return fields
+	}
+	if warn := c.resolveConfigTarget(&cfg); warn != "" {
+		fields["target_command_warn"] = warn
 	}
 	udid := targetUDID(cfg)
 	name := targetName(cfg)
@@ -172,4 +178,151 @@ func (c CLI) resolveBootedSimulator() (string, string) {
 	udid, name, _ := detectBootedSimulator(c.Runner)
 	writeBootedSimulatorCache(run, udid, name)
 	return udid, name
+}
+
+// resolveConfigTarget is the generic, simpool-agnostic answer to "which
+// simulator when several are booted at once": if the repo configures
+// target_command, mav runs it and uses its stdout as the UDID to pin for
+// this command, without ever importing or knowing about whatever pool
+// manager produced it (simpool is one possible value of that command, never
+// a dependency).
+//
+// Precedence (documented in README/skill): an explicit --target flag on
+// `mav run` and the MAV_TARGET_* env vars it sets on matrix children both
+// short-circuit before this ever runs (LoadConfig already applied them, or
+// MAV_TARGET_KIND is set directly); a simulator_udid pinned in config.yaml
+// (via `mav sim select`) also wins, since it is already-resolved explicit
+// state. target_command only fires for the case that used to silently mean
+// "whatever's booted" -- it replaces that guess with a deterministic one,
+// and falls straight back to the old booted behavior if it fails.
+//
+// Mutates cfg.SimulatorUDID/SimulatorName in place (so the caller's actual
+// axe/idb dispatch is pinned, not just the reported field) and returns a
+// non-empty, actionable warning only when target_command was configured but
+// did not produce a usable UDID -- never a panic, never a hang: a bad
+// command degrades to the pre-existing booted fallback.
+func (c CLI) resolveConfigTarget(cfg *Config) string {
+	if isPhysicalDevice(*cfg) {
+		return ""
+	}
+	if os.Getenv("MAV_TARGET_KIND") != "" {
+		return ""
+	}
+	if cfg.SimulatorUDID != "" {
+		return ""
+	}
+	command := strings.TrimSpace(cfg.TargetCommand)
+	if command == "" {
+		return ""
+	}
+	udid, name, warn := c.resolveTargetCommand(cfg.Root, command)
+	if udid == "" {
+		return warn
+	}
+	cfg.SimulatorUDID = udid
+	cfg.SimulatorName = name
+	return ""
+}
+
+// targetCommandTimeout bounds a single target_command invocation so a
+// hanging pool manager can never hang mav itself -- it degrades to the
+// booted fallback instead.
+const targetCommandTimeout = 10 * time.Second
+
+type targetCommandCache struct {
+	UDID       string    `json:"udid"`
+	Name       string    `json:"name"`
+	Warn       string    `json:"warn,omitempty"`
+	ResolvedAt time.Time `json:"resolved_at"`
+}
+
+func targetCommandCachePath(run RunState) string {
+	return filepath.Join(run.Dir, "target-command.json")
+}
+
+func readTargetCommandCache(run RunState) (targetCommandCache, bool) {
+	data, err := os.ReadFile(targetCommandCachePath(run))
+	if err != nil {
+		return targetCommandCache{}, false
+	}
+	var cache targetCommandCache
+	if err := json.Unmarshal(data, &cache); err != nil {
+		return targetCommandCache{}, false
+	}
+	if cache.UDID == "" && cache.Warn == "" {
+		return targetCommandCache{}, false
+	}
+	if time.Since(cache.ResolvedAt) >= bootedSimulatorCacheTTL {
+		return targetCommandCache{}, false
+	}
+	return cache, true
+}
+
+func writeTargetCommandCache(run RunState, udid, name, warn string) {
+	data, err := json.Marshal(targetCommandCache{UDID: udid, Name: name, Warn: warn, ResolvedAt: time.Now()})
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(targetCommandCachePath(run), data, 0o644)
+}
+
+// resolveTargetCommand runs cfg.TargetCommand at most once per run, cached
+// in the run's own state dir under the same TTL as resolveBootedSimulator
+// (see bootedSimulatorCacheTTL) and for the same reason: a hot-path
+// navigation issues dozens of commands, and target_command is expected to
+// shell out to an external pool manager whose own cost (and, if it fails,
+// whose own latency to fail) mav should not multiply by every command.
+// Failures are cached too, so a broken target_command degrades to the
+// booted fallback once per TTL window instead of paying its timeout on
+// every single command.
+func (c CLI) resolveTargetCommand(root, command string) (string, string, string) {
+	if c.Runner == nil {
+		return "", "", ""
+	}
+	run, err := c.resolveRun("")
+	if err != nil {
+		// No run to cache against yet (e.g. a standalone command before
+		// `mav open`); resolve fresh. Rare, never the hot loop.
+		return c.execTargetCommand(root, command)
+	}
+	if cache, ok := readTargetCommandCache(run); ok {
+		return cache.UDID, cache.Name, cache.Warn
+	}
+	udid, name, warn := c.execTargetCommand(root, command)
+	writeTargetCommandCache(run, udid, name, warn)
+	return udid, name, warn
+}
+
+// execTargetCommand runs the configured command through /bin/bash -lc, the
+// same shell invocation flows already use for `exec` steps, so target_command
+// can be anything from a bare binary to a pipeline. Its only contract with
+// mav is: print the UDID to use on stdout. It runs from the project root
+// (like launch and exec-step commands) with MAV_ROOT exported, so a project
+// can point target_command at a repo-relative script.
+func (c CLI) execTargetCommand(root, command string) (string, string, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), targetCommandTimeout)
+	defer cancel()
+	prefixed := shellEnvPrefix(map[string]string{"MAV_ROOT": root}) + " " + command
+	result := c.Runner.Run(ctx, "/bin/bash", "-lc", prefixed)
+	if result.Err != nil {
+		detail := strings.TrimSpace(result.Stderr)
+		if detail == "" {
+			detail = result.Err.Error()
+		}
+		return "", "", fmt.Sprintf("target_command_failed: %s (next: fix or remove target_command in .mav/config.yaml; falling back to the booted simulator)", firstLine(detail))
+	}
+	udid := strings.TrimSpace(firstLine(result.Stdout))
+	if udid == "" {
+		return "", "", "target_command_empty: command produced no output (next: target_command must print a simulator UDID on stdout; falling back to the booted simulator)"
+	}
+	name := strings.TrimSpace(secondLine(result.Stdout))
+	return udid, name, ""
+}
+
+func secondLine(s string) string {
+	lines := strings.SplitN(s, "\n", 3)
+	if len(lines) < 2 {
+		return ""
+	}
+	return strings.TrimSpace(lines[1])
 }

@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.9.0
+
+- Nuevo campo `target_command` en `.mav/config.yaml`: un comando que mav ejecuta para obtener el
+  UDID del simulador a usar. Resuelve el uso en caliente con varios simuladores arrancados a la vez
+  —decenas de invocaciones sueltas (`mav tap`, `mav swipe`, `mav screenshot`...) sin un punto único
+  donde envolver con un pool manager externo. mav no importa ni conoce simpool ni ningún otro pool
+  manager: `target_command` solo ejecuta el comando configurado y lee un UDID de su stdout.
+- Precedencia: un `--target` explícito en `mav run` (y los `MAV_TARGET_*` que fija en sus hijos de
+  matrix) y los `MAV_TARGET_*` puestos directamente en el entorno ganan siempre; un `simulator_udid`
+  fijado en config (`mav sim select`) también gana; `target_command` solo entra en juego donde antes
+  se caía en silencio al simulador arrancado, y sigue cayendo ahí si falla.
+- Se cachea por run igual que la resolución del simulador arrancado
+  (`.mav/runs/<run-id>/target-command.json`, mismo TTL de 2 min), así que una navegación en caliente
+  lo ejecuta una vez, no una vez por comando.
+- Si `target_command` falla o no imprime nada, mav nunca cuelga ni hace panic: cae al comportamiento
+  anterior (el simulador arrancado) y añade `target_command_warn=<motivo y siguiente paso>` a la
+  salida del comando en vez de fallarlo.
+
 ## v0.8.0
 
 - Toda respuesta de exito reporta ahora el objetivo sobre el que se actuo: `udid`, `target_kind`

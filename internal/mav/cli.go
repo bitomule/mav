@@ -400,6 +400,7 @@ func (c CLI) doctor(ctx context.Context, opts GlobalOptions) error {
 		cfg = DefaultConfig(c.Root)
 	}
 	c.resolveConfigTools(&cfg)
+	c.resolveConfigTarget(&cfg)
 	caps := c.resolveCapabilities(ctx, cfg)
 	tools := caps.Tools
 	fields := caps.fields()
@@ -854,6 +855,7 @@ func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 			return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 		}
 		c.resolveConfigTools(&cfg)
+		c.resolveConfigTarget(&cfg)
 		sims, err := ListSimulators(c.Runner)
 		if err != nil {
 			return Fail("sim_list_failed", map[string]string{"error": err.Error()}).Write(c.Stdout)
@@ -885,6 +887,7 @@ func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 			return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 		}
 		c.resolveConfigTools(&cfg)
+		c.resolveConfigTarget(&cfg)
 		if isPhysicalDevice(cfg) {
 			return Fail("sim_not_applicable", map[string]string{"target": "device", "next": "select a simulator with mav sim select"}).Write(c.Stdout)
 		}
@@ -961,6 +964,7 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
 	c.resolveConfigTools(&cfg)
+	c.resolveConfigTarget(&cfg)
 	if err := c.applyOpenTargetOverrides(ctx, &cfg, args); err != nil {
 		return Fail("sim_select_failed", map[string]string{"error": err.Error()}).Write(c.Stdout)
 	}
@@ -1316,6 +1320,7 @@ func (c CLI) ui(ctx context.Context, opts GlobalOptions, args []string) error {
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
 	c.resolveConfigTools(&cfg)
+	c.resolveConfigTarget(&cfg)
 	switch args[0] {
 	case "tree":
 		return c.uiTree(ctx, opts, cfg, args[1:])
@@ -2970,6 +2975,7 @@ func (c CLI) capture(ctx context.Context, opts GlobalOptions, args []string) err
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
 	c.resolveConfigTools(&cfg)
+	c.resolveConfigTarget(&cfg)
 	run, err := c.resolveRun(flagValue(args, "--run"))
 	if err != nil {
 		run, err = NewProjectRunState(c.Root)
@@ -4481,6 +4487,7 @@ func sandboxAccessHint(text string) string {
 func (c CLI) mustLoadConfig() Config {
 	cfg, _ := LoadConfig(c.Root)
 	c.resolveConfigTools(&cfg)
+	c.resolveConfigTarget(&cfg)
 	return cfg
 }
 
@@ -4582,6 +4589,7 @@ func (c CLI) cleanupFailedFlow(ctx context.Context, run RunState, fields map[str
 	c.reapAbandonedRun(ctx, run)
 	if cfg, err := LoadConfig(c.Root); err == nil {
 		c.resolveConfigTools(&cfg)
+		c.resolveConfigTarget(&cfg)
 		path := filepath.Join(run.Dir, "failure.png")
 		if result, err := c.captureScreenshot(ctx, cfg, path); err == nil && result.Err == nil {
 			fields["screenshot"] = path
@@ -4601,6 +4609,7 @@ func (c CLI) captureEvidenceStep(ctx context.Context, run RunState, name, note s
 		return nil, fmt.Errorf("config_not_found")
 	}
 	c.resolveConfigTools(&cfg)
+	c.resolveConfigTarget(&cfg)
 	name = safeFileName(name)
 	idx := len(LoadEvidenceSteps(run)) + 1
 	file := filepath.Join(run.Dir, "steps", fmt.Sprintf("%02d_%s.png", idx, name))
@@ -4898,6 +4907,7 @@ func (c CLI) evaluateSingleConditionWithPrefer(ctx context.Context, condition Fl
 		return false, fmt.Errorf("config_not_found")
 	}
 	c.resolveConfigTools(&cfg)
+	c.resolveConfigTarget(&cfg)
 	described, err := c.describeUITree(ctx, cfg, prefer, false)
 	if err != nil {
 		return false, fmt.Errorf("tree_failed")
@@ -4980,6 +4990,7 @@ func (c CLI) screenshotChangedFrom(ctx context.Context, name string) (bool, erro
 		return false, fmt.Errorf("config_not_found")
 	}
 	c.resolveConfigTools(&cfg)
+	c.resolveConfigTarget(&cfg)
 	current := filepath.Join(run.Dir, "wait-current.png")
 	result, err := c.captureScreenshot(ctx, cfg, current)
 	if err != nil || result.Err != nil {
@@ -5154,6 +5165,7 @@ func (c CLI) crashes(ctx context.Context, opts GlobalOptions, args []string) err
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
 	c.resolveConfigTools(&cfg)
+	c.resolveConfigTarget(&cfg)
 	if !isPhysicalDevice(cfg) && !opts.Raw {
 		return c.crashesFromDiagnosticReports("")
 	}
@@ -5338,6 +5350,7 @@ func (c CLI) evidenceStart(ctx context.Context, opts GlobalOptions, args []strin
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
 	c.resolveConfigTools(&cfg)
+	c.resolveConfigTarget(&cfg)
 	run, err := c.resolveRun(flagValue(args, "--run"))
 	if err != nil {
 		return Fail("run_not_found", nil).Write(c.Stdout)
@@ -5388,6 +5401,7 @@ func (c CLI) evidenceStep(ctx context.Context, opts GlobalOptions, args []string
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
 	c.resolveConfigTools(&cfg)
+	c.resolveConfigTarget(&cfg)
 	run, err := c.resolveRun(flagValue(args, "--run"))
 	if err != nil {
 		return Fail("run_not_found", nil).Write(c.Stdout)
@@ -5472,6 +5486,7 @@ func (c CLI) evidenceStop(ctx context.Context, opts GlobalOptions, args []string
 		cfg, cfgErr := LoadConfig(c.Root)
 		if cfgErr == nil {
 			c.resolveConfigTools(&cfg)
+			c.resolveConfigTarget(&cfg)
 			file := filepath.Join(run.Dir, "steps", fmt.Sprintf("%02d_final.png", len(LoadEvidenceSteps(run))+1))
 			if result, err := c.captureScreenshot(ctx, cfg, file); err == nil && result.Err == nil {
 				_ = AppendEvidenceStep(run, EvidenceStep{Name: "final", Note: flagValue(args, "--note"), File: file, Kind: "screenshot"})
