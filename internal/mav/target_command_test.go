@@ -5,8 +5,11 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // These tests exercise target_command the same way TestLogsReportsPinnedTargetUDID
@@ -352,5 +355,210 @@ func TestTargetCommandFailureFallsBackToBootedUDIDForRealDispatch(t *testing.T) 
 	}
 	if !containsCall(runner.commands, "axe describe-ui --udid BOOTED-FALLBACK") {
 		t.Fatalf("axe was never invoked with the fallback udid; commands=%v", runner.commands)
+	}
+}
+
+// These tests exercise the target_command keepalive: `mav run` reinvoking
+// target_command periodically as a pure liveness signal so a pool manager
+// with its own wall-clock TTL (simpool's `lease`) never reclaims the slot
+// out from under a run whose only long silence is a single build step. The
+// three pingTargetCommandKeepAlive tests below are the deterministic core
+// (no goroutines, no waiting on real time); TestRunFlowPingsTargetCommandKeepAliveDuringLongExecStep
+// is the one integration test that proves the ticker is actually wired into
+// `mav run`, using a real `sleep` inside an exec step (exec steps run
+// through a real os/exec, not the injectable Runner -- see
+// execFlowShellOutput) so the keepalive goroutine gets genuine wall-clock
+// time to fire more than once.
+
+func TestPingTargetCommandKeepAliveMatchingUDIDLogsNothing(t *testing.T) {
+	root := t.TempDir()
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+
+	key := targetCommandKey(root, "print-target")
+	runner := fakeRunner{results: map[string]CommandResult{key: {Stdout: "TC-UDID-1\n"}}, calls: map[string]int{}}
+	cli := CLI{Runner: runner, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+
+	cli.pingTargetCommandKeepAlive(run, root, "print-target", "TC-UDID-1")
+
+	if got := runner.calls[key]; got != 1 {
+		t.Fatalf("target_command calls=%d, want 1 (the ping itself)", got)
+	}
+	data, _ := os.ReadFile(run.LogsPath)
+	if strings.Contains(string(data), "keepalive") {
+		t.Fatalf("logs=%q, want no keepalive warning when the ping's udid still matches", string(data))
+	}
+}
+
+func TestPingTargetCommandKeepAliveMismatchWarnsButNeverChangesTarget(t *testing.T) {
+	root := t.TempDir()
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+
+	key := targetCommandKey(root, "print-target")
+	runner := fakeRunner{out: map[string]string{key: "TC-UDID-STOLEN\n"}, calls: map[string]int{}}
+	cli := CLI{Runner: runner, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+
+	cli.pingTargetCommandKeepAlive(run, root, "print-target", "TC-UDID-ORIGINAL")
+
+	data, err := os.ReadFile(run.LogsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logs := string(data)
+	if !strings.Contains(logs, "keepalive") {
+		t.Fatalf("logs=%q, want a keepalive warning on udid mismatch", logs)
+	}
+	if !strings.Contains(logs, "TC-UDID-STOLEN") || !strings.Contains(logs, "TC-UDID-ORIGINAL") {
+		t.Fatalf("logs=%q, want both the new and the original udid named", logs)
+	}
+}
+
+func TestPingTargetCommandKeepAliveFailureWarnsWithoutPanicking(t *testing.T) {
+	root := t.TempDir()
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+
+	key := targetCommandKey(root, "print-target")
+	runner := fakeRunner{results: map[string]CommandResult{
+		key: {Stderr: "simpool: no free slot", Code: 1, Err: fmt.Errorf("exit status 1")},
+	}}
+	cli := CLI{Runner: runner, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+
+	cli.pingTargetCommandKeepAlive(run, root, "print-target", "TC-UDID-ORIGINAL")
+
+	data, err := os.ReadFile(run.LogsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logs := string(data)
+	if !strings.Contains(logs, "keepalive") || !strings.Contains(logs, "target_command_failed") {
+		t.Fatalf("logs=%q, want a keepalive warning naming the failure", logs)
+	}
+}
+
+func TestStartTargetCommandKeepAliveNoopWhenNotInEffect(t *testing.T) {
+	root := t.TempDir()
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+
+	runner := fakeRunner{calls: map[string]int{}}
+	cli := CLI{Runner: runner, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	cfg := DefaultConfig(root)
+	cfg.Root = root
+	cfg.TargetCommand = "print-target"
+	cfg.SimulatorUDID = "PINNED" // resolved cfg: target_command lost to a pin
+
+	stop := cli.startTargetCommandKeepAlive(run, cfg, false /* inEffect: pin preempted it */)
+	stop()
+
+	if len(runner.calls) != 0 {
+		t.Fatalf("calls=%v, want no target_command invocation when it's not actually in effect", runner.calls)
+	}
+}
+
+// keepAliveExecRunner is a minimal, mutex-guarded Runner for
+// TestRunFlowPingsTargetCommandKeepAliveDuringLongExecStep. The plain
+// map-backed fakeRunner isn't safe here: unlike every other flow-step test,
+// this one has two goroutines genuinely running at once (the keepalive
+// ticker and the flow loop finishing up after the exec step), so a bare map
+// write from each would race.
+type keepAliveExecRunner struct {
+	targetKey string
+	udid      string
+
+	mu    sync.Mutex
+	calls int
+}
+
+func (r *keepAliveExecRunner) LookPath(file string) (string, error) { return "/usr/bin/" + file, nil }
+
+func (r *keepAliveExecRunner) Run(ctx context.Context, name string, args ...string) CommandResult {
+	key := name
+	for _, a := range args {
+		key += " " + a
+	}
+	if key == r.targetKey {
+		r.mu.Lock()
+		r.calls++
+		r.mu.Unlock()
+		return CommandResult{Stdout: r.udid + "\n"}
+	}
+	return CommandResult{}
+}
+
+func (r *keepAliveExecRunner) Start(ctx context.Context, logPath string, name string, args ...string) (int, error) {
+	return 123, nil
+}
+
+func (r *keepAliveExecRunner) callCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls
+}
+
+// TestRunFlowPingsTargetCommandKeepAliveDuringLongExecStep is the
+// production regression this whole mechanism exists for: a `mav run` whose
+// only step is a build-shaped exec step that runs for real wall-clock time
+// (a real `sleep`, not a canned Runner response -- exec steps bypass the
+// injectable Runner entirely) must still reinvoke target_command more than
+// once while that step is in flight, with the keepalive interval shrunk so
+// the test doesn't need to wait tens of seconds. This must fail against the
+// pre-fix code, where nothing touches target_command again once
+// bindFlowTarget resolves it before the loop starts.
+func TestRunFlowPingsTargetCommandKeepAliveDuringLongExecStep(t *testing.T) {
+	original := targetCommandKeepAliveInterval
+	targetCommandKeepAliveInterval = 60 * time.Millisecond
+	t.Cleanup(func() { targetCommandKeepAliveInterval = original })
+
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.AllowShell = true
+	cfg.TargetCommand = "print-target"
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewProjectRunState(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+
+	flowPath := filepath.Join(root, "flow.yaml")
+	flowYAML := "name: keepalive-flow\nsteps:\n  - exec: { cmd: \"sleep 0.35\" }\n"
+	if err := os.WriteFile(flowPath, []byte(flowYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &keepAliveExecRunner{targetKey: targetCommandKey(root, "print-target"), udid: "TC-UDID-STABLE"}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"run", flowPath, "--run", run.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.HasPrefix(out.String(), "fail ") {
+		t.Fatalf("run failed: %s", out.String())
+	}
+
+	if calls := runner.callCount(); calls < 3 {
+		t.Fatalf("target_command calls=%d, want >=3 (1 initial resolution + at least 2 keepalive pings during the 0.35s exec step)", calls)
+	}
+	data, _ := os.ReadFile(run.LogsPath)
+	if strings.Contains(string(data), "keepalive") {
+		t.Fatalf("logs=%q, want no keepalive warning: target_command returned the same udid every time", string(data))
 	}
 }

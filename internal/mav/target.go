@@ -369,3 +369,114 @@ func secondLine(s string) string {
 	}
 	return strings.TrimSpace(lines[1])
 }
+
+// targetCommandKeepAliveInterval is how often `mav run` reinvokes a
+// configured target_command purely as a liveness signal while the run is in
+// flight -- independent of, and more frequent than, the run-scoped
+// target-command cache (see bootedSimulatorCacheTTL) that only re-resolves
+// when some *other* step happens to ask.
+//
+// It exists to cover the one gap that cache leaves: a single long-running
+// step -- a build inside a launch recipe, run through the same `exec` path
+// as a flow's own exec steps -- can go minutes without mav dispatching any
+// command that would touch target_command at all. A pool manager on the
+// other end of target_command that expires its reservation by wall-clock
+// TTL (simpool's `lease` is exactly this) has no way to know the run is
+// still alive during that gap, and reclaims the slot out from under it --
+// precisely the collision target_command exists to prevent in the first
+// place. Comfortably under any TTL a pool manager plausibly uses (simpool's
+// own default is 3 minutes) so a ping every interval never lets that TTL
+// lapse, however long the step in between runs.
+var targetCommandKeepAliveInterval = 60 * time.Second
+
+// targetCommandInEffect reports whether target_command is actually what
+// resolved raw's target, as opposed to being dead configuration a pin or an
+// explicit MAV_TARGET_* env var already preempted (see
+// resolveConfigTargetCommand). raw must be an unresolved Config -- i.e.
+// straight from LoadConfig, before resolveConfigTarget has had a chance to
+// fill SimulatorUDID in from target_command or the booted fallback --
+// otherwise every run would look like target_command is in effect, since
+// resolution always leaves SimulatorUDID non-empty on success.
+func targetCommandInEffect(raw Config) bool {
+	if isPhysicalDevice(raw) {
+		return false
+	}
+	if raw.SimulatorUDID != "" {
+		return false
+	}
+	return strings.TrimSpace(raw.TargetCommand) != ""
+}
+
+// targetCommandInEffectForRun re-loads config fresh (unresolved) to answer
+// targetCommandInEffect for the CLI's project root. A second LoadConfig
+// alongside mustLoadConfig's own is deliberate, not an oversight -- by the
+// time mustLoadConfig returns, its Config has already been resolved in
+// place, so the pin-vs-target_command distinction targetCommandInEffect
+// needs is gone from that copy.
+func (c CLI) targetCommandInEffectForRun() bool {
+	raw, err := LoadConfig(c.Root)
+	if err != nil {
+		return false
+	}
+	return targetCommandInEffect(raw)
+}
+
+// startTargetCommandKeepAlive starts the background ping described at
+// targetCommandKeepAliveInterval and returns a func that stops it; callers
+// (runFlow) defer the stop so it never outlives the run. A no-op (returning
+// an already-inert stop func) whenever target_command isn't actually in
+// effect for this run, target is a physical device, or there's no Runner to
+// dispatch through (e.g. a test CLI with Runner left nil) -- pinging a
+// command that had no say in the run's target would just add noise, not
+// safety.
+//
+// cfg must already be resolved (mustLoadConfig's return), since it supplies
+// both the command to reinvoke and the original UDID every ping is compared
+// against -- this never re-resolves or mutates cfg itself; see
+// pingTargetCommandKeepAlive for why.
+func (c CLI) startTargetCommandKeepAlive(run RunState, cfg Config, inEffect bool) func() {
+	command := strings.TrimSpace(cfg.TargetCommand)
+	originalUDID := targetUDID(cfg)
+	if !inEffect || command == "" || c.Runner == nil || originalUDID == "" {
+		return func() {}
+	}
+	root := cfg.Root
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(targetCommandKeepAliveInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				c.pingTargetCommandKeepAlive(run, root, command, originalUDID)
+			case <-done:
+				return
+			}
+		}
+	}()
+	return func() { close(done) }
+}
+
+// pingTargetCommandKeepAlive reinvokes target_command once, purely for its
+// side effect on whatever pool manager it talks to -- it never changes
+// which UDID the run dispatches against. The run already fixed that for its
+// whole lifetime the moment bindFlowTarget captured it, and that has to
+// stay true even if this ping resolves to something else: switching
+// simulators mid-run would not prevent the collision a stolen slot
+// represents, it would just relocate it somewhere a step already in flight
+// isn't expecting. A mismatch or a failure is logged to the run's own logs
+// (the same appendFile sink worker.go's own lease-expiry warning uses) as
+// an actionable signal, never returned as an error -- symmetric with
+// execTargetCommand's own single-command fallback: this must never fail or
+// hang the run it's protecting.
+func (c CLI) pingTargetCommandKeepAlive(run RunState, root, command, originalUDID string) {
+	udid, _, warn := c.execTargetCommand(root, command)
+	switch {
+	case warn != "":
+		appendFile(run.LogsPath, "mav target_command keepalive: "+warn+"\n")
+	case udid != originalUDID:
+		appendFile(run.LogsPath, fmt.Sprintf(
+			"mav target_command keepalive: target_command now resolves to %s, but this run is pinned to %s and will keep using it -- next: something else may have taken this run's slot; check the pool manager behind target_command\n",
+			udid, originalUDID))
+	}
+}

@@ -742,6 +742,38 @@ It is cached per run the same way the booted-simulator fallback already is
 navigation of dozens of commands runs it once, not once per command, and a
 new `mav` process per command still finds the cached result on disk.
 
+### Keeping a pool manager's slot alive during `mav run`
+
+That per-run cache is exactly right for a hot navigation of short commands,
+but it is the wrong shape for `mav run`: a single step -- an `open` that
+builds the app, or an `exec` step wrapping a build -- can run for minutes
+without mav dispatching any other command, so nothing would touch
+`target_command` again in that whole window. A pool manager on the other end
+that reserves its slot by wall-clock TTL (`simpool lease` is exactly this)
+has no way to know the run is still alive during that silence, and reclaims
+the slot out from under it -- precisely the collision `target_command` exists
+to prevent.
+
+`mav run` covers that gap itself: for as long as it runs, it reinvokes
+`target_command` roughly once a minute as a pure liveness signal, comfortably
+inside any TTL a pool manager plausibly uses. It never changes which UDID the
+run actually dispatches against -- that was already fixed for the run's
+whole lifetime by the resolution `bindFlowTarget` captured before the first
+step -- it only pings the same command so a sticky-renewal pool manager keeps
+the same slot alive. A pool manager with no such TTL at all (or one driven
+through `simpool with` instead, which holds a real flock for the run's whole
+lifetime and needs no pinging) is unaffected either way -- a repeated ping is
+inert for anything that isn't actually watching a clock.
+
+If a ping ever resolves to a UDID different from the one the run started
+with, that means something else has already taken the slot. `mav run` does
+not switch simulators mid-run to chase it -- that would relocate the
+collision, not prevent it -- it keeps dispatching against the original UDID
+and appends an actionable warning to the run's own `logs.txt` instead. The
+same is true if a ping starts failing partway through: logged, never fatal,
+the same "warn and keep going" shape as `target_command`'s own single-command
+fallback.
+
 If `target_command` fails or prints nothing, mav falls back to the booted
 simulator (case 5 above) and reports an actionable
 `target_command_warn=<reason and next step>` field on the command's success

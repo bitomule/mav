@@ -3098,7 +3098,10 @@ func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) err
 	if err := bindFlowParameters(flow, args[1:], bindings); err != nil {
 		return Fail("flow_params_invalid", map[string]string{"error": err.Error()}).Write(c.Stdout)
 	}
-	bindFlowTarget(c.mustLoadConfig(), bindings)
+	cfg := c.mustLoadConfig()
+	bindFlowTarget(cfg, bindings)
+	stopTargetCommandKeepAlive := c.startTargetCommandKeepAlive(run, cfg, c.targetCommandInEffectForRun())
+	defer stopTargetCommandKeepAlive()
 	start := time.Now()
 	for index, step := range flow.Steps {
 		stepStart := time.Now()

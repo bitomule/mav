@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.10.0
+
+- `mav run` ahora reinvoca `target_command` cada ~60s mientras el run está en marcha, como
+  señal de vida pura -- no como una nueva resolución. El caché por run de `target_command`
+  (2 min de TTL, pensado para una navegación en caliente de comandos sueltos) deja un hueco real
+  en `mav run`: un solo paso largo -- un `open` con build, un `exec` que envuelve uno -- puede
+  pasar minutos sin que mav despache ningún otro comando, así que nada volvía a tocar
+  `target_command` en ese tiempo. Un gestor de pool que reserva su slot por TTL de reloj de pared
+  (`simpool lease` es exactamente esto, y a partir de su propia v0.5.0 baja ese TTL por defecto a
+  3 minutos) no tenía forma de saber que el run seguía vivo durante ese silencio, y reclamaba el
+  slot -- justo la colisión que `target_command` existe para evitar.
+- El run nunca cambia de simulador a media ejecución por culpa de una reinvocación: el UDID que
+  usa para despachar quedó fijado al principio del run (la resolución que `bindFlowTarget` capturó
+  antes del primer paso) y sigue siendo ese durante toda su vida. Si una reinvocación periódica
+  resuelve a un UDID distinto, eso significa que algo ya se ha llevado el slot; el run se queda con
+  el UDID original y añade un aviso accionable a `logs.txt` en vez de perseguir el nuevo -- cambiar
+  de simulador a mitad de run reubicaría la colisión, no la evitaría. Un fallo a mitad de run se
+  trata igual: avisado, nunca fatal, la misma forma de "avisa y sigue" que ya tenía la caída de
+  emergencia de `target_command` para un solo comando.
+
 ## v0.9.2
 
 - La caída de emergencia al simulador arrancado cuando `target_command` falla no llegaba a todos
