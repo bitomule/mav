@@ -77,12 +77,12 @@ func (c CLI) withResolvedTarget(fields map[string]string) map[string]string {
 	if warn := c.resolveConfigTarget(&cfg); warn != "" {
 		fields["target_command_warn"] = warn
 	}
+	// resolveConfigTarget already applies the booted-simulator fallback to
+	// cfg itself (see its doc comment), so cfg is fully resolved by now --
+	// no separate fallback needed here just for the reported fields.
 	udid := targetUDID(cfg)
 	name := targetName(cfg)
 	kind := normalizedTargetKind(cfg)
-	if udid == "" && kind == "simulator" {
-		udid, name = c.resolveBootedSimulator()
-	}
 	if udid == "" {
 		return fields
 	}
@@ -145,14 +145,18 @@ func writeBootedSimulatorCache(run RunState, udid, name string) {
 	_ = os.WriteFile(bootedSimulatorCachePath(run), data, 0o644)
 }
 
-// resolveBootedSimulator resolves which simulator is currently booted, for
-// reporting only (targets that are pinned in config or MAV_TARGET_UDID never
-// reach this -- see withResolvedTarget). `xcrun simctl list devices booted
-// -j` costs ~0.75s regardless of how it's invoked (measured: calling simctl
-// directly, bypassing xcrun's own dispatch, costs the same -- the latency is
-// inherent to CoreSimulator, not to xcrun), and hot-path usage means dozens
-// of commands per navigation, so re-resolving on every command would add
-// tens of seconds to a session for a field that rarely changes mid-run.
+// resolveBootedSimulator resolves which simulator is currently booted. It is
+// the last-resort fallback (case 5 in the README's precedence table):
+// targets that are pinned in config, set via MAV_TARGET_UDID, or resolved
+// through a working target_command never reach this -- see
+// resolveConfigTarget, which is the only caller and applies this to cfg
+// itself, not just to a command's reported fields. `xcrun simctl list
+// devices booted -j` costs ~0.75s regardless of how it's invoked (measured:
+// calling simctl directly, bypassing xcrun's own dispatch, costs the same --
+// the latency is inherent to CoreSimulator, not to xcrun), and hot-path
+// usage means dozens of commands per navigation, so re-resolving on every
+// command would add tens of seconds to a session for a field that rarely
+// changes mid-run.
 //
 // The resolution is cached in the run's own state dir and trusted for
 // bootedSimulatorCacheTTL: mav already treats "one run, one simulator, never
@@ -217,6 +221,33 @@ func (c CLI) resolveConfigTarget(cfg *Config) string {
 	if os.Getenv("MAV_TARGET_KIND") != "" {
 		return ""
 	}
+	warn := c.resolveConfigTargetCommand(cfg)
+	// Case 5 of the README precedence table -- the pre-existing booted-
+	// simulator fallback -- applies uniformly here, in cfg itself, whenever
+	// nothing above (a pin, a working target_command) already filled
+	// cfg.SimulatorUDID. This used to live only in withResolvedTarget,
+	// which built the *reported* udid field from a freshly-loaded cfg of
+	// its own without ever writing it back to the cfg a command actually
+	// dispatches against -- so a command whose success output goes through
+	// c.OK (like doctor) looked resolved while a command that reads
+	// cfg.SimulatorUDID directly to build a driver invocation (like
+	// `mav ui tree`'s axe call) still got sent out with an empty UDID.
+	// Resolving it here instead means every caller of resolveConfigTarget
+	// gets the same, real answer.
+	if cfg.SimulatorUDID == "" {
+		cfg.SimulatorUDID, cfg.SimulatorName = c.resolveBootedSimulator()
+	}
+	return warn
+}
+
+// resolveConfigTargetCommand runs target_command (cases 3/4 of the
+// precedence order) and applies a successful result to cfg, or explains why
+// it didn't fire. Split out of resolveConfigTarget so the booted-simulator
+// fallback above applies the same way regardless of which branch below
+// returns -- a pin, an empty target_command, or a target_command that ran
+// and failed all leave cfg.SimulatorUDID exactly as unresolved as each
+// other from that fallback's point of view.
+func (c CLI) resolveConfigTargetCommand(cfg *Config) string {
 	command := strings.TrimSpace(cfg.TargetCommand)
 	if cfg.SimulatorUDID != "" {
 		if command == "" {

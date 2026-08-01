@@ -302,3 +302,55 @@ func TestTargetCommandRoundTripsThroughConfig(t *testing.T) {
 		t.Fatalf("target_command=%q, want %q", loaded.TargetCommand, cfg.TargetCommand)
 	}
 }
+
+// TestTargetCommandFailureFallsBackToBootedUDIDForRealDispatch is the
+// production regression: every test above only proves the warning is
+// surfaced, never that the fallback UDID actually reaches the point where a
+// command uses it. `mav doctor` reports a resolved udid when target_command
+// fails because its report goes through withResolvedTarget, which used to
+// carry the only copy of the booted-simulator fallback -- but `mav ui tree`
+// builds its axe invocation straight from the cfg the ui dispatcher resolved
+// earlier, so with the old code that invocation still carried an empty
+// UDID and axe rejected it outright ("Missing expected argument '--udid
+// <udid>'"), even though the same command's own target_command_warn field
+// claimed mav had fallen back to the booted simulator. This must fail
+// against the pre-fix code and pass once resolveConfigTarget applies the
+// fallback to cfg itself.
+func TestTargetCommandFailureFallsBackToBootedUDIDForRealDispatch(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.TargetCommand = "simpool lease --key A"
+	cfg.Tools = map[string]bool{}
+	root, _ := newTargetCommandRun(t, cfg)
+
+	bootedJSON := `{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-26-0":[` +
+		`{"udid":"BOOTED-FALLBACK","name":"iPhone 17","state":"Booted"}]}}`
+	targetKey := targetCommandKey(root, "simpool lease --key A")
+	runner := &sequenceRecordingRunner{
+		tools: map[string]bool{"axe": true},
+		err: map[string]CommandResult{
+			targetKey: {Stderr: "simpool: pool at capacity", Code: 1, Err: fmt.Errorf("exit status 1")},
+		},
+		out: map[string]string{
+			"xcrun simctl list devices booted -j":     bootedJSON,
+			"axe describe-ui --udid BOOTED-FALLBACK": `[{"AXUniqueId":"HomeView","AXRole":"Application"}]`,
+		},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "tree"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if strings.HasPrefix(got, "fail ") {
+		t.Fatalf("got %q, want ui tree to succeed via the booted fallback, not fail", got)
+	}
+	if !strings.Contains(got, "target_command_warn=") {
+		t.Fatalf("got %q, want target_command_warn reporting the target_command failure", got)
+	}
+	if !strings.Contains(got, "udid=BOOTED-FALLBACK") {
+		t.Fatalf("got %q, want the fallback udid reported on success", got)
+	}
+	if !containsCall(runner.commands, "axe describe-ui --udid BOOTED-FALLBACK") {
+		t.Fatalf("axe was never invoked with the fallback udid; commands=%v", runner.commands)
+	}
+}

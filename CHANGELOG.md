@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.9.2
+
+- La caída de emergencia al simulador arrancado cuando `target_command` falla no llegaba a todos
+  los comandos: `resolveConfigTarget` dejaba `simulator_udid` vacío en el `Config` que cada
+  comando usa para despachar (axe, idb, xcrun...), y solo `withResolvedTarget` —el código que
+  construye los campos de la salida de éxito, no el que decide a qué simulador hablar— aplicaba
+  la caída real. `mav doctor` "funcionaba" porque solo necesitaba ese campo para reportar; `mav ui
+  tree` y el resto de comandos que arrancan un driver directamente con el UDID de `cfg` recibían
+  uno vacío y `axe` rechazaba la llamada (`Missing expected argument '--udid <udid>'`), pese a que
+  el propio `target_command_warn` de esa misma respuesta afirmaba "falling back to the booted
+  simulator". `resolveConfigTarget` ahora aplica esa caída sobre el propio `Config`, así que todo
+  punto de entrada que pasa por ahí (o por `mustLoadConfig`) queda resuelto de verdad, no solo
+  reportado. `mav time freeze|travel|scale|status|reset` no llamaba a la resolución en absoluto
+  (bug aparte, mismo síntoma) y ahora sí.
+
 ## v0.9.1
 
 - `target_command` dejaba de tener efecto en silencio cuando el repo también tenía un

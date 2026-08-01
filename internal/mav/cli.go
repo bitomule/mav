@@ -1107,6 +1107,7 @@ func (c CLI) timeControl(ctx context.Context, opts GlobalOptions, args []string)
 	if err != nil {
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
+	c.resolveConfigTarget(&cfg)
 	if isPhysicalDevice(cfg) {
 		return Fail("time_control_unsupported_on_device", nil).Write(c.Stdout)
 	}
@@ -5236,6 +5237,12 @@ func (c CLI) crashesFromDiagnosticReports(idbError string) error {
 	if err != nil {
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
+	// crashes() already resolved its own cfg before calling here, but this
+	// reloads a fresh copy straight off disk -- re-resolve it too, or
+	// diagnosticCrashRoots below silently narrows its search whenever
+	// target_command is configured (cfg.SimulatorUDID would read empty
+	// instead of falling back like every other caller now does).
+	c.resolveConfigTarget(&cfg)
 	since := time.Now().Add(-15 * time.Minute)
 	var crashDir string
 	if run, err := c.resolveRun(""); err == nil {
