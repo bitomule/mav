@@ -700,14 +700,28 @@ booted at once (several agents, several worktrees, on one machine), set
 target on stdout:
 
 ```yaml
-target_command: simpool with --print-udid
+target_command: simpool lease --device "iPhone 17 Pro" --os 26.3
 ```
+
+The command answers one question -- "which simulator?" -- and the repo
+answers it once, in a file that travels with the repo, instead of every
+caller having to know. Nobody types the command themselves; mav runs it.
 
 `target_command` is generic: mav never imports or knows about simpool or any
 other pool manager. It is exactly one possible value for a field that just
 runs a shell command and reads a UDID off stdout -- a project-local script, a
-different pool tool, anything. It runs from the project root (like launch
-commands) with `MAV_ROOT` exported, so a repo-relative script works.
+different pool tool, `echo` with a hard-coded UDID for a one-off. It runs
+from the project root (like launch commands) with `MAV_ROOT` exported, so a
+repo-relative script works.
+
+The contract is deliberately small, so anything can satisfy it:
+
+- stdout is a UDID, and nothing else
+- exit 0 means the UDID is good; anything else means fall back
+- it must be quick and must not block -- mav runs it while a person or an
+  agent waits on a `tap`, so a command that holds a lock or waits for a free
+  slot is the wrong shape here (`simpool lease` returns and leaves a TTL
+  behind for exactly this reason, where `simpool with` would hold)
 
 Precedence, most to least specific:
 
