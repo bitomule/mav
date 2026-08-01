@@ -198,9 +198,18 @@ func (c CLI) resolveBootedSimulator() (string, string) {
 //
 // Mutates cfg.SimulatorUDID/SimulatorName in place (so the caller's actual
 // axe/idb dispatch is pinned, not just the reported field) and returns a
-// non-empty, actionable warning only when target_command was configured but
-// did not produce a usable UDID -- never a panic, never a hang: a bad
-// command degrades to the pre-existing booted fallback.
+// non-empty, actionable warning in two cases -- never a panic, never a hang:
+//
+//   - target_command was configured but did not produce a usable UDID: a
+//     bad command degrades to the pre-existing booted fallback.
+//   - simulator_udid is pinned *and* target_command is configured: the pin
+//     still wins (a pin is already-resolved explicit state, and inverting
+//     that would make `mav sim select` unpredictable), but silently ignoring
+//     target_command is exactly the failure mode this feature exists to
+//     avoid -- a repo can carry a stale pin from before target_command was
+//     added and never notice the field is dead configuration. Surfaced
+//     through the same target_command_warn field as the failure case, since
+//     both boil down to "target_command is configured but not in effect."
 func (c CLI) resolveConfigTarget(cfg *Config) string {
 	if isPhysicalDevice(*cfg) {
 		return ""
@@ -208,10 +217,13 @@ func (c CLI) resolveConfigTarget(cfg *Config) string {
 	if os.Getenv("MAV_TARGET_KIND") != "" {
 		return ""
 	}
-	if cfg.SimulatorUDID != "" {
-		return ""
-	}
 	command := strings.TrimSpace(cfg.TargetCommand)
+	if cfg.SimulatorUDID != "" {
+		if command == "" {
+			return ""
+		}
+		return fmt.Sprintf("target_command_ignored: simulator_udid=%s is pinned in .mav/config.yaml and wins over target_command (next: remove simulator_udid to let target_command route automatically, or remove target_command if the pin is intentional)", cfg.SimulatorUDID)
+	}
 	if command == "" {
 		return ""
 	}

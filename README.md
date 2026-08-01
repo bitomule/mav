@@ -738,6 +738,25 @@ $ mav ui tap --id save
 ok cmd=ui.tap driver=axe target_kind=simulator udid=... target_command_warn="target_command_failed: simpool: no free slot (next: fix or remove target_command in .mav/config.yaml; falling back to the booted simulator)"
 ```
 
+### If `simulator_udid` is also pinned
+
+A pin still wins over `target_command` (case 3 beats case 4 above) -- that
+part of the precedence doesn't change. But a repo that pins `simulator_udid`
+(via `mav sim select`, or carried over from before `target_command` existed)
+and *also* sets `target_command` would otherwise have dead configuration: the
+field does nothing and nothing says so. mav surfaces that conflict instead of
+staying silent about it, through the same `target_command_warn` field, on
+every affected command:
+
+```bash
+$ mav ui tap --id save
+ok cmd=ui.tap driver=axe target_kind=simulator udid=7D0487E4-DD78-4E43-80EB-EDBFDB1C875B target_command_warn="target_command_ignored: simulator_udid=7D0487E4-DD78-4E43-80EB-EDBFDB1C875B is pinned in .mav/config.yaml and wins over target_command (next: remove simulator_udid to let target_command route automatically, or remove target_command if the pin is intentional)"
+```
+
+This never fails or blocks the command -- an ambiguous config is still a
+working config, just a warned one. If you want `target_command` to actually
+route the simulator, remove `simulator_udid` from `.mav/config.yaml`.
+
 ## Physical Devices
 
 List and select connected iOS devices:

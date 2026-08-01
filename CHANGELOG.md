@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.9.1
+
+- `target_command` dejaba de tener efecto en silencio cuando el repo también tenía un
+  `simulator_udid` fijado en `.mav/config.yaml` (el pin gana, como debe ser), sin que nada lo
+  dijera. Varios repos reales ya tenían un pin de una `mav sim select` anterior, así que añadir
+  `target_command` ahí sería configuración muerta y nadie se enteraría. La precedencia no cambia
+  —el pin sigue ganando— pero ahora ese conflicto es visible: `target_command_warn` avisa en cada
+  comando afectado de que el pin está ganando y qué hacer (quitar el pin o quitar el comando).
+  Nunca falla el comando ni lo cuelga: una config ambigua sigue siendo una config que funciona,
+  solo que avisada.
+
 ## v0.9.0
 
 - Nuevo campo `target_command` en `.mav/config.yaml`: un comando que mav ejecuta para obtener el

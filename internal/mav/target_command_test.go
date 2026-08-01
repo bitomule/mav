@@ -105,7 +105,9 @@ func TestTargetCommandInvokedOncePerRun(t *testing.T) {
 // TestTargetCommandLosesToPinnedSimulatorUDID: simulator_udid already pinned
 // in config.yaml (e.g. via `mav sim select`) is already-resolved explicit
 // state, so it must win over a configured target_command without ever
-// running it.
+// running it -- but the conflict must still be visible (see
+// TestTargetCommandPinnedConfigWarnsWhenTargetCommandAlsoSet below), not a
+// silent no-op that leaves target_command looking like dead configuration.
 func TestTargetCommandLosesToPinnedSimulatorUDID(t *testing.T) {
 	cfg := DefaultConfig(t.TempDir())
 	cfg.SimulatorUDID = "SIM-PINNED"
@@ -125,6 +127,55 @@ func TestTargetCommandLosesToPinnedSimulatorUDID(t *testing.T) {
 	}
 	if got := runner.calls[key]; got != 0 {
 		t.Fatalf("target_command calls=%d, want 0 (pinned simulator_udid must win without invoking it)", got)
+	}
+	if !strings.Contains(out.String(), "target_command_warn=") {
+		t.Fatalf("got %q, want a target_command_warn flagging the dead target_command config", out.String())
+	}
+}
+
+// TestTargetCommandPinnedConfigWarnsWhenTargetCommandAlsoSet is the
+// dedicated regression for the real-world case this guards against: a repo
+// pins simulator_udid (e.g. via `mav sim select`, or carried over from
+// before target_command existed) and separately configures target_command.
+// The pin still wins -- inverting that would make `mav sim select` an
+// unreliable no-op -- but the conflict must be loud, actionable, and never
+// fail or hang the command it decorates: silence here is exactly the
+// failure mode this feature exists to eliminate.
+func TestTargetCommandPinnedConfigWarnsWhenTargetCommandAlsoSet(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.SimulatorUDID = "7D0487E4-DD78-4E43-80EB-EDBFDB1C875B"
+	cfg.SimulatorName = "iPhone 17 Pro"
+	cfg.TargetCommand = "simpool with --print-udid"
+	root, runID := newTargetCommandRun(t, cfg)
+
+	key := targetCommandKey(root, "simpool with --print-udid")
+	runner := fakeRunner{out: map[string]string{key: "SHOULD-NOT-RUN\n"}, calls: map[string]int{}}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"logs", "--run", runID}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "udid=7D0487E4-DD78-4E43-80EB-EDBFDB1C875B") {
+		t.Fatalf("got %q, want the pin to still win", got)
+	}
+	if !strings.Contains(got, "target_command_warn=") {
+		t.Fatalf("got %q, want an actionable target_command_warn field", got)
+	}
+	if !strings.Contains(got, "target_command_ignored") {
+		t.Fatalf("got %q, want target_command_ignored in the warning", got)
+	}
+	if !strings.Contains(got, "7D0487E4-DD78-4E43-80EB-EDBFDB1C875B") {
+		t.Fatalf("got %q, want the warning to name the pin that's winning", got)
+	}
+	if !strings.Contains(got, "next:") {
+		t.Fatalf("got %q, want an actionable next step (remove the pin or remove target_command)", got)
+	}
+	if strings.Contains(got, "fail ") {
+		t.Fatalf("got %q, want an ambiguous-but-resolvable config to still succeed, not fail", got)
+	}
+	if gotCalls := runner.calls[key]; gotCalls != 0 {
+		t.Fatalf("target_command calls=%d, want 0 (the warning must not require actually invoking it)", gotCalls)
 	}
 }
 
