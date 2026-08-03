@@ -1,6 +1,7 @@
 package mav
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -360,6 +361,155 @@ func (c CLI) execTargetCommand(root, command string) (string, string, string) {
 	}
 	name := strings.TrimSpace(secondLine(result.Stdout))
 	return udid, name, ""
+}
+
+// invalidateTargetCommandCache drops the run-scoped target_command cache so
+// the next resolveConfigTarget call in this same run pays the real cost
+// again instead of trusting a resolution that dispatch just proved wrong.
+// Best-effort: a missing file is exactly the state we want, so a failed
+// remove (already gone, permissions) is not reported -- the next read will
+// simply treat it as a cache miss either way (readTargetCommandCache already
+// tolerates a missing file).
+func invalidateTargetCommandCache(run RunState) {
+	_ = os.Remove(targetCommandCachePath(run))
+}
+
+// isSimulatorBooted asks CoreSimulator directly (via `simctl list devices
+// booted`) whether udid is booted right now. This is the ground truth used
+// to decide whether a dispatch failure is the stale-cache problem
+// staleSimulatorTargetRetry exists for, deliberately not axe/idb's stderr
+// wording -- that text is theirs to change, and a wrong guess there would
+// either miss a real staleness case or waste a ~15s re-resolve on a failure
+// that has nothing to do with booting (a bad selector, a disconnected
+// accessibility service). Costs the same ~0.75s as detectBootedSimulator
+// (same underlying simctl call), but only runs after a command has already
+// failed, never on the hot success path.
+func isSimulatorBooted(runner Runner, udid string) bool {
+	if runner == nil || udid == "" {
+		// Unknown is treated as "booted" -- i.e. don't retry -- so a runner-
+		// less CLI (tests with Runner left nil) or an unresolved udid never
+		// triggers a pointless re-resolve.
+		return true
+	}
+	result := runner.Run(context.Background(), "xcrun", "simctl", "list", "devices", "booted", "-j")
+	if result.Err != nil {
+		return true
+	}
+	var parsed struct {
+		Devices map[string][]struct {
+			UDID  string `json:"udid"`
+			State string `json:"state"`
+		} `json:"devices"`
+	}
+	if err := json.Unmarshal([]byte(result.Stdout), &parsed); err != nil {
+		return true
+	}
+	for _, devices := range parsed.Devices {
+		for _, device := range devices {
+			if device.UDID == udid && device.State == "Booted" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// staleSimulatorTargetRetry re-resolves cfg's target_command-sourced
+// simulator after a dispatch failure that isSimulatorBooted has already
+// confirmed is real staleness (the cached UDID is not currently booted).
+// Eligibility beyond that check: target_command must actually be the thing
+// that resolved this target -- not an explicit --target/MAV_TARGET_*, not a
+// simulator_udid pin, not the plain booted fallback -- because it is the
+// only precedence tier with anyone to re-ask (see targetCommandInEffect).
+// Invalidates the run-scoped cache and calls resolveConfigTarget again,
+// which is what actually re-runs target_command and, for a pool manager
+// like simpool, boots the simulator and waits for it. Returns ok=false
+// whenever retrying wouldn't help (no run to cache against, target_command
+// not in effect, or re-resolution produced the same or no UDID) so the
+// caller falls back to reporting the original failure untouched.
+func (c CLI) staleSimulatorTargetRetry(cfg Config) (retried Config, previousUDID string, ok bool) {
+	if isPhysicalDevice(cfg) || cfg.SimulatorUDID == "" {
+		return Config{}, "", false
+	}
+	if !c.targetCommandInEffectForRun() {
+		return Config{}, "", false
+	}
+	run, err := c.resolveRun("")
+	if err != nil {
+		return Config{}, "", false
+	}
+	previousUDID = cfg.SimulatorUDID
+	invalidateTargetCommandCache(run)
+	fresh, err := LoadConfig(c.Root)
+	if err != nil {
+		return Config{}, "", false
+	}
+	c.resolveConfigTools(&fresh)
+	c.resolveConfigTarget(&fresh)
+	if fresh.SimulatorUDID == "" || fresh.SimulatorUDID == previousUDID {
+		return Config{}, "", false
+	}
+	return fresh, previousUDID, true
+}
+
+// dispatchWithStaleTargetRetry runs dispatch once against cfg into its own
+// buffer (dispatch is expected to write exactly the shape any mav command
+// writes: one leading "ok "/"fail " line via Output.Write, optionally
+// followed by data lines like a tree dump) and, only when that first line
+// is a failure AND isSimulatorBooted confirms the resolved simulator is
+// genuinely not booted right now, either:
+//
+//   - retries the exact same dispatch once against a target_command-
+//     re-resolved cfg, annotating the retried attempt's own first line with
+//     target_command_restale so a re-resolve-and-retry is never silent -- a
+//     silent one would hide that the simulator was going down underneath;
+//   - or, when there is nobody to re-ask (target_command not in effect),
+//     annotates the original failure with reason=simulator_not_booted so the
+//     caller sees the real cause instead of a driver's raw, possibly
+//     ambiguous stderr.
+//
+// Exactly one retry, never a loop: staleSimulatorTargetRetry is called once
+// and its result dispatched once, whatever that second attempt produces
+// (success or a fresh failure) is final.
+func (c CLI) dispatchWithStaleTargetRetry(cfg Config, dispatch func(CLI, Config)) string {
+	var buf bytes.Buffer
+	dispatch(c.withStdout(&buf), cfg)
+	out := buf.String()
+	if !strings.HasPrefix(strings.TrimSpace(out), "fail ") {
+		return out
+	}
+	if isPhysicalDevice(cfg) || cfg.SimulatorUDID == "" || isSimulatorBooted(c.Runner, cfg.SimulatorUDID) {
+		return out
+	}
+	if !c.targetCommandInEffectForRun() {
+		return insertFieldIntoFirstLine(out, "reason", "simulator_not_booted")
+	}
+	fresh, previousUDID, retried := c.staleSimulatorTargetRetry(cfg)
+	if !retried {
+		return insertFieldIntoFirstLine(out, "reason", "simulator_not_booted")
+	}
+	var buf2 bytes.Buffer
+	dispatch(c.withStdout(&buf2), fresh)
+	note := fmt.Sprintf(
+		"target_command_restale: cached simulator %s was no longer booted; re-resolved target_command to %s and retried once",
+		previousUDID, fresh.SimulatorUDID)
+	return insertFieldIntoFirstLine(buf2.String(), "target_command_restale", note)
+}
+
+// insertFieldIntoFirstLine appends key=value to the end of output's first
+// line (the "ok "/"fail " Output.Write line) and leaves everything after
+// the first newline (data lines like a tree dump) untouched. Appending
+// rather than re-parsing/re-sorting the existing fields keeps this safe
+// regardless of what else is already on the line, quoted or not -- it never
+// has to understand fields it didn't write.
+func insertFieldIntoFirstLine(output, key, value string) string {
+	line := output
+	rest := ""
+	if idx := strings.IndexByte(output, '\n'); idx >= 0 {
+		line = output[:idx]
+		rest = output[idx:]
+	}
+	return line + " " + key + "=" + quoteIfNeeded(value) + rest
 }
 
 func secondLine(s string) string {

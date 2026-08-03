@@ -1312,6 +1312,16 @@ func probeLogPredicate(cfg Config) string {
 	return strings.Join(parts, " OR ")
 }
 
+// ui is the standalone-command entry point for `mav ui <verb>` -- the
+// hot-path surface this exists for (an agent driving `mav ui tap`, `mav ui
+// tree`, ... command-by-command, not through `mav run`). That distinction
+// matters: `mav run` flows already survive a target_command-backed pool
+// slot being reclaimed mid-run via startTargetCommandKeepAlive's periodic
+// ping, but nothing pings on their behalf between two standalone commands,
+// so a simulator that goes down inside the target-command cache's TTL (see
+// bootedSimulatorCacheTTL) between two `mav ui` calls has no earlier warning
+// -- dispatchWithStaleTargetRetry is what recovers from it here, once,
+// after the fact.
 func (c CLI) ui(ctx context.Context, opts GlobalOptions, args []string) error {
 	if len(args) == 0 {
 		return Fail("ui_command_missing", map[string]string{"usage": "mav ui tree|tap|doubleTap|type|erase|hideKeyboard|swipe|drag|dragPath|toggle|press|longPress|pinch|rotate|twoFingerPan|actions|wait|scrollUntil"}).Write(c.Stdout)
@@ -1322,6 +1332,22 @@ func (c CLI) ui(ctx context.Context, opts GlobalOptions, args []string) error {
 	}
 	c.resolveConfigTools(&cfg)
 	c.resolveConfigTarget(&cfg)
+	var dispatchErr error
+	out := c.dispatchWithStaleTargetRetry(cfg, func(callee CLI, cfg Config) {
+		dispatchErr = callee.dispatchUICommand(ctx, opts, cfg, args)
+	})
+	if dispatchErr != nil {
+		return dispatchErr
+	}
+	_, writeErr := io.WriteString(c.Stdout, out)
+	return writeErr
+}
+
+// dispatchUICommand is the actual `mav ui <verb>` switch, split out of ui so
+// dispatchWithStaleTargetRetry can run it twice (original attempt, then one
+// retry) against two different cfg values without re-parsing args or
+// re-resolving the target a caller already resolved.
+func (c CLI) dispatchUICommand(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
 	switch args[0] {
 	case "tree":
 		return c.uiTree(ctx, opts, cfg, args[1:])
