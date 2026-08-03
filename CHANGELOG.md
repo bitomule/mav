@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.10.1
+
+- Un comando ya no falla cuando el simulador que `target_command` había
+  resuelto se apaga por debajo dentro de la ventana del caché. Antes mav
+  despachaba contra el dispositivo muerto y fallaba en 0 segundos, sin
+  intentar nada, pese a que volver a preguntar habría bastado. Ahora, cuando
+  un comando falla **y** una consulta de estado confirma que el simulador no
+  está arrancado, mav invalida lo cacheado, reejecuta `target_command` y
+  reintenta el comando **una vez** — nunca en bucle —, anunciándolo con
+  `target_command_restale` para que un reintento no sea silencioso.
+- El camino feliz no paga nada: la comprobación de estado sólo ocurre tras un
+  fallo, y se decide por consulta real, no por adivinar el texto del error.
+- Sin `target_command` configurado no hay a quién repreguntar, así que el
+  error dice `reason=simulator_not_booted` en vez de dejar pasar el stderr
+  crudo del driver.
+
 ## v0.10.0
 
 - `mav run` ahora reinvoca `target_command` cada ~60s mientras el run está en marcha, como
