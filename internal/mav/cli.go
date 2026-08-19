@@ -149,16 +149,44 @@ func parseGlobal(args []string) (GlobalOptions, []string) {
 	return opts, rest
 }
 
-func normalizePreferDriver(value string) (string, error) {
+// preferDriverAuto es el centinela que significa "decide tu por coste".
+const preferDriverAuto = "auto"
+
+// normalizePreferDriver valida --prefer-driver contra el registry de drivers
+// en vez de contra una lista congelada, de modo que un driver recien
+// registrado es seleccionable sin tocar el parser. Devuelve "auto" o el id
+// del driver.
+func (c CLI) normalizePreferDriver(value string) (string, error) {
 	if strings.TrimSpace(value) == "" {
-		return "auto", nil
+		return preferDriverAuto, nil
 	}
-	switch value {
-	case "auto", "axe":
+	if value == preferDriverAuto {
 		return value, nil
-	default:
+	}
+	if c.driverRegistry().Lookup(value) == nil {
 		return "", fmt.Errorf("prefer_driver_invalid")
 	}
+	return value, nil
+}
+
+// preferDriverUsage enumera los ids realmente registrados, para que el error
+// no mienta cuando el portfolio de drivers cambia. Registry.All() ya viene
+// ordenado por ID, asi que la salida es determinista.
+func (c CLI) preferDriverUsage() string {
+	ids := []string{preferDriverAuto}
+	for _, d := range c.driverRegistry().All() {
+		ids = append(ids, d.ID())
+	}
+	return "--prefer-driver " + strings.Join(ids, "|")
+}
+
+// routerPrefer traduce el valor normalizado al hint que espera
+// Router.Route: "auto" es ausencia de hint.
+func routerPrefer(prefer string) string {
+	if prefer == preferDriverAuto {
+		return ""
+	}
+	return prefer
 }
 
 func (c CLI) help(opts GlobalOptions, topic string) error {
@@ -432,7 +460,7 @@ func (c CLI) doctor(ctx context.Context, opts GlobalOptions) error {
 		fields["next"] = "mav setup --install " + strings.Join(missing, " ")
 	}
 	addDoctorMatrixFields(fields, caps)
-	if normalizedTargetKind(cfg) != "device" && cfg.SimulatorUDID != "" {
+	if targetKind(cfg) == drivers.KindSim && cfg.SimulatorUDID != "" {
 		if lock, locked := simulatorLockedByOther(cfg.SimulatorUDID, c.Root); locked {
 			fields["sim_contention"] = "locked"
 			fields["sim_lock_run"] = lock.RunID
@@ -888,15 +916,23 @@ func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 		}
 		c.resolveConfigTools(&cfg)
 		c.resolveConfigTarget(&cfg)
-		if isPhysicalDevice(cfg) {
+		if targetKind(cfg) != drivers.KindSim {
 			return Fail("sim_not_applicable", map[string]string{"target": "device", "next": "select a simulator with mav sim select"}).Write(c.Stdout)
 		}
 		if cfg.SimulatorUDID == "" {
 			return Fail("sim_not_selected", map[string]string{"next": "mav sim select --device 'iPhone' --ios 26"}).Write(c.Stdout)
 		}
-		boot := c.Runner.Run(ctx, "xcrun", "simctl", "boot", cfg.SimulatorUDID)
-		if boot.Err != nil && !strings.Contains(boot.Stderr, "Unable to boot device in current state") {
-			return Fail("sim_boot_failed", map[string]string{"stderr": firstLine(boot.Stderr)}).Write(c.Stdout)
+		target := targetFromConfig(cfg)
+		driver, _, routeErr := c.router().Route(ctx, drivers.CapBoot, target, "")
+		if routeErr != nil {
+			return Fail("sim_boot_failed", map[string]string{"stderr": firstLine(routeErr.Error())}).Write(c.Stdout)
+		}
+		lifecycle, ok := driver.(drivers.LifecycleDriver)
+		if !ok {
+			return Fail("sim_boot_failed", map[string]string{"stderr": "driver " + driver.ID() + " does not implement lifecycle"}).Write(c.Stdout)
+		}
+		if bootErr := lifecycle.Boot(ctx, target); bootErr != nil {
+			return Fail("sim_boot_failed", map[string]string{"stderr": firstLine(bootErr.Error())}).Write(c.Stdout)
 		}
 		status := c.Runner.Run(ctx, "xcrun", "simctl", "bootstatus", cfg.SimulatorUDID, "-b")
 		if status.Err != nil {
@@ -968,7 +1004,7 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	if err := c.applyOpenTargetOverrides(ctx, &cfg, args); err != nil {
 		return Fail("sim_select_failed", map[string]string{"error": err.Error()}).Write(c.Stdout)
 	}
-	if !isPhysicalDevice(cfg) && cfg.SimulatorUDID != "" && !hasFlag(args, "--force") {
+	if targetKind(cfg) == drivers.KindSim && cfg.SimulatorUDID != "" && !hasFlag(args, "--force") {
 		if lock, locked := simulatorLockedByOther(cfg.SimulatorUDID, c.Root); locked {
 			return Fail("sim_locked", map[string]string{"udid": cfg.SimulatorUDID, "run": lock.RunID, "project": lock.Project, "next": "select another simulator or rerun with --force"}).Write(c.Stdout)
 		}
@@ -1006,7 +1042,7 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 			return err
 		}
 	}
-	if isPhysicalDevice(cfg) && !hasTool(cfg, "idb") {
+	if targetKind(cfg) == drivers.KindDevice && !hasTool(cfg, "idb") {
 		return Fail("tool_missing", map[string]string{"tool": "idb", "target": "device", "next": "mav setup --install idb"}).Write(c.Stdout)
 	}
 	if err := c.ensureOpenSimulatorBooted(ctx, cfg, run); err != nil {
@@ -1043,10 +1079,10 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 		}
 	}
 	if hasFlag(args, "--time-control") {
-		if isPhysicalDevice(cfg) {
+		if targetKind(cfg) != drivers.KindSim {
 			return Fail("time_control_unsupported_on_device", nil).Write(c.Stdout)
 		}
-		driver, _, routeErr := c.router().Route(ctx, drivers.CapWallClock, targetFromConfig(cfg), "simtime")
+		driver, _, routeErr := c.router().Route(ctx, drivers.CapWallClock, targetFromConfig(cfg), "")
 		if routeErr != nil {
 			return Fail("tool_missing", map[string]string{"tool": "simtime", "next": "mav setup --install simtime"}).Write(c.Stdout)
 		}
@@ -1074,12 +1110,12 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 		fields["log_subsystem"] = probeLogSubsystem(cfg)
 		fields["log_category"] = probeLogCategory(cfg)
 	}
-	if !isPhysicalDevice(cfg) && cfg.SimulatorUDID != "" && probeLogPID > 0 {
+	if targetKind(cfg) == drivers.KindSim && cfg.SimulatorUDID != "" && probeLogPID > 0 {
 		if err := writeSimulatorLock(cfg.SimulatorUDID, run, c.Root, probeLogPID); err == nil {
 			fields["sim_lock"] = simLockPath(cfg.SimulatorUDID)
 		}
 	}
-	fields["target_kind"] = normalizedTargetKind(cfg)
+	fields["target_kind"] = targetKindLabel(targetKind(cfg))
 	fields["session"] = "direct"
 	if _, ok := c.Runner.(ExecRunner); ok {
 		if session, workerErr := startRunWorker(c.Root, run); workerErr == nil {
@@ -1108,14 +1144,14 @@ func (c CLI) timeControl(ctx context.Context, opts GlobalOptions, args []string)
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
 	c.resolveConfigTarget(&cfg)
-	if isPhysicalDevice(cfg) {
+	if targetKind(cfg) != drivers.KindSim {
 		return Fail("time_control_unsupported_on_device", nil).Write(c.Stdout)
 	}
 	run, runErr := c.resolveRun("")
 	if runErr != nil || !exists(filepath.Join(run.Dir, "time-control.enabled")) {
 		return Fail("time_control_not_loaded", map[string]string{"next": "mav open --time-control"}).Write(c.Stdout)
 	}
-	driver, _, routeErr := c.router().Route(ctx, drivers.CapWallClock, targetFromConfig(cfg), "simtime")
+	driver, _, routeErr := c.router().Route(ctx, drivers.CapWallClock, targetFromConfig(cfg), "")
 	if routeErr != nil {
 		return Fail("tool_missing", map[string]string{"tool": "simtime", "next": "mav setup --install simtime"}).Write(c.Stdout)
 	}
@@ -1183,7 +1219,7 @@ func (c CLI) timeControl(ctx context.Context, opts GlobalOptions, args []string)
 }
 
 func (c CLI) ensureOpenSimulatorBooted(ctx context.Context, cfg Config, run RunState) error {
-	if isPhysicalDevice(cfg) || cfg.SimulatorUDID == "" || !hasTool(cfg, "xcrun") {
+	if targetKind(cfg) != drivers.KindSim || cfg.SimulatorUDID == "" || !hasTool(cfg, "xcrun") {
 		return nil
 	}
 	boot := c.Runner.Run(ctx, "xcrun", "simctl", "boot", cfg.SimulatorUDID)
@@ -1254,7 +1290,7 @@ func (c CLI) startProbeLogs(ctx context.Context, cfg Config, run RunState) (int,
 	// without ever going through open() -- see ensureRunWorker.
 	defer c.ensureRunWorker(run)
 	predicate := probeLogPredicate(cfg)
-	if isPhysicalDevice(cfg) {
+	if targetKind(cfg) == drivers.KindDevice {
 		if !hasTool(cfg, "idb") {
 			return 0, fmt.Errorf("idb_missing")
 		}
@@ -1391,12 +1427,12 @@ func (c CLI) dispatchUICommand(ctx context.Context, opts GlobalOptions, cfg Conf
 }
 
 func (c CLI) uiTree(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
-	prefer, err := normalizePreferDriver(opts.PreferDriver)
+	prefer, err := c.normalizePreferDriver(opts.PreferDriver)
 	if err != nil {
-		return Fail("prefer_driver_invalid", map[string]string{"usage": "--prefer-driver auto|axe"}).Write(c.Stdout)
+		return Fail("prefer_driver_invalid", map[string]string{"usage": c.preferDriverUsage()}).Write(c.Stdout)
 	}
 	includeSystem := hasFlag(args, "--include-system")
-	if includeSystem && isPhysicalDevice(cfg) {
+	if includeSystem && targetKind(cfg) != drivers.KindSim {
 		return Fail("tree_system_unsupported_on_device", map[string]string{"next": "run mav ui tree on a simulator for system/SpringBoard inspection"}).Write(c.Stdout)
 	}
 	described, err := c.describeUITree(ctx, cfg, prefer, includeSystem)
@@ -1537,7 +1573,7 @@ type readyUITree struct {
 
 func (c CLI) describeUITree(ctx context.Context, cfg Config, prefer string, includeSystem bool) (describedUITree, error) {
 	if includeSystem {
-		if isPhysicalDevice(cfg) {
+		if targetKind(cfg) != drivers.KindSim {
 			return describedUITree{}, fmt.Errorf("tree_system_unsupported_on_device")
 		}
 		target := targetFromConfig(cfg)
@@ -1551,7 +1587,7 @@ func (c CLI) describeUITree(ctx context.Context, cfg Config, prefer string, incl
 	}
 	target := targetFromConfig(cfg)
 	if hasTool(cfg, "axe") {
-		driver, _, err := c.router().Route(ctx, drivers.CapTreeAX, target, "axe")
+		driver, _, err := c.router().Route(ctx, drivers.CapTreeAX, target, routerPrefer(prefer))
 		if err != nil {
 			return describedUITree{}, err
 		}
@@ -1576,7 +1612,7 @@ func (c CLI) describeUITree(ctx context.Context, cfg Config, prefer string, incl
 }
 
 func (c CLI) recoverEmptyAXTree(ctx context.Context, cfg Config) error {
-	if isPhysicalDevice(cfg) {
+	if targetKind(cfg) != drivers.KindSim {
 		return fmt.Errorf("device_accessibility_recovery_unavailable")
 	}
 	if !hasTool(cfg, "xcrun") || cfg.SimulatorUDID == "" {
@@ -1660,9 +1696,9 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 	value := selector.Value
 	x := flagValue(args, "--x")
 	y := flagValue(args, "--y")
-	prefer, err := normalizePreferDriver(opts.PreferDriver)
+	prefer, err := c.normalizePreferDriver(opts.PreferDriver)
 	if err != nil {
-		return Fail("prefer_driver_invalid", map[string]string{"usage": "--prefer-driver auto|axe"}).Write(c.Stdout)
+		return Fail("prefer_driver_invalid", map[string]string{"usage": c.preferDriverUsage()}).Write(c.Stdout)
 	}
 	caps := c.resolveCapabilities(ctx, cfg)
 	if !selector.IsZero() {
@@ -1699,9 +1735,8 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			return c.uiTap(ctx, opts, cfg, append(onlyFastPathArgs(args),
 				"--x", strconv.Itoa(int(mx+mw/2)), "--y", strconv.Itoa(int(my+mh/2))))
 		}
-		_ = prefer
 		target := targetFromConfig(cfg)
-		driver, _, err := c.router().Route(ctx, drivers.CapSemanticTap, target, "axe")
+		driver, _, err := c.router().Route(ctx, drivers.CapSemanticTap, target, routerPrefer(prefer))
 		if err != nil {
 			return Fail("tool_missing", map[string]string{"tool": "axe", "next": "use mav ui tap --x X --y Y when AXe is unavailable"}).Write(c.Stdout)
 		}
@@ -1734,6 +1769,8 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		xi, _ := strconv.Atoi(x)
 		yi, _ := strconv.Atoi(y)
 		target := targetFromConfig(cfg)
+		// CapCoordTap: en sim axe/baguette/idb empatan a coste 50 y el desempate
+		// por ID daria axe, no idb -- sin este prefer cambiaria el driver= de salida.
 		driver, _, err := c.router().Route(ctx, drivers.CapCoordTap, target, "idb")
 		if err != nil {
 			return Fail("tool_missing", map[string]string{"tool": "idb"}).Write(c.Stdout)
@@ -1991,13 +2028,22 @@ func (c CLI) diagnoseTextTapFailure(ctx context.Context, cfg Config, text, stder
 	if text == "" {
 		return nil, false
 	}
-	result := c.Runner.Run(ctx, "axe", axeTargetArgs(cfg, "describe-ui")...)
-	if result.Err != nil {
+	target := targetFromConfig(cfg)
+	driver, _, err := c.router().Route(ctx, drivers.CapTreeAX, target, "")
+	if err != nil {
+		return nil, false
+	}
+	treeDriver, ok := driver.(drivers.TreeDriver)
+	if !ok {
+		return nil, false
+	}
+	tree, err := treeDriver.Tree(ctx, target, drivers.TreeSpec{})
+	if err != nil {
 		return nil, false
 	}
 	labelMatches := 0
 	valueMatches := 0
-	for _, el := range ExtractElements(result.Stdout) {
+	for _, el := range ExtractElements(string(tree.JSON)) {
 		if el.Label == text {
 			labelMatches++
 		}
@@ -2031,9 +2077,9 @@ func (c CLI) uiType(ctx context.Context, opts GlobalOptions, cfg Config, args []
 	if len(args) == 0 {
 		return Fail("type_text_missing", nil).Write(c.Stdout)
 	}
-	_, err := normalizePreferDriver(opts.PreferDriver)
+	_, err := c.normalizePreferDriver(opts.PreferDriver)
 	if err != nil {
-		return Fail("prefer_driver_invalid", map[string]string{"usage": "--prefer-driver auto|axe"}).Write(c.Stdout)
+		return Fail("prefer_driver_invalid", map[string]string{"usage": c.preferDriverUsage()}).Write(c.Stdout)
 	}
 	selector, selectorErr := selectorFromCLI(args)
 	if selectorErr != nil {
@@ -2060,6 +2106,9 @@ func (c CLI) uiType(ctx context.Context, opts GlobalOptions, cfg Config, args []
 		}
 	}
 	target := targetFromConfig(cfg)
+	// CapType: axe gana el desempate por coste igualmente, pero sin este
+	// prefer el router tambien sondearia baguette, cuyo Probe ejecuta un
+	// subproceso real (`baguette list --json`) en cada `mav ui type`.
 	driver, _, err := c.router().Route(ctx, drivers.CapType, target, "axe")
 	if err != nil {
 		return Fail("tool_missing", map[string]string{"tool": "axe", "next": "mav setup --install axe"}).Write(c.Stdout)
@@ -2093,7 +2142,7 @@ func isSelectorCLIFlag(value string) bool {
 
 func (c CLI) uiErase(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
 	_ = opts
-	if isPhysicalDevice(cfg) {
+	if targetKind(cfg) != drivers.KindSim {
 		return Fail("erase_unsupported_on_device", map[string]string{"next": "device erase is not supported; tap and retype the field"}).Write(c.Stdout)
 	}
 	id := flagValue(args, "--id")
@@ -2123,7 +2172,7 @@ func (c CLI) uiErase(ctx context.Context, opts GlobalOptions, cfg Config, args [
 func (c CLI) uiHideKeyboard(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
 	_ = opts
 	_ = args
-	if isPhysicalDevice(cfg) {
+	if targetKind(cfg) != drivers.KindSim {
 		return Fail("hide_keyboard_unsupported_on_device", map[string]string{"next": "device hide-keyboard is not supported; tap outside the field"}).Write(c.Stdout)
 	}
 	target := targetFromConfig(cfg)
@@ -2134,9 +2183,9 @@ func (c CLI) uiHideKeyboard(ctx context.Context, opts GlobalOptions, cfg Config,
 }
 
 func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
-	prefer, err := normalizePreferDriver(opts.PreferDriver)
+	prefer, err := c.normalizePreferDriver(opts.PreferDriver)
 	if err != nil {
-		return Fail("prefer_driver_invalid", map[string]string{"usage": "--prefer-driver auto|axe"}).Write(c.Stdout)
+		return Fail("prefer_driver_invalid", map[string]string{"usage": c.preferDriverUsage()}).Write(c.Stdout)
 	}
 	direction := flagValue(args, "--direction")
 	if direction == "" && len(args) > 0 && isSwipeDirection(args[0]) {
@@ -2168,13 +2217,26 @@ func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args [
 	}
 	target := targetFromConfig(cfg)
 	preferred := ""
-	if prefer == "axe" || hasTool(cfg, "axe") {
+	switch {
+	case prefer != "" && prefer != "auto":
+		// Un --prefer-driver explicito manda. Aceptar el flag y luego
+		// sobreescribirlo con "axe" seria configuracion muerta del mismo tipo
+		// que target_command_ignored existe para hacer visible: el usuario
+		// pide un driver, mav dice que si, y corre otro sin decir nada.
+		preferred = prefer
+	case hasTool(cfg, "axe"):
 		preferred = "axe"
 	}
+	// CapSwipe: mismo coste de Probe que CapType, mas cfg.Tools["axe"]=true sin
+	// axe en PATH debe seguir siendo un error duro en vez de un fallback
+	// silencioso a baguette/idb (ver TestUISwipePreferAxeDoesNotFallbackToIDB).
 	driver, _, err := c.router().Route(ctx, drivers.CapSwipe, target, preferred)
 	if err != nil {
 		if prefer == "axe" {
 			return Fail("tool_missing", map[string]string{"tool": "axe", "next": "install AXe or use --prefer-driver auto"}).Write(c.Stdout)
+		}
+		if prefer != "" && prefer != "auto" {
+			return Fail("prefer_driver_unusable", map[string]string{"driver": prefer, "capability": string(drivers.CapSwipe), "next": "use --prefer-driver auto to let mav route ui swipe"}).Write(c.Stdout)
 		}
 		return Fail("tool_missing", map[string]string{"tool": "axe|idb"}).Write(c.Stdout)
 	}
@@ -2203,7 +2265,7 @@ func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args [
 }
 
 func (c CLI) uiDoubleTap(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
-	if isPhysicalDevice(cfg) {
+	if targetKind(cfg) != drivers.KindSim {
 		return Fail("double_tap_unsupported_on_device", nil).Write(c.Stdout)
 	}
 	x, y, err := c.actionCoordinates(ctx, cfg, opts, args)
@@ -2211,7 +2273,7 @@ func (c CLI) uiDoubleTap(ctx context.Context, opts GlobalOptions, cfg Config, ar
 		return Fail(err.Error(), nil).Write(c.Stdout)
 	}
 	target := targetFromConfig(cfg)
-	driver, _, err := c.router().Route(ctx, drivers.CapDoubleTap, target, "baguette")
+	driver, _, err := c.router().Route(ctx, drivers.CapDoubleTap, target, "")
 	if err != nil {
 		return Fail("tool_missing", map[string]string{"tool": "baguette"}).Write(c.Stdout)
 	}
@@ -2247,7 +2309,7 @@ func (c CLI) actionCoordinates(ctx context.Context, cfg Config, opts GlobalOptio
 	if err != nil || selector.IsZero() {
 		return 0, 0, fmt.Errorf("selector_invalid")
 	}
-	prefer, _ := normalizePreferDriver(opts.PreferDriver)
+	prefer, _ := c.normalizePreferDriver(opts.PreferDriver)
 	matched, err := c.resolveSelector(ctx, cfg, selector, prefer)
 	if err != nil {
 		return 0, 0, err
@@ -2261,7 +2323,7 @@ func (c CLI) actionCoordinates(ctx context.Context, cfg Config, opts GlobalOptio
 
 func (c CLI) uiDrag(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
 	_ = opts
-	if isPhysicalDevice(cfg) {
+	if targetKind(cfg) != drivers.KindSim {
 		return Fail("drag_unsupported_on_device", nil).Write(c.Stdout)
 	}
 	sx, err1 := strconv.Atoi(flagValue(args, "--start-x"))
@@ -2279,7 +2341,7 @@ func (c CLI) uiDrag(ctx context.Context, opts GlobalOptions, cfg Config, args []
 	}, screenWidth, screenHeight)); sendErr == nil {
 		return c.writeFastPathResult(ctx, cfg, args, "ui.drag", map[string]string{"driver": "baguette", "session": "worker"})
 	}
-	driver, _, err := c.router().Route(ctx, drivers.CapDrag, target, "baguette")
+	driver, _, err := c.router().Route(ctx, drivers.CapDrag, target, "")
 	if err != nil {
 		return Fail("tool_missing", map[string]string{"tool": "baguette"}).Write(c.Stdout)
 	}
@@ -2297,7 +2359,7 @@ func (c CLI) uiDrag(ctx context.Context, opts GlobalOptions, cfg Config, args []
 
 func (c CLI) uiDragPath(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
 	_ = opts
-	if isPhysicalDevice(cfg) {
+	if targetKind(cfg) != drivers.KindSim {
 		return Fail("drag_path_unsupported_on_device", nil).Write(c.Stdout)
 	}
 	var points []drivers.PathPoint
@@ -2318,7 +2380,7 @@ func (c CLI) uiDragPath(ctx context.Context, opts GlobalOptions, cfg Config, arg
 			"driver": "baguette", "session": "worker", "points": strconv.Itoa(len(points)),
 		})
 	}
-	driver, _, err := c.router().Route(ctx, drivers.CapDragPath, target, "baguette")
+	driver, _, err := c.router().Route(ctx, drivers.CapDragPath, target, "")
 	if err != nil {
 		return Fail("tool_missing", map[string]string{"tool": "baguette"}).Write(c.Stdout)
 	}
@@ -2491,7 +2553,7 @@ func (c CLI) uiToggle(ctx context.Context, opts GlobalOptions, cfg Config, args 
 	if desired != "" && desired != "on" && desired != "off" {
 		return Fail("toggle_state_invalid", map[string]string{"state": desired}).Write(c.Stdout)
 	}
-	prefer, _ := normalizePreferDriver(opts.PreferDriver)
+	prefer, _ := c.normalizePreferDriver(opts.PreferDriver)
 	matched, err := c.resolveSelector(ctx, cfg, selector, prefer)
 	if err != nil {
 		return Fail(err.Error(), selectorDiagnosticFields(selector, matched)).Write(c.Stdout)
@@ -2530,7 +2592,7 @@ func elementToggleState(el Element) (bool, bool) {
 
 func (c CLI) uiPress(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
 	_ = opts
-	if isPhysicalDevice(cfg) {
+	if targetKind(cfg) != drivers.KindSim {
 		return Fail("press_unsupported_on_device", nil).Write(c.Stdout)
 	}
 	button := strings.ToLower(flagValue(args, "--button"))
@@ -2543,7 +2605,7 @@ func (c CLI) uiPress(ctx context.Context, opts GlobalOptions, cfg Config, args [
 		return Fail("button_invalid", map[string]string{"button": button}).Write(c.Stdout)
 	}
 	target := targetFromConfig(cfg)
-	driver, _, err := c.router().Route(ctx, drivers.CapHardwareBtn, target, "baguette")
+	driver, _, err := c.router().Route(ctx, drivers.CapHardwareBtn, target, "")
 	if err != nil {
 		return Fail("tool_missing", map[string]string{"tool": "baguette"}).Write(c.Stdout)
 	}
@@ -2559,7 +2621,7 @@ func (c CLI) uiPress(ctx context.Context, opts GlobalOptions, cfg Config, args [
 
 func (c CLI) uiLongPress(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
 	_ = opts
-	if isPhysicalDevice(cfg) {
+	if targetKind(cfg) != drivers.KindSim {
 		return Fail("gesture_unsupported_on_device", map[string]string{"gesture": "longPress", "next": "use sim for multitouch"}).Write(c.Stdout)
 	}
 	x := flagValue(args, "--x")
@@ -2595,7 +2657,7 @@ func (c CLI) uiLongPress(ctx context.Context, opts GlobalOptions, cfg Config, ar
 
 func (c CLI) uiPinch(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
 	_ = opts
-	if isPhysicalDevice(cfg) {
+	if targetKind(cfg) != drivers.KindSim {
 		return Fail("gesture_unsupported_on_device", map[string]string{"gesture": "pinch", "next": "use sim for multitouch"}).Write(c.Stdout)
 	}
 	params := gestureParamsFromArgs(args)
@@ -2652,7 +2714,7 @@ func (c CLI) uiPinch(ctx context.Context, opts GlobalOptions, cfg Config, args [
 
 func (c CLI) uiRotate(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
 	_ = opts
-	if isPhysicalDevice(cfg) {
+	if targetKind(cfg) != drivers.KindSim {
 		return Fail("gesture_unsupported_on_device", map[string]string{"gesture": "rotate", "next": "use sim for multitouch"}).Write(c.Stdout)
 	}
 	params := gestureParamsFromArgs(args)
@@ -2694,7 +2756,7 @@ func (c CLI) uiRotate(ctx context.Context, opts GlobalOptions, cfg Config, args 
 
 func (c CLI) uiTwoFingerPan(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
 	_ = opts
-	if isPhysicalDevice(cfg) {
+	if targetKind(cfg) != drivers.KindSim {
 		return Fail("gesture_unsupported_on_device", map[string]string{"gesture": "twoFingerPan", "next": "use sim for multitouch"}).Write(c.Stdout)
 	}
 	params := gestureParamsFromArgs(args)
@@ -2746,7 +2808,7 @@ func (c CLI) uiTwoFingerPan(ctx context.Context, opts GlobalOptions, cfg Config,
 
 func (c CLI) uiActions(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
 	_ = opts
-	if isPhysicalDevice(cfg) {
+	if targetKind(cfg) != drivers.KindSim {
 		return Fail("gesture_unsupported_on_device", map[string]string{"gesture": "w3c_actions", "next": "use sim for multitouch"}).Write(c.Stdout)
 	}
 	path := flagValue(args, "--file")
@@ -2771,9 +2833,9 @@ func (c CLI) writeGestureError(err error) error {
 
 func (c CLI) uiWait(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
 	_ = cfg
-	prefer, err := normalizePreferDriver(opts.PreferDriver)
+	prefer, err := c.normalizePreferDriver(opts.PreferDriver)
 	if err != nil {
-		return Fail("prefer_driver_invalid", map[string]string{"usage": "--prefer-driver auto|axe"}).Write(c.Stdout)
+		return Fail("prefer_driver_invalid", map[string]string{"usage": c.preferDriverUsage()}).Write(c.Stdout)
 	}
 	id := flagValue(args, "--id")
 	text := flagValue(args, "--text")
@@ -2807,9 +2869,9 @@ func (c CLI) uiWait(ctx context.Context, opts GlobalOptions, cfg Config, args []
 }
 
 func (c CLI) uiScrollUntil(ctx context.Context, opts GlobalOptions, args []string) error {
-	prefer, err := normalizePreferDriver(opts.PreferDriver)
+	prefer, err := c.normalizePreferDriver(opts.PreferDriver)
 	if err != nil {
-		return Fail("prefer_driver_invalid", map[string]string{"usage": "--prefer-driver auto|axe"}).Write(c.Stdout)
+		return Fail("prefer_driver_invalid", map[string]string{"usage": c.preferDriverUsage()}).Write(c.Stdout)
 	}
 	params := map[string]string{
 		"id":        flagValue(args, "--id"),
@@ -2914,7 +2976,7 @@ func (c CLI) location(ctx context.Context, opts GlobalOptions, args []string) er
 	}
 	cfg := c.mustLoadConfig()
 	target := targetFromConfig(cfg)
-	if isPhysicalDevice(cfg) && len(args) > 0 && args[0] == "reset" {
+	if targetKind(cfg) == drivers.KindDevice && len(args) > 0 && args[0] == "reset" {
 		return Fail("location_reset_unsupported_on_device", nil).Write(c.Stdout)
 	}
 	driver, _, err := c.router().Route(ctx, drivers.CapLocation, target, "")
@@ -2942,7 +3004,7 @@ func (c CLI) location(ctx context.Context, opts GlobalOptions, args []string) er
 	case "reset":
 		if err := utility.ResetLocation(ctx, target); err != nil {
 			code := "location_reset_failed"
-			if isPhysicalDevice(cfg) {
+			if targetKind(cfg) == drivers.KindDevice {
 				code = "location_reset_unsupported_on_device"
 			}
 			return Fail(code, map[string]string{"stderr": firstLine(err.Error())}).Write(c.Stdout)
@@ -2955,7 +3017,7 @@ func (c CLI) location(ctx context.Context, opts GlobalOptions, args []string) er
 
 func (c CLI) clipboard(ctx context.Context, opts GlobalOptions, args []string) error {
 	_ = opts
-	if isPhysicalDevice(c.mustLoadConfig()) {
+	if targetKind(c.mustLoadConfig()) != drivers.KindSim {
 		return Fail("clipboard_unsupported_on_device", nil).Write(c.Stdout)
 	}
 	if len(args) == 0 {
@@ -2963,7 +3025,7 @@ func (c CLI) clipboard(ctx context.Context, opts GlobalOptions, args []string) e
 	}
 	cfg := c.mustLoadConfig()
 	target := targetFromConfig(cfg)
-	driver, _, err := c.router().Route(ctx, drivers.CapClipboard, target, "simctl")
+	driver, _, err := c.router().Route(ctx, drivers.CapClipboard, target, "")
 	if err != nil {
 		return Fail("clipboard_unsupported", nil).Write(c.Stdout)
 	}
@@ -3050,7 +3112,7 @@ func (c CLI) captureScreenshot(ctx context.Context, cfg Config, path string) (Co
 	target := targetFromConfig(cfg)
 	prefer := ""
 	switch {
-	case isPhysicalDevice(cfg):
+	case targetKind(cfg) == drivers.KindDevice:
 		prefer = "idb"
 	case hasTool(cfg, "axe"):
 		prefer = "axe"
@@ -3568,12 +3630,12 @@ func (c CLI) executeFlowStepBound(ctx context.Context, run RunState, index int, 
 	return c.executeFlowStepBoundWithOptions(ctx, GlobalOptions{}, run, index, step, bindings)
 }
 
-func flowStepPreferDriver(opts GlobalOptions, step FlowStep) (string, error) {
+func (c CLI) flowStepPreferDriver(opts GlobalOptions, step FlowStep) (string, error) {
 	prefer := opts.PreferDriver
 	if step.Params != nil && step.Params["prefer-driver"] != "" {
 		prefer = step.Params["prefer-driver"]
 	}
-	return normalizePreferDriver(prefer)
+	return c.normalizePreferDriver(prefer)
 }
 
 func (c CLI) executeFlowStepBoundWithOptions(ctx context.Context, opts GlobalOptions, run RunState, index int, step FlowStep, bindings flowExecBindings) (map[string]string, error) {
@@ -3835,7 +3897,7 @@ func (c CLI) executeFlowStep(ctx context.Context, run RunState, index int, step 
 }
 
 func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions, run RunState, index int, step FlowStep) (map[string]string, error) {
-	prefer, preferErr := flowStepPreferDriver(opts, step)
+	prefer, preferErr := c.flowStepPreferDriver(opts, step)
 	if preferErr != nil {
 		return copyParams(step.Params), preferErr
 	}
@@ -4157,7 +4219,7 @@ func (c CLI) executeWhenFlowStepWithOptions(ctx context.Context, opts GlobalOpti
 	if len(step.Do) == 0 {
 		return nil, fmt.Errorf("when_do_missing")
 	}
-	prefer, preferErr := flowStepPreferDriver(opts, step)
+	prefer, preferErr := c.flowStepPreferDriver(opts, step)
 	if preferErr != nil {
 		return copyParams(step.Params), preferErr
 	}
@@ -4199,7 +4261,7 @@ func (c CLI) executeWhenFlowStepBoundWithOptions(ctx context.Context, opts Globa
 	if len(step.Do) == 0 {
 		return nil, fmt.Errorf("when_do_missing")
 	}
-	prefer, preferErr := flowStepPreferDriver(opts, step)
+	prefer, preferErr := c.flowStepPreferDriver(opts, step)
 	if preferErr != nil {
 		return copyParams(step.Params), preferErr
 	}
@@ -4237,7 +4299,7 @@ func (c CLI) executeWhileNotVisibleFlowStepBoundWithOptions(ctx context.Context,
 	if len(step.Do) == 0 {
 		return nil, fmt.Errorf("while_do_missing")
 	}
-	prefer, preferErr := flowStepPreferDriver(opts, step)
+	prefer, preferErr := c.flowStepPreferDriver(opts, step)
 	if preferErr != nil {
 		return copyParams(step.Params), preferErr
 	}
@@ -5196,7 +5258,7 @@ func (c CLI) crashes(ctx context.Context, opts GlobalOptions, args []string) err
 	}
 	c.resolveConfigTools(&cfg)
 	c.resolveConfigTarget(&cfg)
-	if !isPhysicalDevice(cfg) && !opts.Raw {
+	if targetKind(cfg) == drivers.KindSim && !opts.Raw {
 		return c.crashesFromDiagnosticReports("")
 	}
 	if !hasTool(cfg, "idb") {
@@ -5212,7 +5274,7 @@ func (c CLI) crashes(ctx context.Context, opts GlobalOptions, args []string) err
 		return nil
 	}
 	if result.Err != nil {
-		if !isPhysicalDevice(cfg) {
+		if targetKind(cfg) == drivers.KindSim {
 			return c.crashesFromDiagnosticReports(firstLine(result.Stderr))
 		}
 		fields := map[string]string{"stderr": firstLine(result.Stderr)}
@@ -5231,7 +5293,7 @@ func (c CLI) crashes(ctx context.Context, opts GlobalOptions, args []string) err
 
 	if run, err := c.resolveRun(""); err == nil {
 		crashDir := filepath.Join(run.Dir, "crashes")
-		driver, _, err := c.router().Route(ctx, drivers.CapCrashFetch, targetFromConfig(cfg), "idb")
+		driver, _, err := c.router().Route(ctx, drivers.CapCrashFetch, targetFromConfig(cfg), "")
 		if err != nil {
 			return Fail("tool_missing", map[string]string{"tool": "idb"}).Write(c.Stdout)
 		}
@@ -5755,14 +5817,6 @@ func isContainerAtom(kind string) bool {
 	}
 }
 
-func axeTargetArgs(cfg Config, args ...string) []string {
-	out := append([]string{}, args...)
-	if udid := targetUDID(cfg); udid != "" {
-		out = append(out, "--udid", udid)
-	}
-	return out
-}
-
 func idbTargetArgs(cfg Config, args ...string) []string {
 	out := append([]string{}, args...)
 	if udid := targetUDID(cfg); udid != "" {
@@ -5794,7 +5848,7 @@ func isSwipeDirection(direction string) bool {
 }
 
 func (c CLI) startVideoRecording(ctx context.Context, cfg Config, run RunState) (string, int, error) {
-	if isPhysicalDevice(cfg) {
+	if targetKind(cfg) != drivers.KindSim {
 		return "", 0, fmt.Errorf("video_unsupported")
 	}
 	if !hasTool(cfg, "xcrun") {

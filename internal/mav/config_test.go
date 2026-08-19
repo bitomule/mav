@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/bitomule/mav/internal/mav/drivers"
 )
 
 type fakeRunner struct {
@@ -358,7 +360,7 @@ simulator_udid: SIM-1
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.TargetKind != "simulator" || isPhysicalDevice(loaded) {
+	if loaded.TargetKind != "simulator" || targetKind(loaded) != drivers.KindSim {
 		t.Fatalf("target=%q loaded=%+v", loaded.TargetKind, loaded)
 	}
 }

@@ -334,7 +334,7 @@ func TestTargetCommandFailureFallsBackToBootedUDIDForRealDispatch(t *testing.T) 
 			targetKey: {Stderr: "simpool: pool at capacity", Code: 1, Err: fmt.Errorf("exit status 1")},
 		},
 		out: map[string]string{
-			"xcrun simctl list devices booted -j":     bootedJSON,
+			"xcrun simctl list devices booted -j":    bootedJSON,
 			"axe describe-ui --udid BOOTED-FALLBACK": `[{"AXUniqueId":"HomeView","AXRole":"Application"}]`,
 		},
 	}

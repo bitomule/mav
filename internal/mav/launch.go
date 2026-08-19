@@ -115,7 +115,7 @@ func shouldUseDriverInstall(cfg Config, commands LaunchCommands) bool {
 		isMAVSimctlInstall(command) ||
 		strings.Contains(command, "idb install") && strings.Contains(command, "MAV_APP_PATH") ||
 		strings.Contains(command, "idb install") && strings.Contains(command, "$MAV_APP_PATH") ||
-		(isPhysicalDevice(cfg) && strings.Contains(command, "simctl install"))
+		(targetKind(cfg) == drivers.KindDevice && strings.Contains(command, "simctl install"))
 }
 
 func shouldUseDriverLaunch(cfg Config, commands LaunchCommands) bool {
@@ -123,7 +123,7 @@ func shouldUseDriverLaunch(cfg Config, commands LaunchCommands) bool {
 	return command == "" && cfg.BundleID != "" ||
 		isMAVSimctlLaunch(command) ||
 		strings.Contains(command, "idb launch") && strings.Contains(command, "MAV_BUNDLE_ID") ||
-		(isPhysicalDevice(cfg) && strings.Contains(command, "simctl launch"))
+		(targetKind(cfg) == drivers.KindDevice && strings.Contains(command, "simctl launch"))
 }
 
 func (c CLI) runDriverLifecycle(ctx context.Context, cfg Config, run RunState, step launchStep, appPath string) CommandResult {
@@ -135,14 +135,10 @@ func (c CLI) runDriverLifecycle(ctx context.Context, cfg Config, run RunState, s
 	if step.Name == "clear_state" {
 		capability = drivers.CapUninstall
 	}
-	prefer := "simctl"
-	if isPhysicalDevice(cfg) {
-		prefer = "idb"
-	}
-	driver, _, err := c.router().Route(ctx, capability, target, prefer)
+	driver, _, err := c.router().Route(ctx, capability, target, "")
 	if err != nil {
 		result := CommandResult{Stderr: err.Error(), Err: err}
-		appendCommand(run, "launch."+step.Name+" driver="+prefer, result)
+		appendCommand(run, "launch."+step.Name+" capability="+string(capability), result)
 		return result
 	}
 	lifecycle, ok := driver.(drivers.LifecycleDriver)
@@ -181,13 +177,13 @@ func launchEnv(cfg Config, run RunState, appPath string) map[string]string {
 		udid = "booted"
 	}
 	isDevice := "false"
-	if isPhysicalDevice(cfg) {
+	if targetKind(cfg) == drivers.KindDevice {
 		isDevice = "true"
 	}
 	return map[string]string{
 		"MAV_ROOT":        cfg.Root,
 		"MAV_RUN_DIR":     run.Dir,
-		"MAV_TARGET_KIND": normalizedTargetKind(cfg),
+		"MAV_TARGET_KIND": targetKindLabel(targetKind(cfg)),
 		"MAV_IS_DEVICE":   isDevice,
 		"MAV_UDID":        udid,
 		"MAV_BUNDLE_ID":   cfg.BundleID,
@@ -200,7 +196,7 @@ func launchEnv(cfg Config, run RunState, appPath string) map[string]string {
 
 func effectiveLaunchCommands(cfg Config) LaunchCommands {
 	commands := cfg.Launch.Commands
-	if !isPhysicalDevice(cfg) {
+	if targetKind(cfg) != drivers.KindDevice {
 		return commands
 	}
 	if isMAVSimctlInstall(commands.Install) || commands.Install == "" && commands.AppPath != "" {
