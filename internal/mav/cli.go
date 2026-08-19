@@ -2217,7 +2217,14 @@ func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args [
 	}
 	target := targetFromConfig(cfg)
 	preferred := ""
-	if prefer == "axe" || hasTool(cfg, "axe") {
+	switch {
+	case prefer != "" && prefer != "auto":
+		// Un --prefer-driver explicito manda. Aceptar el flag y luego
+		// sobreescribirlo con "axe" seria configuracion muerta del mismo tipo
+		// que target_command_ignored existe para hacer visible: el usuario
+		// pide un driver, mav dice que si, y corre otro sin decir nada.
+		preferred = prefer
+	case hasTool(cfg, "axe"):
 		preferred = "axe"
 	}
 	// CapSwipe: mismo coste de Probe que CapType, mas cfg.Tools["axe"]=true sin
@@ -2227,6 +2234,9 @@ func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args [
 	if err != nil {
 		if prefer == "axe" {
 			return Fail("tool_missing", map[string]string{"tool": "axe", "next": "install AXe or use --prefer-driver auto"}).Write(c.Stdout)
+		}
+		if prefer != "" && prefer != "auto" {
+			return Fail("prefer_driver_unusable", map[string]string{"driver": prefer, "capability": string(drivers.CapSwipe), "next": "use --prefer-driver auto to let mav route ui swipe"}).Write(c.Stdout)
 		}
 		return Fail("tool_missing", map[string]string{"tool": "axe|idb"}).Write(c.Stdout)
 	}

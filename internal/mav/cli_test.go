@@ -1775,6 +1775,64 @@ func TestUISwipePreferAxeDoesNotFallbackToIDB(t *testing.T) {
 	}
 }
 
+// TestUISwipeExplicitPreferIsHonoured guards the regression that abrir
+// --prefer-driver a cualquier id registrado introduce: uiSwipe fijaba
+// preferred="axe" en cuanto cfg tenia axe, asi que un --prefer-driver que
+// antes se rechazaba de plano (prefer_driver_invalid) pasaba a aceptarse y
+// ejecutarse con axe sin decir nada. Aceptar un flag y luego ignorarlo es
+// exactamente la clase de configuracion muerta que target_command_ignored
+// existe para hacer visible.
+func TestUISwipeExplicitPreferIsHonoured(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.BundleID = "com.example.app"
+	cfg.Tools = map[string]bool{"axe": true, "baguette": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runner := &sequenceRecordingRunner{tools: cfg.Tools}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"--prefer-driver", "baguette", "ui", "swipe", "up"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "driver=baguette") {
+		t.Fatalf("--prefer-driver baguette debe servirse con baguette, no sobreescribirse con axe: %q", got)
+	}
+	if containsCall(runner.commands, "axe swipe") {
+		t.Fatalf("--prefer-driver baguette no debe ejecutarse en silencio con axe: %v", runner.commands)
+	}
+}
+
+// TestUISwipeExplicitPreferThatCannotServeFailsLoudly cubre la otra mitad: un
+// --prefer-driver ahora valido como id pero incapaz de servir esta capacidad
+// debe fallar nombrandolo, no caer en silencio al driver por defecto.
+func TestUISwipeExplicitPreferThatCannotServeFailsLoudly(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.BundleID = "com.example.app"
+	cfg.Tools = map[string]bool{"axe": true, "simtime": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runner := &sequenceRecordingRunner{tools: cfg.Tools}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"--prefer-driver", "simtime", "ui", "swipe", "up"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "fail code=prefer_driver_unusable") || !strings.Contains(got, "driver=simtime") {
+		t.Fatalf("un prefer que no puede servir swipe debe fallar nombrandolo, got %q", got)
+	}
+	if containsCall(runner.commands, "axe swipe") {
+		t.Fatalf("no debe caer en silencio a axe: %v", runner.commands)
+	}
+}
+
 // TestSingleProviderCapabilitiesStayHardcodedAfterPreferDriverRemoval locks
 // in FIX B.2: dropping the redundant --prefer-driver hints on single-provider
 // capabilities (CapHardwareBtn, CapDoubleTap, CapWallClock) must not change
