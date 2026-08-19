@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.11.0
+
+- El router de capacidades vuelve a decidir de verdad. La mayoria de las llamadas a
+  `Route()` pedian una capacidad **y ademas** clavaban el driver (`prefer: "axe"`,
+  `"idb"`, `"baguette"`, `"simctl"`), y otras trece se saltaban el router entero
+  llamando a `axe`/`xcrun` a pelo. Eso convertia la tabla de `Cost` en decoracion:
+  daba igual que un driver declarase la capacidad, nunca iba a ganar. Ahora los
+  `prefer` redundantes desaparecen -- se han quitado solo donde la capacidad tiene
+  un unico proveedor, comprobado capacidad por capacidad, asi que el driver que
+  sirve cada comando no cambia -- y los que de verdad desempatan (`tap.coord`,
+  `type`, `swipe`, `screenshot`) siguen ahi, con test de regresion que lo fija.
+- `--prefer-driver` acepta cualquier driver registrado en vez de solo `auto|axe`,
+  y el `usage` del error los lista de verdad en vez de repetir una cadena fija.
+  Abrir el flag destapo un fallo que su propia validacion tapaba: `ui swipe`
+  fijaba `axe` en cuanto estaba instalado y solo miraba `--prefer-driver` para el
+  caso `axe`, asi que cualquier otro valor se habria aceptado y luego ignorado en
+  silencio. Un prefer explicito manda ahora, y si el driver pedido no puede servir
+  la capacidad se falla nombrandolo (`prefer_driver_unusable driver=<id>`) en vez
+  de correr otro sin decirlo -- la misma correccion de rumbo que `target_command_ignored`
+  en la v0.9.1.
+- `isPhysicalDevice` (44 usos) y `normalizedTargetKind` desaparecen a favor de
+  `targetKind()`, que devuelve el enum del router en vez de un booleano. Era un
+  `if` binario que asumia "si no es device, es simulador" repartido por todo el
+  CLI; ahora es un `switch`, y las guardas sim-only se escriben `!= KindSim` para
+  que un tercer tipo de target falle cerrado en vez de colarse por la rama del
+  simulador. La grafia publica no se mueve: `target_kind` sigue diciendo
+  `simulator`/`device` en la salida, en `MAV_TARGET_KIND` y en los `config.yaml`
+  ya escritos en disco.
+- El rastro de evidencia del ciclo de vida mejora de paso: `commands.jsonl`
+  registraba `driver=<el que se pidio>` y ahora registra `driver=<el que sirvio>`.
+  Cuando el enrutado falla del todo no se inventa un driver: anota la capacidad.
+
 ## v0.10.1
 
 - Un comando ya no falla cuando el simulador que `target_command` había
