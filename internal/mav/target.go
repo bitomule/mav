@@ -9,38 +9,59 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/bitomule/mav/internal/mav/drivers"
 )
 
-func normalizedTargetKind(cfg Config) string {
+// targetKind es el unico sitio que decide QUE ES un target. Devuelve el enum
+// del router (drivers.TargetKind) en vez de un bool para que anadir un tercer
+// kind sea anadir un case, no auditar cada if del CLI.
+func targetKind(cfg Config) drivers.TargetKind {
 	if cfg.TargetKind == "device" {
-		return "device"
+		return drivers.KindDevice
 	}
-	return "simulator"
+	return drivers.KindSim
 }
 
-func isPhysicalDevice(cfg Config) bool {
-	return normalizedTargetKind(cfg) == "device"
+// targetKindLabel es la grafia PUBLICA de un TargetKind: es lo que sale en el
+// campo target_kind de la salida del CLI, en MAV_TARGET_KIND y en el
+// target_kind de .mav/config.yaml. Deliberadamente NO es string(kind)
+// ("sim"), que es un token interno de routing: "simulator"/"device" son
+// contrato con los agentes y con los config.yaml ya escritos en disco.
+func targetKindLabel(kind drivers.TargetKind) string {
+	switch kind {
+	case drivers.KindDevice:
+		return "device"
+	default:
+		return "simulator"
+	}
 }
 
 func targetUDID(cfg Config) string {
-	if isPhysicalDevice(cfg) {
+	switch targetKind(cfg) {
+	case drivers.KindDevice:
 		return cfg.DeviceUDID
+	default:
+		return cfg.SimulatorUDID
 	}
-	return cfg.SimulatorUDID
 }
 
 func targetName(cfg Config) string {
-	if isPhysicalDevice(cfg) {
+	switch targetKind(cfg) {
+	case drivers.KindDevice:
 		return cfg.DeviceName
+	default:
+		return cfg.SimulatorName
 	}
-	return cfg.SimulatorName
 }
 
 func targetRuntime(cfg Config) string {
-	if isPhysicalDevice(cfg) {
+	switch targetKind(cfg) {
+	case drivers.KindDevice:
 		return ""
+	default:
+		return cfg.SimulatorRuntime
 	}
-	return cfg.SimulatorRuntime
 }
 
 // OK is the CLI-bound counterpart of the package-level OK: it's the single
@@ -83,7 +104,7 @@ func (c CLI) withResolvedTarget(fields map[string]string) map[string]string {
 	// no separate fallback needed here just for the reported fields.
 	udid := targetUDID(cfg)
 	name := targetName(cfg)
-	kind := normalizedTargetKind(cfg)
+	kind := targetKindLabel(targetKind(cfg))
 	if udid == "" {
 		return fields
 	}
@@ -216,7 +237,7 @@ func (c CLI) resolveBootedSimulator() (string, string) {
 //     through the same target_command_warn field as the failure case, since
 //     both boil down to "target_command is configured but not in effect."
 func (c CLI) resolveConfigTarget(cfg *Config) string {
-	if isPhysicalDevice(*cfg) {
+	if targetKind(*cfg) != drivers.KindSim {
 		return ""
 	}
 	if os.Getenv("MAV_TARGET_KIND") != "" {
@@ -428,7 +449,7 @@ func isSimulatorBooted(runner Runner, udid string) bool {
 // not in effect, or re-resolution produced the same or no UDID) so the
 // caller falls back to reporting the original failure untouched.
 func (c CLI) staleSimulatorTargetRetry(cfg Config) (retried Config, previousUDID string, ok bool) {
-	if isPhysicalDevice(cfg) || cfg.SimulatorUDID == "" {
+	if targetKind(cfg) != drivers.KindSim || cfg.SimulatorUDID == "" {
 		return Config{}, "", false
 	}
 	if !c.targetCommandInEffectForRun() {
@@ -478,7 +499,7 @@ func (c CLI) dispatchWithStaleTargetRetry(cfg Config, dispatch func(CLI, Config)
 	if !strings.HasPrefix(strings.TrimSpace(out), "fail ") {
 		return out
 	}
-	if isPhysicalDevice(cfg) || cfg.SimulatorUDID == "" || isSimulatorBooted(c.Runner, cfg.SimulatorUDID) {
+	if targetKind(cfg) != drivers.KindSim || cfg.SimulatorUDID == "" || isSimulatorBooted(c.Runner, cfg.SimulatorUDID) {
 		return out
 	}
 	if !c.targetCommandInEffectForRun() {
@@ -548,7 +569,7 @@ var targetCommandKeepAliveInterval = 60 * time.Second
 // otherwise every run would look like target_command is in effect, since
 // resolution always leaves SimulatorUDID non-empty on success.
 func targetCommandInEffect(raw Config) bool {
-	if isPhysicalDevice(raw) {
+	if targetKind(raw) != drivers.KindSim {
 		return false
 	}
 	if raw.SimulatorUDID != "" {

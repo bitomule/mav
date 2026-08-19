@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/bitomule/mav/internal/mav/drivers"
 )
 
 // dapIOTimeout bounds every blocking read from lldb-dap so a wedged adapter
@@ -483,7 +485,7 @@ func (c CLI) debug(ctx context.Context, opts GlobalOptions, args []string) error
 	if err != nil {
 		return Fail("config_not_found", nil).Write(c.Stdout)
 	}
-	if isPhysicalDevice(cfg) {
+	if targetKind(cfg) != drivers.KindSim {
 		return Fail("debug_unsupported_on_device", nil).Write(c.Stdout)
 	}
 	run, err := c.resolveRun("")

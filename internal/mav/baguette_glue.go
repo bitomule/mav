@@ -12,33 +12,40 @@ import (
 	"github.com/bitomule/mav/internal/mav/drivers"
 )
 
+// driverRegistry construye el registry contra el que rutea esta invocacion.
+// Separado de router() porque la validacion de --prefer-driver necesita
+// preguntar QUE drivers existen antes de que haya nada que rutear.
+func (c CLI) driverRegistry() *drivers.Registry {
+	reg := drivers.NewRegistry()
+	RegisterDefaultDrivers(reg, NewExecutor(c.Runner))
+	return reg
+}
+
 // router lazily builds the router for this CLI invocation. cli.go uses a value
 // receiver everywhere, so the router is built once per call site that needs it
 // rather than cached on CLI. That keeps the existing shape simple.
 func (c CLI) router() *drivers.Router {
-	reg := drivers.NewRegistry()
-	RegisterDefaultDrivers(reg, NewExecutor(c.Runner))
 	disabled := strings.Split(os.Getenv("MAV_DRIVERS_DISABLE"), ",")
-	return drivers.NewRouter(reg, NewExecutor(c.Runner), disabled)
+	return drivers.NewRouter(c.driverRegistry(), NewExecutor(c.Runner), disabled)
 }
 
 // targetFromConfig projects the cfg fields the drivers need onto Target.
 func targetFromConfig(cfg Config) drivers.Target {
 	target := drivers.Target{
-		Kind:     drivers.KindSim,
+		Kind:     targetKind(cfg),
 		BundleID: cfg.BundleID,
 		Locale:   cfg.Locale,
 		Language: cfg.Language,
 	}
-	if isPhysicalDevice(cfg) {
-		target.Kind = drivers.KindDevice
+	switch target.Kind {
+	case drivers.KindDevice:
 		target.UDID = cfg.DeviceUDID
 		target.Name = cfg.DeviceName
-		return target
+	default:
+		target.UDID = cfg.SimulatorUDID
+		target.Name = cfg.SimulatorName
+		target.Runtime = cfg.SimulatorRuntime
 	}
-	target.UDID = cfg.SimulatorUDID
-	target.Name = cfg.SimulatorName
-	target.Runtime = cfg.SimulatorRuntime
 	return target
 }
 

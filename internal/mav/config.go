@@ -167,7 +167,7 @@ func SaveConfig(root string, cfg Config) error {
 		b.WriteString("\n")
 	}
 	writeKV("project_name", cfg.ProjectName)
-	writeKV("target_kind", normalizedTargetKind(cfg))
+	writeKV("target_kind", targetKindLabel(targetKind(cfg)))
 	if cfg.AppTarget != "" {
 		writeKV("app_target", cfg.AppTarget)
 	}
@@ -361,7 +361,7 @@ func mergeSetupConfig(existing, detected Config) Config {
 		merged.SimulatorRuntime = existing.SimulatorRuntime
 	}
 	if existing.TargetKind != "" {
-		merged.TargetKind = normalizedTargetKind(existing)
+		merged.TargetKind = targetKindLabel(targetKind(existing))
 	}
 	if existing.DeviceUDID != "" {
 		merged.DeviceUDID = existing.DeviceUDID

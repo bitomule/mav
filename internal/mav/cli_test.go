@@ -825,6 +825,56 @@ func TestPreferDriverRejectsAppium(t *testing.T) {
 	}
 }
 
+// TestPreferDriverAcceptsRegisteredNonAxeDriver locks in FIX B.1: --prefer-driver
+// is validated against the driver registry, not a frozen auto|axe list, so a
+// driver id that was rejected before (baguette was never in the switch) is now
+// accepted. uiPress ignores opts.PreferDriver entirely (its Route call always
+// hints "baguette"), so this uses ui swipe -- one of the handlers that actually
+// calls normalizePreferDriver -- to exercise the validation path itself.
+func TestPreferDriverAcceptsRegisteredNonAxeDriver(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.BundleID = "com.example.app"
+	cfg.Tools = map[string]bool{"baguette": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runner := &sequenceRecordingRunner{tools: cfg.Tools}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"--prefer-driver", "baguette", "ui", "swipe", "up"}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "prefer_driver_invalid") {
+		t.Fatalf("baguette should be a valid --prefer-driver value now: got %q", out.String())
+	}
+}
+
+// TestPreferDriverUsageListsRegisteredDrivers locks in the other half of FIX
+// B.1: the prefer_driver_invalid error's usage field must enumerate the ids
+// Registry.All() actually returns, not the frozen "auto|axe" string.
+func TestPreferDriverUsageListsRegisteredDrivers(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.Tools = map[string]bool{"axe": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{tools: cfg.Tools}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"--prefer-driver", "appium", "ui", "tree"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "fail code=prefer_driver_invalid") {
+		t.Fatalf("got %q", got)
+	}
+	if !strings.Contains(got, "auto|axe|baguette|idb|mitmproxy|simctl|simtime") {
+		t.Fatalf("usage field should list registered drivers, got %q", got)
+	}
+}
+
 func TestSubcommandHelp(t *testing.T) {
 	var out bytes.Buffer
 	cli := CLI{Runner: fakeRunner{}, Root: t.TempDir(), Stdout: &out, Stderr: &bytes.Buffer{}}
@@ -1725,6 +1775,85 @@ func TestUISwipePreferAxeDoesNotFallbackToIDB(t *testing.T) {
 	}
 }
 
+// TestSingleProviderCapabilitiesStayHardcodedAfterPreferDriverRemoval locks
+// in FIX B.2: dropping the redundant --prefer-driver hints on single-provider
+// capabilities (CapHardwareBtn, CapDoubleTap, CapWallClock) must not change
+// which driver actually serves the request, since that driver was already
+// the only healthy candidate.
+func TestSingleProviderCapabilitiesStayHardcodedAfterPreferDriverRemoval(t *testing.T) {
+	root := t.TempDir()
+	t.Cleanup(func() { removeSimulatorLock("SIM", root) })
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.BundleID = "com.example.app"
+	cfg.Tools = map[string]bool{"axe": true, "baguette": true, "idb": true, "xcrun": true, "simtime": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(run.Dir) })
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(run.Dir, "time-control.enabled"), []byte(cfg.BundleID+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &sequenceRecordingRunner{
+		tools: cfg.Tools,
+		out:   map[string]string{"simtime --udid SIM --bundle com.example.app": "idle"},
+	}
+
+	t.Run("press reaches baguette", func(t *testing.T) {
+		var out bytes.Buffer
+		cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+		if err := cli.Run(context.Background(), []string{"ui", "press", "--button", "home"}); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out.String(), "driver=baguette") {
+			t.Fatalf("got %q", out.String())
+		}
+	})
+
+	t.Run("doubleTap reaches baguette", func(t *testing.T) {
+		var out bytes.Buffer
+		cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+		if err := cli.Run(context.Background(), []string{"ui", "doubleTap", "--x", "1", "--y", "1"}); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out.String(), "driver=baguette") {
+			t.Fatalf("got %q", out.String())
+		}
+	})
+
+	t.Run("time status reaches simtime", func(t *testing.T) {
+		var out bytes.Buffer
+		cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+		if err := cli.Run(context.Background(), []string{"time", "status"}); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out.String(), "driver=simtime") {
+			t.Fatalf("got %q", out.String())
+		}
+	})
+
+	t.Run("coord tap still reaches idb", func(t *testing.T) {
+		// Regression guard for the CapCoordTap prefer kept in cli.go: without
+		// it, axe/baguette/idb tie at cost 50 and the ID tie-break would pick
+		// axe instead.
+		var out bytes.Buffer
+		cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+		if err := cli.Run(context.Background(), []string{"ui", "tap", "--x", "10", "--y", "10"}); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out.String(), "driver=idb") {
+			t.Fatalf("got %q", out.String())
+		}
+	})
+}
+
 func TestOpenStartsOnlyProbeLogsByDefault(t *testing.T) {
 	root := t.TempDir()
 	t.Cleanup(func() { removeSimulatorLock("SIM", root) })
@@ -2122,6 +2251,39 @@ func TestSimBootRejectsPhysicalTarget(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "fail code=sim_not_applicable") {
 		t.Fatalf("got %q", out.String())
+	}
+}
+
+// TestSimBootToleratesAlreadyBootingState locks in FIX C.2: mav sim boot now
+// routes its boot through the router (CapBoot -> simctl.Boot), and that
+// driver call must keep the exact same tolerance the old direct `xcrun
+// simctl boot` call had for a simulator that is already transitioning to
+// booted.
+func TestSimBootToleratesAlreadyBootingState(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.Tools = map[string]bool{"xcrun": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runner := &sequenceRecordingRunner{
+		tools: cfg.Tools,
+		err: map[string]CommandResult{
+			"xcrun simctl boot SIM": {Stderr: "Unable to boot device in current state", Err: os.ErrNotExist},
+		},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"sim", "boot"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.HasPrefix(strings.TrimSpace(got), "ok ") {
+		t.Fatalf("boot tolerance should still yield ok, got %q", got)
+	}
+	if !strings.Contains(got, "udid=SIM") {
+		t.Fatalf("got %q", got)
 	}
 }
 
