@@ -72,53 +72,60 @@ dice explícitamente que hay que concederlo a mano.
 
 ## La receta
 
-`.crabbox.yaml` en la raíz del repo:
+**Requisito de versión, y es la trampa que más tiempo cuesta**: hace falta **tart >= 2.29** (probado con
+2.35.0). En 2.28.1 `tart exec` calcula el tamaño del terminal **siempre**, con un `try!` sin guard, así que
+revienta cuando no hay TTY:
+
+```
+tart/Exec.swift:91: Fatal error: 'try!' expression unexpectedly raised an error:
+failed to get terminal size: Inappropriate ioctl for device
+ssh key injection failed
+```
+
+crabbox usa `tart exec` para inyectar la clave SSH, así que con tart 2.28.1 **el provider entero no
+arranca desde ningún contexto no interactivo** — que es justo para lo que existe. En `main` está envuelto
+en `if tty` y ya no pasa. No es un bug que reportar: es actualizar.
+
+`.crabbox.yaml` en la raíz del repo (ver `crabbox.yaml.example` aquí al lado):
 
 ```yaml
-provider: tart
-tart:
-  image: ghcr.io/cirruslabs/macos-tahoe-base:latest
-  user: admin
-  cpus: 4
-  memory: 8192
+jobs:
+  mav-macos:
+    provider: tart
+    target: macos
+    idleTimeout: 30m
+    shell: true
+    command: >
+      export PATH=/usr/local/bin:/opt/homebrew/bin:$PATH &&
+      mav doctor &&
+      mav --profile mac run flows/smoke.yaml
+    stop: always
 ```
 
-Y en `.mav/config.yaml`, el perfil declara dónde corre:
+La imagen se elige con `CRABBOX_TART_IMAGE` o `--tart-image`. Comprobado end-to-end con
+`ghcr.io/cirruslabs/macos-tahoe-xcode:latest`: crabbox alquila la VM, inyecta la clave, sincroniza el
+checkout sucio, ejecuta, y libera el lease al terminar. Cuando el comando falla deja un bundle de fallo
+local y sugiere los `crabbox ssh` / `run --id` / `stop` concretos para retomar sobre el mismo lease.
 
-```yaml
-profiles:
-  mac-vm:
-    target_kind: macos
-    runner: crabbox
-    app_target: "//App:MyAppMac"
-```
+### Quién monta qué
 
-Aprovisionamiento (una vez por caja, en el warmup de crabbox):
+La separación de responsabilidades es de crabbox, no invención nuestra — su propia documentación la fija:
+*"Crabbox owns the lease lifecycle, sync, execution and cleanup. The repository owns the command string,
+package-manager setup, test environment"*.
 
-```sh
-#!/bin/sh
-# scripts/provision-mav-vm.sh
-set -eu
+| Capa | Quién | Qué monta |
+|---|---|---|
+| Imagen | tú, una vez | mav, peekaboo, axcli, y los permisos TCC concedidos |
+| Máquina | **crabbox** | lease, sync del checkout, ejecución, limpieza |
+| App | **mav** (`fixtures`) | el estado de la app antes de lanzarla |
 
-brew install bitomule/tap/mav steipete/tap/peekaboo bitomule/tap/axcli
+Ojo con la palabra "fixture": crabbox no la usa para esto. Su `warmup`/`prewarm` prepara **la caja**, no
+la app. El estado de la app es cosa de mav.
 
-# OJO: no hay linea que siembre TCC aqui. No funciona en macOS 26 (ver arriba).
-# Los permisos vienen concedidos en la imagen; si no lo estan, este script no
-# puede arreglarlo y mav lo dira en `doctor`.
-```
+Instalar mav y los drivers **no va en un hook de crabbox**: va en el comando del repo, o mejor en la
+imagen. Meterlo en el comando significa reinstalarlo en cada run.
 
-**El PATH importa más de lo que parece.** En una sesión SSH no interactiva el `PATH` es
-`/usr/bin:/bin:/usr/sbin:/sbin` — sin `/usr/local/bin` ni `/opt/homebrew/bin`. Cualquier cosa que
-instales queda invisible al conducirla por SSH, incluido desde crabbox. Exporta el PATH
-explícitamente en cada comando remoto.
-
-Y el run:
-
-```sh
-crabbox run --provider tart -- mav run flows/smoke.yaml --profile mac-vm
-```
-
-## Lo que no funciona todavía
+## Lo que no funciona todavía## Lo que no funciona todavía
 
 `crabbox run --artifact-glob` **rechaza los targets nativos de macOS**, que es justo el
 mecanismo con el que sacarías `.mav/runs/<id>/` de la VM. Está identificado aguas arriba en
