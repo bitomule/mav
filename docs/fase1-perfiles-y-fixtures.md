@@ -53,7 +53,7 @@ default_profile: ios          # opcional; sin él, la base se usa tal cual
 
 profiles:
   macos:
-    target_kind: macos        # Fase 2; en la Fase 1 sólo se lee y se propaga
+    # OJO: `target_kind: macos` NO va en la Fase 1. Ver "Trampa de orden" abajo.
     app_target: "//App:NokoruMac"
     launch:
       commands:
@@ -83,6 +83,19 @@ el fallo que `target_command_ignored` existe para evitar.
 perfil (como `install: ""` arriba) es presencia, y significa "sin comando" — no "hereda el de la base". Es la
 diferencia que permite a macOS anular el `simctl install` heredado.
 
+### Trampa de orden: `target_kind: macos` no puede entrar en esta fase
+
+`LoadConfig` sólo rellena `target_kind` cuando viene vacío (`config.go`: `if cfg.TargetKind == "" { cfg.TargetKind = "simulator" }`), y `targetKind()` devuelve `KindDevice` únicamente cuando el valor es exactamente `"device"`; **cualquier otra cosa cae en `KindSim`**. Es decir: un `target_kind: macos` en un perfil de la Fase 1 no falla — se comporta como simulador, en silencio.
+
+Escenario concreto: `mav open --profile macos` construye `//App:NokoruMac`, y acto seguido `launchEnv` exporta un `MAV_UDID` de simulador y `shouldUseDriverInstall` encamina a simctl. La app de Mac acaba pasando por la ruta de instalación del simulador y el fallo aparece dos capas más abajo, sin relación aparente con la causa.
+
+Dos consecuencias para el alcance de esta fase:
+
+1. **La Fase 1 no incluye `target_kind: macos`.** El eje de plataforma llega en la Fase 2 con `drivers.KindMac`.
+2. **La validación end-to-end de esta fase es sólo con perfiles de iOS.** Lo que se demuestra aquí es que los perfiles y los fixtures funcionan sin romper el camino existente, no que macOS arranque.
+
+Y una tarea que se gana: mientras `KindMac` no exista, un `target_kind` desconocido debe **fallar ruidosamente** en vez de degradar a simulador. Es un fallo latente que ya existe hoy, no lo introducen los perfiles — pero los perfiles lo vuelven fácil de pisar.
+
 ### Fixtures
 
 Un fixture es una lista de comandos con nombre. Se ejecutan por el mismo camino que `launch.commands`
@@ -99,6 +112,11 @@ clear_state (si --clear-state)  →  healthcheck  →  build  →  app_path  →
 
 La ventana entre `install` y `launch` es la única correcta: el contenedor ya existe (lo crea el install) y la
 app aún no ha arrancado, así que nada tiene el sqlite abierto.
+
+**`--fixture` es incompatible con `--no-relaunch`.** `--no-relaunch` se salta la receta entera
+(`cli.go:1069`, `if !noRelaunch { ... }`), así que un fixture nunca llegaría a correr. Aceptar el flag y no
+ejecutarlo es configuración muerta. El repo ya tiene la respuesta correcta para exactamente esta forma:
+`cli.go:1013` rechaza `--no-relaunch` junto a `--clear-state` con `open_flags_invalid`. Mismo trato.
 
 ## Puntos de código
 
@@ -149,7 +167,21 @@ Campo nuevo junto a `ClearState` en el struct de paso (`internal/mav/flow.go:138
 Verificar que el orden es clear_state → … → install → fixture → launch.
 *Aceptación*: test que activa ambos y afirma el orden en `commands.jsonl`.
 
-**T7 — Documentación**
+**T7 — El fixture aparece en la evidencia del run**
+El struct `Report` (`internal/mav/evidence.go:43`) no registra hoy nada de la receta de lanzamiento — ni
+siquiera si hubo `--clear-state`. Un run cuyo estado lo sembró un fixture, y cuyo `report.json` no dice cuál,
+no es reproducible desde su propia evidencia. Y la evidencia es la razón de existir de MAV.
+*Aceptación*: `report.json` incluye el nombre del fixture aplicado (y si hubo `clear_state`); test que lo
+afirma. Los comandos del fixture ya salen en `commands.jsonl` por usar el camino de `runLaunchCommand`,
+pero el manifiesto verificado tiene que poder responder "¿de qué estado partió esto?" sin leer el trail.
+
+**T8 — `target_kind` desconocido falla ruidosamente**
+Mientras `KindMac` no exista (Fase 2), un `target_kind` que no sea `simulator` ni `device` debe ser un error
+de config, no una degradación silenciosa a simulador. Ver "Trampa de orden" arriba.
+*Aceptación*: test de que `target_kind: macos` devuelve un fallo de config nombrando los valores válidos.
+Test de que `simulator`, `device` y vacío siguen comportándose igual que hoy.
+
+**T9 — Documentación**
 README (sección de config y de launch recipes) y `skills/mav/SKILL.md`. La skill es lo que leen los agentes:
 si `--fixture` no está ahí, no existe.
 *Aceptación*: `mav --help` y `mav open --help` mencionan ambos flags.
@@ -163,15 +195,18 @@ El unit-test no prueba que esto sirva. La prueba real es contra Nokoru, que ya t
    `~/Library/Containers/com.davidcollado.nokoru.debug/Data/Library/Application Support/Nokoru/`
    (rutas verificadas en `App/Shared/NokoruPaths.swift`: `nokoruDirectory`, `recordingsDirectory`,
    `audioURL(for:)`).
-3. `mav open --profile ios --fixture seeded-meetings` — debe seguir funcionando en simulador, que es la
-   prueba de que los perfiles no rompen el camino existente.
-4. `mav open --profile macos --fixture seeded-meetings` — construye `//App:NokoruMac` y lo lanza. **En esta
-   fase todavía no hay driver macOS**, así que el criterio es que el ciclo build/install/fixture/launch
-   termine y la app arranque con datos; no que `mav ui tree` funcione. Eso es la Fase 3.
+3. `mav open --profile ios --fixture seeded-meetings` — debe seguir funcionando en simulador, con la app
+   arrancando con datos ya presentes. Es la prueba de que perfiles y fixtures funcionan sin romper el camino
+   existente.
+4. `mav open` sin `--profile` ni `--fixture` — debe comportarse **exactamente** como antes de esta fase. Es
+   la prueba de no-regresión que protege a Undolly, Boxy y HiddenFace, que no van a tener perfiles.
+5. El perfil de macOS **no** se valida en esta fase: sin `drivers.KindMac` no hay a dónde despachar (ver
+   "Trampa de orden"). Llega en la Fase 2.
 
 ## Fuera de alcance
 
-- `drivers.KindMac` y el modelo de target macOS → Fase 2.
+- `drivers.KindMac` y el modelo de target macOS → Fase 2. Con él llega también `target_kind: macos` en los
+  perfiles, que en esta fase queda deliberadamente fuera.
 - Cualquier driver de macOS → Fase 3.
 - Formato de fixture como datos (bundles, manifiestos). Un fixture es una lista de comandos; si tres apps
   acaban escribiendo el mismo script, entonces se promociona.
