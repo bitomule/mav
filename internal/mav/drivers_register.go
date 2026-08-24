@@ -34,4 +34,5 @@ func RegisterDefaultDrivers(reg *drivers.Registry, exec drivers.Executor) {
 	reg.Register(macos.NewPeekaboo(exec))
 	reg.Register(macos.NewAxcli(exec))
 	reg.Register(macos.NewScreencapture(exec))
+	reg.Register(macos.NewSystem(exec))
 }

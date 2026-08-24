@@ -42,8 +42,9 @@ func targetFromConfig(cfg Config) drivers.Target {
 		target.UDID = cfg.DeviceUDID
 		target.Name = cfg.DeviceName
 	case drivers.KindMac:
-		// Sin UDID: la identidad de una app de macOS es su bundle y su proceso.
+		// Sin UDID: la identidad de una app de macOS es su bundle y su ruta.
 		target.Name = "localhost"
+		target.AppPath = cfg.AppPath
 	default:
 		target.UDID = cfg.SimulatorUDID
 		target.Name = cfg.SimulatorName

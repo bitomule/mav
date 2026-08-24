@@ -51,6 +51,11 @@ type Config struct {
 	Profiles       map[string]profileYAML
 	ActiveProfile  string
 	Fixtures       map[string][]string
+
+	// AppPath lo rellena la receta de lanzamiento en tiempo de ejecucion (paso
+	// app_path); no se lee ni se escribe en el YAML. Es como el driver de
+	// macOS sabe que bundle ejecutar, que es su equivalente del UDID.
+	AppPath string
 }
 
 type LaunchConfig struct {

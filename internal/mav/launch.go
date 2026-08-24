@@ -182,6 +182,10 @@ func shouldUseDriverLaunch(cfg Config, commands LaunchCommands) bool {
 }
 
 func (c CLI) runDriverLifecycle(ctx context.Context, cfg Config, run RunState, step launchStep, appPath string) CommandResult {
+	// El paso app_path de la receta es quien resuelve donde quedo el bundle, y
+	// para un target de macOS eso es su identidad: el driver no tiene UDID al
+	// que hablarle, tiene una ruta que ejecutar.
+	cfg.AppPath = appPath
 	target := targetFromConfig(cfg)
 	capability := drivers.CapLaunch
 	if step.Name == "install" || step.Name == "install_retry" {
