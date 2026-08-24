@@ -263,3 +263,61 @@ func TestCuaNotRunningSaysSo(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+// TestCuaStartsTheDaemonItselfWhenItIsDown: el demonio caido es el unico fallo
+// que mav puede resolver solo, y hacerlo evita que cada agente aprenda -- o se
+// invente -- el conjuro. Lo importante del comando es `open -g`: arrancar el
+// driver no puede robarle el foco a nadie.
+func TestCuaStartsTheDaemonItselfWhenItIsDown(t *testing.T) {
+	f := cuaExec()
+	down := drivers.ExecResult{Stdout: "Cua Driver daemon is not running on /tmp/x.sock.\nStart it first with: cua-driver serve"}
+	f.results["cua-driver call list_windows"] = down
+	f.onCommand = func(cmd string) {
+		if strings.HasPrefix(cmd, "open ") {
+			f.results["cua-driver call list_windows"] = drivers.ExecResult{Stdout: cuaWindowList}
+		}
+	}
+	if _, err := NewCua(f).Tree(context.Background(), macTarget(), drivers.TreeSpec{}); err != nil {
+		t.Fatal(err)
+	}
+	var launch string
+	for _, c := range f.commands {
+		if strings.HasPrefix(c, "open ") {
+			launch = c
+		}
+	}
+	if launch == "" {
+		t.Fatalf("mav debe levantarlo, no rendirse: %v", f.commands)
+	}
+	if !strings.Contains(launch, "-g") {
+		t.Fatalf("sin -g el arranque roba el foco, que es lo unico que este driver promete no hacer: %q", launch)
+	}
+	if !strings.Contains(launch, "-a CuaDriver") {
+		t.Fatalf("tiene que ir por la app, que es quien tiene los permisos: %q", launch)
+	}
+}
+
+// TestCuaGivesUpAfterOneStartAttempt: si el demonio no levanta, reintentar en
+// cada comando convierte un fallo claro en una sucesion de esperas.
+func TestCuaGivesUpAfterOneStartAttempt(t *testing.T) {
+	f := cuaExec()
+	f.results["cua-driver call list_windows"] = drivers.ExecResult{Stdout: "Cua Driver daemon is not running on /tmp/x.sock."}
+	f.results["cua-driver permissions status"] = drivers.ExecResult{Stdout: "{}"}
+	d := NewCua(f)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for i := 0; i < 3; i++ {
+		if _, err := d.Tree(ctx, macTarget(), drivers.TreeSpec{}); err == nil {
+			t.Fatal("sin demonio no hay arbol")
+		}
+	}
+	var starts int
+	for _, c := range f.commands {
+		if strings.HasPrefix(c, "open ") {
+			starts++
+		}
+	}
+	if starts != 1 {
+		t.Fatalf("un intento por proceso, no uno por comando: %d", starts)
+	}
+}

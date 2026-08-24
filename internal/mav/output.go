@@ -62,8 +62,19 @@ func (o Output) Write(w io.Writer) error {
 		}
 		parts = append(parts, key+"="+quoteIfNeeded(o.Fields[key]))
 	}
-	_, err := fmt.Fprintln(w, strings.Join(parts, " "))
-	return err
+	if _, err := fmt.Fprintln(w, strings.Join(parts, " ")); err != nil {
+		return err
+	}
+	if !o.OK {
+		// Un fallo tiene que llegar a main, que es quien sabe salir con 1.
+		// Devolver nil convertia `mav ui tap ... && siguiente-paso` en una
+		// cadena que seguia adelante despues de un fallo, y obligaba a cada
+		// agente a leer stdout para saber si su propio comando habia
+		// funcionado. La linea `fail code=...` ya esta escrita; esto solo pone
+		// el codigo de salida de acuerdo con ella.
+		return CommandFailed{}
+	}
+	return nil
 }
 
 func quoteIfNeeded(value string) string {

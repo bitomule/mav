@@ -2,6 +2,28 @@
 
 ## v0.12.0
 
+- **Un fallo ya sale con código 1.** Todos salían con 0: la línea `fail code=...` se escribía
+  y el proceso decía que todo había ido bien, así que `mav ui tap ... && siguiente-paso`
+  encadenaba después de un fallo y cada agente tenía que leer stdout para saber si su
+  propio comando había funcionado. `main` ya sabía salir con 1; lo que faltaba era que el
+  fallo llegara hasta él.
+- Y la salida se escribe **siempre**, también al fallar: `mav ui` la bufferizaba y la
+  descartaba si había error, dejando al usuario sin nada que leer justo cuando más falta
+  hace.
+- **`mav` arranca solo el demonio de CuaDriver** si no está en marcha, con `open -g` para
+  no robar el foco. Antes cada comando moría con un mensaje que exigía saberse el conjuro
+  — y un agente que se lo invente arrancando `cua-driver serve` suelto pierde la
+  atribución de permisos, que es todo lo que aporta el broker. Un intento por proceso: si
+  no levanta, insistir sólo convierte un fallo claro en una sucesión de esperas.
+- **`report.json` ya no emite un veredicto sobre una captura que nunca existió.** Todo
+  flow traía `"screenshot_evidence":{"ok":false}`, indistinguible de una captura rota para
+  quien lee el JSON. Ahora el campo está ausente cuando no hay nada que validar.
+- Tres comandos que fallaban en macOS por puertas con forma de iOS: **`clipboard`** daba
+  `unsupported_on_device` cuando el driver ya lo servía, **`ui type`** forzaba `axe` como
+  driver, y **`ui swipe`** mandaba a instalar `axe|idb`. Ahora los tres funcionan; el swipe
+  se traduce a scroll con la dirección invertida, para que un flow escrito una vez
+  signifique lo mismo en las dos plataformas.
+
 - **`mav ui tap` no funcionaba en macOS aunque todo estuviera instalado.** La puerta
   preguntaba por `axe`, que en el Mac no se instala nunca, así que fallaba con
   `tool_missing` pidiendo una herramienta que además ya no es la única que sirve input

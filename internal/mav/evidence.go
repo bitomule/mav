@@ -46,10 +46,15 @@ type ReportData struct {
 	// hubo alguno. Sin esto el manifiesto no puede responder "de que estado
 	// partio esto?", y un run cuya evidencia no dice eso no es reproducible --
 	// que es justo lo que el manifiesto verificado promete.
-	Fixture            string               `json:"fixture,omitempty"`
-	Dir                string               `json:"dir"`
-	Screenshot         string               `json:"screenshot,omitempty"`
-	ScreenshotEvidence ImageEvidence        `json:"screenshot_evidence"`
+	Fixture    string `json:"fixture,omitempty"`
+	Dir        string `json:"dir"`
+	Screenshot string `json:"screenshot,omitempty"`
+	// Puntero para poder estar AUSENTE. Como valor, un run sin captura de
+	// pantalla suelta -- que es todo flow -- serializaba
+	// `"screenshot_evidence":{"ok":false}`: un veredicto negativo sobre algo
+	// que nunca existio. En una capa de evidencia eso es peor que no decir
+	// nada, porque un agente no puede distinguirlo de una captura rota.
+	ScreenshotEvidence *ImageEvidence       `json:"screenshot_evidence,omitempty"`
 	Steps              []ReportEvidenceStep `json:"steps"`
 	Video              string               `json:"video,omitempty"`
 	VideoMP4           string               `json:"video_mp4,omitempty"`
@@ -152,12 +157,13 @@ func GenerateReport(run RunState) (string, error) {
 		}
 	}
 	if data.Screenshot != "" {
-		data.ScreenshotEvidence = ValidateEvidenceImage(data.Screenshot)
-		if !data.ScreenshotEvidence.OK {
+		evidence := ValidateEvidenceImage(data.Screenshot)
+		data.ScreenshotEvidence = &evidence
+		if !evidence.OK {
 			data.Issues = append(data.Issues, ReportIssue{
 				Severity: "warning",
 				Title:    "Current screenshot is not usable",
-				Detail:   data.ScreenshotEvidence.Issue,
+				Detail:   evidence.Issue,
 			})
 		}
 	}

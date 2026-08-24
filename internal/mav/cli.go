@@ -1434,11 +1434,14 @@ func (c CLI) ui(ctx context.Context, opts GlobalOptions, args []string) error {
 	out := c.dispatchWithStaleTargetRetry(cfg, func(callee CLI, cfg Config) {
 		dispatchErr = callee.dispatchUICommand(ctx, opts, cfg, args)
 	})
-	if dispatchErr != nil {
-		return dispatchErr
+	// La salida se escribe SIEMPRE, tambien cuando el comando fallo: la linea
+	// `fail code=...` es el resultado, no un efecto secundario del exito.
+	// Devolverse antes de escribirla dejaba al usuario sin nada que leer justo
+	// en el caso en que mas falta hace.
+	if _, writeErr := io.WriteString(c.Stdout, out); writeErr != nil {
+		return writeErr
 	}
-	_, writeErr := io.WriteString(c.Stdout, out)
-	return writeErr
+	return dispatchErr
 }
 
 // dispatchUICommand is the actual `mav ui <verb>` switch, split out of ui so
@@ -1811,6 +1814,24 @@ func tapToolPresent(caps Capabilities, cfg Config) bool {
 		return caps.Tools["cua-driver"] || caps.Tools["axcli"]
 	}
 	return caps.Tools["axe"]
+}
+
+// swipeToolMissingFields nombra la herramienta de desplazamiento de cada
+// plataforma. En el Mac no existe axe ni idb, asi que pedirlos mandaba a
+// instalar herramientas de iOS que no arreglan nada.
+func swipeToolMissingFields(cfg Config) map[string]string {
+	if targetKind(cfg) == drivers.KindMac {
+		return map[string]string{"tool": "cua-driver", "next": "mav setup --install cua-driver"}
+	}
+	return map[string]string{"tool": "axe|idb"}
+}
+
+// typeToolMissingFields nombra la herramienta de escritura de cada plataforma.
+func typeToolMissingFields(cfg Config) map[string]string {
+	if targetKind(cfg) == drivers.KindMac {
+		return map[string]string{"tool": "cua-driver", "next": "mav setup --install cua-driver"}
+	}
+	return map[string]string{"tool": "axe", "next": "mav setup --install axe"}
 }
 
 func tapToolMissingFields(cfg Config) map[string]string {
@@ -2275,9 +2296,16 @@ func (c CLI) uiType(ctx context.Context, opts GlobalOptions, cfg Config, args []
 	// CapType: axe gana el desempate por coste igualmente, pero sin este
 	// prefer el router tambien sondearia baguette, cuyo Probe ejecuta un
 	// subproceso real (`baguette list --json`) en cada `mav ui type`.
-	driver, _, err := c.router().Route(ctx, drivers.CapType, target, "axe")
+	// El prefer solo se nombra donde axe es el canonico. En macOS forzarlo
+	// dejaba fuera al driver que si sabe escribir alli, y el error acababa
+	// pidiendo instalar una herramienta de iOS.
+	typePrefer := "axe"
+	if targetKind(cfg) == drivers.KindMac {
+		typePrefer = ""
+	}
+	driver, _, err := c.router().Route(ctx, drivers.CapType, target, typePrefer)
 	if err != nil {
-		return Fail("tool_missing", map[string]string{"tool": "axe", "next": "mav setup --install axe"}).Write(c.Stdout)
+		return Fail("tool_missing", typeToolMissingFields(cfg)).Write(c.Stdout)
 	}
 	td, ok := driver.(drivers.TypeDriver)
 	if !ok {
@@ -2404,13 +2432,13 @@ func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args [
 		if prefer != "" && prefer != "auto" {
 			return Fail("prefer_driver_unusable", map[string]string{"driver": prefer, "capability": string(drivers.CapSwipe), "next": "use --prefer-driver auto to let mav route ui swipe"}).Write(c.Stdout)
 		}
-		return Fail("tool_missing", map[string]string{"tool": "axe|idb"}).Write(c.Stdout)
+		return Fail("tool_missing", swipeToolMissingFields(cfg)).Write(c.Stdout)
 	}
 	gd, ok := driver.(interface {
 		Swipe(context.Context, drivers.Target, drivers.SwipeSpec) error
 	})
 	if !ok {
-		return Fail("tool_missing", map[string]string{"tool": "axe|idb"}).Write(c.Stdout)
+		return Fail("tool_missing", swipeToolMissingFields(cfg)).Write(c.Stdout)
 	}
 	sx, _ := strconv.Atoi(startX)
 	sy, _ := strconv.Atoi(startY)
@@ -3183,7 +3211,11 @@ func (c CLI) location(ctx context.Context, opts GlobalOptions, args []string) er
 
 func (c CLI) clipboard(ctx context.Context, opts GlobalOptions, args []string) error {
 	_ = opts
-	if targetKind(c.mustLoadConfig()) != drivers.KindSim {
+	// El portapapeles del Mac es el del propio sistema, y el driver de macOS ya
+	// lo servia: lo que fallaba era esta puerta, que daba por dispositivo
+	// fisico todo lo que no fuera simulador. En un iPhone real sigue sin haber
+	// forma de leerlo.
+	if kind := targetKind(c.mustLoadConfig()); kind != drivers.KindSim && kind != drivers.KindMac {
 		return Fail("clipboard_unsupported_on_device", nil).Write(c.Stdout)
 	}
 	if len(args) == 0 {

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/bitomule/mav/internal/mav/drivers"
 )
@@ -42,6 +43,11 @@ const CuaID = "cua"
 //     del snapshot), rol, etiqueta y frame.
 type Cua struct {
 	exec drivers.Executor
+
+	// daemonAttempted acota el autoarranque a un intento por proceso. Si el
+	// demonio no levanta, insistir en cada comando convierte un fallo claro en
+	// una sucesion de esperas.
+	daemonAttempted bool
 }
 
 var (
@@ -49,6 +55,7 @@ var (
 	_ drivers.ScreenshotDriver = (*Cua)(nil)
 	_ drivers.TapDriver        = (*Cua)(nil)
 	_ drivers.TypeDriver       = (*Cua)(nil)
+	_ drivers.GestureDriver    = (*Cua)(nil)
 )
 
 // NewCua construye el driver.
@@ -66,6 +73,7 @@ func (d *Cua) Provides(target drivers.Target) drivers.CapabilitySet {
 		drivers.CapCoordTap,
 		drivers.CapSemanticTap,
 		drivers.CapType,
+		drivers.CapSwipe,
 	)
 }
 
@@ -73,7 +81,7 @@ func (d *Cua) Provides(target drivers.Target) drivers.CapabilitySet {
 // cuatro capacidades con entrega en segundo plano verificada.
 func (d *Cua) Cost(c drivers.Capability, _ drivers.Target) int {
 	switch c {
-	case drivers.CapTreeAX, drivers.CapScreenshot, drivers.CapCoordTap, drivers.CapSemanticTap, drivers.CapType:
+	case drivers.CapTreeAX, drivers.CapScreenshot, drivers.CapCoordTap, drivers.CapSemanticTap, drivers.CapType, drivers.CapSwipe:
 		return 0
 	default:
 		return 100
@@ -135,11 +143,67 @@ func (d *Cua) Warm(_ context.Context, _ drivers.Target) <-chan error {
 // cuaCall invoca una herramienta del driver. La forma es siempre
 // `cua-driver call <tool> '<json>'` y la respuesta es JSON por stdout.
 func (d *Cua) cuaCall(ctx context.Context, tool string, args map[string]any) ([]byte, error) {
+	raw, err := d.rawCall(ctx, tool, args)
+	if err == nil || !isCuaDaemonDown(err) || d.daemonAttempted {
+		return raw, err
+	}
+	// El demonio se cae, o simplemente no se ha arrancado nunca en esta
+	// sesion. Levantarlo es un comando fijo y sin decisiones, asi que lo hace
+	// mav: si cada agente tiene que aprender el conjuro, la mitad no lo hara y
+	// la otra mitad lo hara mal -- arrancando `cua-driver serve` suelto, que
+	// segun su propia documentacion no esta soportado fuera de la app y ademas
+	// pierde la atribucion de permisos, que es TODO lo que aporta el broker.
+	d.daemonAttempted = true
+	if startErr := d.startDaemon(ctx); startErr != nil {
+		return nil, err
+	}
+	return d.rawCall(ctx, tool, args)
+}
+
+// startDaemon levanta el demonio por LaunchServices y espera a que conteste.
+//
+// `open -g` deja la app en segundo plano: arrancar el driver no puede robarle
+// el foco a nadie, que es la propiedad por la que se eligio este driver.
+func (d *Cua) startDaemon(ctx context.Context) error {
+	if res := d.exec.Run(ctx, "open", "-n", "-g", "-a", "CuaDriver", "--args", "serve"); res.Err != nil {
+		return fmt.Errorf("cua: could not start the CuaDriver daemon: %s", firstLine(res.Stderr))
+	}
+	// Sondeo en vez de una espera fija: en frio tarda unos segundos y en
+	// caliente responde enseguida, asi que una espera fija seria a la vez
+	// demasiado corta y demasiado larga.
+	for attempt := 0; attempt < 30; attempt++ {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		res := d.exec.Run(ctx, "cua-driver", "permissions", "status", "--json")
+		var probe map[string]any
+		if json.Unmarshal([]byte(res.Stdout), &probe) == nil {
+			if _, ok := probe["accessibility"]; ok {
+				return nil
+			}
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return errors.New("cua: the CuaDriver daemon did not answer after starting")
+}
+
+// isCuaDaemonDown reconoce el unico fallo que mav puede resolver solo.
+//
+// Se mira el texto porque no hay nada mejor: ese caso sale con codigo de salida
+// CERO y un mensaje para humanos, no un error estructurado.
+func isCuaDaemonDown(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "daemon is not running")
+}
+
+func (d *Cua) rawCall(ctx context.Context, tool string, args map[string]any) ([]byte, error) {
 	payload, err := json.Marshal(args)
 	if err != nil {
 		return nil, err
 	}
 	res := d.exec.Run(ctx, "cua-driver", "call", tool, string(payload))
+	if strings.Contains(res.Stdout, "daemon is not running") {
+		return nil, fmt.Errorf("cua-driver %s: %s", tool, firstLine(res.Stdout))
+	}
 	if strings.TrimSpace(res.Stdout) == "" {
 		if res.Err != nil {
 			return nil, fmt.Errorf("cua-driver %s: %s", tool, firstLine(res.Stderr))
@@ -508,4 +572,52 @@ func (d *Cua) Type(ctx context.Context, target drivers.Target, spec drivers.Text
 	}
 	_, err = d.cuaCall(ctx, "type_text", args)
 	return err
+}
+
+// Swipe desplaza el contenido de la ventana.
+//
+// En un Mac un swipe ES un scroll: no hay dedo, hay rueda. La direccion se
+// invierte a proposito -- deslizar hacia arriba en un movil sube el contenido,
+// que es lo que en escritorio se pide como scroll hacia abajo -- para que un
+// flow escrito una vez signifique lo mismo en las dos plataformas.
+func (d *Cua) Swipe(ctx context.Context, target drivers.Target, spec drivers.SwipeSpec) error {
+	direction := map[string]string{
+		"up": "down", "down": "up", "left": "right", "right": "left",
+	}[spec.Direction]
+	if direction == "" {
+		return errors.New("cua: swipe needs a direction; coordinate swipes are not a desktop gesture")
+	}
+	pid, err := d.resolvePID(ctx, target)
+	if err != nil {
+		return err
+	}
+	_, err = d.cuaCall(ctx, "scroll", map[string]any{
+		"pid":           pid,
+		"direction":     direction,
+		"delivery_mode": "background",
+	})
+	return err
+}
+
+// Pinch, Rotate, TwoFingerPan y W3CActions existen porque GestureDriver es una
+// interfaz entera, y fallan diciendo por que.
+//
+// No es una laguna que llenar mas adelante: un trackpad envia gestos al sistema
+// y a la app en foco, no a un PID, asi que reproducirlos en segundo plano
+// contra una ventana concreta no es cuestion de esfuerzo sino de que no existe
+// la via. Un mensaje que lo diga ahorra la busqueda.
+func (d *Cua) Pinch(context.Context, drivers.Target, drivers.PinchSpec) error {
+	return errors.New("cua: multitouch gestures cannot be delivered to a pid on macOS")
+}
+
+func (d *Cua) Rotate(context.Context, drivers.Target, drivers.RotateSpec) error {
+	return errors.New("cua: multitouch gestures cannot be delivered to a pid on macOS")
+}
+
+func (d *Cua) TwoFingerPan(context.Context, drivers.Target, drivers.TwoFingerPanSpec) error {
+	return errors.New("cua: multitouch gestures cannot be delivered to a pid on macOS")
+}
+
+func (d *Cua) W3CActions(context.Context, drivers.Target, []byte) error {
+	return errors.New("cua: W3C action chains are an iOS driver feature; use ui tap/type/swipe")
 }

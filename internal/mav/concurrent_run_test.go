@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -677,8 +678,12 @@ func TestFlowRunRejectsUnknownRunID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = cli.Run(context.Background(), []string{"run", flowPath, "--run", "bogus123"})
-	if err != nil {
+	// Un fallo de flow sale como linea `fail` Y como CommandFailed, para que el
+	// codigo de salida coincida con lo que dice la salida. Lo que sigue sin
+	// valer es un error de Go crudo, que no lleva codigo que un agente pueda
+	// leer.
+	var failed CommandFailed
+	if err = cli.Run(context.Background(), []string{"run", flowPath, "--run", "bogus123"}); err != nil && !errors.As(err, &failed) {
 		t.Fatalf("runFlow returned a Go error instead of a Fail() payload: %v", err)
 	}
 	if !strings.Contains(out.String(), "fail code=run_not_found") {

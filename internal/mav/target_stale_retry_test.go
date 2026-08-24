@@ -129,9 +129,7 @@ func TestUITreeDoesNotRetryWhenSimulatorIsActuallyBooted(t *testing.T) {
 	}
 	var out bytes.Buffer
 	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
-	if err := cli.Run(context.Background(), []string{"ui", "tree"}); err != nil {
-		t.Fatal(err)
-	}
+	allowFail(t, cli.Run(context.Background(), []string{"ui", "tree"}))
 	got := out.String()
 	if !strings.HasPrefix(got, "fail ") {
 		t.Fatalf("got %q, want the unrelated failure to still be reported as a failure", got)
@@ -174,9 +172,7 @@ func TestUITreeWithoutTargetCommandLabelsNotBootedClearly(t *testing.T) {
 	}
 	var out bytes.Buffer
 	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
-	if err := cli.Run(context.Background(), []string{"ui", "tree"}); err != nil {
-		t.Fatal(err)
-	}
+	allowFail(t, cli.Run(context.Background(), []string{"ui", "tree"}))
 	got := out.String()
 	if !strings.HasPrefix(got, "fail ") {
 		t.Fatalf("got %q, want ui tree to still fail -- nobody to re-ask without target_command", got)
@@ -215,9 +211,7 @@ func TestUITreeRetryNeverLoopsWhenReresolutionDoesNotHelp(t *testing.T) {
 	}
 	var out bytes.Buffer
 	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
-	if err := cli.Run(context.Background(), []string{"ui", "tree"}); err != nil {
-		t.Fatal(err)
-	}
+	allowFail(t, cli.Run(context.Background(), []string{"ui", "tree"}))
 	got := out.String()
 	if !strings.HasPrefix(got, "fail ") {
 		t.Fatalf("got %q, want the failure to persist when re-resolution changes nothing", got)
@@ -266,9 +260,7 @@ func TestUITreeRetriesExactlyOnceEvenIfRetryAlsoFails(t *testing.T) {
 	}
 	var out bytes.Buffer
 	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
-	if err := cli.Run(context.Background(), []string{"ui", "tree"}); err != nil {
-		t.Fatal(err)
-	}
+	allowFail(t, cli.Run(context.Background(), []string{"ui", "tree"}))
 	got := out.String()
 	if !strings.HasPrefix(got, "fail ") {
 		t.Fatalf("got %q, want the still-failing retry reported as a failure", got)

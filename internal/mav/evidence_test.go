@@ -52,7 +52,7 @@ func TestGenerateReport(t *testing.T) {
 	if filepath.Base(path) != "report.json" {
 		t.Fatalf("report path=%s", path)
 	}
-	if report.Logs != "hello log\n" || report.ScreenshotEvidence.Width != 32 || report.ValidStepCount != 1 {
+	if report.Logs != "hello log\n" || report.ScreenshotEvidence == nil || report.ScreenshotEvidence.Width != 32 || report.ValidStepCount != 1 {
 		t.Fatalf("unexpected report data: %+v", report)
 	}
 	for _, want := range []string{"notifications-before", "before toggling notifications"} {
@@ -230,5 +230,33 @@ func TestReportOmitsFixtureWhenNoneApplied(t *testing.T) {
 	}
 	if strings.Contains(string(data), "\"fixture\"") {
 		t.Fatalf("sin fixture no debe aparecer el campo:\n%s", data)
+	}
+}
+
+// TestReportOmitsScreenshotVerdictWhenThereIsNoScreenshot: un flow no deja
+// captura suelta, y el campo salia igualmente como {"ok":false}. Un veredicto
+// negativo sobre algo que nunca existio es indistinguible de una captura rota
+// para quien lee el JSON, que es justo lo que una capa de evidencia no puede
+// permitirse.
+func TestReportOmitsScreenshotVerdictWhenThereIsNoScreenshot(t *testing.T) {
+	dir := t.TempDir()
+	run := RunState{ID: "sin-captura", Dir: dir}
+	path, err := GenerateReport(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var populated ReportData
+	if err := json.Unmarshal(encoded, &populated); err != nil {
+		t.Fatal(err)
+	}
+	if populated.ScreenshotEvidence != nil {
+		t.Fatalf("sin captura no debe haber veredicto: %+v", populated.ScreenshotEvidence)
+	}
+	if strings.Contains(string(encoded), "screenshot_evidence") {
+		t.Fatalf("el campo debe estar ausente, no en falso: %s", encoded)
 	}
 }

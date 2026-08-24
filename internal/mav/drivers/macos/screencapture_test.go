@@ -14,6 +14,11 @@ type fakeExec struct {
 	results  map[string]drivers.ExecResult
 	tools    map[string]bool
 	startPID int
+
+	// onCommand deja que un test cambie el mundo al ejecutarse un comando, que
+	// es lo que hace falta para probar un arranque de demonio: el mismo
+	// comando falla antes y funciona despues.
+	onCommand func(string)
 }
 
 func (f *fakeExec) LookPath(name string) (string, error) {
@@ -26,6 +31,9 @@ func (f *fakeExec) LookPath(name string) (string, error) {
 func (f *fakeExec) Run(_ context.Context, name string, args ...string) drivers.ExecResult {
 	command := name + " " + strings.Join(args, " ")
 	f.commands = append(f.commands, command)
+	if f.onCommand != nil {
+		f.onCommand(command)
+	}
 	for needle, res := range f.results {
 		if strings.Contains(command, needle) {
 			return res
