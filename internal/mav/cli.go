@@ -1066,10 +1066,11 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 		appendFile(run.LogsPath, "mav probe log capture failed: "+probeLogErr.Error()+"\n")
 	}
 	appPath := ""
+	clearStateWarn := ""
 	if !noRelaunch {
 		var failedStep *launchStep
 		var failedResult CommandResult
-		appPath, failedStep, failedResult = c.runLaunchRecipe(ctx, cfg, run, hasFlag(args, "--clear-state"))
+		appPath, failedStep, failedResult, clearStateWarn = c.runLaunchRecipe(ctx, cfg, run, hasFlag(args, "--clear-state"))
 		if failedStep != nil {
 			fields := map[string]string{"run": run.ID, "logs": run.LogsPath, "step": failedStep.Name, "stderr": firstLine(failedResult.Stderr)}
 			if fields["stderr"] == "" && failedResult.Err != nil {
@@ -1116,6 +1117,9 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 		}
 	}
 	fields["target_kind"] = targetKindLabel(targetKind(cfg))
+	if clearStateWarn != "" {
+		fields["clear_state_warn"] = clearStateWarn
+	}
 	fields["session"] = "direct"
 	if _, ok := c.Runner.(ExecRunner); ok {
 		if session, workerErr := startRunWorker(c.Root, run); workerErr == nil {

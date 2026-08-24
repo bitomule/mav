@@ -16,7 +16,11 @@ type launchStep struct {
 	Command string
 }
 
-func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clearState bool) (string, *launchStep, CommandResult) {
+// runLaunchRecipe ejecuta la receta de lanzamiento del proyecto. Devuelve, por
+// orden: la ruta del .app resuelta, el paso que falló (nil si todo fue bien),
+// su resultado, y un aviso no fatal para los casos en los que seguir es
+// correcto pero callarse no.
+func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clearState bool) (string, *launchStep, CommandResult, string) {
 	commands := effectiveLaunchCommands(cfg)
 	steps := []launchStep{
 		{Name: "healthcheck", Command: commands.Healthcheck},
@@ -26,14 +30,35 @@ func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clea
 	appPath := ""
 	driverLaunch := shouldUseDriverLaunch(cfg, commands)
 	if strings.TrimSpace(commands.Launch) == "" && !driverLaunch {
-		return appPath, &launchStep{Name: "launch"}, CommandResult{Stderr: "launch command missing; run mav setup or add launch.commands.launch to .mav/config.yaml", Err: fmt.Errorf("launch_command_missing")}
+		return appPath, &launchStep{Name: "launch"}, CommandResult{Stderr: "launch command missing; run mav setup or add launch.commands.launch to .mav/config.yaml", Err: fmt.Errorf("launch_command_missing")}, ""
 	}
 	if clearState && strings.TrimSpace(commands.Install) == "" && strings.TrimSpace(commands.AppPath) == "" {
-		return appPath, &launchStep{Name: "clear_state"}, CommandResult{Stderr: "clearState requires an install command in the launch recipe; add launch.commands.install to .mav/config.yaml", Err: fmt.Errorf("clear_state_install_missing")}
+		return appPath, &launchStep{Name: "clear_state"}, CommandResult{Stderr: "clearState requires an install command in the launch recipe; add launch.commands.install to .mav/config.yaml", Err: fmt.Errorf("clear_state_install_missing")}, ""
 	}
 	env := launchEnv(cfg, run, appPath)
+	warn := ""
 	if clearState && cfg.BundleID != "" {
-		_ = c.runDriverLifecycle(ctx, cfg, run, launchStep{Name: "clear_state"}, appPath)
+		// Un uninstall que falla NO es fatal: el caso corriente es que la app
+		// todavía no estuviera instalada (primer run del proyecto, simulador
+		// recién creado), y ahí abortar sería peor que seguir. Pero descartar
+		// el resultado -- que es lo que este código hacía -- deja mudo también
+		// el caso en el que el uninstall falla de verdad, y entonces
+		// --clear-state miente: el usuario cree que parte de cero y arrastra
+		// el estado del run anterior, que es exactamente el bug irreproducible
+		// que --clear-state existe para evitar.
+		//
+		// No se intenta distinguir "no había nada que desinstalar" de "falló
+		// de verdad": eso obligaría a leer el stderr de simctl/idb, que es
+		// suyo y pueden cambiarlo cuando quieran (la misma razón por la que
+		// isSimulatorBooted pregunta a CoreSimulator en vez de adivinar por el
+		// texto del error). Se avisa siempre y decide quien lee.
+		if result := c.runDriverLifecycle(ctx, cfg, run, launchStep{Name: "clear_state"}, appPath); result.Err != nil {
+			detail := firstLine(strings.TrimSpace(result.Stderr))
+			if detail == "" {
+				detail = result.Err.Error()
+			}
+			warn = fmt.Sprintf("clear_state_incomplete: uninstall of %s did not complete: %s (next: the app may still carry state from an earlier run; check launch.clear_state in the run's commands trail)", cfg.BundleID, detail)
+		}
 	}
 	for _, step := range steps {
 		if step.Name == "build" && os.Getenv("MAV_SKIP_BUILD") == "1" {
@@ -50,17 +75,17 @@ func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clea
 					env = launchEnv(cfg, run, appPath)
 					continue
 				} else {
-					return appPath, &step, retryResult
+					return appPath, &step, retryResult, warn
 				}
 			}
-			return appPath, &step, result
+			return appPath, &step, result, warn
 		}
 		if step.Name == "app_path" {
 			resolved, err := parseAppPath(result.Stdout)
 			if err != nil {
 				result.Err = err
 				result.Stderr = err.Error()
-				return appPath, &step, result
+				return appPath, &step, result, warn
 			}
 			appPath = resolved
 			env = launchEnv(cfg, run, appPath)
@@ -80,10 +105,10 @@ func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clea
 					appPath = retryPath
 					env = launchEnv(cfg, run, appPath)
 				} else {
-					return appPath, &step, retryResult
+					return appPath, &step, retryResult, warn
 				}
 			} else {
-				return appPath, &step, result
+				return appPath, &step, result, warn
 			}
 		}
 	}
@@ -96,17 +121,17 @@ func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clea
 			result = c.runLaunchCommand(ctx, cfg, run, step, env)
 		}
 		if result.Err != nil {
-			return appPath, &step, result
+			return appPath, &step, result, warn
 		}
 	}
 	if strings.TrimSpace(commands.Cleanup) != "" {
 		step := launchStep{Name: "cleanup", Command: commands.Cleanup}
 		result := c.runLaunchCommand(ctx, cfg, run, step, env)
 		if result.Err != nil {
-			return appPath, &step, result
+			return appPath, &step, result, warn
 		}
 	}
-	return appPath, nil, CommandResult{}
+	return appPath, nil, CommandResult{}, warn
 }
 
 func shouldUseDriverInstall(cfg Config, commands LaunchCommands) bool {

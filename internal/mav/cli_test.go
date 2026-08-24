@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -222,6 +223,15 @@ func (r *launchRecipeRunner) Run(ctx context.Context, name string, args ...strin
 			if strings.Contains(script, needle) {
 				return result
 			}
+		}
+		return CommandResult{}
+	}
+	// Los pasos que van por driver (simctl/idb via el router) no pasan por el
+	// shell, asi que se casan contra la linea completa. Sin esto un test no
+	// puede simular el fallo de, por ejemplo, el uninstall de clear_state.
+	for needle, result := range r.results {
+		if strings.Contains(command, needle) {
+			return result
 		}
 	}
 	return CommandResult{}
@@ -1782,6 +1792,52 @@ func TestUISwipePreferAxeDoesNotFallbackToIDB(t *testing.T) {
 // ejecutarse con axe sin decir nada. Aceptar un flag y luego ignorarlo es
 // exactamente la clase de configuracion muerta que target_command_ignored
 // existe para hacer visible.
+// TestOpenClearStateFailureWarnsInsteadOfBeingSilent fija la conducta que
+// sustituye al `_ =` que descartaba el resultado del uninstall: un clear_state
+// que falla NO aborta el open -- el caso corriente es que la app aun no
+// estuviera instalada -- pero tampoco puede desaparecer, porque entonces
+// --clear-state miente y el run arrastra el estado del anterior.
+func TestOpenClearStateFailureWarnsInsteadOfBeingSilent(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.app"
+	cfg.SimulatorUDID = "SIM"
+	cfg.Launch = LaunchConfig{Mode: "custom", Commands: LaunchCommands{
+		AppPath: "make ios-app-path",
+		Install: `xcrun simctl install "$MAV_UDID" "$MAV_APP_PATH"`,
+		Launch:  `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`,
+	}}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runner := &launchRecipeRunner{
+		tools: map[string]bool{"xcrun": true},
+		results: map[string]CommandResult{
+			"make ios-app-path": {Stdout: "/tmp/App.app\n"},
+			`xcrun simctl uninstall SIM com.example.app`: {
+				Stderr: "An error was encountered processing the command",
+				Code:   1,
+				Err:    errors.New("exit status 1"),
+			},
+		},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"open", "--clear-state"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if strings.HasPrefix(strings.TrimSpace(got), "fail ") {
+		t.Fatalf("un clear_state fallido no debe abortar el open: %q", got)
+	}
+	if !strings.Contains(got, "clear_state_warn=") || !strings.Contains(got, "clear_state_incomplete") {
+		t.Fatalf("el fallo del uninstall debe salir avisado en la respuesta: %q", got)
+	}
+	if !containsCall(runner.commands, "simctl install") {
+		t.Fatalf("el open debe continuar hasta el install: %v", runner.commands)
+	}
+}
+
 func TestUISwipeExplicitPreferIsHonoured(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
