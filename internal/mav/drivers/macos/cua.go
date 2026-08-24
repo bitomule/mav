@@ -241,7 +241,12 @@ func (d *Cua) resolveWindow(ctx context.Context, target drivers.Target) (cuaWind
 		return cuaWindow{}, err
 	}
 	target.PID = pid
-	raw, err := d.cuaCall(ctx, "list_windows", map[string]any{})
+	// El pid va en la peticion y no se filtra despues, y no es una
+	// optimizacion: sin pid la herramienta enumera solo la capa 0 -- para no
+	// inundar al llamante con tooltips, popovers, menus y el Dock -- mientras
+	// que nombrando el proceso admite todas las capas. Es la unica forma de
+	// alcanzar una app cuya UI entera vive en una ventana accesoria.
+	raw, err := d.cuaCall(ctx, "list_windows", map[string]any{"pid": pid})
 	if err != nil {
 		return cuaWindow{}, err
 	}
@@ -252,7 +257,7 @@ func (d *Cua) resolveWindow(ctx context.Context, target drivers.Target) (cuaWind
 	var best cuaWindow
 	var bestArea float64
 	for _, w := range windows {
-		if w.PID != target.PID || !w.OnScreen {
+		if w.PID != pid || !w.OnScreen {
 			continue
 		}
 		area := w.Bounds.Width * w.Bounds.Height
@@ -265,7 +270,7 @@ func (d *Cua) resolveWindow(ctx context.Context, target drivers.Target) (cuaWind
 		// popover, onboarding) no sale en list_windows porque la herramienta
 		// solo enumera la capa 0. El mensaje lo dice para que nadie lo lea
 		// como "la app no esta abierta", que es a lo que se parece.
-		return cuaWindow{}, fmt.Errorf("cua: no layer-0 window for pid %d; a floating window (panel, HUD, popover) is invisible to list_windows", target.PID)
+		return cuaWindow{}, fmt.Errorf("cua: no on-screen window for pid %d", pid)
 	}
 	return best, nil
 }

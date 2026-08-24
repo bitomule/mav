@@ -64,18 +64,35 @@ func TestCuaPicksTheLargestOnScreenWindowOfThePid(t *testing.T) {
 	}
 }
 
-// TestCuaFloatingWindowFailsLoudly: una ventana flotante (layer != 0) no sale
-// en list_windows por diseno declarado de la herramienta. Ese caso tiene que
-// decir por que, porque desde fuera se parece exactamente a "la app no esta
-// abierta" y lleva a diagnosticar lo que no es.
-func TestCuaFloatingWindowFailsLoudly(t *testing.T) {
+// TestCuaAsksForWindowsByPID: sin pid en la peticion, list_windows enumera
+// solo la capa 0 -- para no inundar al llamante con tooltips, popovers y el
+// Dock -- y una app cuya UI entera es una ventana flotante parece cerrada.
+// Nombrando el proceso, admite todas las capas. Filtrar despues en Go no
+// sirve: lo que no viene, no se puede filtrar.
+func TestCuaAsksForWindowsByPID(t *testing.T) {
+	f := cuaExec()
+	if _, err := NewCua(f).Tree(context.Background(), macTarget(), drivers.TreeSpec{}); err != nil {
+		t.Fatal(err)
+	}
+	var listing string
+	for _, c := range f.commands {
+		if strings.Contains(c, "list_windows") {
+			listing = c
+		}
+	}
+	if !strings.Contains(listing, `"pid":4242`) {
+		t.Fatalf("el pid tiene que ir en la peticion, no aplicarse despues: %q", listing)
+	}
+}
+
+func TestCuaNoWindowFailsLoudly(t *testing.T) {
 	f := cuaExec()
 	f.results["cua-driver call list_windows"] = drivers.ExecResult{Stdout: `{"windows":[]}`}
 	_, err := NewCua(f).Tree(context.Background(), macTarget(), drivers.TreeSpec{})
 	if err == nil {
 		t.Fatal("sin ventana no puede haber arbol")
 	}
-	if !strings.Contains(err.Error(), "floating window") {
+	if !strings.Contains(err.Error(), "no on-screen window") {
 		t.Fatalf("el error debe nombrar la causa real: %v", err)
 	}
 }
