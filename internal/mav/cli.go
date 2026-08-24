@@ -253,8 +253,8 @@ Commands:
 Global flags:
   --raw       Emit raw underlying tool output where supported.
   --verbose   Print extra debug details where supported.
-  --prefer-driver auto|axe
-              Prefer a UI driver for semantic tree/tap commands.
+  --prefer-driver auto|<driver-id>
+              Prefer a registered driver. Use mav doctor to list them.
   --profile NAME
               Select a platform profile from .mav/config.yaml.
   --help,-h   Show help.
@@ -298,7 +298,7 @@ Selects a physical iOS device and switches target_kind to device.
 `
 	case "open":
 		return `Usage:
-  mav open [--device NAME] [--ios VERSION] [--udid UDID] [--locale LOCALE] [--language LANG] [--clear-state] [--time-control] [--no-relaunch] [--force]
+  mav open [--device NAME] [--ios VERSION] [--udid UDID] [--locale LOCALE] [--language LANG] [--clear-state] [--fixture NAME] [--time-control] [--no-relaunch] [--force]
 
 --no-relaunch reuses the app already running on the selected target. It starts or reuses a MAV run without executing the launch recipe.
 --force ignores a fresh MAV simulator lock when you know the run is yours.
@@ -1038,6 +1038,15 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	if noRelaunch && hasFlag(args, "--clear-state") {
 		return Fail("open_flags_invalid", map[string]string{"usage": "--no-relaunch cannot be combined with --clear-state"}).Write(c.Stdout)
 	}
+	fixture := flagValue(args, "--fixture")
+	// Mismo trato que --clear-state, y por el mismo motivo: --no-relaunch se
+	// salta la receta entera, asi que el fixture no llegaria a correr nunca.
+	// Aceptar el flag y no ejecutarlo dejaria al agente validando contra datos
+	// que nadie sembro, con las aserciones pasando o fallando por el motivo
+	// equivocado.
+	if noRelaunch && fixture != "" {
+		return Fail("open_flags_invalid", map[string]string{"usage": "--no-relaunch cannot be combined with --fixture"}).Write(c.Stdout)
+	}
 	// A run bound via withRun (i.e. this open is a step inside a flow that
 	// already allocated its own run) is authoritative: open neither reads
 	// nor kills whatever .mav/current-run happens to name, and never
@@ -1095,7 +1104,7 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	if !noRelaunch {
 		var failedStep *launchStep
 		var failedResult CommandResult
-		appPath, failedStep, failedResult, clearStateWarn = c.runLaunchRecipe(ctx, cfg, run, hasFlag(args, "--clear-state"))
+		appPath, failedStep, failedResult, clearStateWarn = c.runLaunchRecipe(ctx, cfg, run, hasFlag(args, "--clear-state"), fixture)
 		if failedStep != nil {
 			fields := map[string]string{"run": run.ID, "logs": run.LogsPath, "step": failedStep.Name, "stderr": firstLine(failedResult.Stderr)}
 			if fields["stderr"] == "" && failedResult.Err != nil {
@@ -1103,6 +1112,7 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 			}
 			return Fail("launch_step_failed", fields).Write(c.Stdout)
 		}
+		writeRunFixture(run, fixture)
 	}
 	if hasFlag(args, "--time-control") {
 		if targetKind(cfg) != drivers.KindSim {
@@ -1144,6 +1154,9 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	fields["target_kind"] = targetKindLabel(targetKind(cfg))
 	if clearStateWarn != "" {
 		fields["clear_state_warn"] = clearStateWarn
+	}
+	if fixture != "" {
+		fields["fixture"] = fixture
 	}
 	fields["session"] = "direct"
 	if _, ok := c.Runner.(ExecRunner); ok {
@@ -3932,7 +3945,7 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 	}
 	switch step.Action {
 	case "open":
-		args := flowArgs(step.Params, "--device", "device", "--ios", "ios", "--udid", "udid", "--locale", "locale", "--language", "language")
+		args := flowArgs(step.Params, "--device", "device", "--ios", "ios", "--udid", "udid", "--locale", "locale", "--language", "language", "--fixture", "fixture")
 		if step.Params["clearState"] == "true" {
 			args = append(args, "--clear-state")
 		}

@@ -634,6 +634,7 @@ func TestProfileOverridableFieldsAreExhaustive(t *testing.T) {
 		"allow_shell":         "politica del repo, no de la plataforma",
 		"default_profile":     "es el selector, no puede estar dentro de lo seleccionado",
 		"profiles":            "idem",
+		"fixtures":            "los estados con nombre son del repo, no de la plataforma; un fixture que solo valga para una la nombra",
 	}
 	typ := reflect.TypeOf(configYAML{})
 	for i := 0; i < typ.NumField(); i++ {

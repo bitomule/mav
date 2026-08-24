@@ -50,6 +50,7 @@ type Config struct {
 	DefaultProfile string
 	Profiles       map[string]profileYAML
 	ActiveProfile  string
+	Fixtures       map[string][]string
 }
 
 type LaunchConfig struct {
@@ -144,6 +145,7 @@ func loadConfig(root, profileOverride string, skipProfile bool) (Config, error) 
 	cfg.Launch = raw.Launch
 	cfg.DefaultProfile = raw.DefaultProfile
 	cfg.Profiles = raw.Profiles
+	cfg.Fixtures = raw.Fixtures
 	if cfg.Launch.Mode == "" && hasLaunchCommands(cfg.Launch.Commands) {
 		cfg.Launch.Mode = "custom"
 	}
@@ -260,6 +262,13 @@ type configYAML struct {
 
 	DefaultProfile string                 `yaml:"default_profile,omitempty"`
 	Profiles       map[string]profileYAML `yaml:"profiles,omitempty"`
+
+	// Fixtures son estados con nombre: listas de comandos que dejan la app en
+	// una situacion conocida antes de lanzarla. No son un formato de datos --
+	// mav no sabe que es un fixture por dentro, solo los ejecuta -- porque el
+	// como sembrar es especifico de cada app y formalizarlo aqui obligaria a
+	// todo el mundo al mismo formato.
+	Fixtures map[string][]string `yaml:"fixtures,omitempty"`
 }
 
 // profileYAML es la capa de overlay de un perfil de plataforma. Todos los
@@ -366,6 +375,7 @@ func SaveConfig(root string, cfg Config) error {
 		TargetCommand:     strings.TrimSpace(cfg.TargetCommand),
 		DefaultProfile:    cfg.DefaultProfile,
 		Profiles:          cfg.Profiles,
+		Fixtures:          cfg.Fixtures,
 	}
 	if cfg.Launch.Mode != "" || hasLaunchCommands(cfg.Launch.Commands) {
 		mode := cfg.Launch.Mode

@@ -100,43 +100,46 @@ type FlowCoordinate struct {
 }
 
 type flowStepPayload struct {
-	Screen         string          `yaml:"screen"`
-	Text           string          `yaml:"text"`
-	ID             string          `yaml:"id"`
-	Value          string          `yaml:"value"`
-	X              string          `yaml:"x"`
-	Y              string          `yaml:"y"`
-	Cmd            string          `yaml:"cmd"`
-	Out            string          `yaml:"out"`
-	Name           string          `yaml:"name"`
-	Note           string          `yaml:"note"`
-	Timeout        string          `yaml:"timeout"`
-	Duration       string          `yaml:"duration"`
-	Hold           string          `yaml:"hold"`
-	Direction      string          `yaml:"direction"`
-	Contains       string          `yaml:"contains"`
-	Key            string          `yaml:"key"`
-	Level          string          `yaml:"level"`
-	Device         string          `yaml:"device"`
-	IOS            string          `yaml:"ios"`
-	UDID           string          `yaml:"udid"`
-	Locale         string          `yaml:"locale"`
-	Language       string          `yaml:"language"`
-	ChangedFrom    string          `yaml:"changedFrom"`
-	MaxSwipes      string          `yaml:"maxSwipes"`
-	Scale          string          `yaml:"scale"`
-	PanX           string          `yaml:"panX"`
-	PanY           string          `yaml:"panY"`
-	Distance       string          `yaml:"distance"`
-	Angle          string          `yaml:"angle"`
-	Rotate         string          `yaml:"rotate"`
-	Degrees        string          `yaml:"degrees"`
-	File           string          `yaml:"file"`
-	HAR            string          `yaml:"har"`
-	Port           string          `yaml:"port"`
-	PreferDriver   string          `yaml:"prefer-driver"`
-	ClearState     bool            `yaml:"clearState"`
-	ClearStateDash bool            `yaml:"clear-state"`
+	Screen         string `yaml:"screen"`
+	Text           string `yaml:"text"`
+	ID             string `yaml:"id"`
+	Value          string `yaml:"value"`
+	X              string `yaml:"x"`
+	Y              string `yaml:"y"`
+	Cmd            string `yaml:"cmd"`
+	Out            string `yaml:"out"`
+	Name           string `yaml:"name"`
+	Note           string `yaml:"note"`
+	Timeout        string `yaml:"timeout"`
+	Duration       string `yaml:"duration"`
+	Hold           string `yaml:"hold"`
+	Direction      string `yaml:"direction"`
+	Contains       string `yaml:"contains"`
+	Key            string `yaml:"key"`
+	Level          string `yaml:"level"`
+	Device         string `yaml:"device"`
+	IOS            string `yaml:"ios"`
+	UDID           string `yaml:"udid"`
+	Locale         string `yaml:"locale"`
+	Language       string `yaml:"language"`
+	ChangedFrom    string `yaml:"changedFrom"`
+	MaxSwipes      string `yaml:"maxSwipes"`
+	Scale          string `yaml:"scale"`
+	PanX           string `yaml:"panX"`
+	PanY           string `yaml:"panY"`
+	Distance       string `yaml:"distance"`
+	Angle          string `yaml:"angle"`
+	Rotate         string `yaml:"rotate"`
+	Degrees        string `yaml:"degrees"`
+	File           string `yaml:"file"`
+	HAR            string `yaml:"har"`
+	Port           string `yaml:"port"`
+	PreferDriver   string `yaml:"prefer-driver"`
+	ClearState     bool   `yaml:"clearState"`
+	ClearStateDash bool   `yaml:"clear-state"`
+	// Una sola grafia a proposito: el doblete clearState/clear-state de arriba
+	// es deuda que no hay motivo para repetir.
+	Fixture        string          `yaml:"fixture"`
 	Network        bool            `yaml:"network"`
 	Focused        string          `yaml:"focused"`
 	Optional       bool            `yaml:"optional"`
@@ -344,6 +347,9 @@ func parseFlowStepNode(node yaml.Node) (FlowStep, error) {
 	}
 	if payload.ClearState || payload.ClearStateDash {
 		params["clearState"] = "true"
+	}
+	if payload.Fixture != "" {
+		params["fixture"] = payload.Fixture
 	}
 	if payload.Optional {
 		params["optional"] = "true"

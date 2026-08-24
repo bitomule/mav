@@ -188,3 +188,47 @@ func writeTestPNG(path string) error {
 	defer file.Close()
 	return png.Encode(file, img)
 }
+
+// TestReportRecordsTheFixtureApplied: un run cuyo estado lo sembro un fixture y
+// cuyo manifiesto no dice cual no es reproducible desde su propia evidencia,
+// que es justo lo que el manifiesto verificado promete.
+func TestReportRecordsTheFixtureApplied(t *testing.T) {
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeRunFixture(run, "seeded-meetings")
+	path, err := GenerateReport(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report ReportData
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Fixture != "seeded-meetings" {
+		t.Fatalf("report.json debe registrar el fixture aplicado, got %q", report.Fixture)
+	}
+}
+
+func TestReportOmitsFixtureWhenNoneApplied(t *testing.T) {
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := GenerateReport(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "\"fixture\"") {
+		t.Fatalf("sin fixture no debe aparecer el campo:\n%s", data)
+	}
+}

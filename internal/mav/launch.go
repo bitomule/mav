@@ -20,7 +20,7 @@ type launchStep struct {
 // orden: la ruta del .app resuelta, el paso que falló (nil si todo fue bien),
 // su resultado, y un aviso no fatal para los casos en los que seguir es
 // correcto pero callarse no.
-func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clearState bool) (string, *launchStep, CommandResult, string) {
+func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clearState bool, fixture string) (string, *launchStep, CommandResult, string) {
 	commands := effectiveLaunchCommands(cfg)
 	steps := []launchStep{
 		{Name: "healthcheck", Command: commands.Healthcheck},
@@ -108,6 +108,36 @@ func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clea
 					return appPath, &step, retryResult, warn
 				}
 			} else {
+				return appPath, &step, result, warn
+			}
+		}
+	}
+	// El fixture va aqui, entre install y launch, y no es casualidad: el
+	// contenedor de la app ya existe (lo acaba de crear el install) y la app
+	// todavia no ha arrancado, asi que nada tiene su base de datos abierta.
+	// Antes o despues de esta ventana, sembrar es corromper.
+	if fixture != "" {
+		commandsForFixture, ok := cfg.Fixtures[fixture]
+		if !ok {
+			step := launchStep{Name: "fixture"}
+			return appPath, &step, CommandResult{
+				Stderr: fmt.Sprintf("fixture_not_found name=%s available=%s", fixture, strings.Join(fixtureNames(cfg), ",")),
+				Err:    fmt.Errorf("fixture_not_found"),
+			}, warn
+		}
+		// Una instancia viva de un run anterior tendria la base de datos
+		// abierta mientras el fixture la reescribe. Matarla es best-effort: si
+		// no habia nada corriendo el terminate falla y da igual, y no hay
+		// forma barata de distinguirlo del fallo real sin leer el stderr del
+		// driver, que es suyo.
+		c.terminateBeforeFixture(ctx, cfg, run)
+		for i, command := range commandsForFixture {
+			if strings.TrimSpace(command) == "" {
+				continue
+			}
+			step := launchStep{Name: "fixture", Command: command}
+			if result := c.runLaunchCommand(ctx, cfg, run, step, env); result.Err != nil {
+				result.Stderr = fmt.Sprintf("fixture %s step %d/%d failed: %s", fixture, i+1, len(commandsForFixture), result.Stderr)
 				return appPath, &step, result, warn
 			}
 		}
@@ -339,4 +369,34 @@ func shellQuote(value string) string {
 		return "''"
 	}
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
+// terminateBeforeFixture cierra la app antes de que un fixture le reescriba el
+// estado. Best-effort a proposito: el caso corriente es que no hubiera nada
+// corriendo, y ahi fallar seria absurdo.
+func (c CLI) terminateBeforeFixture(ctx context.Context, cfg Config, run RunState) {
+	if cfg.BundleID == "" {
+		return
+	}
+	target := targetFromConfig(cfg)
+	driver, _, err := c.router().Route(ctx, drivers.CapTerminate, target, "")
+	if err != nil {
+		return
+	}
+	utility, ok := driver.(drivers.DeviceUtilityDriver)
+	if !ok {
+		return
+	}
+	if err := utility.Terminate(ctx, target, cfg.BundleID); err != nil {
+		appendFile(run.LogsPath, "mav fixture: terminate before seeding did not run: "+err.Error()+"\n")
+	}
+}
+
+func fixtureNames(cfg Config) []string {
+	names := make([]string, 0, len(cfg.Fixtures))
+	for name := range cfg.Fixtures {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

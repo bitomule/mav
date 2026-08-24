@@ -40,8 +40,13 @@ type EvidenceStep struct {
 }
 
 type ReportData struct {
-	RunID              string               `json:"run_id"`
-	CreatedAt          string               `json:"created_at"`
+	RunID     string `json:"run_id"`
+	CreatedAt string `json:"created_at"`
+	// Fixture es el estado con nombre que se sembro antes de lanzar la app, si
+	// hubo alguno. Sin esto el manifiesto no puede responder "de que estado
+	// partio esto?", y un run cuya evidencia no dice eso no es reproducible --
+	// que es justo lo que el manifiesto verificado promete.
+	Fixture            string               `json:"fixture,omitempty"`
 	Dir                string               `json:"dir"`
 	Screenshot         string               `json:"screenshot,omitempty"`
 	ScreenshotEvidence ImageEvidence        `json:"screenshot_evidence"`
@@ -101,6 +106,7 @@ func GenerateReport(run RunState) (string, error) {
 		RunID:     run.ID,
 		CreatedAt: time.Now().Format(time.RFC3339),
 		Dir:       run.Dir,
+		Fixture:   readRunFixture(run),
 	}
 	for index, step := range LoadEvidenceSteps(run) {
 		reportStep := ReportEvidenceStep{
@@ -388,4 +394,25 @@ func LoadEvidenceSteps(run RunState) []EvidenceStep {
 func exists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// runFixturePath es donde `mav open` deja constancia del fixture aplicado, para
+// que el manifiesto de evidencia pueda decir de que estado partio el run.
+func runFixturePath(run RunState) string {
+	return filepath.Join(run.Dir, "fixture.txt")
+}
+
+func writeRunFixture(run RunState, fixture string) {
+	if fixture == "" {
+		return
+	}
+	_ = os.WriteFile(runFixturePath(run), []byte(fixture+"\n"), 0o644)
+}
+
+func readRunFixture(run RunState) string {
+	data, err := os.ReadFile(runFixturePath(run))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }

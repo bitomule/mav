@@ -2670,3 +2670,130 @@ steps:
 		t.Fatalf("text-only type step must not produce tap-target args, got %v", args)
 	}
 }
+
+func fixtureConfigRoot(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.app"
+	cfg.SimulatorUDID = "SIM"
+	cfg.Launch = LaunchConfig{Mode: "custom", Commands: LaunchCommands{
+		AppPath: "make ios-app-path",
+		Install: `xcrun simctl install "$MAV_UDID" "$MAV_APP_PATH"`,
+		Launch:  `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`,
+	}}
+	cfg.Fixtures = map[string][]string{
+		"seeded": {"echo seeding-one", "echo seeding-two"},
+	}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+// TestFixtureRunsBetweenInstallAndLaunch fija la ventana: el contenedor ya
+// existe y la app aun no ha arrancado, asi que nada tiene su base de datos
+// abierta. Antes o despues, sembrar es corromper.
+func TestFixtureRunsBetweenInstallAndLaunch(t *testing.T) {
+	root := fixtureConfigRoot(t)
+	runner := &launchRecipeRunner{
+		tools:   map[string]bool{"xcrun": true},
+		results: map[string]CommandResult{"make ios-app-path": {Stdout: "/tmp/App.app\n"}},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"open", "--fixture", "seeded"}); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(runner.commands, "\n")
+	install := strings.Index(joined, "simctl install")
+	seed := strings.Index(joined, "seeding-one")
+	launch := strings.Index(joined, "simctl launch")
+	if install < 0 || seed < 0 || launch < 0 {
+		t.Fatalf("faltan pasos: %s", joined)
+	}
+	if !(install < seed && seed < launch) {
+		t.Fatalf("orden incorrecto install=%d fixture=%d launch=%d:\n%s", install, seed, launch, joined)
+	}
+	if !strings.Contains(out.String(), "fixture=seeded") {
+		t.Fatalf("el fixture aplicado debe salir en la respuesta: %q", out.String())
+	}
+}
+
+func TestFixtureNotFoundFailsListingAvailable(t *testing.T) {
+	root := fixtureConfigRoot(t)
+	runner := &launchRecipeRunner{
+		tools:   map[string]bool{"xcrun": true},
+		results: map[string]CommandResult{"make ios-app-path": {Stdout: "/tmp/App.app\n"}},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"open", "--fixture", "nope"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "fail code=launch_step_failed") || !strings.Contains(got, "fixture_not_found") {
+		t.Fatalf("un fixture inexistente debe fallar nombrando los validos: %q", got)
+	}
+	if containsCall(runner.commands, "simctl launch") {
+		t.Fatalf("no debe lanzarse la app si el fixture no existe: %v", runner.commands)
+	}
+}
+
+func TestFixtureRejectedWithNoRelaunch(t *testing.T) {
+	root := fixtureConfigRoot(t)
+	runner := &launchRecipeRunner{tools: map[string]bool{"xcrun": true}}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"open", "--no-relaunch", "--fixture", "seeded"}); err != nil {
+		t.Fatal(err)
+	}
+	// --no-relaunch se salta la receta entera, asi que el fixture no correria.
+	// Aceptarlo y no ejecutarlo dejaria al agente validando contra datos que
+	// nadie sembro.
+	if !strings.Contains(out.String(), "open_flags_invalid") {
+		t.Fatalf("--fixture con --no-relaunch debe rechazarse: %q", out.String())
+	}
+}
+
+func TestFixtureFailureAbortsNamingTheStep(t *testing.T) {
+	root := fixtureConfigRoot(t)
+	runner := &launchRecipeRunner{
+		tools: map[string]bool{"xcrun": true},
+		results: map[string]CommandResult{
+			"make ios-app-path": {Stdout: "/tmp/App.app\n"},
+			"seeding-two":       {Stderr: "boom", Code: 1, Err: errors.New("exit status 1")},
+		},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"open", "--fixture", "seeded"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "step=fixture") || !strings.Contains(got, "fixture seeded step 2/2") {
+		t.Fatalf("el fallo debe nombrar el fixture y el paso: %q", got)
+	}
+	if containsCall(runner.commands, "simctl launch") {
+		t.Fatalf("no debe lanzarse la app tras un fixture fallido: %v", runner.commands)
+	}
+}
+
+func TestNoFixtureRunsNothing(t *testing.T) {
+	root := fixtureConfigRoot(t)
+	runner := &launchRecipeRunner{
+		tools:   map[string]bool{"xcrun": true},
+		results: map[string]CommandResult{"make ios-app-path": {Stdout: "/tmp/App.app\n"}},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"open"}); err != nil {
+		t.Fatal(err)
+	}
+	if containsCall(runner.commands, "seeding-one") {
+		t.Fatalf("sin --fixture no debe sembrarse nada: %v", runner.commands)
+	}
+	if strings.Contains(out.String(), "fixture=") {
+		t.Fatalf("sin --fixture no debe reportarse ninguno: %q", out.String())
+	}
+}
