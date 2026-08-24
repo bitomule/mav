@@ -306,7 +306,7 @@ Selects a physical iOS device and switches target_kind to device.
 	case "ui":
 		return `Usage:
   mav ui tree [--prefer-driver auto|axe] [--include-system]
-  mav ui tap --id ID [--prefer-driver auto|axe]
+  mav ui tap --id ID [--verify] [--prefer-driver auto|<driver-id>]
   mav ui tap --x X --y Y
   mav ui tap --text TEXT [--prefer-driver auto|axe]
   mav ui tap --value VALUE
@@ -330,7 +330,7 @@ Selects a physical iOS device and switches target_kind to device.
 		return "Usage: mav ui tree [--prefer-driver auto|axe] [--include-system] [--agent] [--with-frame]\n\nPrints compact screen metadata followed by bounded node lines with id, label, role, value, enabled, subrole, title, pid, focused, and frame when available. --include-system asks the system/SpringBoard tree via baguette when a system service, permission prompt, or cross-app view is in front. Simulator only.\n\n--agent emits a ranked 40-element view that puts focused + actionable elements first and drops frame to save tokens. Combine with --with-frame to keep coordinates.\n"
 	case "ui tap":
 		return `Usage:
-  mav ui tap --id ID [--prefer-driver auto|axe]
+  mav ui tap --id ID [--verify] [--prefer-driver auto|<driver-id>]
   mav ui tap --x X --y Y
   mav ui tap --text TEXT [--prefer-driver auto|axe]
   mav ui tap --value VALUE
@@ -1760,6 +1760,45 @@ func (c CLI) waitForTreeReady(ctx context.Context, cfg Config, timeout time.Dura
 // En el Mac seria el consejo contrario al correcto: pulsar por coordenadas es
 // justo el camino que puede aterrizar en otra aplicacion si la ventana se
 // movio. Lo que falta ahi es un driver que entregue por PID.
+// snapshotForVerification lee el arbol para poder compararlo despues de una
+// accion. Devuelve nil si no se puede leer: la verificacion es un extra, y no
+// poder hacerla nunca debe convertir un tap correcto en un fallo.
+func (c CLI) snapshotForVerification(ctx context.Context, cfg Config) []Element {
+	described, err := c.describeUITree(ctx, cfg, "auto", false)
+	if err != nil || described.Result.Err != nil {
+		return nil
+	}
+	return ExtractElements(described.Result.Stdout)
+}
+
+// verifyTapChangedSomething responde a la pregunta que la capa de evidencia de
+// mav no puede permitirse dejar sin respuesta: el tap hizo algo?
+//
+// Existe porque un tap puede reportar exito sin haber hecho nada. AXPress
+// devuelve OK y no hace nada sobre vistas renderizadas por un navegador, y un
+// evento sintetico puede acabar en una ventana que ya no esta donde estaba.
+// Reportar "ok" ahi es peor que fallar: el agente sigue construyendo sobre una
+// pantalla que no cambio, y el fallo aparece tres pasos despues sin relacion
+// aparente con la causa.
+//
+// Devuelve "changed", "unchanged" o "unknown". OJO con "unchanged": no siempre
+// significa que el tap fallara -- hay acciones que legitimamente no cambian el
+// arbol -- asi que es una senal para que decida quien lee, no un veredicto.
+func (c CLI) verifyTapChangedSomething(ctx context.Context, cfg Config, before []Element) string {
+	if before == nil {
+		return "unknown"
+	}
+	after := c.snapshotForVerification(ctx, cfg)
+	if after == nil {
+		return "unknown"
+	}
+	delta := TreeDiff(before, after)
+	if len(delta.Added) == 0 && len(delta.Removed) == 0 && len(delta.Changed) == 0 {
+		return "unchanged"
+	}
+	return "changed"
+}
+
 func tapToolMissingFields(cfg Config) map[string]string {
 	if targetKind(cfg) == drivers.KindMac {
 		return map[string]string{
@@ -1828,6 +1867,13 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		if !ok {
 			return Fail("tool_missing", map[string]string{"tool": "axe"}).Write(c.Stdout)
 		}
+		// El arbol de ANTES solo se lee cuando se pide verificacion, porque
+		// leerlo cuesta segundos y esto es el bucle en caliente.
+		verify := hasFlag(args, "--verify")
+		var before []Element
+		if verify {
+			before = c.snapshotForVerification(ctx, cfg)
+		}
 		_, tapErr := td.Tap(ctx, target, drivers.TapSpec{Selector: drivers.ElementSelector{ID: id, Text: text}})
 		result := CommandResult{}
 		if tapErr != nil {
@@ -1836,9 +1882,20 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			if hasTextDiagnostic {
 				return Fail("ui_tap_text_no_label_match", diagnosticFields).Write(c.Stdout)
 			}
-			return Fail("ui_tap_failed", map[string]string{"stderr": firstLine(result.Stderr)}).Write(c.Stdout)
+			tapFields := map[string]string{"stderr": firstLine(result.Stderr)}
+			// Un locator ambiguo no es un fallo del tap: es que el selector
+			// describe varias cosas y la herramienta se niega a elegir por su
+			// cuenta, que es lo correcto. Pero el mensaje es suyo y no dice
+			// que hacer, asi que el agente se queda mirando.
+			if strings.Contains(result.Stderr, "must be unique") {
+				tapFields["next"] = "the selector matches more than one element; use --id, or a longer --text that only matches one"
+			}
+			return Fail("ui_tap_failed", tapFields).Write(c.Stdout)
 		}
 		fields["driver"] = driver.ID()
+		if verify {
+			fields["verified"] = c.verifyTapChangedSomething(ctx, cfg, before)
+		}
 		c.appendCurrentCommand(command, result)
 		return c.writeFastPathResult(ctx, cfg, args, "ui.tap", fields)
 	}
@@ -1868,7 +1925,15 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		result := CommandResult{}
 		if tapErr != nil {
 			result = CommandResult{Stderr: tapErr.Error(), Err: tapErr}
-			return Fail("ui_tap_failed", map[string]string{"stderr": firstLine(result.Stderr)}).Write(c.Stdout)
+			tapFields := map[string]string{"stderr": firstLine(result.Stderr)}
+			// Un locator ambiguo no es un fallo del tap: es que el selector
+			// describe varias cosas y la herramienta se niega a elegir por su
+			// cuenta, que es lo correcto. Pero el mensaje es suyo y no dice
+			// que hacer, asi que el agente se queda mirando.
+			if strings.Contains(result.Stderr, "must be unique") {
+				tapFields["next"] = "the selector matches more than one element; use --id, or a longer --text that only matches one"
+			}
+			return Fail("ui_tap_failed", tapFields).Write(c.Stdout)
 		}
 		c.appendCurrentCommand("mav ui tap --x "+x+" --y "+y, result)
 		return c.writeFastPathResult(ctx, cfg, args, "ui.tap", map[string]string{"x": x, "y": y, "driver": driver.ID(), "route_recorded": "false"})
@@ -1943,7 +2008,10 @@ func onlyFastPathArgs(args []string) []string {
 	out := []string{}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if !strings.HasPrefix(arg, "--wait-") && arg != "--observe" {
+		// --verify se conserva: la caida a coordenadas es justo el camino con
+		// mas probabilidad de pulsar donde no toca, asi que perder ahi la
+		// verificacion seria perderla donde mas hace falta.
+		if !strings.HasPrefix(arg, "--wait-") && arg != "--observe" && arg != "--verify" {
 			continue
 		}
 		out = append(out, arg)

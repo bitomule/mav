@@ -1,6 +1,6 @@
 Usage:
   mav ui tree [--prefer-driver auto|axe] [--include-system]
-  mav ui tap --id ID [--prefer-driver auto|axe]
+  mav ui tap --id ID [--verify] [--prefer-driver auto|<driver-id>]
   mav ui tap --x X --y Y
   mav ui tap --text TEXT [--prefer-driver auto|axe]
   mav ui tap --value VALUE

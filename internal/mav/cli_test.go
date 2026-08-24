@@ -2797,3 +2797,42 @@ func TestNoFixtureRunsNothing(t *testing.T) {
 		t.Fatalf("sin --fixture no debe reportarse ninguno: %q", out.String())
 	}
 }
+
+// TestTapVerificationSurvivesTheCoordinateFallback: cuando un tap semantico cae
+// a coordenadas, ese es el camino con mas probabilidad de pulsar donde no toca.
+// Perder ahi --verify seria perderlo justo donde hace falta.
+func TestTapVerificationSurvivesTheCoordinateFallback(t *testing.T) {
+	got := onlyFastPathArgs([]string{"--id", "boton", "--verify", "--observe", "delta", "--wait-timeout", "2s"})
+	joined := strings.Join(got, " ")
+	if !strings.Contains(joined, "--verify") {
+		t.Fatalf("--verify debe sobrevivir a la caida a coordenadas: %v", got)
+	}
+	if strings.Contains(joined, "--id") {
+		t.Fatalf("el selector no debe reenviarse: %v", got)
+	}
+}
+
+// TestVerifyReportsUnknownRatherThanGuessing: la verificacion es un extra. Si no
+// se puede leer el arbol, no se puede afirmar que el tap funciono NI que fallo,
+// y decir cualquiera de las dos cosas seria peor que admitir que no se sabe.
+func TestVerifyReportsUnknownRatherThanGuessing(t *testing.T) {
+	cli := CLI{Root: t.TempDir()}
+	if got := cli.verifyTapChangedSomething(context.Background(), Config{}, nil); got != "unknown" {
+		t.Fatalf("sin arbol previo no se puede verificar nada, got %q", got)
+	}
+}
+
+// TestVerifyDistinguishesChangedFromUnchanged: el caso "unchanged" es la razon
+// entera de esta funcion -- un tap que reporta ok sin haber hecho nada -- asi
+// que conviene fijarlo sin depender de una app viva.
+func TestVerifyDistinguishesChangedFromUnchanged(t *testing.T) {
+	same := []Element{{ID: "a", Label: "Uno"}, {ID: "b", Label: "Dos"}}
+	if delta := TreeDiff(same, same); len(delta.Added)+len(delta.Removed)+len(delta.Changed) != 0 {
+		t.Fatalf("dos arboles identicos no tienen delta: %+v", delta)
+	}
+	moved := []Element{{ID: "a", Label: "Uno"}, {ID: "b", Label: "DOS"}}
+	delta := TreeDiff(same, moved)
+	if len(delta.Changed) == 0 {
+		t.Fatalf("un cambio de etiqueta debe detectarse: %+v", delta)
+	}
+}
