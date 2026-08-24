@@ -130,13 +130,17 @@ func (d *Axcli) Tap(ctx context.Context, target drivers.Target, spec drivers.Tap
 	// El cursor software que axcli dibuja por defecto es util para un humano
 	// mirando y ruido para un agente: contradice justo lo que se le pide, que
 	// es no notarse.
-	args := append([]string{}, base...)
-	args = append(args, "--no-visual-cursor")
+	// En 0.1.0 --app/--pid son flags DEL SUBCOMANDO, no globales, y no existen
+	// ni --no-visual-cursor ni --strategy: la entrega por PID es el
+	// comportamiento unico, no una opcion. Verificado contra el binario que
+	// instala la formula, no contra el main de GitHub, que va por delante.
+	args := []string{"click"}
+	args = append(args, base...)
 	switch {
 	case spec.Selector.ID != "":
-		args = append(args, "click", `[identifier="`+spec.Selector.ID+`"]`)
+		args = append(args, `[identifier="`+spec.Selector.ID+`"]`)
 	case spec.Selector.Text != "":
-		args = append(args, "click", `text="`+spec.Selector.Text+`"`)
+		args = append(args, `text="`+spec.Selector.Text+`"`)
 	case spec.X != 0 || spec.Y != 0:
 		// `mouse click` es global e ignora --app: mueve el cursor real y
 		// dispara sobre la ventana de encima. Deja de ser background-safe, asi
@@ -162,13 +166,13 @@ func (d *Axcli) Type(ctx context.Context, target drivers.Target, spec drivers.Te
 	if err != nil {
 		return err
 	}
-	args := append([]string{}, base...)
-	args = append(args, "--no-visual-cursor")
+	args := []string{"fill"}
+	args = append(args, base...)
 	switch {
 	case spec.Selector.ID != "":
-		args = append(args, "fill", `[identifier="`+spec.Selector.ID+`"]`, spec.Text)
+		args = append(args, `[identifier="`+spec.Selector.ID+`"]`, spec.Text)
 	case spec.Selector.Text != "":
-		args = append(args, "fill", `text="`+spec.Selector.Text+`"`, spec.Text)
+		args = append(args, `text="`+spec.Selector.Text+`"`, spec.Text)
 	default:
 		return errors.New("axcli: typing requires a selector; use peekaboo to type into the focused element")
 	}

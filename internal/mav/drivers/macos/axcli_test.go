@@ -51,15 +51,18 @@ func TestAxcliRefusesCoordinateTaps(t *testing.T) {
 	}
 }
 
-func TestAxcliDisablesTheVisualCursor(t *testing.T) {
+func TestAxcliCommandShapeMatchesTheReleasedVersion(t *testing.T) {
 	f := &fakeExec{tools: map[string]bool{"axcli": true}}
 	if _, err := NewAxcli(f).Tap(context.Background(), macTarget(), drivers.TapSpec{
 		Selector: drivers.ElementSelector{ID: "saveButton"},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.commands) != 1 || !strings.Contains(f.commands[0], "--no-visual-cursor") {
-		t.Fatalf("el cursor software contradice lo que se le pide a un agente: %v", f.commands)
+	// --app va DESPUES del subcomando en 0.1.0, no antes: es flag del
+	// subcomando, no global. Verificado contra el binario que instala la
+	// formula.
+	if len(f.commands) != 1 || !strings.HasPrefix(f.commands[0], "axcli click --app") {
+		t.Fatalf("forma del comando incorrecta para 0.1.0: %v", f.commands)
 	}
 	if !strings.Contains(f.commands[0], `identifier="saveButton"`) {
 		t.Fatalf("el selector debe ir por identificador: %v", f.commands)
