@@ -53,7 +53,9 @@ for _ in $(seq 1 60); do
 done
 
 echo "==> instalando mav y drivers"
-SSHPASS="$PASSWORD" sshpass -e ssh -o StrictHostKeyChecking=no \
+# Sin `if !`, un fallo aqui se perderia si alguien canaliza la salida del script
+# a otro comando: el codigo de salida de una tuberia es el del ultimo eslabon.
+if ! SSHPASS="$PASSWORD" sshpass -e ssh -o StrictHostKeyChecking=no \
   -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "$USER_NAME@$IP" 'bash -s' <<'PROVISION'
 set -eu
 export NONINTERACTIVE=1
@@ -72,9 +74,27 @@ brew install bitomule/tap/mav steipete/tap/peekaboo bitomule/tap/axcli
 echo 'export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH' >> "$HOME/.zshenv"
 echo 'export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH' >> "$HOME/.bashrc"
 
-echo "    instalado:"
-for t in mav peekaboo axcli; do printf "      %s %s\n" "$t" "$(command -v $t || echo NO)"; done
+# Verificar, no confiar: `brew install` con varias formulas falla entero si una
+# no existe, y sin esta comprobacion el script reportaba exito con la imagen a
+# medio construir. Una imagen incompleta que se anuncia como lista es peor que
+# un fallo, porque el error aparece luego en el primer run y sin relacion
+# aparente con la causa.
+missing=""
+for t in mav peekaboo axcli; do
+  if command -v "$t" >/dev/null 2>&1; then
+    printf "      %-10s %s\n" "$t" "$(command -v $t)"
+  else
+    printf "      %-10s NO INSTALADO\n" "$t"
+    missing="$missing $t"
+  fi
+done
+[ -z "$missing" ] || { echo "faltan herramientas:$missing" >&2; exit 1; }
 PROVISION
+then
+  echo "el aprovisionamiento fallo; la VM $NAME queda en pie para inspeccionarla" >&2
+  trap - EXIT
+  exit 1
+fi
 
 echo "==> apagando"
 SSHPASS="$PASSWORD" sshpass -e ssh -o StrictHostKeyChecking=no \
