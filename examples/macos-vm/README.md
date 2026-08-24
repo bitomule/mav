@@ -134,6 +134,43 @@ queremos.
 Así que la imagen trae herramientas y nada más. Los permisos se conceden después, contra la app concreta,
 por el canal del hipervisor descrito arriba. Eso mantiene una sola imagen sirviendo a cualquier app.
 
+## Lo probado de verdad, y dónde para
+
+Ejecutado contra NokoruMac en una VM de macOS 26.0:
+
+| Paso | Resultado |
+|---|---|
+| Imagen con mav + peekaboo + axcli | ✅ construida y verificada |
+| crabbox: lease, sync, run, cleanup | ✅ end-to-end |
+| App corriendo dentro de la VM | ✅ |
+| Fixture (`vacio` borra el contenedor) | ✅ la app arrancó mostrando el onboarding de primer uso |
+| Accessibility + Event Synthesizing | ✅ **concedidos por el canal del hipervisor, sin tocar el host** |
+| Screen Recording | ❌ ver abajo |
+| `mav ui tree` / `mav capture` | ❌ bloqueados por lo anterior |
+
+### Tres cosas que salieron al ejecutarlo
+
+**1. Una app firmada para desarrollo no arranca en la VM.** NokoruMac lleva `embedded.provisionprofile`
+y entitlements restringidos (iCloud, push) atados a un equipo y unos dispositivos. En una VM limpia,
+AMFI la mata con SIGKILL sin mensaje. Para validar UI no hacen falta esos entitlements: re-firmar ad-hoc
+(`codesign -f -s - --deep`) la deja arrancar. Es un compromiso consciente — se pierde iCloud y push — y
+hay que decirlo, porque ya no estás probando exactamente el binario que distribuyes.
+
+**2. `mav ui tree` en macOS necesita los DOS permisos, no sólo Accessibility.** `peekaboo see` enumera
+ventanas con ScreenCaptureKit, así que sin Screen Recording falla con `WINDOW_NOT_FOUND` aunque
+Accessibility esté concedida. Su propio log lo dice: *"rejected onDemand host … missing Screen
+Recording"*.
+
+**3. Screen Recording no se puede conceder a un binario CLI por la vía normal.** A diferencia de
+Accessibility —donde macOS registró `sshd-keygen-wrapper` solo y bastó activar el interruptor— el panel
+de Screen Recording aparece vacío y su botón "+" abre un selector pensado para `.app`. Provocar la
+petición desde un proceso sin GUI no registra ninguna entrada.
+
+Vías que quedan por explorar, ninguna probada aún: conceder a `Terminal.app` y conducir desde una
+terminal dentro de la sesión gráfica en vez de por SSH; o capturar la pantalla **desde fuera** por el
+propio VNC del hipervisor, que no necesita permiso alguno — la evidencia visual de esta prueba se obtuvo
+justo así.
+
 ## Lo que no funciona todavía## Lo que no funciona todavía## Lo que no funciona todavía
 
 `crabbox run --artifact-glob` **rechaza los targets nativos de macOS**, que es justo el
