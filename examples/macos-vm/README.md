@@ -18,9 +18,39 @@ código:
 2. **Estado.** `--clear-state` borra el contenedor de la app, pero no el resto de rastro
    que deja en el sistema.
 
-En una VM cuya imagen fabricas tú, los dos desaparecen: las imágenes base de tart traen
-**SIP desactivado**, así que el aprovisionamiento escribe los permisos directamente en
-`TCC.db`, y el estado se tira al borrar la VM.
+En una VM cuya imagen fabricas tú, el segundo desaparece: tiras la VM y el estado se va con ella.
+
+El primero **no**, y esto contradice lo que dice la mayoría de guías sobre el tema.
+
+### Sembrar `TCC.db` NO funciona en macOS 26
+
+Probado en una VM real de macOS 26.0 con SIP desactivado, y falla en las cuatro variantes:
+
+| Intento | Resultado |
+|---|---|
+| `INSERT` por ruta, `client_type=1` | ignorado |
+| Identificador de firma, `client_type=0`, sin `csreq` | ignorado |
+| Identificador de firma, `client_type=0`, **con `csreq` válido de 172 bytes** | ignorado |
+| Lo anterior sobre toda la cadena de proceso responsable (`bash`, `zsh`, `ssh`, `sshd`) | ignorado |
+
+Con `tccd` reiniciado en cada intento, y con un reinicio completo de la VM al final. `csrutil status`
+confirmaba `disabled` todo el rato, y las filas quedaban en la base con `auth_value=2`.
+
+Las guías que dicen que esto funciona —y el orb de CircleCI— son de macOS anteriores. En macOS 26,
+escribir en la `TCC.db` del sistema deja de bastar aunque SIP esté desactivado.
+
+### Lo que sí funciona: hornear el permiso en la imagen
+
+El permiso hay que concederlo **una vez, a mano, dentro de la VM** (por VNC o pantalla compartida) y
+después **guardar la imagen**. Cada clon hereda la `TCC.db` ya concedida, porque la escribió `tccd`
+por su cuenta y no un `INSERT` externo.
+
+No hay atajo automatizable para esa primera concesión: cualquier forma de pulsar el botón de System
+Settings necesitaría ya el permiso de accesibilidad que estás intentando conceder.
+
+La consecuencia práctica es buena: **el trabajo manual es una vez por imagen, no una vez por run.** Y
+convierte una "librería de imágenes ya concedidas" en la pieza que de verdad hace falta, más que
+cualquier script de aprovisionamiento.
 
 ## La receta
 
@@ -54,16 +84,15 @@ set -eu
 
 brew install bitomule/tap/mav steipete/tap/peekaboo bitomule/tap/axcli
 
-# Los permisos que en tu Mac son un click humano aquí son una fila de SQLite,
-# porque la imagen base trae SIP desactivado. Este es el motivo entero de usar
-# una VM en vez del Mac de al lado.
-TCC="/Library/Application Support/com.apple.TCC/TCC.db"
-for service in kTCCServiceAccessibility kTCCServiceScreenCapture; do
-  sudo sqlite3 "$TCC" "INSERT OR REPLACE INTO access
-    (service, client, client_type, auth_value, auth_reason, auth_version)
-    VALUES ('$service', '/bin/sh', 1, 2, 4, 1);"
-done
+# OJO: no hay linea que siembre TCC aqui. No funciona en macOS 26 (ver arriba).
+# Los permisos vienen concedidos en la imagen; si no lo estan, este script no
+# puede arreglarlo y mav lo dira en `doctor`.
 ```
+
+**El PATH importa más de lo que parece.** En una sesión SSH no interactiva el `PATH` es
+`/usr/bin:/bin:/usr/sbin:/sbin` — sin `/usr/local/bin` ni `/opt/homebrew/bin`. Cualquier cosa que
+instales queda invisible al conducirla por SSH, incluido desde crabbox. Exporta el PATH
+explícitamente en cada comando remoto.
 
 Y el run:
 
