@@ -115,17 +115,26 @@ package-manager setup, test environment"*.
 
 | Capa | Quién | Qué monta |
 |---|---|---|
-| Imagen | tú, una vez | mav, peekaboo, axcli, y los permisos TCC concedidos |
+| Imagen | `scripts/build-mav-vm-image.sh`, una vez | mav, peekaboo, axcli |
 | Máquina | **crabbox** | lease, sync del checkout, ejecución, limpieza |
 | App | **mav** (`fixtures`) | el estado de la app antes de lanzarla |
+| Permisos | quien prueba, contra su app | TCC — ver abajo |
 
 Ojo con la palabra "fixture": crabbox no la usa para esto. Su `warmup`/`prewarm` prepara **la caja**, no
-la app. El estado de la app es cosa de mav.
+la app. El estado de la app es cosa de mav. E instalar mav y los drivers **no va en un hook de crabbox**:
+va en la imagen, o acabas reinstalándolo en cada run.
 
-Instalar mav y los drivers **no va en un hook de crabbox**: va en el comando del repo, o mejor en la
-imagen. Meterlo en el comando significa reinstalarlo en cada run.
+### Por qué la imagen NO trae permisos concedidos
 
-## Lo que no funciona todavía## Lo que no funciona todavía
+Se podría hornear Accessibility y Screen Recording, porque van a las *herramientas* y son las mismas
+siempre. Pero la app bajo prueba pide los suyos —Nokoru quiere micrófono, calendario y Apple Events— y
+esos cambian con cada app. Una imagen "con permisos" sería **una imagen por app**, que es justo lo que no
+queremos.
+
+Así que la imagen trae herramientas y nada más. Los permisos se conceden después, contra la app concreta,
+por el canal del hipervisor descrito arriba. Eso mantiene una sola imagen sirviendo a cualquier app.
+
+## Lo que no funciona todavía## Lo que no funciona todavía## Lo que no funciona todavía
 
 `crabbox run --artifact-glob` **rechaza los targets nativos de macOS**, que es justo el
 mecanismo con el que sacarías `.mav/runs/<id>/` de la VM. Está identificado aguas arriba en
