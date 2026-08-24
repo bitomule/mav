@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -451,5 +452,203 @@ func mustWrite(t *testing.T, path, content string) {
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func writeRawConfig(t *testing.T, root, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(root, MavDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ConfigFile), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+const profileFixture = `project_name: nokoru
+app_target: "//App:NokoruiOS"
+bundle_id: com.davidcollado.nokoru.debug
+process_name: nNokoru
+target_command: simpool lease --device "iPhone 17 Pro"
+launch:
+  mode: custom
+  commands:
+    build: "bazelisk build '//App:NokoruiOS'"
+    app_path: "./scripts/mav-app-path.sh"
+    install: "xcrun simctl install $MAV_UDID $MAV_APP_PATH"
+    launch: "xcrun simctl launch $MAV_UDID $MAV_BUNDLE_ID"
+profiles:
+  mac:
+    app_target: "//App:NokoruMac"
+    process_name: Nokoru
+    target_command: ""
+    launch:
+      commands:
+        build: "bazelisk build '//App:NokoruMac'"
+        install: ""
+`
+
+func TestProfileOverlayReplacesOnlyDeclaredFields(t *testing.T) {
+	root := t.TempDir()
+	writeRawConfig(t, root, profileFixture)
+	cfg, err := LoadConfigWithProfile(root, "mac")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ActiveProfile != "mac" {
+		t.Fatalf("perfil activo=%q", cfg.ActiveProfile)
+	}
+	if cfg.AppTarget != "//App:NokoruMac" || cfg.ProcessName != "Nokoru" {
+		t.Fatalf("el perfil debe ganar: app_target=%q process_name=%q", cfg.AppTarget, cfg.ProcessName)
+	}
+	if cfg.Launch.Commands.Build != "bazelisk build '//App:NokoruMac'" {
+		t.Fatalf("build=%q", cfg.Launch.Commands.Build)
+	}
+	// Heredado: el perfil no lo menciona.
+	if cfg.Launch.Commands.Launch != "xcrun simctl launch $MAV_UDID $MAV_BUNDLE_ID" {
+		t.Fatalf("launch deberia heredarse de la base: %q", cfg.Launch.Commands.Launch)
+	}
+	if cfg.BundleID != "com.davidcollado.nokoru.debug" {
+		t.Fatalf("bundle_id deberia heredarse: %q", cfg.BundleID)
+	}
+}
+
+func TestProfileEmptyStringAnnulsInheritedValue(t *testing.T) {
+	root := t.TempDir()
+	writeRawConfig(t, root, profileFixture)
+	cfg, err := LoadConfigWithProfile(root, "mac")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Esta es la distincion que justifica los punteros: presente-y-vacio NO es
+	// ausente. Un simctl install heredado en un run de macOS instalaria la app
+	// de Mac en un simulador.
+	if cfg.Launch.Commands.Install != "" {
+		t.Fatalf(`install: "" en el perfil debe anular el de la base, got %q`, cfg.Launch.Commands.Install)
+	}
+	if cfg.TargetCommand != "" {
+		t.Fatalf(`target_command: "" debe anular el lease de simpool, got %q`, cfg.TargetCommand)
+	}
+}
+
+func TestProfileNotFoundFailsListingAvailable(t *testing.T) {
+	root := t.TempDir()
+	writeRawConfig(t, root, profileFixture)
+	_, err := LoadConfigWithProfile(root, "windows")
+	if err == nil {
+		t.Fatal("un perfil inexistente debe fallar, no caer en la base en silencio")
+	}
+	if !strings.Contains(err.Error(), "profile_not_found") || !strings.Contains(err.Error(), "mac") {
+		t.Fatalf("el error debe nombrar los perfiles validos: %v", err)
+	}
+}
+
+func TestProfilePrecedenceFlagOverEnvOverDefault(t *testing.T) {
+	root := t.TempDir()
+	writeRawConfig(t, root, profileFixture+"default_profile: mac\n")
+
+	// 3) default_profile cuando no hay nada mas
+	cfg, err := LoadConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ActiveProfile != "mac" {
+		t.Fatalf("default_profile deberia aplicarse: %q", cfg.ActiveProfile)
+	}
+
+	// 2) MAV_PROFILE gana al default
+	t.Setenv("MAV_PROFILE", "nope")
+	if _, err := LoadConfig(root); err == nil {
+		t.Fatal("MAV_PROFILE deberia ganar al default_profile y fallar al no existir")
+	}
+
+	// 1) el override explicito gana a MAV_PROFILE
+	cfg, err = LoadConfigWithProfile(root, "mac")
+	if err != nil {
+		t.Fatalf("el override explicito debe ganar a MAV_PROFILE: %v", err)
+	}
+	if cfg.ActiveProfile != "mac" {
+		t.Fatalf("perfil activo=%q", cfg.ActiveProfile)
+	}
+}
+
+func TestConfigWithoutProfilesIsUnchanged(t *testing.T) {
+	root := t.TempDir()
+	writeRawConfig(t, root, "project_name: plain\nbundle_id: com.example.app\n")
+	cfg, err := LoadConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ActiveProfile != "" || len(cfg.Profiles) != 0 {
+		t.Fatalf("una config sin perfiles no debe activar ninguno: %q %v", cfg.ActiveProfile, cfg.Profiles)
+	}
+	if cfg.BundleID != "com.example.app" {
+		t.Fatalf("bundle_id=%q", cfg.BundleID)
+	}
+}
+
+func TestSaveConfigRefusesToFlattenAnActiveProfile(t *testing.T) {
+	root := t.TempDir()
+	writeRawConfig(t, root, profileFixture)
+	cfg, err := LoadConfigWithProfile(root, "mac")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Guardar esto escribiria //App:NokoruMac como app_target BASE y dejaria el
+	// perfil sin sentido, en silencio y sin vuelta atras.
+	if err := SaveConfig(root, cfg); err == nil {
+		t.Fatal("SaveConfig debe rechazar una config con perfil aplicado")
+	} else if !strings.Contains(err.Error(), "config_save_with_active_profile") {
+		t.Fatalf("error inesperado: %v", err)
+	}
+}
+
+// TestProfileOverridableFieldsAreExhaustive rompe cuando configYAML gana un
+// campo y nadie decide si un perfil de plataforma deberia poder
+// sobreescribirlo. Sin este test ese olvido no se nota: el campo simplemente
+// se ignora dentro del perfil, en silencio, que es la clase de configuracion
+// muerta que este proyecto persigue.
+func TestProfileOverridableFieldsAreExhaustive(t *testing.T) {
+	overridable := map[string]bool{
+		"target_kind":    true, // Fase 2: el eje de plataforma
+		"app_target":     true, // //App:NokoruiOS vs //App:NokoruMac
+		"process_name":   true, // el binario de Mac no se llama igual
+		"target_command": true, // un lease de simpool no pinta nada en macOS
+		"log_subsystem":  true,
+		"log_category":   true,
+		"launch":         true, // recetas distintas por plataforma
+	}
+	notOverridable := map[string]string{
+		"project_name":        "el proyecto es el mismo en todas las plataformas",
+		"bundle_id":           "compartido; si divergiera seria otra app",
+		"app":                 "espejo de bundle_id/process_name",
+		"device_target":       "eje de dispositivo iOS fisico, ortogonal a la plataforma",
+		"device_udid":         "seleccion de dispositivo, se persiste aparte",
+		"device_name":         "idem",
+		"simulator_udid":      "seleccion de simulador, se persiste aparte",
+		"simulator_name":      "idem",
+		"simulator_runtime":   "idem",
+		"locale":              "se fija por invocacion, no por plataforma",
+		"language":            "idem",
+		"preferred_ui_driver": "lo decide el router por capacidad y coste",
+		"allow_shell":         "politica del repo, no de la plataforma",
+		"default_profile":     "es el selector, no puede estar dentro de lo seleccionado",
+		"profiles":            "idem",
+	}
+	typ := reflect.TypeOf(configYAML{})
+	for i := 0; i < typ.NumField(); i++ {
+		tag := typ.Field(i).Tag.Get("yaml")
+		name := strings.Split(tag, ",")[0]
+		if name == "" || name == "-" {
+			continue
+		}
+		if overridable[name] {
+			continue
+		}
+		if _, ok := notOverridable[name]; ok {
+			continue
+		}
+		t.Fatalf("configYAML tiene el campo %q y nadie ha decidido si un perfil puede sobreescribirlo.\n"+
+			"Anadelo a overridable (y a profileYAML + applyProfile) o a notOverridable con el motivo.", name)
 	}
 }

@@ -43,6 +43,13 @@ type Config struct {
 	TargetCommand     string
 	Launch            LaunchConfig
 	Tools             map[string]bool
+
+	// DefaultProfile y Profiles se conservan crudos para poder reescribirlos
+	// sin perderlos, y para que `mav doctor` pueda listarlos. ActiveProfile es
+	// el que se resolvio para esta invocacion ("" si ninguno).
+	DefaultProfile string
+	Profiles       map[string]profileYAML
+	ActiveProfile  string
 }
 
 type LaunchConfig struct {
@@ -75,7 +82,37 @@ func DefaultConfig(root string) Config {
 	}
 }
 
+// LoadConfig carga .mav/config.yaml aplicando el perfil que corresponda segun
+// la precedencia documentada. Equivale a LoadConfigWithProfile(root, "").
 func LoadConfig(root string) (Config, error) {
+	return LoadConfigWithProfile(root, "")
+}
+
+// LoadConfigRaw carga la config SIN aplicar ningun perfil. Es lo que deben
+// usar los caminos que luego escriben (setup, sim select, device select): solo
+// una config sin overlay puede volver a disco sin aplanar el perfil sobre la
+// base. Ver el guardarrail de SaveConfig.
+func LoadConfigRaw(root string) (Config, error) {
+	return loadConfig(root, "", true)
+}
+
+// LoadConfigWithProfile carga la config y superpone un perfil de plataforma.
+//
+// Precedencia de seleccion, de mas fuerte a mas debil:
+//
+//  1. profileOverride -- lo que venga de un --profile explicito
+//  2. MAV_PROFILE en el entorno
+//  3. default_profile en la propia config
+//  4. ninguno: los campos base se usan tal cual
+//
+// Un perfil pedido que no existe es un error, nunca un no-op: aceptar el flag
+// y seguir con la base seria configuracion muerta del mismo tipo que
+// target_command_ignored existe para hacer visible.
+func LoadConfigWithProfile(root, profileOverride string) (Config, error) {
+	return loadConfig(root, profileOverride, false)
+}
+
+func loadConfig(root, profileOverride string, skipProfile bool) (Config, error) {
 	path := filepath.Join(root, ConfigFile)
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -105,11 +142,21 @@ func LoadConfig(root string) (Config, error) {
 	cfg.AllowShell = raw.AllowShell
 	cfg.TargetCommand = raw.TargetCommand
 	cfg.Launch = raw.Launch
+	cfg.DefaultProfile = raw.DefaultProfile
+	cfg.Profiles = raw.Profiles
 	if cfg.Launch.Mode == "" && hasLaunchCommands(cfg.Launch.Commands) {
 		cfg.Launch.Mode = "custom"
 	}
 	if cfg.TargetKind == "" {
 		cfg.TargetKind = "simulator"
+	}
+	// El perfil se aplica ANTES que los MAV_TARGET_*: esas variables las fija
+	// `mav run --matrix` en sus hijos para clavar un dispositivo concreto, y
+	// clavar dispositivo es una decision mas especifica que elegir plataforma.
+	if !skipProfile {
+		if err := applyProfile(&cfg, profileOverride); err != nil {
+			return Config{}, err
+		}
 	}
 	if kind := os.Getenv("MAV_TARGET_KIND"); kind != "" {
 		cfg.TargetKind = kind
@@ -122,6 +169,63 @@ func LoadConfig(root string) (Config, error) {
 		}
 	}
 	return cfg, nil
+}
+
+// applyProfile resuelve que perfil toca y superpone sus campos sobre cfg.
+func applyProfile(cfg *Config, override string) error {
+	name := strings.TrimSpace(override)
+	if name == "" {
+		name = strings.TrimSpace(os.Getenv("MAV_PROFILE"))
+	}
+	if name == "" {
+		name = strings.TrimSpace(cfg.DefaultProfile)
+	}
+	if name == "" {
+		return nil
+	}
+	profile, ok := cfg.Profiles[name]
+	if !ok {
+		return fmt.Errorf("profile_not_found name=%s available=%s", name, strings.Join(profileNames(*cfg), ","))
+	}
+	cfg.ActiveProfile = name
+	overlayString(&cfg.TargetKind, profile.TargetKind)
+	overlayString(&cfg.AppTarget, profile.AppTarget)
+	overlayString(&cfg.ProcessName, profile.ProcessName)
+	overlayString(&cfg.TargetCommand, profile.TargetCommand)
+	overlayString(&cfg.LogSubsystem, profile.LogSubsystem)
+	overlayString(&cfg.LogCategory, profile.LogCategory)
+	if profile.Launch != nil {
+		overlayString(&cfg.Launch.Mode, profile.Launch.Mode)
+		if c := profile.Launch.Commands; c != nil {
+			overlayString(&cfg.Launch.Commands.Healthcheck, c.Healthcheck)
+			overlayString(&cfg.Launch.Commands.Build, c.Build)
+			overlayString(&cfg.Launch.Commands.AppPath, c.AppPath)
+			overlayString(&cfg.Launch.Commands.Install, c.Install)
+			overlayString(&cfg.Launch.Commands.Launch, c.Launch)
+			overlayString(&cfg.Launch.Commands.Cleanup, c.Cleanup)
+		}
+	}
+	return nil
+}
+
+// overlayString aplica un campo de perfil sobre el de la base. Un puntero nil
+// significa "el perfil no dice nada, hereda"; un puntero a cadena vacia
+// significa "el perfil dice explicitamente que aqui no hay nada", que NO es lo
+// mismo.
+func overlayString(base *string, override *string) {
+	if override == nil {
+		return
+	}
+	*base = *override
+}
+
+func profileNames(cfg Config) []string {
+	names := make([]string, 0, len(cfg.Profiles))
+	for name := range cfg.Profiles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 type configYAML struct {
@@ -145,6 +249,44 @@ type configYAML struct {
 	AllowShell        bool          `yaml:"allow_shell,omitempty"`
 	TargetCommand     string        `yaml:"target_command,omitempty"`
 	Launch            LaunchConfig  `yaml:"launch,omitempty"`
+
+	DefaultProfile string                 `yaml:"default_profile,omitempty"`
+	Profiles       map[string]profileYAML `yaml:"profiles,omitempty"`
+}
+
+// profileYAML es la capa de overlay de un perfil de plataforma. Todos los
+// campos son punteros a proposito: yaml.Unmarshal sobre un string plano no
+// distingue "ausente" de `""`, y esa distincion es justo lo que un perfil
+// necesita. Un campo nil se hereda de la base; un campo presente gana, incluso
+// cuando vale cadena vacia -- que es como el perfil de macOS anula el
+// `simctl install` heredado.
+//
+// La lista de campos es deliberadamente cerrada, no abierta: si configYAML
+// gana un campo nuevo que deberia poder sobreescribirse, hay que anadirlo aqui
+// a mano. TestProfileOverridableFieldsAreExhaustive existe para que ese olvido
+// rompa el build en vez de ignorarse en silencio.
+type profileYAML struct {
+	TargetKind    *string            `yaml:"target_kind,omitempty"`
+	AppTarget     *string            `yaml:"app_target,omitempty"`
+	ProcessName   *string            `yaml:"process_name,omitempty"`
+	TargetCommand *string            `yaml:"target_command,omitempty"`
+	LogSubsystem  *string            `yaml:"log_subsystem,omitempty"`
+	LogCategory   *string            `yaml:"log_category,omitempty"`
+	Launch        *profileLaunchYAML `yaml:"launch,omitempty"`
+}
+
+type profileLaunchYAML struct {
+	Mode     *string                    `yaml:"mode,omitempty"`
+	Commands *profileLaunchCommandsYAML `yaml:"commands,omitempty"`
+}
+
+type profileLaunchCommandsYAML struct {
+	Healthcheck *string `yaml:"healthcheck,omitempty"`
+	Build       *string `yaml:"build,omitempty"`
+	AppPath     *string `yaml:"app_path,omitempty"`
+	Install     *string `yaml:"install,omitempty"`
+	Launch      *string `yaml:"launch,omitempty"`
+	Cleanup     *string `yaml:"cleanup,omitempty"`
 }
 
 type configAppYAML struct {
@@ -175,6 +317,15 @@ func firstNonEmpty(values ...string) string {
 // con el escritor anterior -- SaveConfig nunca ha leído el fichero previo para
 // preservar nada.
 func SaveConfig(root string, cfg Config) error {
+	// Un cfg con perfil aplicado ya NO es la base: sus campos son el resultado
+	// del overlay. Escribirlo aplanaria el perfil sobre la base -- un
+	// `mav sim select` en un repo con default_profile: macos dejaria el
+	// app_target de macOS como app_target base y el perfil dejaria de tener
+	// sentido, en silencio y sin vuelta atras. Se rechaza por construccion en
+	// vez de confiar en que ningun llamante se equivoque.
+	if cfg.ActiveProfile != "" {
+		return fmt.Errorf("config_save_with_active_profile profile=%s (next: reload the config without a profile before saving)", cfg.ActiveProfile)
+	}
 	if err := os.MkdirAll(filepath.Join(root, MavDir), 0o755); err != nil {
 		return err
 	}
@@ -205,6 +356,8 @@ func SaveConfig(root string, cfg Config) error {
 		PreferredUIDriver: cfg.PreferredUIDriver,
 		AllowShell:        cfg.AllowShell,
 		TargetCommand:     strings.TrimSpace(cfg.TargetCommand),
+		DefaultProfile:    cfg.DefaultProfile,
+		Profiles:          cfg.Profiles,
 	}
 	if cfg.Launch.Mode != "" || hasLaunchCommands(cfg.Launch.Commands) {
 		mode := cfg.Launch.Mode
@@ -727,4 +880,28 @@ func processNameFromBundle(bundleID, fallback string) string {
 		return fallback
 	}
 	return parts[len(parts)-1]
+}
+
+// persistTargetSelection guarda en disco SOLO la seleccion de target (que
+// simulador o dispositivo, y locale/idioma) sin arrastrar el resto del cfg en
+// memoria, que puede venir con un perfil ya superpuesto.
+//
+// Existe porque `mav sim select`, `mav device select` y el pin explicito de
+// `mav open --device/--ios/--udid` son las tres unicas cosas que escriben
+// config a media sesion, y las tres parten de un cfg resuelto. Guardarlo
+// entero aplanaria el perfil sobre la base (ver el guardarrail de SaveConfig).
+func persistTargetSelection(root string, cfg Config) error {
+	base, err := LoadConfigRaw(root)
+	if err != nil {
+		return err
+	}
+	base.TargetKind = cfg.TargetKind
+	base.SimulatorUDID = cfg.SimulatorUDID
+	base.SimulatorName = cfg.SimulatorName
+	base.SimulatorRuntime = cfg.SimulatorRuntime
+	base.DeviceUDID = cfg.DeviceUDID
+	base.DeviceName = cfg.DeviceName
+	base.Locale = cfg.Locale
+	base.Language = cfg.Language
+	return SaveConfig(root, base)
 }

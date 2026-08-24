@@ -679,7 +679,9 @@ func (c CLI) installSkills(ctx context.Context) error {
 
 func (c CLI) setupProject(opts GlobalOptions, args []string) error {
 	cfg, err := SetupConfig(c.Root, c.Runner)
-	if existing, loadErr := LoadConfig(c.Root); loadErr == nil {
+	// Sin overlay: esta rama termina en SaveConfig, y guardar una config con
+	// perfil aplicado aplanaria el perfil sobre la base.
+	if existing, loadErr := LoadConfigRaw(c.Root); loadErr == nil {
 		cfg = mergeSetupConfig(existing, cfg)
 	}
 	interactive := !hasFlag(args, "--non-interactive")
@@ -905,7 +907,7 @@ func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 		if language := flagValue(args[1:], "--language"); language != "" {
 			cfg.Language = language
 		}
-		if err := SaveConfig(c.Root, cfg); err != nil {
+		if err := persistTargetSelection(c.Root, cfg); err != nil {
 			return err
 		}
 		return c.OK("sim.select", map[string]string{"udid": sim.UDID, "name": sim.Name, "runtime": sim.Runtime}).Write(c.Stdout)
@@ -985,7 +987,7 @@ func (c CLI) device(ctx context.Context, opts GlobalOptions, args []string) erro
 		cfg.TargetKind = "device"
 		cfg.DeviceUDID = device.UDID
 		cfg.DeviceName = device.Name
-		if err := SaveConfig(c.Root, cfg); err != nil {
+		if err := persistTargetSelection(c.Root, cfg); err != nil {
 			return err
 		}
 		return c.OK("device.select", map[string]string{"udid": device.UDID, "name": device.Name}).Write(c.Stdout)
@@ -1272,7 +1274,7 @@ func (c CLI) applyOpenTargetOverrides(ctx context.Context, cfg *Config, args []s
 		return fmt.Errorf("%s", firstLine(boot.Stderr))
 	}
 	_ = c.Runner.Run(ctx, "xcrun", "simctl", "bootstatus", sim.UDID, "-b")
-	return SaveConfig(c.Root, *cfg)
+	return persistTargetSelection(c.Root, *cfg)
 }
 
 func simctlLaunchLanguageArgs(cfg Config) []string {
