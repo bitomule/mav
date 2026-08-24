@@ -43,8 +43,8 @@ Evaluación técnica y plan. Fecha: 2026-08-19. Repo en `v0.11.0`.
 
 `internal/mav/drivers/` es un router de capacidades real:
 
-- `Capability` — 39 capacidades declaradas, en `drivers/capability.go`.
-- `Driver` + 13 interfaces funcionales (`TapDriver`, `TreeDriver`, `GestureDriver`, `LifecycleDriver`…), en
+- `Capability` — 35 capacidades declaradas, en `drivers/capability.go`.
+- `Driver` + 16 interfaces funcionales (`TapDriver`, `TreeDriver`, `GestureDriver`, `LifecycleDriver`…), en
   `drivers/driver.go`.
 - `Registry` con auto-registro y `Router` que decide por `Provides(target)` → filtro de salud (`Probe`) →
   orden por `Cost(cap, target)`, con `ErrNoDriver` estructurado que lista por qué perdió cada candidato.
@@ -60,7 +60,7 @@ El acoplamiento no estaba en `drivers/` sino en la capa de encima, y la mayor pa
 
 | Problema | Estado |
 |---|---|
-| `isPhysicalDevice(cfg)` booleano, 44 call sites | ✅ Sustituido por `targetKind(cfg) drivers.TargetKind` + `switch`. Las guardas sim-only se escriben `!= KindSim` para que un tercer kind falle cerrado |
+| `isPhysicalDevice(cfg)` booleano, 44 call sites | ✅ Sustituido por `targetKind(cfg) drivers.TargetKind` + `switch`, con las guardas sim-only escritas `!= KindSim`. ⚠️ **Pero eso no basta para que un tercer kind falle cerrado**: `targetKind()` (`target.go:19-24`) devuelve `KindSim` para *cualquier* valor que no sea `"device"`, así que un label desconocido colapsa a simulador **antes** de llegar a ninguna guarda. Y `targetKindLabel()` lo normaliza de vuelta a `"simulator"` al escribir. Lo cierra la T8 de la Fase 1 |
 | `Route()` con `prefer` hardcodeado | ✅ Eliminados los redundantes (capacidades con un único proveedor, comprobado uno a uno); los que desempatan de verdad siguen con test de regresión |
 | 13 `Runner.Run("axe"/"idb"/"xcrun")` saltándose el router | ✅ Encaminadas |
 | `--prefer-driver auto\|axe` | ✅ Acepta cualquier driver registrado |
@@ -476,11 +476,25 @@ funcionalidad de Nokoru**: es banco de pruebas para MAV, no el objeto de la vali
 
 Dos cosas que salieron del propio diseño y que conviene fijar **antes** de escribir código.
 
-**1. El rasgo `BackgroundSafe()` debe acotarse a capacidades de input.** axcli también provee árbol de
-accesibilidad. Si el router usa el rasgo como criterio de desempate global, axcli le gana `tree` a Peekaboo
-por un motivo que no tiene nada que ver con el foco — y con ello se pierden `menu` y `window`, que es
-justamente por lo que Peekaboo entra en la mezcla. El desempate tiene que estar acotado a las capacidades de
-input.
+**1. `BackgroundSafe()` como método de la interfaz `Driver` probablemente sea la solución equivocada — decisión
+a revisar antes de escribir código.**
+
+El problema de partida es real: axcli también provee árbol de accesibilidad, así que un desempate global por
+"es background-safe" le haría ganar `tree` a Peekaboo por un motivo que no tiene nada que ver con el foco, y
+con ello se perderían `menu` y `window`, que es justamente por lo que Peekaboo entra.
+
+La corrección obvia —acotar el desempate a capacidades de input— tiene un coste escondido: `Route()`
+(`drivers/router.go:79-131`) necesitaría una lista cableada de qué capacidades cuentan como "input". Eso es
+conocimiento por-capacidad viviendo fuera de la declaración de capacidades: exactamente la clase de
+special-case que el PR #53 acaba de eliminar. Y obliga a los 6 drivers de iOS a contestar una pregunta que no
+les aplica.
+
+**La alternativa no necesita interfaz nueva:** `Cost(cap, target)` (`drivers/driver.go:37`) ya es
+*por capacidad* y *por target*. Un driver que roba el foco declara coste alto para las capacidades de input
+en `KindMac` y el reparto Peekaboo/axcli sale solo — un único criterio de ordenación, cero cambios de
+interfaz, y sin listas cableadas.
+
+Es decisión de Fase 3, pero conviene fijarla ahora: hoy este documento la fija mal.
 
 **2. Background-safe por defecto puede fallar en silencio al escribir.** `CGEventPostToPid` entrega el evento
 al proceso, pero hay controles de AppKit que sólo aceptan teclado con foco real. No es resoluble leyendo
