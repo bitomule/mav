@@ -2,6 +2,25 @@
 
 ## v0.12.0
 
+- **`mav ui tap` no funcionaba en macOS aunque todo estuviera instalado.** La puerta
+  preguntaba por `axe`, que en el Mac no se instala nunca, así que fallaba con
+  `tool_missing` pidiendo una herramienta que además ya no es la única que sirve input
+  allí.
+- El input va ahora por **cua-driver** y axcli queda detrás, y no por entregar mejor:
+  `cg-pid` sintetiza un evento de ratón y hay botones SwiftUI que lo aceptan **sin
+  reaccionar**. Medido contra el onboarding de una app real: el tap reportaba éxito y la
+  pantalla no avanzaba. El click de cua-driver va por AXPress cuando el elemento lo
+  expone, y sobre esos mismos botones sí surte efecto.
+- **Una clave desconocida dentro de un perfil ahora es un error** (`profile_unknown_key`)
+  en vez de ignorarse. Escribir `fixture:` en un perfil no hacía nada, y desde fuera eso
+  es indistinguible de que se aplicara sin efecto. Se acota a los perfiles a propósito:
+  son nuevos, así que ninguna configuración existente puede romperse.
+- Las ventanas se piden **por pid**: sin pid, cua-driver enumera sólo la capa 0 — para no
+  inundar al llamante con tooltips, popovers, menús y el Dock — y una app cuya UI entera
+  vive en una ventana accesoria parece cerrada. Requiere el arreglo propuesto aguas
+  arriba en trycua/cua (issue #1451, regresión del PR #1452 al portar a Rust); sin él,
+  una ventana flotante falla con un mensaje que lo dice.
+
 - **El driver de macOS pasa a ser cua-driver** (trycua/cua, MIT), y salen
   peekaboo y la captura de axcli. El motivo es estructural: macOS concede
   Accessibility y Screen Recording **sólo a procesos GUI interactivos**, así que

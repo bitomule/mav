@@ -66,7 +66,13 @@ func (d *Axcli) Provides(target drivers.Target) drivers.CapabilitySet {
 func (d *Axcli) Cost(c drivers.Capability, _ drivers.Target) int {
 	switch c {
 	case drivers.CapCoordTap, drivers.CapSemanticTap:
-		return 0
+		// Por detras de cua-driver (0), y no por ser peor entregando, sino por
+		// como pulsa: cg-pid sintetiza un evento de raton, y hay botones
+		// -- SwiftUI, medido -- que lo aceptan sin reaccionar. El click de
+		// cua-driver va por AXPress cuando el elemento lo expone, que sobre
+		// esos mismos botones si surte efecto. axcli sigue siendo la unica via
+		// cuando cua no puede resolver la ventana.
+		return 10
 	case drivers.CapType:
 		return 60
 	default:

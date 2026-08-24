@@ -1801,11 +1801,23 @@ func (c CLI) verifyTapChangedSomething(ctx context.Context, cfg Config, before [
 	return "changed"
 }
 
+// tapToolPresent responde si hay ALGUNA herramienta capaz de pulsar.
+//
+// Preguntaba solo por axe, que en el Mac no se instala nunca, asi que `ui tap`
+// fallaba con tool_missing incluso con el driver de macOS sano y pidiendo una
+// herramienta que ya no es la unica que sirve input alli.
+func tapToolPresent(caps Capabilities, cfg Config) bool {
+	if targetKind(cfg) == drivers.KindMac {
+		return caps.Tools["cua-driver"] || caps.Tools["axcli"]
+	}
+	return caps.Tools["axe"]
+}
+
 func tapToolMissingFields(cfg Config) map[string]string {
 	if targetKind(cfg) == drivers.KindMac {
 		return map[string]string{
-			"tool": "axcli",
-			"next": "mav setup --install axcli; taps on macOS need PID-targeted delivery, coordinates can land on another app",
+			"tool": "cua-driver",
+			"next": "mav setup --install cua-driver; taps on macOS need PID-targeted delivery, coordinates can land on another app",
 		}
 	}
 	return map[string]string{"tool": "axe", "next": "use mav ui tap --x X --y Y when AXe is unavailable"}
@@ -1839,7 +1851,7 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			fields["value"] = value
 			command += " --value " + value
 		}
-		if !caps.Tools["axe"] {
+		if !tapToolPresent(caps, cfg) {
 			return Fail("tool_missing", tapToolMissingFields(cfg)).Write(c.Stdout)
 		}
 		if isSimpleSemanticSelector(selector) && value != "" {

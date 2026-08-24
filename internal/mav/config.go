@@ -119,6 +119,40 @@ func LoadConfigWithProfile(root, profileOverride string) (Config, error) {
 	return loadConfig(root, profileOverride, false)
 }
 
+// knownProfileKeys es el contrato de un perfil, escrito una sola vez.
+var knownProfileKeys = map[string]bool{
+	"target_kind": true, "app_target": true, "process_name": true,
+	"target_command": true, "log_subsystem": true, "log_category": true,
+	"launch": true, "runner": true,
+}
+
+// rejectUnknownProfileKeys convierte en error una clave que no existe dentro de
+// un perfil.
+//
+// yaml.Unmarshal ignora en silencio lo que no conoce, y en un perfil eso es
+// especialmente caro: escribes `fixture: x`, no pasa nada, y no hay forma de
+// distinguirlo de que el fixture se aplicara y no hiciera efecto. Se acota a
+// los perfiles a proposito: son nuevos, asi que ninguna configuracion existente
+// puede romperse por esto, mientras que endurecer el fichero entero si podria.
+func rejectUnknownProfileKeys(data []byte) error {
+	var doc struct {
+		Profiles map[string]map[string]yaml.Node `yaml:"profiles"`
+	}
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		// El error real ya lo dio el decodificado principal; aqui no se
+		// duplica.
+		return nil
+	}
+	for name, fields := range doc.Profiles {
+		for key := range fields {
+			if !knownProfileKeys[key] {
+				return fmt.Errorf("profile_unknown_key profile=%s key=%s", name, key)
+			}
+		}
+	}
+	return nil
+}
+
 func loadConfig(root, profileOverride string, skipProfile bool) (Config, error) {
 	path := filepath.Join(root, ConfigFile)
 	data, err := os.ReadFile(path)
@@ -128,6 +162,9 @@ func loadConfig(root, profileOverride string, skipProfile bool) (Config, error) 
 	cfg := DefaultConfig(root)
 	var raw configYAML
 	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return Config{}, err
+	}
+	if err := rejectUnknownProfileKeys(data); err != nil {
 		return Config{}, err
 	}
 	cfg.ProjectName = raw.ProjectName

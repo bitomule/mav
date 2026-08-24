@@ -2853,3 +2853,27 @@ func TestCaptureHonoursPreferDriver(t *testing.T) {
 		t.Fatalf("--prefer-driver simctl ignorado, encamino por coste a idb: %q", runner.command)
 	}
 }
+
+// TestTapToolGateIsNotIOSShaped: la puerta preguntaba solo por axe, que en el
+// Mac no se instala nunca, asi que `ui tap` fallaba con tool_missing aun con el
+// driver de macOS sano -- y ademas nombraba una herramienta que ya no es la
+// unica que sirve input alli.
+func TestTapToolGateIsNotIOSShaped(t *testing.T) {
+	mac := DefaultConfig(t.TempDir())
+	mac.TargetKind = "macos"
+	caps := Capabilities{Tools: map[string]bool{"cua-driver": true}}
+	if !tapToolPresent(caps, mac) {
+		t.Fatal("con el driver de macOS presente se puede pulsar, aunque no haya axe")
+	}
+	if tapToolPresent(Capabilities{Tools: map[string]bool{"axe": true}}, mac) {
+		t.Fatal("axe no sirve input en el Mac")
+	}
+	if got := tapToolMissingFields(mac)["tool"]; got != "cua-driver" {
+		t.Fatalf("debe nombrar el canonico de macOS: %q", got)
+	}
+
+	sim := DefaultConfig(t.TempDir())
+	if !tapToolPresent(Capabilities{Tools: map[string]bool{"axe": true}}, sim) {
+		t.Fatal("en simulador sigue siendo axe")
+	}
+}

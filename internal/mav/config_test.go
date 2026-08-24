@@ -773,3 +773,25 @@ func TestProfileRunnerRejectsUnknownValues(t *testing.T) {
 		t.Fatalf("runner=%q", cfg.ProfileRunner)
 	}
 }
+
+// TestProfileUnknownKeyIsAnError: yaml.Unmarshal ignora en silencio lo que no
+// conoce. En un perfil eso es caro: escribes una clave que no existe, no pasa
+// nada, y desde fuera es indistinguible de que si se aplico y no hizo efecto.
+func TestProfileUnknownKeyIsAnError(t *testing.T) {
+	root := t.TempDir()
+	writeRawConfig(t, root, "project_name: x\nprofiles:\n  mac:\n    target_kind: macos\n    fixture: onboarding\n")
+	_, err := LoadConfigWithProfile(root, "mac")
+	if err == nil {
+		t.Fatal("una clave inexistente en un perfil no puede pasar en silencio")
+	}
+	if !strings.Contains(err.Error(), "profile_unknown_key") || !strings.Contains(err.Error(), "fixture") {
+		t.Fatalf("el error debe nombrar la clave: %v", err)
+	}
+
+	// Y lo valido sigue cargando.
+	ok := t.TempDir()
+	writeRawConfig(t, ok, "project_name: x\nprofiles:\n  mac:\n    target_kind: macos\n    runner: local\n")
+	if _, err := LoadConfigWithProfile(ok, "mac"); err != nil {
+		t.Fatal(err)
+	}
+}

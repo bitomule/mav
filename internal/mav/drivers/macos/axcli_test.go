@@ -29,9 +29,12 @@ func TestAxcliCoversWhatCuaCannotReach(t *testing.T) {
 	if caps.Has(drivers.CapScreenshot) {
 		t.Fatal("la captura de axcli devolvia el escritorio sin decirlo; no se declara")
 	}
-	// Los taps van por CGEventPostToPid, que no roba el foco: camino canonico.
-	if ax.Cost(drivers.CapSemanticTap, mac) != 0 {
-		t.Fatal("el tap por PID es el camino bueno en el Mac")
+	// Detras de cua-driver: cg-pid sintetiza un evento de raton y hay botones
+	// SwiftUI que lo aceptan sin reaccionar, mientras que el AXPress de
+	// cua-driver si los pulsa. Sigue barato porque cuando cua no resuelve la
+	// ventana es la unica via.
+	if ax.Cost(drivers.CapSemanticTap, mac) <= cua.Cost(drivers.CapSemanticTap, mac) {
+		t.Fatal("cua-driver es el canonico de input; axcli va detras")
 	}
 	// Escribir NO es background-safe ni siquiera aqui: `fill` activa la app
 	// antes de teclear, en el codigo y sin flag para evitarlo. Se declara caro
