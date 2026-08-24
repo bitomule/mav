@@ -23,7 +23,7 @@ Evaluación técnica y plan. Fecha: 2026-08-19. Repo en `v0.11.0`.
 | **Criterio de aceptación** | **Bucket A completo** | Los ~14 comandos que mapean 1:1 (§2.4), funcionando contra NokoruMac. Lo descartado es el bucket C: 4 comandos mobile-only (home, hideKeyboard, rotate/twoFingerPan sin API pública, device iOS). |
 | VM (Tart) como target | **Sí, pero después del driver** | Sigue siendo lo que devuelve `erase`, `matrix` y `time travel`, porque el papel real del simulador en MAV no es "iOS" sino "dispositivo desechable de propiedad exclusiva". Pero no bloquea el primer entregable: se entra cuando un prompt de TCC rompa un run local. |
 | Construir esa capa de VM dentro de MAV | **No — usar `crabbox`** | Lease, sync del checkout sucio, ejecución remota, evidencia de run y release ya existen, en Go, MIT, con un **provider `tart` de primera clase para VMs macOS**. Construirlo rompería el rol de MAV (wrapper sobre drivers + evidencia). Ver §2.6. |
-| CI con targets macOS | **Sí, dentro de VM** | Las imágenes base de Tart traen **SIP desactivado y auto-login en una sesión Aqua completa**, así que el provisioning escribe los permisos directamente en `TCC.db`. El bloqueo de TCC es del Mac del desarrollador, no de una VM que tú controlas. |
+| CI con targets macOS | **Sí, con una imagen pre-concedida** | Verificado en VM real: las imágenes base de Tart traen SIP desactivado y auto-login en una sesión Aqua completa. Pero **sembrar `TCC.db` no funciona en macOS 26** (§2.5.1): el permiso se concede una vez a mano y se guarda en la imagen. Sigue siendo la diferencia entre un click por imagen y un click por run. |
 
 **Qué hacer primero:**
 
@@ -227,8 +227,17 @@ Virtualization.framework. 6545★, release 2.35.0 (2026-08-04), Swift, activo. *
 
 Las imágenes base de cirruslabs traen de fábrica:
 
-- **SIP desactivado.** La llave de todo: con SIP off, el provisioning **escribe los grants directamente en
-  `TCC.db`**. Accessibility, Screen Recording y micrófono dejan de ser un click humano.
+- **SIP desactivado.** ⚠️ **Corregido tras probarlo en una VM real de macOS 26.0:** esto NO permite sembrar
+  los permisos escribiendo en `TCC.db`. Las entradas se ignoran aunque lleven el identificador de firma
+  correcto, `client_type=0` y un `csreq` válido de 172 bytes — probado en las cuatro variantes, con `tccd`
+  reiniciado en cada una y un reinicio completo de la VM al final. Las guías que dicen lo contrario, y el orb
+  de CircleCI, son de versiones anteriores de macOS.
+  Lo que sí funciona: conceder el permiso **una vez a mano dentro de la VM y guardar la imagen**. Los clones
+  lo heredan porque lo escribió `tccd`, no un `INSERT` externo. No hay atajo para esa primera concesión:
+  cualquier forma de pulsar el botón de System Settings necesitaría ya el permiso que se intenta conceder.
+  El trabajo manual pasa a ser **una vez por imagen en vez de una por run**, que sigue siendo la mejora
+  grande — pero convierte "una librería de imágenes ya concedidas" en la pieza que de verdad hace falta,
+  más que cualquier script de aprovisionamiento.
 - **Auto-login del usuario `admin` en una sesión Aqua completa con WindowServer.** El segundo requisito no
   obvio: el Accessibility API necesita una sesión GUI real, y una VM la tiene aunque arranque headless.
 - **Arranque headless** (`--no-graphics`), con VNC opcional (`--vnc-experimental`).
