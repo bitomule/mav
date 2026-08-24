@@ -130,11 +130,18 @@ func (d *Axcli) Tap(ctx context.Context, target drivers.Target, spec drivers.Tap
 	// El cursor software que axcli dibuja por defecto es util para un humano
 	// mirando y ruido para un agente: contradice justo lo que se le pide, que
 	// es no notarse.
-	// En 0.1.0 --app/--pid son flags DEL SUBCOMANDO, no globales, y no existen
-	// ni --no-visual-cursor ni --strategy: la entrega por PID es el
-	// comportamiento unico, no una opcion. Verificado contra el binario que
-	// instala la formula, no contra el main de GitHub, que va por delante.
-	args := []string{"click"}
+	// --strategy cg-pid va EXPLICITO aunque sea el default. Dos motivos: deja
+	// escrito en el comando cual es la propiedad de la que depende mav, y si
+	// una version futura cambia el default, esto falla en vez de empezar a
+	// robar el foco en silencio.
+	//
+	// Y no es teorico: la 0.1.0 que publica crates.io no tiene esta opcion
+	// siquiera -- su click llama a activate() y clica por coordenadas moviendo
+	// el cursor real. Por eso la formula apunta a un commit de main y no a la
+	// version publicada.
+	//
+	// --app/--pid son flags del subcomando, no globales.
+	args := []string{"click", "--strategy", "cg-pid"}
 	args = append(args, base...)
 	switch {
 	case spec.Selector.ID != "":

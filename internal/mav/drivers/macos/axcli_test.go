@@ -51,7 +51,7 @@ func TestAxcliRefusesCoordinateTaps(t *testing.T) {
 	}
 }
 
-func TestAxcliCommandShapeMatchesTheReleasedVersion(t *testing.T) {
+func TestAxcliTapAsksForPIDDeliveryExplicitly(t *testing.T) {
 	f := &fakeExec{tools: map[string]bool{"axcli": true}}
 	if _, err := NewAxcli(f).Tap(context.Background(), macTarget(), drivers.TapSpec{
 		Selector: drivers.ElementSelector{ID: "saveButton"},
@@ -61,8 +61,11 @@ func TestAxcliCommandShapeMatchesTheReleasedVersion(t *testing.T) {
 	// --app va DESPUES del subcomando en 0.1.0, no antes: es flag del
 	// subcomando, no global. Verificado contra el binario que instala la
 	// formula.
-	if len(f.commands) != 1 || !strings.HasPrefix(f.commands[0], "axcli click --app") {
-		t.Fatalf("forma del comando incorrecta para 0.1.0: %v", f.commands)
+	// --strategy cg-pid explicito: es la propiedad entera por la que axcli
+	// esta en la mezcla. Sin ella, su click activa la app y clica por
+	// coordenadas, que es lo que abrio el correo del usuario en una prueba.
+	if len(f.commands) != 1 || !strings.HasPrefix(f.commands[0], "axcli click --strategy cg-pid --app") {
+		t.Fatalf("el tap debe pedir entrega por PID explicitamente: %v", f.commands)
 	}
 	if !strings.Contains(f.commands[0], `identifier="saveButton"`) {
 		t.Fatalf("el selector debe ir por identificador: %v", f.commands)
