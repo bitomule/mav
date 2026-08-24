@@ -445,9 +445,11 @@ GRDB de Nokoru y unos `.m4a` bajo `Application Support/Nokoru/` (`recordings/<uu
 | **Peekaboo** | Árbol AX, `menu`, `window`, capturas |
 | **axcli** | Todo el input: tap, type, scroll, drag — vía `CGEventPostToPid` |
 
-- **`BackgroundSafe() bool`** en la interfaz `Driver`, usado por el router como criterio de desempate junto
-  al coste. **Activo por defecto**: si el agente valida mientras trabajas, robarte el foco a mitad de un flow
-  no es un detalle, es que no puedes usar el Mac. Se renuncia con `--prefer-driver`.
+- **El reparto sale de `Cost(cap, target)`, sin interfaz nueva.** axcli declara coste 0 para las capacidades
+  de input en `KindMac`; Peekaboo declara coste alto para esas mismas y coste 0 para árbol, `menu`, `window`
+  y capturas. El router ya ordena por ahí, así que background-safe queda **activo por defecto** sin añadir
+  un segundo eje de decisión: si el agente valida mientras trabajas, robarte el foco a mitad de un flow no es
+  un detalle, es que no puedes usar el Mac. Se renuncia puntualmente con `--prefer-driver`. Ver §4.5.
 - Lectura directa sin herramienta: `screencapture`, `log stream`, `~/Library/Logs/DiagnosticReports`.
 - **Distribución**: fórmula espejo de axcli en `bitomule/tap` **apuntando al release upstream de
   `andelf/axcli`** — un puntero y un sha, no un fork. Mismo tratamiento para el resto de herramientas, de
@@ -476,25 +478,28 @@ funcionalidad de Nokoru**: es banco de pruebas para MAV, no el objeto de la vali
 
 Dos cosas que salieron del propio diseño y que conviene fijar **antes** de escribir código.
 
-**1. `BackgroundSafe()` como método de la interfaz `Driver` probablemente sea la solución equivocada — decisión
-a revisar antes de escribir código.**
+**1. El reparto background-safe se expresa con `Cost`, no con un rasgo nuevo en la interfaz `Driver`.**
+
+*(Decisión revisada y cerrada. La primera versión de este plan proponía un `BackgroundSafe() bool` en la
+interfaz; se descartó por lo que sigue.)*
 
 El problema de partida es real: axcli también provee árbol de accesibilidad, así que un desempate global por
 "es background-safe" le haría ganar `tree` a Peekaboo por un motivo que no tiene nada que ver con el foco, y
 con ello se perderían `menu` y `window`, que es justamente por lo que Peekaboo entra.
 
-La corrección obvia —acotar el desempate a capacidades de input— tiene un coste escondido: `Route()`
+La corrección aparente —acotar el desempate a capacidades de input— tiene un coste escondido: `Route()`
 (`drivers/router.go:79-131`) necesitaría una lista cableada de qué capacidades cuentan como "input". Eso es
 conocimiento por-capacidad viviendo fuera de la declaración de capacidades: exactamente la clase de
-special-case que el PR #53 acaba de eliminar. Y obliga a los 6 drivers de iOS a contestar una pregunta que no
-les aplica.
+special-case que el PR #53 acaba de eliminar. Y obligaría a los 6 drivers de iOS a contestar una pregunta que
+no les aplica.
 
-**La alternativa no necesita interfaz nueva:** `Cost(cap, target)` (`drivers/driver.go:37`) ya es
-*por capacidad* y *por target*. Un driver que roba el foco declara coste alto para las capacidades de input
-en `KindMac` y el reparto Peekaboo/axcli sale solo — un único criterio de ordenación, cero cambios de
-interfaz, y sin listas cableadas.
+**`Cost(cap, target)` (`drivers/driver.go:37`) ya es *por capacidad* y *por target*, que son justo los dos
+ejes que hacen falta.** Un driver que roba el foco declara coste alto para las capacidades de input en
+`KindMac`; el reparto Peekaboo/axcli sale solo. Un único criterio de ordenación, cero cambios de interfaz,
+ninguna lista cableada, y ningún driver de iOS tocado.
 
-Es decisión de Fase 3, pero conviene fijarla ahora: hoy este documento la fija mal.
+El corolario para la Fase 3: los dos drivers de macOS se distinguen **por su tabla de costes**, no por un
+flag. Y si mañana aparece un tercer driver background-safe, entra sin tocar el router.
 
 **2. Background-safe por defecto puede fallar en silencio al escribir.** `CGEventPostToPid` entrega el evento
 al proceso, pero hay controles de AppKit que sólo aceptan teclado con foco real. No es resoluble leyendo
