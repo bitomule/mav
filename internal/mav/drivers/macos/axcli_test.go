@@ -116,3 +116,40 @@ func TestAxcliDoesNotProvideTheTree(t *testing.T) {
 		t.Fatal("el arbol lo da peekaboo, que emite JSON")
 	}
 }
+
+// TestAxcliScreenshotTargetsTheApp: la captura por app la hace axcli y no
+// Peekaboo porque Peekaboo v4 descarta las ventanas con layer != 0 -- toda UI
+// flotante -- aunque los permisos esten concedidos.
+func TestAxcliScreenshotTargetsTheApp(t *testing.T) {
+	f := &fakeExec{tools: map[string]bool{"axcli": true}}
+	d := NewAxcli(f)
+	if err := d.Screenshot(context.Background(), macTarget(), drivers.ScreenshotSpec{OutPath: "/tmp/x.png"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.commands) != 1 || !strings.HasPrefix(f.commands[0], "axcli screenshot ") {
+		t.Fatalf("%v", f.commands)
+	}
+	if !strings.Contains(f.commands[0], "--output /tmp/x.png") {
+		t.Fatalf("falta el destino: %v", f.commands)
+	}
+	if !strings.Contains(f.commands[0], "--app ") && !strings.Contains(f.commands[0], "--pid ") {
+		t.Fatalf("la captura debe acotarse a la app, no a la pantalla: %v", f.commands)
+	}
+}
+
+// TestAxcliScreenshotIsAnEscapeHatchNotTheDefault: axcli captura ventanas que
+// Peekaboo rechaza, pero sin sesion grafica devuelve el escritorio recortado a
+// las medidas de la ventana -- sin error. Un resultado silenciosamente
+// equivocado no puede ser el camino por defecto; se pide a mano.
+func TestAxcliScreenshotIsAnEscapeHatchNotTheDefault(t *testing.T) {
+	target := macTarget()
+	ax := NewAxcli(&fakeExec{}).Cost(drivers.CapScreenshot, target)
+	pk := NewPeekaboo(&fakeExec{}).Cost(drivers.CapScreenshot, target)
+	sc := NewScreencapture(&fakeExec{}).Cost(drivers.CapScreenshot, target)
+	if ax <= pk {
+		t.Fatalf("axcli=%d peekaboo=%d: peekaboo es el canonico, devuelve contenido real", ax, pk)
+	}
+	if ax >= sc {
+		t.Fatalf("axcli=%d screencapture=%d: acotar a la ventana sigue siendo mejor que la pantalla entera", ax, sc)
+	}
+}

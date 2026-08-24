@@ -193,6 +193,20 @@ atribución TCC que le daba el bridge de Peekaboo.app y la respuesta pasa a ser 
 permission is required`. Son dos fallos distintos con la misma causa de fondo — la identidad del proceso
 responsable — y ninguno se arregla concediendo más permisos a `mav`.
 
+**7. La captura por app dentro de la VM sólo funciona por el bridge de Peekaboo.app, y el fallo
+alternativo es silencioso.** Concedido Screen Recording a `axcli` —se puede, aunque el panel no registre
+el intento denegado: hay que añadirlo con "+" y escribir la ruta a mano—, `axcli screenshot` reporta
+éxito, escribe el PNG y acierta las medidas de la ventana (`Capturing window 640x640 at (192,52)`). Lo
+que hay dentro del PNG es **el fondo de escritorio**. Con `--legacy` igual. Peekaboo, sobre la misma
+ventana y en el mismo instante, devuelve el contenido real. La diferencia es que su CLI delega en
+Peekaboo.app, que vive en la sesión gráfica, mientras que axcli captura desde su propio proceso — y ese
+proceso, lanzado por SSH, no tiene sesión gráfica. Control con TextEdit: mismo resultado, así que no es
+cosa de la app bajo prueba.
+
+Que un driver devuelva un PNG plausible en vez de un error es peor que fallar: por eso axcli queda como
+escotilla de escape (`--prefer-driver axcli`) para las ventanas flotantes que Peekaboo rechaza, y no como
+camino por defecto.
+
 **6. `cg-pid` puede fallar en silencio al pulsar, y aquí lo hizo.** El riesgo anotado como hipótesis en el
 plan quedó demostrado: `axcli click --strategy cg-pid "text=Get started"` reportó éxito
 (`cg-pid click pid=1740 wid=107 screen=(512,641)`) y el onboarding **no avanzó** — seguía en "Step 1 of

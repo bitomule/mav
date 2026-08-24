@@ -77,8 +77,17 @@ func (d *Peekaboo) Cost(c drivers.Capability, _ drivers.Target) int {
 	case drivers.CapTreeAX:
 		return 0
 	case drivers.CapScreenshot:
-		// Acotada a la ventana de la app: mejor evidencia que la pantalla
-		// entera de screencapture, que declara 50.
+		// Sigue siendo el canonico pese a su filtro de capa (ver abajo), por
+		// una razon que se midio: es el unico que devuelve el CONTENIDO de la
+		// ventana. Su CLI delega en Peekaboo.app, que vive en la sesion
+		// grafica; axcli captura desde el propio proceso y, cuando ese proceso
+		// no tiene sesion grafica -- por ejemplo mav lanzado por SSH dentro de
+		// una VM --, ScreenCaptureKit devuelve el escritorio recortado a las
+		// medidas de la ventana. Sin error y con las medidas correctas.
+		//
+		// Su limite: v4 descarta las ventanas con layer != 0, o sea toda UI
+		// flotante (panel, HUD, popover). Para esas hay que pedir axcli a mano
+		// con --prefer-driver axcli, asumiendo lo anterior.
 		return 0
 	case drivers.CapSemanticTap, drivers.CapCoordTap, drivers.CapType:
 		// No se declaran en Provides (ver arriba); el coste queda por si

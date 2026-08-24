@@ -114,7 +114,8 @@ func TestPeekabooInputStaysExpensiveIfReintroduced(t *testing.T) {
 	if d.Cost(drivers.CapTreeAX, mac) != 0 {
 		t.Fatal("el arbol es lo que solo peekaboo sabe hacer")
 	}
-	if d.Cost(drivers.CapScreenshot, mac) != 0 {
+	sc := NewScreencapture(&fakeExec{}).Cost(drivers.CapScreenshot, mac)
+	if d.Cost(drivers.CapScreenshot, mac) >= sc {
 		t.Fatal("captura acotada a la ventana debe ganar a la pantalla entera de screencapture")
 	}
 	if d.Cost(drivers.CapSemanticTap, mac) < 100 {

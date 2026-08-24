@@ -26,8 +26,9 @@ type Axcli struct {
 }
 
 var (
-	_ drivers.TapDriver  = (*Axcli)(nil)
-	_ drivers.TypeDriver = (*Axcli)(nil)
+	_ drivers.TapDriver        = (*Axcli)(nil)
+	_ drivers.TypeDriver       = (*Axcli)(nil)
+	_ drivers.ScreenshotDriver = (*Axcli)(nil)
 )
 
 // NewAxcli construye el driver.
@@ -43,6 +44,7 @@ func (d *Axcli) Provides(target drivers.Target) drivers.CapabilitySet {
 		drivers.CapCoordTap,
 		drivers.CapSemanticTap,
 		drivers.CapType,
+		drivers.CapScreenshot,
 	)
 }
 
@@ -60,6 +62,12 @@ func (d *Axcli) Cost(c drivers.Capability, _ drivers.Target) int {
 	switch c {
 	case drivers.CapCoordTap, drivers.CapSemanticTap:
 		return 0
+	case drivers.CapScreenshot:
+		// Escotilla de escape, no camino por defecto: captura ventanas que
+		// Peekaboo rechaza, pero puede devolver el escritorio en vez del
+		// contenido (ver Screenshot). Mas barato que screencapture (50), que
+		// da la pantalla entera, y mas caro que Peekaboo (0).
+		return 40
 	case drivers.CapType:
 		return 60
 	default:
@@ -183,6 +191,39 @@ func (d *Axcli) Type(ctx context.Context, target drivers.Target, spec drivers.Te
 	default:
 		return errors.New("axcli: typing requires a selector; use peekaboo to type into the focused element")
 	}
+	if res := d.exec.Run(ctx, "axcli", args...); res.Err != nil {
+		return axcliError(res)
+	}
+	return nil
+}
+
+// Screenshot captura la ventana de la app por ScreenCaptureKit, sin activarla.
+//
+// Existe como escotilla para lo que Peekaboo v4 rechaza: ese solo acepta
+// ventanas en la capa 0, asi que enumera una UI flotante y la descarta sola
+// -- `id=107 640x640 reason=layer != 0` --. axcli no filtra por capa.
+//
+// Pero NO es el camino por defecto, y conviene saber por que antes de pedirlo:
+// axcli captura desde su propio proceso, y si ese proceso no tiene sesion
+// grafica, ScreenCaptureKit devuelve el ESCRITORIO recortado a las medidas de
+// la ventana. Con las medidas correctas, sin error y sin aviso -- medido
+// dentro de una VM con mav lanzado por SSH, donde Peekaboo devolvia el
+// contenido real de la misma ventana porque su CLI delega en Peekaboo.app,
+// que si vive en la sesion grafica. `--legacy` tampoco lo arregla.
+//
+// Cuando el proceso si tiene sesion grafica, captura el contenido propio de la
+// ventana aunque este ocluida, que es la propiedad util.
+func (d *Axcli) Screenshot(ctx context.Context, target drivers.Target, spec drivers.ScreenshotSpec) error {
+	if spec.OutPath == "" {
+		return errors.New("axcli: screenshot output path missing")
+	}
+	base, err := axcliTargetArgs(target)
+	if err != nil {
+		return err
+	}
+	args := []string{"screenshot"}
+	args = append(args, base...)
+	args = append(args, "--output", spec.OutPath)
 	if res := d.exec.Run(ctx, "axcli", args...); res.Err != nil {
 		return axcliError(res)
 	}
