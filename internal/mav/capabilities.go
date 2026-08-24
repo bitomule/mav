@@ -2,7 +2,10 @@ package mav
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
+
+	"github.com/bitomule/mav/internal/mav/drivers"
 )
 
 type Capabilities struct {
@@ -23,6 +26,12 @@ type Capabilities struct {
 	Debug                bool
 	IDBIssue             string
 	IDBNext              string
+
+	// macOS: TCC es el factor que decide, no la API. Se reporta aparte porque
+	// el titular del permiso NO es mav sino el proceso que lo ejecuta, y eso
+	// hay que decirlo o el usuario lo busca donde no esta.
+	MacPermissions     string
+	MacPermissionsNext string
 }
 
 func (c CLI) resolveCapabilities(ctx context.Context, cfg Config) Capabilities {
@@ -60,11 +69,60 @@ func (c CLI) resolveCapabilities(ctx context.Context, cfg Config) Capabilities {
 		caps.NetworkCapture = true
 		caps.NetworkCaptureDriver = "mitmproxy"
 	}
+	if targetKind(cfg) == drivers.KindMac {
+		c.resolveMacPermissions(ctx, &caps)
+	}
 	caps.WallClock = tools["simtime"]
 	if tools["xcrun"] {
 		caps.Debug = c.Runner.Run(ctx, "xcrun", "--find", "lldb-dap").Err == nil
 	}
 	return caps
+}
+
+// resolveMacPermissions pregunta a peekaboo por el estado de TCC. Es la unica
+// de las herramientas que sabe contestarlo sin efectos secundarios: axcli lo
+// comprueba al arrancar un comando de verdad, y provocar eso solo para sondear
+// tocaria la app bajo prueba.
+func (c CLI) resolveMacPermissions(ctx context.Context, caps *Capabilities) {
+	if !caps.Tools["peekaboo"] {
+		caps.MacPermissions = "unknown"
+		caps.MacPermissionsNext = "mav setup --install peekaboo to report Accessibility and Screen Recording state"
+		return
+	}
+	res := c.Runner.Run(ctx, "peekaboo", "permissions", "--json")
+	missing := macMissingPermissions(res.Stdout)
+	if len(missing) == 0 {
+		caps.MacPermissions = "ok"
+		return
+	}
+	caps.MacPermissions = strings.Join(missing, "+") + "_missing"
+	caps.MacPermissionsNext = "grant it to the terminal or agent harness that runs mav, not to mav itself: System Settings > Privacy & Security"
+}
+
+// macMissingPermissions lee la respuesta de `peekaboo permissions --json`.
+// Deliberadamente tolerante: si la salida no se entiende, no se inventa un
+// estado -- devolver "todo bien" ante un formato desconocido seria peor que
+// admitir que no se sabe.
+func macMissingPermissions(stdout string) []string {
+	var envelope struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Permissions []struct {
+				Name      string `json:"name"`
+				IsGranted bool   `json:"isGranted"`
+			} `json:"permissions"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &envelope); err != nil || !envelope.Success {
+		return []string{"unreadable"}
+	}
+	var missing []string
+	for _, perm := range envelope.Data.Permissions {
+		if !perm.IsGranted {
+			missing = append(missing, strings.ReplaceAll(strings.ToLower(perm.Name), " ", "_"))
+		}
+	}
+	return missing
 }
 
 func knownTools() []string {
@@ -142,6 +200,12 @@ func (caps Capabilities) fields() map[string]string {
 	} else {
 		fields["debug"] = "missing"
 		fields["debug_next"] = "mav setup --install lldb-dap"
+	}
+	if caps.MacPermissions != "" {
+		fields["mac_permissions"] = caps.MacPermissions
+		if caps.MacPermissionsNext != "" {
+			fields["mac_permissions_next"] = caps.MacPermissionsNext
+		}
 	}
 	if caps.IDBIssue != "" {
 		fields["idb_issue"] = caps.IDBIssue

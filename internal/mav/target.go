@@ -121,6 +121,15 @@ func (c CLI) withResolvedTarget(fields map[string]string) map[string]string {
 		if _, ok := fields["profile"]; !ok {
 			fields["profile"] = cfg.ActiveProfile
 		}
+		// Un perfil que declara runner: crabbox espera correr dentro de una VM.
+		// Si esta linea la esta leyendo alguien, mav esta corriendo AHI, sea
+		// dentro o fuera -- reportarlo evita el malentendido de creerse aislado
+		// cuando se lanzo el comando a pelo.
+		if cfg.ProfileRunner != "" && cfg.ProfileRunner != "local" {
+			if _, ok := fields["runner"]; !ok {
+				fields["runner"] = cfg.ProfileRunner
+			}
+		}
 	}
 	udid := targetUDID(cfg)
 	name := targetName(cfg)

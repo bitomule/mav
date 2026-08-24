@@ -724,3 +724,49 @@ func TestMacTargetSkipsSimulatorResolution(t *testing.T) {
 		t.Fatalf("un target de macOS no debe resolver simulador, got %q", cfg.SimulatorUDID)
 	}
 }
+
+func TestMacMissingPermissionsRefusesToGuess(t *testing.T) {
+	// Devolver "todo bien" ante un formato que no se entiende seria peor que
+	// admitir que no se sabe: el usuario se enteraria del permiso que falta
+	// cuando fallase un comando, no cuando pregunta.
+	for name, stdout := range map[string]string{
+		"vacio":         "",
+		"no-json":       "error: something",
+		"success-false": `{"success":false}`,
+	} {
+		if got := macMissingPermissions(stdout); len(got) == 0 {
+			t.Fatalf("%s: no debe darse por bueno lo que no se entiende, got %v", name, got)
+		}
+	}
+	granted := `{"success":true,"data":{"permissions":[{"name":"Accessibility","isGranted":true},{"name":"Screen Recording","isGranted":true}]}}`
+	if got := macMissingPermissions(granted); len(got) != 0 {
+		t.Fatalf("con todo concedido no falta nada: %v", got)
+	}
+	partial := `{"success":true,"data":{"permissions":[{"name":"Accessibility","isGranted":true},{"name":"Screen Recording","isGranted":false}]}}`
+	got := macMissingPermissions(partial)
+	if len(got) != 1 || got[0] != "screen_recording" {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestProfileRunnerRejectsUnknownValues(t *testing.T) {
+	root := t.TempDir()
+	writeRawConfig(t, root, "project_name: x\nprofiles:\n  mac:\n    runner: podman\n")
+	// Un runner mal escrito que se ignore en silencio significaria correr en
+	// local algo que el usuario creia aislado en una VM.
+	if _, err := LoadConfigWithProfile(root, "mac"); err == nil {
+		t.Fatal("un runner desconocido debe fallar")
+	} else if !strings.Contains(err.Error(), "profile_runner_invalid") {
+		t.Fatalf("error inesperado: %v", err)
+	}
+
+	root2 := t.TempDir()
+	writeRawConfig(t, root2, "project_name: x\nprofiles:\n  mac:\n    runner: crabbox\n")
+	cfg, err := LoadConfigWithProfile(root2, "mac")
+	if err != nil {
+		t.Fatalf("crabbox es valido: %v", err)
+	}
+	if cfg.ProfileRunner != "crabbox" {
+		t.Fatalf("runner=%q", cfg.ProfileRunner)
+	}
+}

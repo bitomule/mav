@@ -50,6 +50,7 @@ type Config struct {
 	DefaultProfile string
 	Profiles       map[string]profileYAML
 	ActiveProfile  string
+	ProfileRunner  string
 	Fixtures       map[string][]string
 
 	// AppPath lo rellena la receta de lanzamiento en tiempo de ejecucion (paso
@@ -209,6 +210,10 @@ func applyProfile(cfg *Config, override string) error {
 	overlayString(&cfg.TargetCommand, profile.TargetCommand)
 	overlayString(&cfg.LogSubsystem, profile.LogSubsystem)
 	overlayString(&cfg.LogCategory, profile.LogCategory)
+	overlayString(&cfg.ProfileRunner, profile.Runner)
+	if err := validateProfileRunner(cfg.ProfileRunner); err != nil {
+		return err
+	}
 	if profile.Launch != nil {
 		overlayString(&cfg.Launch.Mode, profile.Launch.Mode)
 		if c := profile.Launch.Commands; c != nil {
@@ -295,6 +300,13 @@ type profileYAML struct {
 	LogSubsystem  *string            `yaml:"log_subsystem,omitempty"`
 	LogCategory   *string            `yaml:"log_category,omitempty"`
 	Launch        *profileLaunchYAML `yaml:"launch,omitempty"`
+
+	// Runner dice DONDE corre este perfil: "local" (por defecto) o "crabbox".
+	// mav no orquesta maquinas -- eso es crabbox, que ya sabe alquilar una VM
+	// de macOS con tart, sincronizar el checkout sucio y devolverla al acabar.
+	// Este campo solo declara la intencion; quien la ejecuta es el envoltorio,
+	// no mav.
+	Runner *string `yaml:"runner,omitempty"`
 }
 
 type profileLaunchYAML struct {
@@ -952,5 +964,18 @@ func validateTargetKind(kind string) error {
 		return nil
 	default:
 		return fmt.Errorf("target_kind_invalid value=%s valid=simulator,device,macos", kind)
+	}
+}
+
+// validateProfileRunner rechaza runners que mav no conoce, por el mismo motivo
+// que un target_kind desconocido: un valor mal escrito que se ignora en
+// silencio es configuracion muerta, y aqui ademas significaria correr en local
+// algo que el usuario creia aislado en una VM.
+func validateProfileRunner(runner string) error {
+	switch runner {
+	case "", "local", "crabbox":
+		return nil
+	default:
+		return fmt.Errorf("profile_runner_invalid value=%s valid=local,crabbox", runner)
 	}
 }
