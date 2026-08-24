@@ -44,6 +44,16 @@
   `clear_state_warn`, siguiendo el mismo "avisa y sigue" de `target_command_warn`. Sin
   eso, `--clear-state` mentía: el usuario creía partir de cero y arrastraba el estado
   del run anterior.
+- **Ciclo de vida de macOS**: lanzar, cerrar, `openURL`, portapapeles y el equivalente
+  honesto de `--clear-state` (borra el contenedor y los preferences, no la app). El
+  lanzamiento ejecuta `Contents/MacOS/<binario>` en vez de `open` porque `open` no propaga
+  variables de entorno, y el entorno es como mav inyecta su configuración.
+- `mav doctor` reporta el estado de Accessibility y Screen Recording en macOS, diciendo a
+  quién hay que concederlos: al proceso que ejecuta `mav` —tu terminal o el harness del
+  agente— no a `mav`.
+- Los perfiles admiten `runner: local|crabbox`, que declara **dónde** corre ese perfil.
+  mav no orquesta máquinas: la receta completa para una VM desechable está en
+  `examples/macos-vm/`.
 - `SaveConfig` pasa a usar `yaml.Marshal` en vez de un escritor a mano. El escritor
   omitía los valores vacíos, así que el fichero no podía expresar "presente y vale
   cadena vacía" — justo lo que un perfil necesita para **anular** un comando heredado.
