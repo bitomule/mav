@@ -315,12 +315,19 @@ func (d *Peekaboo) Type(ctx context.Context, target drivers.Target, spec drivers
 }
 
 // Screenshot captura la ventana de la app, no la pantalla entera.
+//
+// Usa `see --path` y no `image`: ese subcomando se elimino en Peekaboo v4, y
+// una version instalada por brew hoy es v4. Ademas `see` devuelve el arbol y la
+// captura en la misma llamada, asi que cuando alguien encadena tree+capture
+// -- que es el caso normal en un flow -- se ahorra una invocacion entera, y las
+// dos evidencias corresponden al MISMO instante en vez de a dos momentos
+// distintos, que para una captura que acompana a un arbol importa.
 func (d *Peekaboo) Screenshot(ctx context.Context, target drivers.Target, spec drivers.ScreenshotSpec) error {
 	if spec.OutPath == "" {
 		return errors.New("peekaboo: screenshot output path missing")
 	}
-	args := append([]string{"image"}, appArgs(target)...)
-	args = append(args, "--mode", "window", "--path", spec.OutPath, "--format", "png", "--json")
+	args := append([]string{"see"}, appArgs(target)...)
+	args = append(args, "--mode", "window", "--path", spec.OutPath, "--json")
 	res := d.exec.Run(ctx, "peekaboo", args...)
 	_, err := decodeEnvelope(res.Stdout)
 	return err

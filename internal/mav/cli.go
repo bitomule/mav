@@ -3225,8 +3225,12 @@ func (c CLI) capture(ctx context.Context, opts GlobalOptions, args []string) err
 		}
 		_ = SaveCurrentRun(c.Root, run)
 	}
+	prefer, err := c.normalizePreferDriver(opts.PreferDriver)
+	if err != nil {
+		return Fail("prefer_driver_invalid", map[string]string{"usage": c.preferDriverUsage()}).Write(c.Stdout)
+	}
 	path := uniqueCapturePath(run, flagValue(args, "--name"))
-	result, err := c.captureScreenshot(ctx, cfg, path)
+	result, err := c.captureScreenshotWith(ctx, cfg, path, routerPrefer(prefer))
 	if err != nil {
 		return Fail("tool_missing", map[string]string{"tool": "axe|idb|xcrun"}).Write(c.Stdout)
 	}
@@ -3258,6 +3262,13 @@ func uniqueCapturePath(run RunState, name string) string {
 }
 
 func (c CLI) captureScreenshot(ctx context.Context, cfg Config, path string) (CommandResult, error) {
+	return c.captureScreenshotWith(ctx, cfg, path, "")
+}
+
+// captureScreenshotWith es captureScreenshot honrando --prefer-driver. La
+// version sin prefer existe porque la mayoria de llamadas son internas (fast
+// path de fallo, pasos de un flow) y ahi no hay flag del usuario que respetar.
+func (c CLI) captureScreenshotWith(ctx context.Context, cfg Config, path, prefer string) (CommandResult, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return CommandResult{}, err
 	}
@@ -3268,8 +3279,7 @@ func (c CLI) captureScreenshot(ctx context.Context, cfg Config, path string) (Co
 	// PATH en vez de salud, y ademas dejaba fuera a cualquier target que no
 	// fuera iOS -- en macOS acababa nombrando a axe, que ni siquiera provee la
 	// capacidad alli, y la captura moria con capture_tool_missing.
-	prefer := ""
-	if targetKind(cfg) == drivers.KindDevice {
+	if prefer == "" && targetKind(cfg) == drivers.KindDevice {
 		prefer = "idb"
 	}
 	driver, _, err := c.router().Route(ctx, drivers.CapScreenshot, target, prefer)

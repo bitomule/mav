@@ -160,3 +160,25 @@ func TestPeekabooOnlyProvidesOnMac(t *testing.T) {
 		t.Fatal("en simulador manda AXe")
 	}
 }
+
+// TestPeekabooScreenshotUsesSeeNotImage: `peekaboo image` se elimino en v4, y
+// una instalacion por brew hoy es v4. El driver estaba escrito contra la 3.0.0
+// de la maquina de desarrollo y fallaba con INVALID_ARGUMENT en cualquier otra.
+func TestPeekabooScreenshotUsesSeeNotImage(t *testing.T) {
+	f := &fakeExec{
+		tools:   map[string]bool{"peekaboo": true},
+		results: map[string]drivers.ExecResult{"peekaboo see": {Stdout: `{"success":true,"data":{}}`}},
+	}
+	if err := NewPeekaboo(f).Screenshot(context.Background(), macTarget(), drivers.ScreenshotSpec{OutPath: "/tmp/x.png"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.commands) != 1 {
+		t.Fatalf("%v", f.commands)
+	}
+	if !strings.HasPrefix(f.commands[0], "peekaboo see ") {
+		t.Fatalf("debe usar `see`, no el `image` eliminado en v4: %v", f.commands)
+	}
+	if !strings.Contains(f.commands[0], "--mode window") {
+		t.Fatalf("la captura debe acotarse a la ventana de la app: %v", f.commands)
+	}
+}

@@ -2836,3 +2836,20 @@ func TestVerifyDistinguishesChangedFromUnchanged(t *testing.T) {
 		t.Fatalf("un cambio de etiqueta debe detectarse: %+v", delta)
 	}
 }
+
+// TestCaptureHonoursPreferDriver: --prefer-driver se aceptaba en la linea de
+// comandos pero captureScreenshot lo tiraba y encaminaba siempre por coste, asi
+// que la unica forma de esquivar un driver roto en captura era desinstalarlo.
+func TestCaptureHonoursPreferDriver(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Tools["idb"] = true
+	cfg.Tools["simctl"] = true
+	runner := &recordingRunner{tools: map[string]bool{"idb": true, "xcrun": true, "simctl": true}}
+	cli := CLI{Runner: runner, Root: t.TempDir(), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	if _, err := cli.captureScreenshotWith(context.Background(), cfg, filepath.Join(t.TempDir(), "s.png"), "simctl"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(runner.command, "idb screenshot") {
+		t.Fatalf("--prefer-driver simctl ignorado, encamino por coste a idb: %q", runner.command)
+	}
+}

@@ -171,7 +171,36 @@ terminal dentro de la sesión gráfica en vez de por SSH; o capturar la pantalla
 propio VNC del hipervisor, que no necesita permiso alguno — la evidencia visual de esta prueba se obtuvo
 justo así.
 
-## Lo que no funciona todavía## Lo que no funciona todavía## Lo que no funciona todavía
+**4. La captura acotada a la app choca además con un filtro de Peekaboo v4, no sólo con TCC.** Corriendo
+en la sesión gráfica, `peekaboo see --app nNokoru` enumera las ventanas candidatas y las descarta una a
+una diciendo por qué:
+
+```
+Desktop observation target was not found: shareable window for nNokoru.
+Candidates: #2 id=107 '<untitled>' 640x640 alpha=1.00 reason=layer != 0
+```
+
+`id=107` **es** la ventana visible de la app. Peekaboo sólo acepta ventanas en la capa 0, y el onboarding
+de Nokoru es una ventana flotante. O sea: cualquier app cuya UI viva en un panel flotante, un HUD o un
+popover queda fuera de la captura por app de Peekaboo aunque los permisos estén perfectos. `axcli
+snapshot` lee el árbol de esa misma ventana sin problema (9 elementos interactivos, botón "Get started"
+incluido), así que el árbol y la captura no fallan por lo mismo y no se arreglan igual.
+
+**5. Ejecutar `mav` por SSH lo deja en la sesión equivocada.** Un proceso lanzado desde SSH no está en la
+sesión Aqua: `screencapture` responde `could not create image from display` porque no ve pantalla
+ninguna. `sudo launchctl asuser 501 …` sí entra en la sesión gráfica, pero entonces se pierde la
+atribución TCC que le daba el bridge de Peekaboo.app y la respuesta pasa a ser `Screen Recording
+permission is required`. Son dos fallos distintos con la misma causa de fondo — la identidad del proceso
+responsable — y ninguno se arregla concediendo más permisos a `mav`.
+
+**6. `cg-pid` puede fallar en silencio al pulsar, y aquí lo hizo.** El riesgo anotado como hipótesis en el
+plan quedó demostrado: `axcli click --strategy cg-pid "text=Get started"` reportó éxito
+(`cg-pid click pid=1740 wid=107 screen=(512,641)`) y el onboarding **no avanzó** — seguía en "Step 1 of
+5". El mismo clic con `--strategy ax` (AXPress) avanzó a "Step 2 of 5" a la primera. Para botones SwiftUI
+conviene AXPress; para lo demás, `cg-pid` sigue siendo lo que no roba el foco. Es la razón por la que
+`mav ui tap --verify` existe: sin comprobar el efecto, un tap que no hizo nada se reporta como `ok`.
+
+## Lo que no funciona todavía
 
 `crabbox run --artifact-glob` **rechaza los targets nativos de macOS**, que es justo el
 mecanismo con el que sacarías `.mav/runs/<id>/` de la VM. Está identificado aguas arriba en

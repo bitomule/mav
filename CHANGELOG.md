@@ -2,6 +2,15 @@
 
 ## v0.12.0
 
+- **Captura por app en macOS: `peekaboo image` ya no existe.** El subcomando se eliminó
+  en Peekaboo v4 y el driver estaba escrito contra la 3.0.0 de la máquina de desarrollo,
+  así que cualquier instalación hecha hoy por `brew` fallaba con `INVALID_ARGUMENT`. Pasa
+  a usar `peekaboo see --path`, que además devuelve árbol y captura en la misma llamada:
+  las dos evidencias corresponden al mismo instante en vez de a dos momentos distintos.
+- **`mav capture` ignoraba `--prefer-driver`.** El flag se aceptaba en la línea de
+  comandos y se tiraba a la basura: la captura encaminaba siempre por coste, así que la
+  única forma de esquivar un driver roto era desinstalarlo. Ahora se respeta, y el
+  `idb` implícito de los dispositivos físicos sólo se aplica cuando no pediste nada.
 - **macOS.** `mav` deja de ser sólo iOS. `target_kind: macos` es un tipo de destino de
   primera clase, con tres drivers nuevos: peekaboo (árbol de accesibilidad, menús,
   capturas de ventana), axcli (input que **no roba el foco**, vía `CGEventPostToPid`) y
