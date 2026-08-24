@@ -53,10 +53,14 @@ for _ in $(seq 1 60); do
 done
 
 echo "==> instalando mav y drivers"
-# Sin `if !`, un fallo aqui se perderia si alguien canaliza la salida del script
-# a otro comando: el codigo de salida de una tuberia es el del ultimo eslabon.
-if ! SSHPASS="$PASSWORD" sshpass -e ssh -o StrictHostKeyChecking=no \
-  -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "$USER_NAME@$IP" 'bash -s' <<'PROVISION'
+# El aprovisionamiento va en un fichero y no en un heredoc dentro de un `if`:
+# mezclar las dos cosas rompio el heredoc en una version anterior y las ultimas
+# lineas -- justo las que arreglan el PATH y verifican -- acabaron imprimiendose
+# como texto en vez de ejecutarse. La imagen salio sin PATH y el script no se
+# entero.
+PROVISION_SCRIPT=$(mktemp)
+trap 'rm -f "$PROVISION_SCRIPT"; kill "$RUN_PID" 2>/dev/null || true' EXIT
+cat > "$PROVISION_SCRIPT" <<'PROVISION'
 set -eu
 export NONINTERACTIVE=1
 
@@ -69,20 +73,20 @@ eval "$(/opt/homebrew/bin/brew shellenv)"
 brew install bitomule/tap/mav steipete/tap/peekaboo bitomule/tap/axcli
 
 # En una sesion SSH no interactiva el PATH es /usr/bin:/bin:/usr/sbin:/sbin, sin
-# /opt/homebrew/bin. Cualquier cosa instalada por brew seria invisible al
-# conducirla desde fuera -- incluido desde crabbox -- si no se arregla aqui.
-echo 'export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH' >> "$HOME/.zshenv"
-echo 'export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH' >> "$HOME/.bashrc"
+# /opt/homebrew/bin. Sin esto, todo lo que acaba de instalarse es invisible al
+# conducir la VM desde fuera -- incluido desde crabbox.
+LINE='export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH'
+grep -qs "/opt/homebrew/bin" "$HOME/.zshenv" 2>/dev/null || echo "$LINE" >> "$HOME/.zshenv"
+grep -qs "/opt/homebrew/bin" "$HOME/.bashrc" 2>/dev/null || echo "$LINE" >> "$HOME/.bashrc"
 
 # Verificar, no confiar: `brew install` con varias formulas falla entero si una
 # no existe, y sin esta comprobacion el script reportaba exito con la imagen a
-# medio construir. Una imagen incompleta que se anuncia como lista es peor que
-# un fallo, porque el error aparece luego en el primer run y sin relacion
-# aparente con la causa.
+# medio construir. Una imagen incompleta anunciada como lista es peor que un
+# fallo: el error reaparece en el primer run, sin relacion aparente con la causa.
 missing=""
 for t in mav peekaboo axcli; do
   if command -v "$t" >/dev/null 2>&1; then
-    printf "      %-10s %s\n" "$t" "$(command -v $t)"
+    printf "      %-10s %s\n" "$t" "$(command -v "$t")"
   else
     printf "      %-10s NO INSTALADO\n" "$t"
     missing="$missing $t"
@@ -90,9 +94,13 @@ for t in mav peekaboo axcli; do
 done
 [ -z "$missing" ] || { echo "faltan herramientas:$missing" >&2; exit 1; }
 PROVISION
+
+if ! SSHPASS="$PASSWORD" sshpass -e ssh -o StrictHostKeyChecking=no \
+  -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "$USER_NAME@$IP" \
+  'bash -s' < "$PROVISION_SCRIPT"
 then
   echo "el aprovisionamiento fallo; la VM $NAME queda en pie para inspeccionarla" >&2
-  trap - EXIT
+  trap 'rm -f "$PROVISION_SCRIPT"' EXIT
   exit 1
 fi
 
