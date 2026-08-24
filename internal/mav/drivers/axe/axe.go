@@ -32,7 +32,14 @@ func (d *Driver) ID() string { return ID }
 
 // Provides declares the capabilities AXe can serve. AXe handles both sim and
 // device for tree/screenshot, single-finger gestures, semantic tap, and type.
-func (d *Driver) Provides(_ drivers.Target) drivers.CapabilitySet {
+func (d *Driver) Provides(target drivers.Target) drivers.CapabilitySet {
+	// AXe habla con simuladores y dispositivos iOS. Declarar capacidades en
+	// un target de macOS lo metia a competir por ellas: empataba a coste con
+	// el driver de macOS y desempataba el orden alfabetico, asi que un
+	// `ui tree` contra una app de Mac acababa invocando a AXe sin udid.
+	if target.Kind == drivers.KindMac {
+		return drivers.NewSet()
+	}
 	return drivers.NewSet(
 		drivers.CapTreeAX,
 		drivers.CapSemanticTap,

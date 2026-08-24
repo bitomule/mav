@@ -34,7 +34,14 @@ func (d *Driver) ID() string { return ID }
 // Provides covers the operations idb is currently responsible for in cli.go:
 // device lifecycle, device logs/crashes, coordinate taps, fallback screenshot
 // when AXe is missing.
-func (d *Driver) Provides(_ drivers.Target) drivers.CapabilitySet {
+func (d *Driver) Provides(target drivers.Target) drivers.CapabilitySet {
+	// idb habla con simuladores y dispositivos iOS. Declarar capacidades en
+	// un target de macOS lo metia a competir por ellas: empataba a coste con
+	// el driver de macOS y desempataba el orden alfabetico, asi que un
+	// `ui tree` contra una app de Mac acababa invocando a idb sin udid.
+	if target.Kind == drivers.KindMac {
+		return drivers.NewSet()
+	}
 	return drivers.NewSet(
 		drivers.CapCoordTap,
 		drivers.CapSwipe,

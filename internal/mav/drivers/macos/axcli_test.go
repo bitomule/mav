@@ -9,22 +9,31 @@ import (
 	"github.com/bitomule/mav/internal/mav/drivers"
 )
 
-// TestAxcliWinsTapsAndNotTyping es el nucleo del reparto con Peekaboo, y la
-// razon por la que no hizo falta un rasgo BackgroundSafe en la interfaz Driver:
-// Cost ya es por capacidad y por target.
-func TestAxcliWinsTapsAndNotTyping(t *testing.T) {
+// TestAxcliIsTheOnlyInputPathOnMac: tras la leccion de que un click de
+// peekaboo puede aterrizar en otra app, axcli es el unico que sirve input en el
+// Mac. Si no esta instalado, `ui tap` falla -- que es lo que se quiere -- en vez
+// de caer a un camino que pulsa a ciegas.
+func TestAxcliIsTheOnlyInputPathOnMac(t *testing.T) {
 	ax := NewAxcli(&fakeExec{})
 	peek := NewPeekaboo(&fakeExec{})
 	mac := macTarget()
 
-	// Los taps van por CGEventPostToPid, que no roba el foco: axcli gana.
-	if ax.Cost(drivers.CapCoordTap, mac) >= peek.Cost(drivers.CapCoordTap, mac) {
-		t.Fatal("axcli debe ganar los taps: entrega por PID sin activar la app")
+	caps := ax.Provides(mac)
+	if !caps.Has(drivers.CapSemanticTap) || !caps.Has(drivers.CapType) {
+		t.Fatalf("axcli debe servir el input: %v", caps)
 	}
-	// Escribir NO: `fill` activa la app igualmente, asi que no aporta nada
-	// sobre peekaboo y no debe preferirse creyendo que si.
-	if ax.Cost(drivers.CapType, mac) < peek.Cost(drivers.CapType, mac) {
-		t.Fatal("axcli no es mejor escribiendo: fill activa la app igual que peekaboo")
+	if peek.Provides(mac).Has(drivers.CapSemanticTap) {
+		t.Fatal("peekaboo no debe competir por el input")
+	}
+	// Los taps van por CGEventPostToPid, que no roba el foco: camino canonico.
+	if ax.Cost(drivers.CapSemanticTap, mac) != 0 {
+		t.Fatal("el tap por PID es el camino bueno en el Mac")
+	}
+	// Escribir NO es background-safe ni siquiera aqui: `fill` activa la app
+	// antes de teclear, en el codigo y sin flag para evitarlo. Se declara caro
+	// para que quede dicho que no es gratis, aunque hoy no compita con nadie.
+	if ax.Cost(drivers.CapType, mac) == 0 {
+		t.Fatal("escribir activa la app: no puede anunciarse como camino canonico")
 	}
 }
 

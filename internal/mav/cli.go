@@ -1646,7 +1646,14 @@ func (c CLI) describeUITree(ctx context.Context, cfg Config, prefer string, incl
 		}
 	}
 	target := targetFromConfig(cfg)
-	if hasTool(cfg, "axe") {
+	// Sin gate por herramienta: quien decide es el router. Preguntar antes por
+	// `hasTool(cfg, "axe")` duplicaba la decision fuera de el, y eso no se
+	// notaba mientras todos los targets se servian con axe -- en cuanto
+	// aparecio uno que no (macOS), este `if` mandaba a axe de todas formas y
+	// el arbol moria pidiendo un --udid que no existe. Si no hay driver para
+	// esta capacidad en este target, el propio ErrNoDriver lo explica mejor de
+	// lo que puede hacerlo un booleano.
+	{
 		driver, _, err := c.router().Route(ctx, drivers.CapTreeAX, target, routerPrefer(prefer))
 		if err != nil {
 			return describedUITree{}, err
@@ -1746,6 +1753,23 @@ func (c CLI) waitForTreeReady(ctx context.Context, cfg Config, timeout time.Dura
 	return readyUITree{}, fmt.Errorf("tree_not_ready")
 }
 
+// tapToolMissingFields explica que falta para poder pulsar, y en macOS eso NO
+// es lo mismo que en iOS.
+//
+// El mensaje de iOS sugiere caer a coordenadas, que alli es un apano razonable.
+// En el Mac seria el consejo contrario al correcto: pulsar por coordenadas es
+// justo el camino que puede aterrizar en otra aplicacion si la ventana se
+// movio. Lo que falta ahi es un driver que entregue por PID.
+func tapToolMissingFields(cfg Config) map[string]string {
+	if targetKind(cfg) == drivers.KindMac {
+		return map[string]string{
+			"tool": "axcli",
+			"next": "mav setup --install axcli; taps on macOS need PID-targeted delivery, coordinates can land on another app",
+		}
+	}
+	return map[string]string{"tool": "axe", "next": "use mav ui tap --x X --y Y when AXe is unavailable"}
+}
+
 func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
 	selector, selectorErr := selectorFromCLI(args)
 	if selectorErr != nil {
@@ -1775,7 +1799,7 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			command += " --value " + value
 		}
 		if !caps.Tools["axe"] {
-			return Fail("tool_missing", map[string]string{"tool": "axe", "next": "use mav ui tap --x X --y Y when AXe is unavailable"}).Write(c.Stdout)
+			return Fail("tool_missing", tapToolMissingFields(cfg)).Write(c.Stdout)
 		}
 		if isSimpleSemanticSelector(selector) && value != "" {
 			return Fail("tap_target_missing", map[string]string{"usage": "mav ui tap --value VALUE requires another predicate or a stable --id"}).Write(c.Stdout)
@@ -1798,7 +1822,7 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		target := targetFromConfig(cfg)
 		driver, _, err := c.router().Route(ctx, drivers.CapSemanticTap, target, routerPrefer(prefer))
 		if err != nil {
-			return Fail("tool_missing", map[string]string{"tool": "axe", "next": "use mav ui tap --x X --y Y when AXe is unavailable"}).Write(c.Stdout)
+			return Fail("tool_missing", tapToolMissingFields(cfg)).Write(c.Stdout)
 		}
 		td, ok := driver.(drivers.TapDriver)
 		if !ok {
@@ -3170,16 +3194,15 @@ func (c CLI) captureScreenshot(ctx context.Context, cfg Config, path string) (Co
 		return CommandResult{}, err
 	}
 	target := targetFromConfig(cfg)
+	// Solo se nombra driver para device, donde idb es el canonico por decision
+	// explicita. Para lo demas decide el router por coste: la cascada de
+	// hasTool que habia aqui replicaba eso peor, porque miraba presencia en
+	// PATH en vez de salud, y ademas dejaba fuera a cualquier target que no
+	// fuera iOS -- en macOS acababa nombrando a axe, que ni siquiera provee la
+	// capacidad alli, y la captura moria con capture_tool_missing.
 	prefer := ""
-	switch {
-	case targetKind(cfg) == drivers.KindDevice:
+	if targetKind(cfg) == drivers.KindDevice {
 		prefer = "idb"
-	case hasTool(cfg, "axe"):
-		prefer = "axe"
-	case hasTool(cfg, "idb"):
-		prefer = "idb"
-	case hasTool(cfg, "xcrun"):
-		prefer = "simctl"
 	}
 	driver, _, err := c.router().Route(ctx, drivers.CapScreenshot, target, prefer)
 	if err != nil {

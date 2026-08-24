@@ -87,10 +87,28 @@ func TestPeekabooFallsBackToElemIDWhenThereIsNoAXIdentifier(t *testing.T) {
 	}
 }
 
-// TestPeekabooIsExpensiveForInput es la decision de diseno que sustituye a un
-// rasgo BackgroundSafe en la interfaz: el reparto con axcli se expresa con
-// Cost, que ya es por capacidad y por target.
-func TestPeekabooIsExpensiveForInput(t *testing.T) {
+// TestPeekabooDoesNotProvideInput fija la leccion mas cara de esta fase,
+// aprendida probando contra una app real: con peekaboo sirviendo taps, un
+// `ui tap` abrio el correo del usuario en vez de pulsar el boton de la app bajo
+// prueba. Su click activa la app y dispara por coordenadas de un snapshot; si
+// ese snapshot ya no describe la pantalla, acierta a lo que haya delante.
+//
+// Un tap que puede acertarle a otra aplicacion es peor que no tener tap. Sin
+// axcli, `ui tap` debe fallar diciendo que falta.
+func TestPeekabooDoesNotProvideInput(t *testing.T) {
+	caps := NewPeekaboo(&fakeExec{}).Provides(macTarget())
+	for _, cap := range []drivers.Capability{drivers.CapSemanticTap, drivers.CapCoordTap, drivers.CapType} {
+		if caps.Has(cap) {
+			t.Fatalf("peekaboo no debe servir %s: su click puede aterrizar en otra app", cap)
+		}
+	}
+	// Lo que si es suyo y nadie mas hace.
+	if !caps.Has(drivers.CapTreeAX) || !caps.Has(drivers.CapScreenshot) {
+		t.Fatalf("arbol y capturas si son suyos: %v", caps)
+	}
+}
+
+func TestPeekabooInputStaysExpensiveIfReintroduced(t *testing.T) {
 	d := NewPeekaboo(&fakeExec{})
 	mac := macTarget()
 	if d.Cost(drivers.CapTreeAX, mac) != 0 {
@@ -99,8 +117,8 @@ func TestPeekabooIsExpensiveForInput(t *testing.T) {
 	if d.Cost(drivers.CapScreenshot, mac) != 0 {
 		t.Fatal("captura acotada a la ventana debe ganar a la pantalla entera de screencapture")
 	}
-	if d.Cost(drivers.CapType, mac) <= d.Cost(drivers.CapTreeAX, mac) {
-		t.Fatal("su input activa la app, asi que debe ser caro para que le gane uno que entregue por PID")
+	if d.Cost(drivers.CapSemanticTap, mac) < 100 {
+		t.Fatal("si alguien reintroduce el input, no puede ser nunca el camino barato")
 	}
 }
 

@@ -134,13 +134,24 @@ func (c CLI) withResolvedTarget(fields map[string]string) map[string]string {
 	udid := targetUDID(cfg)
 	name := targetName(cfg)
 	kind := targetKindLabel(targetKind(cfg))
-	if udid == "" {
-		return fields
-	}
-	fields["udid"] = udid
+	// El kind se reporta SIEMPRE, tambien cuando no hay udid. La guarda de
+	// abajo existe para el caso "no se ha podido resolver contra que
+	// simulador", pero en un target de macOS no hay udid por definicion --la
+	// maquina es esta-- y salir antes dejaba al agente sin saber que
+	// plataforma esta conduciendo, que es justo el dato que mas cambia lo que
+	// puede pedir a continuacion.
 	if _, ok := fields["target_kind"]; !ok {
 		fields["target_kind"] = kind
 	}
+	if udid == "" {
+		if name != "" {
+			if _, ok := fields["target_name"]; !ok {
+				fields["target_name"] = name
+			}
+		}
+		return fields
+	}
+	fields["udid"] = udid
 	if name != "" {
 		if _, ok := fields["target_name"]; !ok {
 			fields["target_name"] = name

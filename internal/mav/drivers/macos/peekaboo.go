@@ -43,11 +43,23 @@ func (d *Peekaboo) Provides(target drivers.Target) drivers.CapabilitySet {
 	if target.Kind != drivers.KindMac {
 		return drivers.NewSet()
 	}
+	// Peekaboo NO declara capacidades de input, y esto no es una omision.
+	//
+	// Su click activa la app de destino y dispara por coordenadas resueltas de
+	// un snapshot. Si ese snapshot ya no describe la pantalla -- porque la
+	// ventana se movio, porque otra app se puso delante, o porque el snapshot
+	// vigente es otro -- el click aterriza en lo que haya ahi. En una prueba
+	// real eso abrio el correo del usuario en vez de pulsar un boton de la app
+	// bajo prueba.
+	//
+	// Un tap que puede acertarle a otra aplicacion es peor que no tener tap:
+	// el segundo falla y se arregla, el primero hace algo que nadie pidio y
+	// puede no notarse hasta mucho despues. Asi que si no hay un driver que
+	// entregue por PID -- axcli -- el router devuelve ErrNoDriver y `ui tap`
+	// falla diciendo que falta, en vez de caer a un camino que puede pulsar
+	// cualquier cosa.
 	return drivers.NewSet(
 		drivers.CapTreeAX,
-		drivers.CapSemanticTap,
-		drivers.CapCoordTap,
-		drivers.CapType,
 		drivers.CapScreenshot,
 	)
 }
@@ -68,12 +80,10 @@ func (d *Peekaboo) Cost(c drivers.Capability, _ drivers.Target) int {
 		// Acotada a la ventana de la app: mejor evidencia que la pantalla
 		// entera de screencapture, que declara 50.
 		return 0
-	case drivers.CapSemanticTap:
-		// Nadie mas resuelve un elemento por su identificador en el Mac, asi
-		// que aqui gana aunque robe el foco.
-		return 0
-	case drivers.CapCoordTap, drivers.CapType:
-		return 60
+	case drivers.CapSemanticTap, drivers.CapCoordTap, drivers.CapType:
+		// No se declaran en Provides (ver arriba); el coste queda por si
+		// alguien las reintroduce, para que nunca sean el camino barato.
+		return 100
 	default:
 		return 100
 	}
@@ -191,6 +201,7 @@ type seeElement struct {
 	Role            string `json:"role"`
 	RoleDescription string `json:"role_description"`
 	Label           string `json:"label"`
+	Description     string `json:"description"`
 	Title           string `json:"title"`
 	Value           string `json:"value"`
 	IsActionable    bool   `json:"is_actionable"`
@@ -231,10 +242,19 @@ func (d *Peekaboo) Tree(ctx context.Context, target drivers.Target, _ drivers.Tr
 			// que es lo que un agente espera de `--id`. elem_N solo vale
 			// dentro del snapshot que lo genero.
 			"identifier": firstNonEmptyString(el.Identifier, el.ID),
-			"label":      el.Label,
-			"role":       firstNonEmptyString(el.RoleDescription, el.Role),
-			"title":      el.Title,
-			"value":      el.Value,
+			// El texto util esta en `description`, no en `label`: peekaboo
+			// rellena `label` con el rol localizado cuando el elemento no
+			// tiene titulo propio, asi que un arbol entero sale diciendo
+			// "boton" en el idioma del sistema. `description` es donde vive lo
+			// que un agente necesita leer ("Soporte", "Ajustes", el texto de
+			// la fila...).
+			"label": firstNonEmptyString(el.Description, el.Title, usefulLabel(el)),
+			// El rol estable en ingles, NO role_description, que esta
+			// localizado: un selector escrito contra "botón" deja de funcionar
+			// en cuanto cambia el idioma del sistema.
+			"role":  el.Role,
+			"title": el.Title,
+			"value": el.Value,
 		}
 		if el.IsEnabled != nil {
 			node["enabled"] = *el.IsEnabled
@@ -313,4 +333,14 @@ func firstNonEmptyString(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// usefulLabel devuelve el `label` de peekaboo solo cuando aporta algo. Cuando
+// coincide con role_description es que el elemento no tenia titulo y peekaboo
+// puso ahi el rol localizado, que como etiqueta es ruido.
+func usefulLabel(el seeElement) string {
+	if el.Label == el.RoleDescription {
+		return ""
+	}
+	return el.Label
 }
