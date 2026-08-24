@@ -17,10 +17,14 @@ import (
 // del router (drivers.TargetKind) en vez de un bool para que anadir un tercer
 // kind sea anadir un case, no auditar cada if del CLI.
 func targetKind(cfg Config) drivers.TargetKind {
-	if cfg.TargetKind == "device" {
+	switch cfg.TargetKind {
+	case "device":
 		return drivers.KindDevice
+	case "macos":
+		return drivers.KindMac
+	default:
+		return drivers.KindSim
 	}
-	return drivers.KindSim
 }
 
 // targetKindLabel es la grafia PUBLICA de un TargetKind: es lo que sale en el
@@ -32,6 +36,8 @@ func targetKindLabel(kind drivers.TargetKind) string {
 	switch kind {
 	case drivers.KindDevice:
 		return "device"
+	case drivers.KindMac:
+		return "macos"
 	default:
 		return "simulator"
 	}
@@ -41,6 +47,10 @@ func targetUDID(cfg Config) string {
 	switch targetKind(cfg) {
 	case drivers.KindDevice:
 		return cfg.DeviceUDID
+	case drivers.KindMac:
+		// Una app de macOS no tiene UDID: la maquina es esta. Devolver algo
+		// aqui haria que withResolvedTarget reportase un identificador falso.
+		return ""
 	default:
 		return cfg.SimulatorUDID
 	}
@@ -50,6 +60,8 @@ func targetName(cfg Config) string {
 	switch targetKind(cfg) {
 	case drivers.KindDevice:
 		return cfg.DeviceName
+	case drivers.KindMac:
+		return "localhost"
 	default:
 		return cfg.SimulatorName
 	}
@@ -57,7 +69,7 @@ func targetName(cfg Config) string {
 
 func targetRuntime(cfg Config) string {
 	switch targetKind(cfg) {
-	case drivers.KindDevice:
+	case drivers.KindDevice, drivers.KindMac:
 		return ""
 	default:
 		return cfg.SimulatorRuntime

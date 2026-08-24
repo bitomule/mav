@@ -943,9 +943,9 @@ func persistTargetSelection(root string, cfg Config) error {
 // aqui. Hasta entonces, ruido en vez de silencio.
 func validateTargetKind(kind string) error {
 	switch kind {
-	case "simulator", "device":
+	case "simulator", "device", "macos":
 		return nil
 	default:
-		return fmt.Errorf("target_kind_invalid value=%s valid=simulator,device", kind)
+		return fmt.Errorf("target_kind_invalid value=%s valid=simulator,device,macos", kind)
 	}
 }

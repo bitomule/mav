@@ -1332,6 +1332,18 @@ func (c CLI) startProbeLogs(ctx context.Context, cfg Config, run RunState) (int,
 	// without ever going through open() -- see ensureRunWorker.
 	defer c.ensureRunWorker(run)
 	predicate := probeLogPredicate(cfg)
+	if targetKind(cfg) == drivers.KindMac {
+		// En el Mac el stream es el del propio host: la misma linea que en
+		// simulador quitando el `simctl spawn <udid>` de delante. El predicado
+		// y el formato no cambian, asi que todo lo que consume logs.txt
+		// aguas abajo sigue funcionando igual.
+		args := []string{"stream", "--style", "compact", "--level", "debug", "--predicate", predicate}
+		pid, err := c.Runner.Start(ctx, run.LogsPath, "log", args...)
+		if err == nil {
+			appendProcess(run, "probe-logs", pid, "log "+strings.Join(args, " "))
+		}
+		return pid, err
+	}
 	if targetKind(cfg) == drivers.KindDevice {
 		if !hasTool(cfg, "idb") {
 			return 0, fmt.Errorf("idb_missing")

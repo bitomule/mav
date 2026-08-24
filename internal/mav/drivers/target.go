@@ -7,6 +7,11 @@ type TargetKind string
 const (
 	KindSim    TargetKind = "sim"
 	KindDevice TargetKind = "device"
+	// KindMac es una app corriendo en el propio Mac. Se comporta como
+	// KindDevice mas que como KindSim: es una maquina real y compartida, no
+	// desechable, asi que no admite erase ni matrix ni lease. La variante
+	// desechable de macOS es una VM, y esa llega despues.
+	KindMac TargetKind = "mac"
 )
 
 // Target is the device/sim a driver operates on for a single call. It replaces
@@ -20,6 +25,13 @@ type Target struct {
 	BundleID string
 	Locale   string
 	Language string
+
+	// AppPath y PID identifican una app de macOS, que no tiene UDID: su
+	// identidad es la ruta del .app y el proceso vivo. Se anaden JUNTO a UDID,
+	// no en su lugar, porque un target de iOS los deja vacios y uno de macOS
+	// deja UDID vacio.
+	AppPath string
+	PID     int
 }
 
 // IsSim is a convenience for the common branch.
@@ -27,6 +39,9 @@ func (t Target) IsSim() bool { return t.Kind == KindSim }
 
 // IsDevice mirrors IsSim.
 func (t Target) IsDevice() bool { return t.Kind == KindDevice }
+
+// IsMac reports whether the target is an app on the host Mac.
+func (t Target) IsMac() bool { return t.Kind == KindMac }
 
 // --- input specs ---------------------------------------------------------
 

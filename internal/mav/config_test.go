@@ -657,21 +657,19 @@ func TestProfileOverridableFieldsAreExhaustive(t *testing.T) {
 func TestUnknownTargetKindFailsFromEverySource(t *testing.T) {
 	// Fichero
 	root := t.TempDir()
-	writeRawConfig(t, root, "project_name: x\ntarget_kind: macos\n")
+	writeRawConfig(t, root, "project_name: x\ntarget_kind: windows\n")
 	if _, err := LoadConfig(root); err == nil {
 		t.Fatal("un target_kind desconocido en el fichero debe fallar")
 	} else if !strings.Contains(err.Error(), "target_kind_invalid") {
 		t.Fatalf("error inesperado: %v", err)
 	}
 
-	// Perfil: es el caso que mas importa, porque es el facil de escribir por
-	// error mientras drivers.KindMac todavia no existe.
+	// Perfil
 	root2 := t.TempDir()
-	writeRawConfig(t, root2, "project_name: x\nprofiles:\n  mac:\n    target_kind: macos\n")
-	if _, err := LoadConfigWithProfile(root2, "mac"); err == nil {
+	writeRawConfig(t, root2, "project_name: x\nprofiles:\n  weird:\n    target_kind: windows\n")
+	if _, err := LoadConfigWithProfile(root2, "weird"); err == nil {
 		t.Fatal("un target_kind desconocido en un perfil debe fallar")
 	}
-	// Sin activar el perfil, la config sigue siendo valida.
 	if _, err := LoadConfig(root2); err != nil {
 		t.Fatalf("sin perfil activo no deberia fallar: %v", err)
 	}
@@ -679,8 +677,50 @@ func TestUnknownTargetKindFailsFromEverySource(t *testing.T) {
 	// Entorno
 	root3 := t.TempDir()
 	writeRawConfig(t, root3, "project_name: x\n")
-	t.Setenv("MAV_TARGET_KIND", "macos")
+	t.Setenv("MAV_TARGET_KIND", "windows")
 	if _, err := LoadConfig(root3); err == nil {
 		t.Fatal("un MAV_TARGET_KIND desconocido debe fallar")
+	}
+}
+
+func TestMacosIsAValidTargetKind(t *testing.T) {
+	root := t.TempDir()
+	writeRawConfig(t, root, "project_name: x\nprofiles:\n  mac:\n    target_kind: macos\n")
+	cfg, err := LoadConfigWithProfile(root, "mac")
+	if err != nil {
+		t.Fatalf("macos debe ser un target_kind valido: %v", err)
+	}
+	if targetKind(cfg) != drivers.KindMac {
+		t.Fatalf("kind=%v", targetKind(cfg))
+	}
+	// La grafia publica se conserva: es contrato con los agentes y con los
+	// config.yaml ya escritos.
+	if got := targetKindLabel(targetKind(cfg)); got != "macos" {
+		t.Fatalf("label=%q", got)
+	}
+	// Una app de macOS no tiene UDID; reportar uno seria mentir.
+	if targetUDID(cfg) != "" {
+		t.Fatalf("udid=%q", targetUDID(cfg))
+	}
+}
+
+// TestMacTargetSkipsSimulatorResolution: un target de macOS no debe resolver
+// target_command ni caer al simulador arrancado. Es la guarda que evita el
+// escenario mas caro que encontro la revision -- un run "de macOS" alquilando
+// un iPhone simulado y, con --clear-state, desinstalando de el la app de iOS
+// porque el bundle_id es compartido.
+func TestMacTargetSkipsSimulatorResolution(t *testing.T) {
+	root := t.TempDir()
+	writeRawConfig(t, root, "project_name: x\nbundle_id: com.example.app\ntarget_command: echo SHOULD-NOT-RUN\nprofiles:\n  mac:\n    target_kind: macos\n")
+	cfg, err := LoadConfigWithProfile(root, "mac")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cli := CLI{Root: root}
+	if warn := cli.resolveConfigTarget(&cfg); warn != "" {
+		t.Fatalf("un target de macOS no deberia avisar de target_command: %q", warn)
+	}
+	if cfg.SimulatorUDID != "" {
+		t.Fatalf("un target de macOS no debe resolver simulador, got %q", cfg.SimulatorUDID)
 	}
 }

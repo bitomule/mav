@@ -235,6 +235,10 @@ func launchEnv(cfg Config, run RunState, appPath string) map[string]string {
 	if targetKind(cfg) == drivers.KindDevice {
 		isDevice = "true"
 	}
+	platform := "ios"
+	if targetKind(cfg) == drivers.KindMac {
+		platform = "macos"
+	}
 	return map[string]string{
 		"MAV_ROOT":        cfg.Root,
 		"MAV_RUN_DIR":     run.Dir,
@@ -245,7 +249,7 @@ func launchEnv(cfg Config, run RunState, appPath string) map[string]string {
 		"MAV_APP_PATH":    appPath,
 		"MAV_DEVICE_NAME": targetName(cfg),
 		"MAV_RUNTIME":     targetRuntime(cfg),
-		"MAV_PLATFORM":    "ios",
+		"MAV_PLATFORM":    platform,
 	}
 }
 
