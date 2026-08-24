@@ -39,18 +39,36 @@ confirmaba `disabled` todo el rato, y las filas quedaban en la base con `auth_va
 Las guías que dicen que esto funciona —y el orb de CircleCI— son de macOS anteriores. En macOS 26,
 escribir en la `TCC.db` del sistema deja de bastar aunque SIP esté desactivado.
 
-### Lo que sí funciona: hornear el permiso en la imagen
+### Lo que sí funciona: conceder por el ratón virtual del hipervisor
 
-El permiso hay que concederlo **una vez, a mano, dentro de la VM** (por VNC o pantalla compartida) y
-después **guardar la imagen**. Cada clon hereda la `TCC.db` ya concedida, porque la escribió `tccd`
-por su cuenta y no un `INSERT` externo.
+El permiso no se puede conceder **desde dentro** de la VM: cualquier forma de pulsar el botón de System
+Settings necesitaría ya el permiso de accesibilidad que intentas conceder. Es circular.
 
-No hay atajo automatizable para esa primera concesión: cualquier forma de pulsar el botón de System
-Settings necesitaría ya el permiso de accesibilidad que estás intentando conceder.
+Pero sí **desde fuera**. La VM tiene teclado y ratón virtuales a nivel de hipervisor
+(`configuration.keyboards` y `configuration.pointingDevices` en `VM.swift` de tart), y tart expone un
+servidor VNC contra ellos (`tart run --vnc-experimental`, que además funciona antes del login y en modo
+recuperación). Para el guest, esos eventos son **hardware**, no eventos sintéticos de un proceso — y TCC
+sólo gobierna los sintéticos.
 
-La consecuencia práctica es buena: **el trabajo manual es una vez por imagen, no una vez por run.** Y
-convierte una "librería de imágenes ya concedidas" en la pieza que de verdad hace falta, más que
-cualquier script de aprovisionamiento.
+Verificado en una VM de macOS 26.0 con cero permisos concedidos:
+
+```sh
+tart run mav-macos-test --no-graphics --vnc-experimental
+# imprime: VNC server is running at vnc://:<password>@127.0.0.1:<puerto>
+
+vncdo -s 127.0.0.1::<puerto> -p <password> capture pantalla.png   # → framebuffer completo
+vncdo -s 127.0.0.1::<puerto> -p <password> move 52 28 click 1     # → abre el menú Apple
+```
+
+La captura salió (2,5 MB de escritorio real) y el click abrió el menú. Desde ahí, `System Settings…` está
+en ese mismo menú: el camino entero hasta activar la casilla de Accesibilidad es clickable por este canal.
+
+**Consecuencia**: el bootstrap de permisos SÍ es automatizable, y no hace falta una imagen distinta por
+combinación de permisos. Se conduce la primera concesión por VNC, y a partir de ahí el guest ya puede
+usar sus propias herramientas.
+
+Ni crabbox ni Peekaboo hacen esto: crabbox no menciona TCC en toda su documentación, y la de Peekaboo
+dice explícitamente que hay que concederlo a mano.
 
 ## La receta
 
