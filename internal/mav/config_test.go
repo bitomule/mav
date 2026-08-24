@@ -84,6 +84,53 @@ func (f fakeRunner) Start(ctx context.Context, logPath string, name string, args
 	return 123, nil
 }
 
+func TestSaveConfigRoundTripsIncludingExplicitEmptyOverride(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.ProjectName = "nokoru"
+	cfg.AppTarget = "//App:NokoruiOS"
+	cfg.BundleID = "com.davidcollado.nokoru.debug"
+	cfg.ProcessName = "nNokoru"
+	cfg.SimulatorName = "iPhone 17 Pro"
+	cfg.TargetCommand = `simpool lease --device "iPhone 17 Pro" --os 26.3`
+	cfg.Launch = LaunchConfig{Mode: "custom", Commands: LaunchCommands{
+		Build:   "bazelisk build '//App:NokoruiOS'",
+		AppPath: "./scripts/mav-app-path.sh",
+		Install: `xcrun simctl install "$MAV_UDID" "$MAV_APP_PATH"`,
+	}}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	back, err := LoadConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ name, want, got string }{
+		{"project_name", cfg.ProjectName, back.ProjectName},
+		{"app_target", cfg.AppTarget, back.AppTarget},
+		{"bundle_id", cfg.BundleID, back.BundleID},
+		{"process_name", cfg.ProcessName, back.ProcessName},
+		{"target_command", cfg.TargetCommand, back.TargetCommand},
+		{"launch.build", cfg.Launch.Commands.Build, back.Launch.Commands.Build},
+		{"launch.app_path", cfg.Launch.Commands.AppPath, back.Launch.Commands.AppPath},
+		{"launch.install", cfg.Launch.Commands.Install, back.Launch.Commands.Install},
+	} {
+		if c.want != c.got {
+			t.Fatalf("%s: round-trip perdio el valor: want %q got %q", c.name, c.want, c.got)
+		}
+	}
+	// El escritor anterior omitia los valores vacios, asi que un comando que
+	// nunca se configuro no debe reaparecer como cadena vacia en el fichero:
+	// la config de un repo real se lee a mano y el ruido cuesta.
+	data, err := os.ReadFile(filepath.Join(root, ConfigFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "cleanup:") || strings.Contains(string(data), "healthcheck:") {
+		t.Fatalf("comandos no configurados no deben escribirse:\n%s", data)
+	}
+}
+
 func TestSetupConfigFindsBazelApp(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "MODULE.bazel"), "module(name = \"Demo\")\n")

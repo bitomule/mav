@@ -50,13 +50,19 @@ type LaunchConfig struct {
 	Commands LaunchCommands `yaml:"commands"`
 }
 
+// LaunchCommands es la receta de lanzamiento de la config base. Los campos
+// llevan omitempty porque en la base "vacío" y "ausente" significan lo mismo:
+// no hay comando. La distinción sí importa en un perfil de plataforma, que
+// necesita poder *anular* un comando heredado -- por eso los perfiles usan su
+// propio tipo con punteros (ver profileLaunchCommandsYAML), en vez de
+// reutilizar este.
 type LaunchCommands struct {
-	Healthcheck string `yaml:"healthcheck"`
-	Build       string `yaml:"build"`
-	AppPath     string `yaml:"app_path"`
-	Install     string `yaml:"install"`
-	Launch      string `yaml:"launch"`
-	Cleanup     string `yaml:"cleanup"`
+	Healthcheck string `yaml:"healthcheck,omitempty"`
+	Build       string `yaml:"build,omitempty"`
+	AppPath     string `yaml:"app_path,omitempty"`
+	Install     string `yaml:"install,omitempty"`
+	Launch      string `yaml:"launch,omitempty"`
+	Cleanup     string `yaml:"cleanup,omitempty"`
 }
 
 func DefaultConfig(root string) Config {
@@ -121,10 +127,10 @@ func LoadConfig(root string) (Config, error) {
 type configYAML struct {
 	ProjectName       string        `yaml:"project_name"`
 	TargetKind        string        `yaml:"target_kind"`
-	AppTarget         string        `yaml:"app_target"`
-	DeviceTarget      string        `yaml:"device_target"`
-	DeviceUDID        string        `yaml:"device_udid"`
-	DeviceName        string        `yaml:"device_name"`
+	AppTarget         string        `yaml:"app_target,omitempty"`
+	DeviceTarget      string        `yaml:"device_target,omitempty"`
+	DeviceUDID        string        `yaml:"device_udid,omitempty"`
+	DeviceName        string        `yaml:"device_name,omitempty"`
 	BundleID          string        `yaml:"bundle_id"`
 	ProcessName       string        `yaml:"process_name"`
 	App               configAppYAML `yaml:"app"`
@@ -136,9 +142,9 @@ type configYAML struct {
 	LogSubsystem      string        `yaml:"log_subsystem"`
 	LogCategory       string        `yaml:"log_category"`
 	PreferredUIDriver string        `yaml:"preferred_ui_driver"`
-	AllowShell        bool          `yaml:"allow_shell"`
-	TargetCommand     string        `yaml:"target_command"`
-	Launch            LaunchConfig  `yaml:"launch"`
+	AllowShell        bool          `yaml:"allow_shell,omitempty"`
+	TargetCommand     string        `yaml:"target_command,omitempty"`
+	Launch            LaunchConfig  `yaml:"launch,omitempty"`
 }
 
 type configAppYAML struct {
@@ -155,72 +161,63 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+// SaveConfig serializa cfg a .mav/config.yaml.
+//
+// Usa yaml.Marshal deliberadamente en vez del escritor a mano que había aquí
+// antes: aquel omitía los valores vacíos (writeCommandKV), lo que hace
+// imposible expresar "este campo está presente y vale cadena vacía". Esa
+// distinción no importaba mientras la config era plana, pero es justo la que
+// los perfiles de plataforma necesitan para que un perfil pueda *anular* un
+// comando heredado de la base en vez de heredarlo.
+//
+// Nota sobre lo que NO cambia: esta función reconstruye el fichero entero, así
+// que los comentarios que el usuario haya escrito a mano se pierden. Ya pasaba
+// con el escritor anterior -- SaveConfig nunca ha leído el fichero previo para
+// preservar nada.
 func SaveConfig(root string, cfg Config) error {
 	if err := os.MkdirAll(filepath.Join(root, MavDir), 0o755); err != nil {
 		return err
 	}
-	var b strings.Builder
-	writeKV := func(key, value string) {
-		b.WriteString(key)
-		b.WriteString(": ")
-		b.WriteString(yamlQuote(value))
-		b.WriteString("\n")
-	}
-	writeKV("project_name", cfg.ProjectName)
-	writeKV("target_kind", targetKindLabel(targetKind(cfg)))
-	if cfg.AppTarget != "" {
-		writeKV("app_target", cfg.AppTarget)
-	}
-	if cfg.DeviceTarget != "" {
-		writeKV("device_target", cfg.DeviceTarget)
-	}
-	if cfg.DeviceUDID != "" {
-		writeKV("device_udid", cfg.DeviceUDID)
-	}
-	if cfg.DeviceName != "" {
-		writeKV("device_name", cfg.DeviceName)
-	}
-	b.WriteString("app:\n")
-	b.WriteString("  bundle_id: ")
-	b.WriteString(yamlQuote(cfg.BundleID))
-	b.WriteString("\n")
-	b.WriteString("  process_name: ")
-	b.WriteString(yamlQuote(cfg.ProcessName))
-	b.WriteString("\n")
-	writeKV("bundle_id", cfg.BundleID)
-	writeKV("process_name", cfg.ProcessName)
-	writeKV("simulator_udid", cfg.SimulatorUDID)
-	writeKV("simulator_name", cfg.SimulatorName)
-	writeKV("simulator_runtime", cfg.SimulatorRuntime)
-	writeKV("locale", cfg.Locale)
-	writeKV("language", cfg.Language)
-	writeKV("log_subsystem", probeLogSubsystem(cfg))
-	writeKV("log_category", probeLogCategory(cfg))
-	writeKV("preferred_ui_driver", cfg.PreferredUIDriver)
-	if cfg.AllowShell {
-		b.WriteString("allow_shell: true\n")
-	}
-	if strings.TrimSpace(cfg.TargetCommand) != "" {
-		writeKV("target_command", cfg.TargetCommand)
+	raw := configYAML{
+		ProjectName:  cfg.ProjectName,
+		TargetKind:   targetKindLabel(targetKind(cfg)),
+		AppTarget:    cfg.AppTarget,
+		DeviceTarget: cfg.DeviceTarget,
+		DeviceUDID:   cfg.DeviceUDID,
+		DeviceName:   cfg.DeviceName,
+		// bundle_id y process_name se escriben en los dos sitios a propósito:
+		// LoadConfig los lee con firstNonEmpty(raw.App.X, raw.X), así que una
+		// config escrita por mav tiene que seguir siendo legible por ambos
+		// caminos.
+		App: configAppYAML{
+			BundleID:    cfg.BundleID,
+			ProcessName: cfg.ProcessName,
+		},
+		BundleID:          cfg.BundleID,
+		ProcessName:       cfg.ProcessName,
+		SimulatorUDID:     cfg.SimulatorUDID,
+		SimulatorName:     cfg.SimulatorName,
+		SimulatorRuntime:  cfg.SimulatorRuntime,
+		Locale:            cfg.Locale,
+		Language:          cfg.Language,
+		LogSubsystem:      probeLogSubsystem(cfg),
+		LogCategory:       probeLogCategory(cfg),
+		PreferredUIDriver: cfg.PreferredUIDriver,
+		AllowShell:        cfg.AllowShell,
+		TargetCommand:     strings.TrimSpace(cfg.TargetCommand),
 	}
 	if cfg.Launch.Mode != "" || hasLaunchCommands(cfg.Launch.Commands) {
 		mode := cfg.Launch.Mode
 		if mode == "" {
 			mode = "custom"
 		}
-		b.WriteString("launch:\n")
-		b.WriteString("  mode: ")
-		b.WriteString(yamlQuote(mode))
-		b.WriteString("\n")
-		b.WriteString("  commands:\n")
-		writeCommandKV(&b, "healthcheck", cfg.Launch.Commands.Healthcheck)
-		writeCommandKV(&b, "build", cfg.Launch.Commands.Build)
-		writeCommandKV(&b, "app_path", cfg.Launch.Commands.AppPath)
-		writeCommandKV(&b, "install", cfg.Launch.Commands.Install)
-		writeCommandKV(&b, "launch", cfg.Launch.Commands.Launch)
-		writeCommandKV(&b, "cleanup", cfg.Launch.Commands.Cleanup)
+		raw.Launch = LaunchConfig{Mode: mode, Commands: cfg.Launch.Commands}
 	}
-	return os.WriteFile(filepath.Join(root, ConfigFile), []byte(b.String()), 0o644)
+	data, err := yaml.Marshal(raw)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(root, ConfigFile), data, 0o644)
 }
 
 func writeCommandKV(b *strings.Builder, key, value string) {
