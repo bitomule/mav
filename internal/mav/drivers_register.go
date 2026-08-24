@@ -27,11 +27,12 @@ func RegisterDefaultDrivers(reg *drivers.Registry, exec drivers.Executor) {
 	reg.Register(baguette.New(exec))
 	reg.Register(network.New(exec))
 	reg.Register(simtime.New(exec))
-	// macOS: peekaboo da el arbol, los menus y las capturas de ventana; axcli
+	// macOS: cua-driver da arbol, captura de ventana e input en segundo plano
+	// en una sola herramienta; axcli
 	// el input que no roba el foco; screencapture el video y la captura de
 	// pantalla entera como ultimo recurso. El reparto entre los tres sale de
 	// sus tablas de Cost, no de ningun caso especial en el router.
-	reg.Register(macos.NewPeekaboo(exec))
+	reg.Register(macos.NewCua(exec))
 	reg.Register(macos.NewAxcli(exec))
 	reg.Register(macos.NewScreencapture(exec))
 	reg.Register(macos.NewSystem(exec))

@@ -79,54 +79,63 @@ func (c CLI) resolveCapabilities(ctx context.Context, cfg Config) Capabilities {
 	return caps
 }
 
-// resolveMacPermissions pregunta a peekaboo por el estado de TCC. Es la unica
-// de las herramientas que sabe contestarlo sin efectos secundarios: axcli lo
-// comprueba al arrancar un comando de verdad, y provocar eso solo para sondear
-// tocaria la app bajo prueba.
+// resolveMacPermissions pregunta a cua-driver por el estado de TCC.
+//
+// Y pregunta al DEMONIO, que es lo que hace util la respuesta: contesta con la
+// identidad de CuaDriver.app, que es quien tiene los permisos de verdad. Un
+// sondeo que mirara los permisos del proceso que corre mav no diria nada,
+// porque en macOS un CLI nunca los tiene: solo los procesos GUI interactivos
+// pueden tenerlos, y de ahi toda la arquitectura de broker.
 func (c CLI) resolveMacPermissions(ctx context.Context, caps *Capabilities) {
-	if !caps.Tools["peekaboo"] {
+	if !caps.Tools["cua-driver"] {
 		caps.MacPermissions = "unknown"
-		caps.MacPermissionsNext = "mav setup --install peekaboo to report Accessibility and Screen Recording state"
+		caps.MacPermissionsNext = "mav setup --install cua-driver to report Accessibility and Screen Recording state"
 		return
 	}
-	res := c.Runner.Run(ctx, "peekaboo", "permissions", "--json")
+	res := c.Runner.Run(ctx, "cua-driver", "permissions", "status", "--json")
 	missing := macMissingPermissions(res.Stdout)
 	if len(missing) == 0 {
 		caps.MacPermissions = "ok"
 		return
 	}
 	caps.MacPermissions = strings.Join(missing, "+") + "_missing"
-	caps.MacPermissionsNext = "grant it to the terminal or agent harness that runs mav, not to mav itself: System Settings > Privacy & Security"
+	// Su propio flujo de concesion lanza la app por LaunchServices para que los
+	// dialogos se atribuyan a ella y la registra en los paneles. Conceder a la
+	// terminal no sirve: el que captura es el demonio.
+	caps.MacPermissionsNext = "cua-driver permissions grant"
 }
 
-// macMissingPermissions lee la respuesta de `peekaboo permissions --json`.
+// macMissingPermissions lee la respuesta de `cua-driver permissions status`.
 // Deliberadamente tolerante: si la salida no se entiende, no se inventa un
 // estado -- devolver "todo bien" ante un formato desconocido seria peor que
 // admitir que no se sabe.
 func macMissingPermissions(stdout string) []string {
-	var envelope struct {
-		Success bool `json:"success"`
-		Data    struct {
-			Permissions []struct {
-				Name      string `json:"name"`
-				IsGranted bool   `json:"isGranted"`
-			} `json:"permissions"`
-		} `json:"data"`
+	// Punteros y no bool: la respuesta trae `null` cuando no hay demonio al
+	// que preguntar, y un `false` implicito ahi seria mentir en la direccion
+	// contraria -- diria "falta permiso" cuando lo que pasa es que nadie ha
+	// contestado.
+	var status struct {
+		Accessibility   *bool `json:"accessibility"`
+		ScreenRecording *bool `json:"screen_recording"`
 	}
-	if err := json.Unmarshal([]byte(stdout), &envelope); err != nil || !envelope.Success {
+	if err := json.Unmarshal([]byte(stdout), &status); err != nil {
+		return []string{"unreadable"}
+	}
+	if status.Accessibility == nil && status.ScreenRecording == nil {
 		return []string{"unreadable"}
 	}
 	var missing []string
-	for _, perm := range envelope.Data.Permissions {
-		if !perm.IsGranted {
-			missing = append(missing, strings.ReplaceAll(strings.ToLower(perm.Name), " ", "_"))
-		}
+	if status.Accessibility == nil || !*status.Accessibility {
+		missing = append(missing, "accessibility")
+	}
+	if status.ScreenRecording == nil || !*status.ScreenRecording {
+		missing = append(missing, "screen_recording")
 	}
 	return missing
 }
 
 func knownTools() []string {
-	return []string{"go", "bazelisk", "xcrun", "axe", "idb", "baguette", "simtime", "lldb-dap", "mitmdump", "pipx", "python3.12", "python3.13", "python3.14", "peekaboo", "axcli", "screencapture"}
+	return []string{"go", "bazelisk", "xcrun", "axe", "idb", "baguette", "simtime", "lldb-dap", "mitmdump", "pipx", "python3.12", "python3.13", "python3.14", "cua-driver", "axcli", "screencapture"}
 }
 
 func (c CLI) resolveConfigTools(cfg *Config) {

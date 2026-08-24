@@ -730,19 +730,22 @@ func TestMacMissingPermissionsRefusesToGuess(t *testing.T) {
 	// admitir que no se sabe: el usuario se enteraria del permiso que falta
 	// cuando fallase un comando, no cuando pregunta.
 	for name, stdout := range map[string]string{
-		"vacio":         "",
-		"no-json":       "error: something",
-		"success-false": `{"success":false}`,
+		"vacio":      "",
+		"no-json":    "error: something",
+		"otra-forma": `{"success":false}`,
+		// Sin demonio al que preguntar la respuesta trae null, y eso no es
+		// "faltan los dos": es que nadie ha contestado.
+		"sin-demonio": `{"accessibility":null,"screen_recording":null}`,
 	} {
-		if got := macMissingPermissions(stdout); len(got) == 0 {
+		if got := macMissingPermissions(stdout); len(got) != 1 || got[0] != "unreadable" {
 			t.Fatalf("%s: no debe darse por bueno lo que no se entiende, got %v", name, got)
 		}
 	}
-	granted := `{"success":true,"data":{"permissions":[{"name":"Accessibility","isGranted":true},{"name":"Screen Recording","isGranted":true}]}}`
+	granted := `{"accessibility":true,"screen_recording":true}`
 	if got := macMissingPermissions(granted); len(got) != 0 {
 		t.Fatalf("con todo concedido no falta nada: %v", got)
 	}
-	partial := `{"success":true,"data":{"permissions":[{"name":"Accessibility","isGranted":true},{"name":"Screen Recording","isGranted":false}]}}`
+	partial := `{"accessibility":true,"screen_recording":false}`
 	got := macMissingPermissions(partial)
 	if len(got) != 1 || got[0] != "screen_recording" {
 		t.Fatalf("got %v", got)

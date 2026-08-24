@@ -15,7 +15,7 @@ func TestRegisterDefaultDriversWiresAllBridges(t *testing.T) {
 	// macOS conviven con los de iOS sin excluirse: cada uno declara lo que
 	// provee segun el TargetKind, asi que en un run de simulador los de macOS
 	// simplemente no son candidatos.
-	want := []string{"axcli", "axe", "baguette", "idb", "macsystem", "mitmproxy", "peekaboo", "screencapture", "simctl", "simtime"}
+	want := []string{"axcli", "axe", "baguette", "cua", "idb", "macsystem", "mitmproxy", "screencapture", "simctl", "simtime"}
 	got := reg.All()
 	if len(got) != len(want) {
 		t.Fatalf("expected %d drivers, got %d", len(want), len(got))

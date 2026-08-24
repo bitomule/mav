@@ -2,6 +2,34 @@
 
 ## v0.12.0
 
+- **El driver de macOS pasa a ser cua-driver** (trycua/cua, MIT), y salen
+  peekaboo y la captura de axcli. El motivo es estructural: macOS concede
+  Accessibility y Screen Recording **sólo a procesos GUI interactivos**, así que
+  un CLI no puede tenerlos por mucho que se los des a la terminal. La única
+  arquitectura que funciona es un broker —una app con los permisos y un
+  socket—, y cua-driver la trae de serie: el binario que invocamos vive dentro
+  de `/Applications/CuaDriver.app`. Además da árbol con geometría, captura de
+  ventana e input en segundo plano **en una sola herramienta**, y su árbol y su
+  captura salen de la misma llamada, así que describen el mismo instante.
+- Medido dentro de una VM contra una ventana flotante, que es donde se cayó
+  todo lo anterior: peekaboo la enumeraba y la descartaba sola por la capa;
+  axcli leía el árbol pero su captura devolvía **el escritorio** recortado a las
+  medidas de la ventana, sin error, y encima activaba la app. cua-driver
+  devolvió el contenido real y el click llegó en segundo plano.
+- axcli se queda **sólo como escotilla**: cua-driver resuelve la ventana por
+  `list_windows`, que es *layer-0 only* por diseño declarado, así que una UI
+  flotante —panel, HUD, popover, un onboarding— le resulta invisible. axcli
+  apunta por `--app` y no necesita window id. Cuando no hay ventana que
+  resolver, el error lo dice con esas palabras en vez de parecer "la app no
+  está abierta".
+- Dos cosas que se pierden y conviene saber: sus elementos **no exponen
+  AXIdentifier** (sólo `element_token`, válido dentro del snapshot), y ya no hay
+  menús ni gestión de ventanas al nivel que daba peekaboo.
+- `mav doctor` reporta los permisos preguntando **al demonio**, que es quien los
+  tiene, y el `next` pasa a ser `cua-driver permissions grant` — el único flujo
+  de los probados que registra la app en los paneles solo, en vez de exigir
+  añadirla a mano con el "+".
+
 - **Captura por app en macOS: `peekaboo image` ya no existe.** El subcomando se eliminó
   en Peekaboo v4 y el driver estaba escrito contra la 3.0.0 de la máquina de desarrollo,
   así que cualquier instalación hecha hoy por `brew` fallaba con `INVALID_ARGUMENT`. Pasa
