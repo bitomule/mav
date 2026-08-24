@@ -1,5 +1,56 @@
 # Changelog
 
+## v0.12.0
+
+- **macOS.** `mav` deja de ser sólo iOS. `target_kind: macos` es un tipo de destino de
+  primera clase, con tres drivers nuevos: peekaboo (árbol de accesibilidad, menús,
+  capturas de ventana), axcli (input que **no roba el foco**, vía `CGEventPostToPid`) y
+  el `screencapture` del sistema (vídeo, y captura de pantalla entera como último
+  recurso). Los logs y los crashes salieron casi gratis: `log stream` del host es la
+  misma línea que en simulador quitando el `simctl spawn`, y los `.ips` del Mac son el
+  mismo formato JSON que los de iOS, así que `ParseIPS` sirve sin tocar nada.
+- Hacen falta **dos** drivers de input y no uno porque peekaboo no puede entregar
+  eventos a un PID: o activa la app de destino —saltando de Space si hace falta— o
+  dispara a lo que esté delante. `--no-auto-focus` no lo arregla, sólo empeora la
+  puntería. El reparto entre los dos se expresa con `Cost(cap, target)`, que ya es por
+  capacidad y por target, en vez de con un rasgo nuevo en la interfaz `Driver` que
+  habría obligado al router a cablear qué capacidades son "input".
+- **Perfiles de plataforma** en `.mav/config.yaml`: un bloque por plataforma que
+  sobreescribe `app_target`, la receta de lanzamiento, `process_name`, `target_command`
+  y los campos de log. Se selecciona con `--profile`, `MAV_PROFILE` o `default_profile`,
+  en ese orden; un perfil pedido que no existe falla nombrando los válidos en vez de
+  caer a la base en silencio. Son un overlay sobre los campos planos, no un sustituto:
+  un repo de una sola plataforma no escribe ninguno y no cambia nada para él.
+- **Fixtures**: estados con nombre —listas de comandos— que dejan la app en una
+  situación conocida. Corren entre `install` y `launch`, que es la única ventana donde
+  el contenedor ya existe y nada tiene su base de datos abierta; por eso mismo la app se
+  cierra antes de sembrar. Componen con `--clear-state` (borra el contenedor, el fixture
+  siembra encima), están disponibles como `fixture:` en el paso `open` de un flow, y el
+  aplicado se registra en `report.json` — un run cuya evidencia no dice de qué estado
+  partió no es reproducible.
+- `--fixture` se rechaza junto a `--no-relaunch`, igual que `--clear-state` y por el
+  mismo motivo: `--no-relaunch` se salta la receta entera, así que el fixture no
+  llegaría a correr y el agente acabaría validando contra datos que nadie sembró.
+- Un `target_kind` desconocido ya no falla abierto. `targetKind()` mandaba a `KindSim`
+  todo lo que no fuera el literal `"device"`, así que un `target_kind: macos` escrito a
+  mano antes de que existiera se comportaba como simulador de principio a fin: ese run
+  resolvía un lease de simpool, arrancaba un iPhone simulado, y con `--clear-state`
+  desinstalaba de él la app usando un `bundle_id` que en una app multiplataforma es el
+  mismo en las dos. Ahora la validación corre al final de la carga, cuando ya se
+  aplicaron el perfil y `MAV_TARGET_KIND`, porque las tres fuentes tienen que pasar por
+  el mismo filtro.
+- Un `clear_state` que no llega a desinstalar ya no se descarta en silencio. No aborta
+  el `open` —el caso corriente es que la app aún no estuviera instalada— pero sale como
+  `clear_state_warn`, siguiendo el mismo "avisa y sigue" de `target_command_warn`. Sin
+  eso, `--clear-state` mentía: el usuario creía partir de cero y arrastraba el estado
+  del run anterior.
+- `SaveConfig` pasa a usar `yaml.Marshal` en vez de un escritor a mano. El escritor
+  omitía los valores vacíos, así que el fichero no podía expresar "presente y vale
+  cadena vacía" — justo lo que un perfil necesita para **anular** un comando heredado.
+  Y ahora rechaza escribir una config con perfil aplicado: guardarla aplanaría el perfil
+  sobre la base, y un `mav sim select` en un repo con `default_profile` habría dejado el
+  `app_target` de macOS como base, en silencio y sin vuelta atrás.
+
 ## v0.11.0
 
 - El router de capacidades vuelve a decidir de verdad. La mayoria de las llamadas a

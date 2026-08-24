@@ -91,6 +91,43 @@ MAV is early and evolving. The current stable pieces are:
 
 ![MAV driver router](assets/router.svg)
 
+## Platforms
+
+`mav` drives iOS simulators, physical iOS devices, and macOS apps. `target_kind` in
+`.mav/config.yaml` picks one: `simulator`, `device` or `macos`.
+
+On macOS the drivers are [Peekaboo](https://github.com/openclaw/Peekaboo) for the
+accessibility tree, menus and window-scoped captures, and
+[axcli](https://github.com/andelf/axcli) for input. Two of them, not one, for a concrete
+reason: Peekaboo cannot deliver events to a specific PID — it either activates the target
+app (hopping Spaces if needed) or fires at whatever is frontmost. axcli delivers via
+`CGEventPostToPid` without stealing focus, which is what makes it usable while you work.
+The split between them is expressed through the router's per-capability cost table, not
+through a special case.
+
+Multitouch gestures, hardware buttons and `hideKeyboard` do not exist on macOS and return
+structured errors. Everything else in the core loop — `ui tree`, `ui tap`, `ui type`,
+`capture`, `logs`, `crashes`, `evidence` — works.
+
+Permissions are the real constraint, not the API. macOS asks for Accessibility and Screen
+Recording, and **the grant belongs to the process that runs `mav`** — your terminal or
+agent harness — not to `mav` itself. `mav doctor` reports what is missing and who needs
+it.
+
+## Profiles and fixtures
+
+An app that ships on more than one platform from one repo uses **profiles**: a per-platform
+overlay on the flat config, selected with `--profile`, `MAV_PROFILE` or `default_profile`.
+An absent key inherits from the base; an explicit empty string annuls it.
+
+**Fixtures** are named lists of commands that leave the app in a known state. They run
+after install and before launch — the only window where the container exists and nothing
+holds the app's database open — compose with `--clear-state`, and are recorded in the run
+evidence.
+
+See the [macOS scope evaluation](docs/macos-scope-evaluation.md) for how this was decided
+and what was deliberately left out.
+
 ## Requirements
 
 - macOS.

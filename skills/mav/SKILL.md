@@ -1,12 +1,66 @@
 ---
 name: mav
-description: Use MAV, the Mobile Agent Verifier CLI, to validate iOS apps through deterministic simulator/device actions, configurable launch recipes, accessibility tree inspection, screenshots, logs, crashes, and evidence reports.
+description: Use MAV, the Mobile Agent Verifier CLI, to validate iOS and macOS apps through deterministic simulator/device/mac actions, configurable launch recipes, accessibility tree inspection, screenshots, logs, crashes, and evidence reports.
 ---
 
 # MAV
 
 Use `mav` when validating an iOS app locally. MAV is deterministic: it
 does not explore or repair routes by itself. The agent decides the next action.
+
+## Platforms
+
+`mav` drives iOS simulators, physical iOS devices, and **macOS apps**. The platform comes
+from `target_kind` in `.mav/config.yaml`: `simulator`, `device` or `macos`.
+
+A repo whose app ships on more than one platform (same codebase, different build target)
+uses **profiles** instead of two configs:
+
+```yaml
+app_target: "//App:MyAppiOS"
+launch:
+  commands:
+    build: "bazelisk build '//App:MyAppiOS'"
+profiles:
+  mac:
+    target_kind: macos
+    app_target: "//App:MyAppMac"
+    launch:
+      commands:
+        build: "bazelisk build '//App:MyAppMac'"
+        install: ""        # explicitly none: macOS has no simctl install
+```
+
+Select one with `mav open --profile mac`, or set `default_profile`. An empty string in a
+profile *annuls* the inherited value; an absent key inherits it. A profile that does not
+exist fails with `profile_not_found` rather than silently using the base.
+
+On macOS: `ui tree`, `ui tap`, `ui type`, `capture`, `logs`, `crashes`, `evidence` and
+flows all work. What does **not** exist there, and returns a structured error: multitouch
+gestures (`pinch`, `rotate`, `twoFingerPan`), hardware buttons, `hideKeyboard`, and the
+simulator/device commands. Prefer `--id` selectors: on macOS a tap resolves to a real
+accessibility action, not a coordinate.
+
+## Fixtures
+
+`fixtures` are named states — lists of commands that leave the app in a known situation:
+
+```yaml
+fixtures:
+  seeded:
+    - "./scripts/seed-db.sh"
+  empty:
+    - "./scripts/wipe.sh"
+```
+
+Apply one with `mav open --fixture seeded`, or `fixture: seeded` in a flow's `open` step.
+They run **after install and before launch** — the only window where the container exists
+and nothing holds the app's database open — and the app is closed first for the same
+reason. They compose with `--clear-state`: the container is wiped, then the fixture seeds
+on top. The applied fixture is recorded in `report.json`.
+
+`--fixture` cannot be combined with `--no-relaunch`, which skips the launch recipe
+entirely.
 
 ## Workflow
 
