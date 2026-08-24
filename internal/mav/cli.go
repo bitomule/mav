@@ -549,6 +549,12 @@ func (c CLI) setup(ctx context.Context, opts GlobalOptions, args []string) error
 		"baguette":  {"brew", "install", "tddworks/tap/baguette"},
 		"mitmproxy": {"brew", "install", "mitmproxy"},
 		"simtime":   {"brew", "install", "mobai-app/tap/simtime"},
+		// Drivers de macOS. peekaboo publica formula propia; axcli no tiene
+		// ninguna aguas arriba, asi que va por el tap de mav como formula
+		// espejo: apunta al release del autor original, no a un fork -- un
+		// puntero y un sha, sin pasar a mantener codigo ajeno.
+		"peekaboo": {"brew", "install", "steipete/tap/peekaboo"},
+		"axcli":    {"brew", "install", "bitomule/tap/axcli"},
 	}
 	for _, tool := range tools {
 		if tool == "simtime" {

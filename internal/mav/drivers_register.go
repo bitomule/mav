@@ -5,6 +5,7 @@ import (
 	"github.com/bitomule/mav/internal/mav/drivers/axe"
 	"github.com/bitomule/mav/internal/mav/drivers/baguette"
 	"github.com/bitomule/mav/internal/mav/drivers/idb"
+	"github.com/bitomule/mav/internal/mav/drivers/macos"
 	"github.com/bitomule/mav/internal/mav/drivers/network"
 	"github.com/bitomule/mav/internal/mav/drivers/simctl"
 	"github.com/bitomule/mav/internal/mav/drivers/simtime"
@@ -26,4 +27,11 @@ func RegisterDefaultDrivers(reg *drivers.Registry, exec drivers.Executor) {
 	reg.Register(baguette.New(exec))
 	reg.Register(network.New(exec))
 	reg.Register(simtime.New(exec))
+	// macOS: peekaboo da el arbol, los menus y las capturas de ventana; axcli
+	// el input que no roba el foco; screencapture el video y la captura de
+	// pantalla entera como ultimo recurso. El reparto entre los tres sale de
+	// sus tablas de Cost, no de ningun caso especial en el router.
+	reg.Register(macos.NewPeekaboo(exec))
+	reg.Register(macos.NewAxcli(exec))
+	reg.Register(macos.NewScreencapture(exec))
 }

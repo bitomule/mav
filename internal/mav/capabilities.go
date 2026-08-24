@@ -68,7 +68,7 @@ func (c CLI) resolveCapabilities(ctx context.Context, cfg Config) Capabilities {
 }
 
 func knownTools() []string {
-	return []string{"go", "bazelisk", "xcrun", "axe", "idb", "baguette", "simtime", "lldb-dap", "mitmdump", "pipx", "python3.12", "python3.13", "python3.14"}
+	return []string{"go", "bazelisk", "xcrun", "axe", "idb", "baguette", "simtime", "lldb-dap", "mitmdump", "pipx", "python3.12", "python3.13", "python3.14", "peekaboo", "axcli", "screencapture"}
 }
 
 func (c CLI) resolveConfigTools(cfg *Config) {

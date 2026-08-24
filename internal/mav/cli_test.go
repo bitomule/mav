@@ -880,7 +880,7 @@ func TestPreferDriverUsageListsRegisteredDrivers(t *testing.T) {
 	if !strings.Contains(got, "fail code=prefer_driver_invalid") {
 		t.Fatalf("got %q", got)
 	}
-	if !strings.Contains(got, "auto|axe|baguette|idb|mitmproxy|simctl|simtime") {
+	if !strings.Contains(got, "auto|axcli|axe|baguette|idb|mitmproxy|peekaboo|screencapture|simctl|simtime") {
 		t.Fatalf("usage field should list registered drivers, got %q", got)
 	}
 }
