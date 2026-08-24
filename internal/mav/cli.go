@@ -38,6 +38,7 @@ type GlobalOptions struct {
 	Raw          bool
 	Help         bool
 	PreferDriver string
+	Profile      string
 }
 
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
@@ -51,6 +52,17 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 func (c CLI) Run(ctx context.Context, args []string) error {
 	opts, rest := parseGlobal(args)
+	// --profile se propaga por el entorno en vez de hilarse por las ~50
+	// llamadas a LoadConfig. Dos motivos: la precedencia documentada
+	// (--profile gana a MAV_PROFILE) se cumple igual porque el flag pisa la
+	// variable, y ademas los hijos -- flows, hijos de matrix, y los propios
+	// comandos de la receta de lanzamiento -- heredan el perfil sin que haya
+	// que acordarse de reenviarlo en cada sitio.
+	if opts.Profile != "" {
+		if err := os.Setenv("MAV_PROFILE", opts.Profile); err != nil {
+			return err
+		}
+	}
 	if len(rest) == 0 {
 		return c.help(opts, "")
 	}
@@ -138,9 +150,18 @@ func parseGlobal(args []string) (GlobalOptions, []string) {
 			} else {
 				rest = append(rest, arg)
 			}
+		case "--profile":
+			if i+1 < len(args) {
+				opts.Profile = args[i+1]
+				i++
+			} else {
+				rest = append(rest, arg)
+			}
 		default:
 			if strings.HasPrefix(arg, "--prefer-driver=") {
 				opts.PreferDriver = strings.TrimPrefix(arg, "--prefer-driver=")
+			} else if strings.HasPrefix(arg, "--profile=") {
+				opts.Profile = strings.TrimPrefix(arg, "--profile=")
 			} else {
 				rest = append(rest, arg)
 			}
@@ -234,6 +255,8 @@ Global flags:
   --verbose   Print extra debug details where supported.
   --prefer-driver auto|axe
               Prefer a UI driver for semantic tree/tap commands.
+  --profile NAME
+              Select a platform profile from .mav/config.yaml.
   --help,-h   Show help.
 `
 	case "setup":

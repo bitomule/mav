@@ -102,6 +102,14 @@ func (c CLI) withResolvedTarget(fields map[string]string) map[string]string {
 	// resolveConfigTarget already applies the booted-simulator fallback to
 	// cfg itself (see its doc comment), so cfg is fully resolved by now --
 	// no separate fallback needed here just for the reported fields.
+	// El perfil activo se reporta por el mismo motivo que udid/target_kind: en
+	// uso en caliente, un agente encadena comandos sueltos y necesita leer de
+	// la respuesta contra que esta operando, en vez de recordarlo.
+	if cfg.ActiveProfile != "" {
+		if _, ok := fields["profile"]; !ok {
+			fields["profile"] = cfg.ActiveProfile
+		}
+	}
 	udid := targetUDID(cfg)
 	name := targetName(cfg)
 	kind := targetKindLabel(targetKind(cfg))

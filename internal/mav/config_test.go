@@ -652,3 +652,34 @@ func TestProfileOverridableFieldsAreExhaustive(t *testing.T) {
 			"Anadelo a overridable (y a profileYAML + applyProfile) o a notOverridable con el motivo.", name)
 	}
 }
+
+func TestUnknownTargetKindFailsFromEverySource(t *testing.T) {
+	// Fichero
+	root := t.TempDir()
+	writeRawConfig(t, root, "project_name: x\ntarget_kind: macos\n")
+	if _, err := LoadConfig(root); err == nil {
+		t.Fatal("un target_kind desconocido en el fichero debe fallar")
+	} else if !strings.Contains(err.Error(), "target_kind_invalid") {
+		t.Fatalf("error inesperado: %v", err)
+	}
+
+	// Perfil: es el caso que mas importa, porque es el facil de escribir por
+	// error mientras drivers.KindMac todavia no existe.
+	root2 := t.TempDir()
+	writeRawConfig(t, root2, "project_name: x\nprofiles:\n  mac:\n    target_kind: macos\n")
+	if _, err := LoadConfigWithProfile(root2, "mac"); err == nil {
+		t.Fatal("un target_kind desconocido en un perfil debe fallar")
+	}
+	// Sin activar el perfil, la config sigue siendo valida.
+	if _, err := LoadConfig(root2); err != nil {
+		t.Fatalf("sin perfil activo no deberia fallar: %v", err)
+	}
+
+	// Entorno
+	root3 := t.TempDir()
+	writeRawConfig(t, root3, "project_name: x\n")
+	t.Setenv("MAV_TARGET_KIND", "macos")
+	if _, err := LoadConfig(root3); err == nil {
+		t.Fatal("un MAV_TARGET_KIND desconocido debe fallar")
+	}
+}

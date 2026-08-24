@@ -168,6 +168,14 @@ func loadConfig(root, profileOverride string, skipProfile bool) (Config, error) 
 			cfg.DeviceName = os.Getenv("MAV_TARGET_NAME")
 		}
 	}
+	// Al final a proposito: el target_kind puede venir del fichero, de un
+	// perfil o de MAV_TARGET_KIND, y las tres fuentes tienen que pasar por el
+	// mismo filtro. Validarlo antes del overlay dejaria pasar justo el caso
+	// que mas importa, que es un perfil declarando una plataforma que aun no
+	// existe.
+	if err := validateTargetKind(cfg.TargetKind); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
 }
 
@@ -904,4 +912,30 @@ func persistTargetSelection(root string, cfg Config) error {
 	base.Locale = cfg.Locale
 	base.Language = cfg.Language
 	return SaveConfig(root, base)
+}
+
+// validateTargetKind rechaza los labels de target_kind que mav no conoce.
+//
+// Sin esto la config falla ABIERTA, que en este caso concreto es peligroso:
+// targetKind() devuelve KindDevice solo para el literal "device" y manda todo
+// lo demas a KindSim, y targetKindLabel() lo normaliza de vuelta a "simulator"
+// al escribir. Asi que un `target_kind: macos` escrito a mano no da error --
+// se comporta como simulador de principio a fin.
+//
+// El desenlace no es teorico: ese run resolveria target_command (un
+// `simpool lease` de iPhone), alquilaria y arrancaria un simulador, y con
+// --clear-state encaminaria CapUninstall contra el usando el bundle_id, que en
+// una app multiplataforma como Nokoru es el MISMO en iOS y macOS. Es decir,
+// desinstalaria la app de iOS del simulador durante un run "de macOS". Y el
+// resultado del uninstall ni siquiera se miraba hasta hace poco.
+//
+// Cuando llegue drivers.KindMac, "macos" pasa a ser un valor valido y se anade
+// aqui. Hasta entonces, ruido en vez de silencio.
+func validateTargetKind(kind string) error {
+	switch kind {
+	case "simulator", "device":
+		return nil
+	default:
+		return fmt.Errorf("target_kind_invalid value=%s valid=simulator,device", kind)
+	}
 }
