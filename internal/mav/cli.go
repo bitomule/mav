@@ -5315,6 +5315,13 @@ func (c CLI) crashes(ctx context.Context, opts GlobalOptions, args []string) err
 	if targetKind(cfg) == drivers.KindSim && !opts.Raw {
 		return c.crashesFromDiagnosticReports("")
 	}
+	if targetKind(cfg) == drivers.KindMac {
+		// En el Mac los .ips estan en el disco local y son el MISMO formato
+		// JSON que introdujeron iOS 15 y macOS 12, asi que ParseIPS sirve sin
+		// tocar nada. No hay idb de por medio ni nada que pueda fallar aparte
+		// del propio filesystem, asi que tampoco hay modo --raw que ofrecer.
+		return c.crashesFromDiagnosticReports("")
+	}
 	if !hasTool(cfg, "idb") {
 		return Fail("tool_missing", map[string]string{"tool": "idb"}).Write(c.Stdout)
 	}
