@@ -278,21 +278,19 @@ a leaked lease blocks the next run.
 Two commands set it up:
 
 ```sh
-mav vm install                    # installs the VM tooling
+mav setup --install vm            # installs the VM tooling
 ./scripts/build-mav-vm-image.sh   # builds the image, once
 ```
 
 `mav doctor` reports `vm_tooling`, `vm_image` and the current lease, and any VM failure
-names `mav vm install` rather than dying deep inside a run. The image build ends with
+names `mav setup --install vm` rather than dying deep inside a run. The image build ends with
 two switches you flip by hand — macOS 26 has no scriptable way to grant Accessibility
 or Screen Recording — and after that they live on the disk that becomes the image.
 
-Two things worth knowing before you rely on it. A development-signed bundle does not
-launch in a clean VM: the entitlements tied to your team and device list get it killed on
+One thing worth knowing before you rely on it: a development-signed bundle does not
+launch in a clean VM. The entitlements tied to your team and device list get it killed on
 sight, so mav re-signs the guest's copy ad-hoc and reports `resigned=adhoc` on `open`. You
-are no longer running the exact binary you ship, and iCloud and push go with it. And
-`mav evidence start` records no video on macOS, in a VM or out of it: video capture is
-simulator-only. Screenshots, trees, logs and HAR all work.
+are no longer running the exact binary you ship, and iCloud and push go with it.
 
 The measured findings behind all of this, including four ways of seeding `TCC.db` that
 do not work on macOS 26, live in [`examples/macos-vm/`](examples/macos-vm/).

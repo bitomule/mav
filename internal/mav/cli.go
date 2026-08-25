@@ -115,8 +115,6 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 		return c.sim(ctx, opts, rest[1:])
 	case "device":
 		return c.device(ctx, opts, rest[1:])
-	case "vm":
-		return c.vmCommand(ctx, opts, rest[1:])
 	case "open":
 		return c.open(ctx, opts, rest[1:])
 	case "ui":
@@ -256,7 +254,6 @@ Commands:
               Install the MAV agent skill globally for all supported agents.
   sim         List, select, or boot simulators.
   device      List or select physical iOS devices.
-  vm          Install the tooling that runs a macOS app in a disposable VM.
   open        Build, install, launch, and start run logs.
   ui          Inspect and control the current UI.
   capture     Capture the current screen.
@@ -284,16 +281,19 @@ Global flags:
   --help,-h   Show help.
 `
 	case "setup":
-		return "Usage:\n  mav setup [--non-interactive]\n  mav setup --install axe idb baguette simtime lldb-dap\n"
+		return `Usage:
+  mav setup [--non-interactive]
+  mav setup --install axe idb baguette simtime lldb-dap cua-driver axcli mitmproxy vm
+
+Without --install it configures the project, interactively unless --non-interactive.
+With --install it installs tools and configures nothing.
+
+  vm    the tooling a project with vm: true needs to lease a disposable macOS
+        machine. Build the image once with scripts/build-mav-vm-image.sh.
+`
 	case "install-skills":
 		return "Usage: mav install-skills\n"
-	case "vm", "vm install":
-		return `Usage: mav vm install
 
-Installs the tooling a project with vm: true needs to lease a disposable macOS
-machine, and reports whether the prepared image is present. Build the image once
-with scripts/build-mav-vm-image.sh.
-`
 	case "sim":
 		return `Usage:
   mav sim list
@@ -576,6 +576,7 @@ func (c CLI) setup(ctx context.Context, opts GlobalOptions, args []string) error
 	if len(tools) == 0 {
 		return Fail("setup_install_missing", nil).Write(c.Stdout)
 	}
+	extra := map[string]string{}
 	commands := map[string][]string{
 		"axe":       {"brew", "install", "cameroncooke/axe/axe"},
 		"baguette":  {"brew", "install", "tddworks/tap/baguette"},
@@ -630,6 +631,16 @@ func (c CLI) setup(ctx context.Context, opts GlobalOptions, args []string) error
 			}
 			continue
 		}
+		if tool == "vm" {
+			fields, err := c.setupVM(ctx)
+			if err != nil {
+				return err
+			}
+			for key, value := range fields {
+				extra[key] = value
+			}
+			continue
+		}
 		cmd, ok := commands[tool]
 		if !ok {
 			return Fail("setup_unknown_tool", map[string]string{"tool": tool}).Write(c.Stdout)
@@ -642,7 +653,11 @@ func (c CLI) setup(ctx context.Context, opts GlobalOptions, args []string) error
 			return Fail("setup_failed", map[string]string{"tool": tool, "stderr": firstLine(result.Stderr)}).Write(c.Stdout)
 		}
 	}
-	return c.OK("setup", map[string]string{"installed": strings.Join(tools, ",")}).Write(c.Stdout)
+	fields := map[string]string{"installed": strings.Join(tools, ",")}
+	for key, value := range extra {
+		fields[key] = value
+	}
+	return c.OK("setup", fields).Write(c.Stdout)
 }
 
 func (c CLI) verifySimtime(ctx context.Context) error {
@@ -825,6 +840,16 @@ func (c CLI) promptSetupConfig(cfg Config) (Config, error) {
 	cfg.AllowShell, err = c.promptBool(prompts, reader, "allow_shell", cfg.AllowShell)
 	if err != nil {
 		return cfg, err
+	}
+	// Only for a macOS project, because that is the only place `vm` means
+	// anything: a simulator is reached from this machine and a phone is
+	// plugged into it. Asking everyone would be offering a setting that
+	// LoadConfig then rejects.
+	if targetKind(cfg) == drivers.KindMac {
+		cfg.VM, err = c.promptBool(prompts, reader, "vm", cfg.VM)
+		if err != nil {
+			return cfg, err
+		}
 	}
 	if cfg.Launch.Mode, err = c.promptString(prompts, reader, "launch.mode", cfg.Launch.Mode); err != nil {
 		return cfg, err
@@ -5822,7 +5847,13 @@ func (c CLI) evidenceStart(ctx context.Context, opts GlobalOptions, args []strin
 	path, pid, err := c.startVideoRecording(ctx, cfg, run)
 	if err != nil {
 		if err.Error() == "video_unsupported" {
-			return Fail("video_unsupported", map[string]string{"target": "device", "next": "use simulator video or capture screenshots; device video is not supported in this PR"}).Write(c.Stdout)
+			// The target is reported from the config and not hardcoded:
+			// this used to answer target=device on a macOS run, which sent
+			// whoever read it looking in the wrong place.
+			return Fail("video_unsupported", map[string]string{
+				"target": targetKindLabel(targetKind(cfg)),
+				"next":   "capture screenshots with mav evidence step; this target has no recorder",
+			}).Write(c.Stdout)
 		}
 		return Fail("evidence_start_failed", map[string]string{"run": run.ID, "error": err.Error()}).Write(c.Stdout)
 	}
@@ -5908,10 +5939,30 @@ func (c CLI) evidenceStop(ctx context.Context, opts GlobalOptions, args []string
 	if err != nil {
 		return Fail("video_not_running", map[string]string{"run": run.ID}).Write(c.Stdout)
 	}
+	cfg, cfgErr := LoadConfig(c.Root)
+	if cfgErr == nil {
+		c.resolveConfigTools(&cfg)
+		c.resolveConfigTarget(&cfg)
+	}
+	// The recorder is asked to stop BEFORE the process holding it is
+	// signalled. On macOS only the daemon can write the mp4's index, and a
+	// file cut off without one is a plausible-looking video no player will
+	// open, which is worse than no video at all.
+	videoStopWarn := c.stopVideoThroughDriver(ctx, cfg, run, pid)
 	_ = stopRunProcess(c.Runner, pid)
 	_ = os.Remove(filepath.Join(run.Dir, "video.pid"))
 	removeProcess(run, pid)
-	fields := map[string]string{"run": run.ID, "file": filepath.Join(run.Dir, "video.mov")}
+	// Everything below reads the video off this machine's disk, and when the
+	// run happened in a VM the recorder wrote it on the other one. Without
+	// this the checks fail on a video that exists, and the run reports
+	// video_not_written about a file that arrives seconds later with the
+	// normal evidence sync.
+	c.syncVMEvidence(ctx)
+	c.pruneMacVideoLeftovers(cfg, run)
+	fields := map[string]string{"run": run.ID, "file": evidenceVideoPath(cfg, run)}
+	if videoStopWarn != "" {
+		fields["video_warn"] = videoStopWarn
+	}
 	if issue := videoLogIssue(filepath.Join(run.Dir, "video.log")); issue != "" {
 		return Fail("video_recording_failed", map[string]string{"run": run.ID, "file": fields["file"], "log": filepath.Join(run.Dir, "video.log"), "error": issue}).Write(c.Stdout)
 	}
@@ -5930,7 +5981,11 @@ func (c CLI) evidenceStop(ctx context.Context, opts GlobalOptions, args []string
 		return Fail("video_invalid", map[string]string{"run": run.ID, "file": fields["file"], "duration": duration, "issue": validation.Issue, "log": filepath.Join(run.Dir, "video.log")}).Write(c.Stdout)
 	}
 	fields["duration"] = validation.Duration.String()
-	if mp4, err := c.transcodeEvidenceVideo(ctx, fields["file"]); err == nil {
+	if filepath.Ext(fields["file"]) == ".mp4" {
+		// Already H.264: transcoding it would spend ffmpeg on producing the
+		// same thing under a different name.
+		fields["video_mp4"] = fields["file"]
+	} else if mp4, err := c.transcodeEvidenceVideo(ctx, fields["file"]); err == nil {
 		fields["video_mp4"] = mp4
 	} else {
 		fields["video_mp4_warn"] = err.Error()
@@ -6210,7 +6265,45 @@ func isSwipeDirection(direction string) bool {
 	}
 }
 
+// evidenceVideoPath is where this target's recorder writes. The extension
+// is not cosmetic: the simulator's recorder produces QuickTime and the
+// Mac's produces H.264, and reportVideo/transcodeEvidenceVideo both branch
+// on which one they are looking at.
+func evidenceVideoPath(cfg Config, run RunState) string {
+	if targetKind(cfg) == drivers.KindMac {
+		return filepath.Join(run.Dir, "video.mp4")
+	}
+	return filepath.Join(run.Dir, "video.mov")
+}
+
+// startMacVideoRecording routes CapVideo instead of naming a tool, which is
+// the whole reason macOS gets video at all now: the drivers have recorded
+// video since v0.12.0 and nothing ever reached them, because this function
+// went straight to simctl and refused anything that was not a simulator.
+func (c CLI) startMacVideoRecording(ctx context.Context, cfg Config, run RunState) (string, int, error) {
+	target := targetFromConfig(cfg)
+	driver, _, err := c.router().Route(ctx, drivers.CapVideo, target, "")
+	if err != nil {
+		return "", 0, fmt.Errorf("video_unsupported")
+	}
+	recorder, ok := driver.(drivers.VideoDriver)
+	if !ok {
+		return "", 0, fmt.Errorf("video_unsupported")
+	}
+	path := evidenceVideoPath(cfg, run)
+	result, err := recorder.VideoStart(ctx, target, drivers.VideoSpec{OutPath: path})
+	if err != nil {
+		return "", 0, err
+	}
+	appendProcess(run, "video", result.PID, "video."+driver.ID())
+	c.ensureRunWorker(run)
+	return path, result.PID, nil
+}
+
 func (c CLI) startVideoRecording(ctx context.Context, cfg Config, run RunState) (string, int, error) {
+	if targetKind(cfg) == drivers.KindMac {
+		return c.startMacVideoRecording(ctx, cfg, run)
+	}
 	if targetKind(cfg) != drivers.KindSim {
 		return "", 0, fmt.Errorf("video_unsupported")
 	}

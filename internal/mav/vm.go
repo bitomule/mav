@@ -164,9 +164,9 @@ func vmHostTooOld(ctx context.Context, host Runner) string {
 }
 
 // vmInstallHint is the single sentence every VM failure ends with. Users
-// are never told to install crabbox by name: they are told to run one mav
-// command that does it for them.
-const vmInstallHint = "mav vm install"
+// are never told to install the hypervisor by name: they are told to run
+// the same command that installs everything else mav needs.
+const vmInstallHint = "mav setup --install vm"
 
 // acquireVMLease returns the machine this project drives, leasing a new one
 // only when there is not already a live one to reuse. Reuse is the common

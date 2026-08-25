@@ -10,7 +10,6 @@ package macos
 import (
 	"context"
 	"errors"
-	"os/exec"
 	"strconv"
 
 	"github.com/bitomule/mav/internal/mav/drivers"
@@ -49,7 +48,10 @@ func (d *Screencapture) Provides(target drivers.Target) drivers.CapabilitySet {
 func (d *Screencapture) Cost(c drivers.Capability, _ drivers.Target) int {
 	switch c {
 	case drivers.CapVideo:
-		return 0 // nobody else records video on the Mac
+		// Behind cua: this records only when mav already runs inside the
+		// graphical session, which is true on the user's own Mac and never
+		// true over SSH.
+		return 50
 	case drivers.CapScreenshot:
 		return 50
 	default:
@@ -107,12 +109,15 @@ func (d *Screencapture) VideoStart(ctx context.Context, _ drivers.Target, spec d
 
 // VideoStop cuts the recording with SIGINT. Killing with SIGKILL would
 // leave the .mov half-written and without an index, that is, unreadable.
-func (d *Screencapture) VideoStop(_ context.Context, _ drivers.Target, pid int) error {
+func (d *Screencapture) VideoStop(ctx context.Context, _ drivers.Target, pid int) error {
 	if pid <= 0 {
 		return errors.New("screencapture: video pid missing")
 	}
-	if err := exec.Command("kill", "-INT", strconv.Itoa(pid)).Run(); err != nil {
-		return err
+	// Through the executor, not exec.Command: when mav drives a VM the
+	// recorder's pid is the guest's, and signalling it here would not fail
+	// loudly, it would hit whatever local process holds that number.
+	if res := d.exec.Run(ctx, "kill", "-INT", strconv.Itoa(pid)); res.Err != nil {
+		return errors.New(firstLine(res.Stderr))
 	}
 	return nil
 }

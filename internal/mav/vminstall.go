@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// vmFormulas are what `mav vm install` puts on the machine. They are listed
+// vmFormulas are what `mav setup --install vm` puts on the machine. They are listed
 // here and never in an error message or a doc: somebody writing `vm: true`
 // should not have to learn which project provides the hypervisor this
 // month, only that one mav command installs whatever it is.
@@ -16,24 +16,20 @@ var vmFormulas = map[string]string{
 	vmHostTool:  "cirruslabs/cli/tart",
 }
 
-func (c CLI) vmCommand(ctx context.Context, opts GlobalOptions, args []string) error {
-	_ = opts
-	if len(args) == 0 {
-		return Fail("vm_command_missing", map[string]string{"usage": "mav vm install"}).Write(c.Stdout)
-	}
-	switch args[0] {
-	case "install":
-		return c.vmInstall(ctx)
-	default:
-		return Fail("vm_unknown_command", map[string]string{"command": args[0], "usage": "mav vm install"}).Write(c.Stdout)
-	}
-}
-
-func (c CLI) vmInstall(ctx context.Context) error {
+// setupVM is `mav setup --install vm`. It is a tool in that list and not a
+// command of its own because there is only one place a user should look for
+// "mav is missing something I need": everything else mav can install lives
+// behind the same flag, and a second install command is a second thing to
+// remember for no gain.
+//
+// Unlike the rest of that list it installs two tools and checks a version
+// floor, which is why it has its own function instead of a row in the
+// command table.
+func (c CLI) setupVM(ctx context.Context) (map[string]string, error) {
 	host := c.hostRunner()
 	if _, err := host.LookPath("brew"); err != nil {
-		return Fail("vm_install_needs_brew", map[string]string{
-			"next": "install Homebrew from https://brew.sh, then rerun mav vm install",
+		return nil, Fail("vm_install_needs_brew", map[string]string{
+			"next": "install Homebrew from https://brew.sh, then rerun " + vmInstallHint,
 		}).Write(c.Stdout)
 	}
 	fields := map[string]string{}
@@ -54,7 +50,7 @@ func (c CLI) vmInstall(ctx context.Context) error {
 			// The formula is named in the error and only there: it is what
 			// the user would have to type by hand if this command cannot
 			// do it for them.
-			return Fail("vm_install_failed", map[string]string{
+			return nil, Fail("vm_install_failed", map[string]string{
 				"error": firstLine(strings.TrimSpace(result.Stderr)),
 				"next":  "brew " + action + " " + vmFormulas[tool],
 			}).Write(c.Stdout)
@@ -64,26 +60,26 @@ func (c CLI) vmInstall(ctx context.Context) error {
 	// Deliberately a count and not the formula names. Nobody writing
 	// `vm: true` should end up learning which project ships the hypervisor;
 	// that is exactly the detail the config surface exists to hide.
-	fields["installed"] = strconv.Itoa(len(installed))
+	fields["vm_installed"] = strconv.Itoa(len(installed))
 	if missing := vmToolingMissing(host); len(missing) > 0 {
-		return Fail("vm_tooling_missing", map[string]string{
+		return nil, Fail("vm_tooling_missing", map[string]string{
 			"missing": strings.Join(missing, ","),
-			"next":    "open a new shell so the installed tools are on PATH, then rerun mav vm install",
+			"next":    "open a new shell so the installed tools are on PATH, then rerun " + vmInstallHint,
 		}).Write(c.Stdout)
 	}
-	fields["tooling"] = "ok"
+	fields["vm_tooling"] = "ok"
 	// The image is a separate step and cannot be folded into this one: it
 	// takes tens of minutes to build and it ends with two switches a human
 	// has to flip by hand, because macOS 26 has no scriptable way to grant
 	// Accessibility or Screen Recording. Reporting it as missing here is
 	// the whole point -- the alternative is finding out mid-run.
 	if vmImageReady(ctx, host) {
-		fields["image"] = vmImage
+		fields["vm_image"] = vmImage
 	} else {
-		fields["image"] = "missing"
-		fields["image_next"] = "scripts/build-mav-vm-image.sh"
+		fields["vm_image"] = "missing"
+		fields["vm_image_next"] = "scripts/build-mav-vm-image.sh"
 	}
-	return c.OK("vm.install", fields).Write(c.Stdout)
+	return fields, nil
 }
 
 // vmDoctorFields is what `mav doctor` reports about VM mode. Nothing is

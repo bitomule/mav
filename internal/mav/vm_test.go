@@ -471,7 +471,9 @@ func TestAVersionAboveTheFloorIsNotRefused(t *testing.T) {
 // TestInstallNeverNamesTheUnderlyingTool: the whole point of a one-key
 // config surface is that nobody has to learn which project ships the
 // hypervisor. Leaking it in the success output undoes that on the very
-// first command a new user runs.
+// first command a new user runs. It also pins that the VM tooling installs
+// through `mav setup --install`, like everything else mav can install, and
+// not through a second command nobody would think to look for.
 func TestInstallNeverNamesTheUnderlyingTool(t *testing.T) {
 	root := vmConfigRoot(t)
 	host := &vmHostRunner{
@@ -481,7 +483,7 @@ func TestInstallNeverNamesTheUnderlyingTool(t *testing.T) {
 	var out bytes.Buffer
 	cli := CLI{Runner: host, Stdout: &out, Stderr: &bytes.Buffer{}, Root: root}
 
-	if err := cli.Run(context.Background(), []string{"vm", "install"}); err != nil {
+	if err := cli.Run(context.Background(), []string{"setup", "--install", "vm"}); err != nil {
 		t.Fatal(err)
 	}
 	for _, leak := range []string{vmLeaseTool, vmHostTool, "openclaw", "cirruslabs"} {
@@ -489,7 +491,7 @@ func TestInstallNeverNamesTheUnderlyingTool(t *testing.T) {
 			t.Fatalf("the output names %q: %s", leak, out.String())
 		}
 	}
-	if !strings.Contains(out.String(), "tooling=ok") {
+	if !strings.Contains(out.String(), "vm_tooling=ok") {
 		t.Fatalf("install must report that the tooling is ready: %s", out.String())
 	}
 }

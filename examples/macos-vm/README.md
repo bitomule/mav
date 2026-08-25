@@ -1,7 +1,7 @@
 # Running `mav` against a macOS app inside a disposable VM
 
 This is where the measurements behind `vm: true` live. **The feature itself needs none of
-this**: put `vm: true` next to `target_kind: macos`, run `mav vm install` once and
+this**: put `vm: true` next to `target_kind: macos`, run `mav setup --install vm` once and
 `scripts/build-mav-vm-image.sh` once, and mav leases the machine, ships the app across,
 drives it and hands the machine back on its own. See the README's *Running the app in a
 disposable VM*.
@@ -89,7 +89,7 @@ ssh key injection failed
 The lease tool uses `tart exec` to inject the SSH key, so with 2.28.1 **the whole
 provider fails to start from any non-interactive context**, which is exactly what it
 exists for. Nothing in that message points at the version, which is why `mav doctor`
-reports `vm_tooling=outdated` and `mav vm install` upgrades it rather than leaving you
+reports `vm_tooling=outdated` and `mav setup --install vm` upgrades it rather than leaving you
 to read a stack trace about ioctls.
 
 ### Who sets up what
@@ -134,7 +134,7 @@ went the whole way through `mav` alone.
 | `mav ui tap` | not reached | ✅ onboarding advanced |
 | `mav network start/stop` | not reached | ✅ proxy set and restored **inside** the VM |
 | `mav evidence step` / `report` | not reached | ✅ |
-| `mav evidence start` (video) | not reached | ❌ simulator-only, on macOS with or without a VM |
+| `mav evidence start` (video) | not reached | ✅ 1m31s of H.264, through the driver daemon |
 | `mav stop` | not reached | ✅ machine handed back, VM gone |
 
 ### What surfaced when running it
@@ -230,5 +230,10 @@ some later command happens to sync is evidence it reasons about stale.
   on an idle timeout rather than trusting anyone to remember.
 - **The `tart` provider does not expose `--audio`.** If what you validate needs a
   microphone, that VM will not have one even though tart itself can do it.
-- **`mav evidence start` records no video on macOS**, in a VM or out of it: video capture
-  is simulator-only and always has been. Screenshots, trees, logs and HAR all work.
+- **Video has exactly one working path in here, and three that look like they should.**
+  `screencapture -v` sees no display over SSH. The driver's persistent `recording start`
+  captures per-action stills and its video flag does nothing there, while
+  `recording render` refuses without an mp4 only the other path produces. The
+  hypervisor's own desktop recording answers *"artifacts video currently requires
+  target=linux or native Windows desktop capture"*. What works is holding an MCP session
+  open against the driver daemon for the length of the recording, which is what mav does.

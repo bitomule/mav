@@ -36,8 +36,8 @@ profile *annuls* the inherited value; an absent key inherits it. A profile that 
 exist fails with `profile_not_found` rather than silently using the base.
 
 On macOS these work: `ui tree`, `ui tap`, `ui type`, `ui erase`, `ui swipe`, `ui wait`,
-`capture`, `open`, `app list`, `openURL`, `clipboard`, `logs`, `crashes`, `evidence`,
-`run`, `network` and `time travel|reset`. `ui hideKeyboard` succeeds without doing
+`capture`, `open`, `app list`, `openURL`, `clipboard`, `logs`, `crashes`, `evidence`
+(including video), `run`, `network` and `time travel|reset`. `ui hideKeyboard` succeeds without doing
 anything: there is no on-screen keyboard to hide, and failing would force a shared flow
 to branch by platform.
 
@@ -77,9 +77,9 @@ What you do need to know:
 
 - `mav doctor` reports `vm_tooling`, `vm_image` and `vm_lease`. Run it first when a VM
   project misbehaves.
-- Any VM failure (`vm_tooling_missing`, `vm_image_missing`, `vm_lease_failed`) carries
-  `next=mav vm install`. Tell the user to run that; do not go looking for the
-  underlying hypervisor.
+- Any VM failure (`vm_tooling_missing`, `vm_tooling_outdated`, `vm_image_missing`,
+  `vm_lease_failed`) carries `next=mav setup --install vm`. Tell the user to run that; do
+  not go looking for the underlying hypervisor.
 - **Call `mav stop` when you are done.** Only two macOS VMs can exist at once, so a
   machine you leave leased blocks the next run. An idle timeout catches the case where
   you crash, but it costs the user twenty minutes of a slot they could be using.
@@ -91,9 +91,10 @@ What you do need to know:
   the VM and mav re-signed the guest's copy: iCloud, push and anything else tied to the
   provisioning profile are gone from what you are driving. Say so if you report on
   behaviour that could depend on them.
-- `mav evidence start` fails on macOS with `video_unsupported`, VM or not: video capture
-  is simulator-only. Use `mav evidence step` for screenshots plus tree, and
-  `mav evidence report`.
+- `mav evidence start` records video here too. It goes through the driver daemon rather
+  than `screencapture`, which over SSH sees no display, so it works the same in a VM as
+  on the user's own Mac. Call `mav evidence stop` to finalize it: the mp4's index is
+  written on stop, and a run killed without it leaves a file no player opens.
 
 ## Fixtures
 

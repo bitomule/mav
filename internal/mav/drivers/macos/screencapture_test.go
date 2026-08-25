@@ -72,8 +72,28 @@ func TestScreencaptureIsAFallbackForScreenshots(t *testing.T) {
 	if got := d.Cost(drivers.CapScreenshot, mac); got == 0 {
 		t.Fatalf("screenshot should not be canonical cost, got %d", got)
 	}
-	if got := d.Cost(drivers.CapVideo, mac); got != 0 {
-		t.Fatalf("video is canonical: nobody else records on the Mac, got %d", got)
+	// Video is a fallback too, and the reason is not quality: this records
+	// only when mav already runs inside the graphical session. Over SSH,
+	// which is every run against a VM, it sees no display at all, so a
+	// driver that goes through the permission-holding daemon has to be able
+	// to win.
+	if got := d.Cost(drivers.CapVideo, mac); got == 0 {
+		t.Fatalf("video should not be canonical cost, got %d", got)
+	}
+}
+
+// TestScreencaptureStopsThroughTheExecutor: the recorder's pid belongs to
+// whichever machine the executor reaches. Signalling it from this process
+// would not fail loudly when that machine is a VM, it would hit whatever
+// local process holds that number.
+func TestScreencaptureStopsThroughTheExecutor(t *testing.T) {
+	f := &fakeExec{}
+	d := NewScreencapture(f)
+	if err := d.VideoStop(context.Background(), drivers.Target{Kind: drivers.KindMac}, 4321); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.commands) != 1 || !strings.Contains(f.commands[0], "kill") || !strings.Contains(f.commands[0], "4321") {
+		t.Fatalf("the stop never went through the executor: %v", f.commands)
 	}
 }
 

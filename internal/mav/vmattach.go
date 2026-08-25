@@ -80,6 +80,17 @@ func (c CLI) detachVM(ctx context.Context, runner *vmRunner) {
 	c.pullVMEvidence(ctx, runner)
 }
 
+// syncVMEvidence brings the guest's artifacts home right now, mid-command,
+// for the one case the per-command sync cannot cover: a command that
+// inspects a file it just caused the guest to write. A no-op outside VM
+// mode, so callers do not have to branch.
+func (c CLI) syncVMEvidence(ctx context.Context) {
+	if c.vmRun == nil || c.vmRun.released {
+		return
+	}
+	c.pullVMEvidence(ctx, c.vmRun)
+}
+
 func (c CLI) pullVMEvidence(ctx context.Context, runner *vmRunner) {
 	run, err := c.resolveRun("")
 	if err != nil {

@@ -11,7 +11,6 @@ Commands:
               Install the MAV agent skill globally for all supported agents.
   sim         List, select, or boot simulators.
   device      List or select physical iOS devices.
-  vm          Install the tooling that runs a macOS app in a disposable VM.
   open        Build, install, launch, and start run logs.
   ui          Inspect and control the current UI.
   capture     Capture the current screen.
