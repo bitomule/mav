@@ -226,9 +226,10 @@ func (r *launchRecipeRunner) Run(ctx context.Context, name string, args ...strin
 		}
 		return CommandResult{}
 	}
-	// Los pasos que van por driver (simctl/idb via el router) no pasan por el
-	// shell, asi que se casan contra la linea completa. Sin esto un test no
-	// puede simular el fallo de, por ejemplo, el uninstall de clear_state.
+	// Steps that go through a driver (simctl/idb via the router) do not
+	// pass through the shell, so they match against the full line. Without
+	// this a test cannot simulate the failure of, say, clear_state's
+	// uninstall.
 	for needle, result := range r.results {
 		if strings.Contains(command, needle) {
 			return result
@@ -1765,18 +1766,18 @@ func TestUISwipePreferAxeDoesNotFallbackToIDB(t *testing.T) {
 	}
 }
 
-// TestUISwipeExplicitPreferIsHonoured guards the regression that abrir
-// --prefer-driver a cualquier id registrado introduce: uiSwipe fijaba
-// preferred="axe" en cuanto cfg tenia axe, asi que un --prefer-driver que
-// antes se rechazaba de plano (prefer_driver_invalid) pasaba a aceptarse y
-// ejecutarse con axe sin decir nada. Aceptar un flag y luego ignorarlo es
-// exactamente la clase de configuracion muerta que target_command_ignored
-// existe para hacer visible.
-// TestOpenClearStateFailureWarnsInsteadOfBeingSilent fija la conducta que
-// sustituye al `_ =` que descartaba el resultado del uninstall: un clear_state
-// que falla NO aborta el open -- el caso corriente es que la app aun no
-// estuviera instalada -- pero tampoco puede desaparecer, porque entonces
-// --clear-state miente y el run arrastra el estado del anterior.
+// TestUISwipeExplicitPreferIsHonoured guards the regression that opening
+// --prefer-driver to any registered id introduces: uiSwipe pinned
+// preferred="axe" as soon as cfg had axe, so a --prefer-driver that was
+// previously rejected outright (prefer_driver_invalid) became accepted and
+// executed with axe without a word. Accepting a flag and then ignoring it
+// is exactly the kind of dead configuration target_command_ignored exists
+// to make visible.
+// TestOpenClearStateFailureWarnsInsteadOfBeingSilent pins the behavior
+// that replaces the `_ =` that discarded the uninstall's result: a failing
+// clear_state does NOT abort the open, the common case is that the app was
+// not installed yet, but it cannot disappear either, because then
+// --clear-state lies and the run drags the previous one's state along.
 func TestOpenClearStateFailureWarnsInsteadOfBeingSilent(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
@@ -1808,13 +1809,13 @@ func TestOpenClearStateFailureWarnsInsteadOfBeingSilent(t *testing.T) {
 	}
 	got := out.String()
 	if strings.HasPrefix(strings.TrimSpace(got), "fail ") {
-		t.Fatalf("un clear_state fallido no debe abortar el open: %q", got)
+		t.Fatalf("a failed clear_state must not abort the open: %q", got)
 	}
 	if !strings.Contains(got, "clear_state_warn=") || !strings.Contains(got, "clear_state_incomplete") {
-		t.Fatalf("el fallo del uninstall debe salir avisado en la respuesta: %q", got)
+		t.Fatalf("the uninstall failure must surface as a warning in the response: %q", got)
 	}
 	if !containsCall(runner.commands, "simctl install") {
-		t.Fatalf("el open debe continuar hasta el install: %v", runner.commands)
+		t.Fatalf("the open must carry on to the install: %v", runner.commands)
 	}
 }
 
@@ -1835,16 +1836,16 @@ func TestUISwipeExplicitPreferIsHonoured(t *testing.T) {
 	}
 	got := out.String()
 	if !strings.Contains(got, "driver=baguette") {
-		t.Fatalf("--prefer-driver baguette debe servirse con baguette, no sobreescribirse con axe: %q", got)
+		t.Fatalf("--prefer-driver baguette must be served with baguette, not overwritten with axe: %q", got)
 	}
 	if containsCall(runner.commands, "axe swipe") {
-		t.Fatalf("--prefer-driver baguette no debe ejecutarse en silencio con axe: %v", runner.commands)
+		t.Fatalf("--prefer-driver baguette must not silently run with axe: %v", runner.commands)
 	}
 }
 
-// TestUISwipeExplicitPreferThatCannotServeFailsLoudly cubre la otra mitad: un
-// --prefer-driver ahora valido como id pero incapaz de servir esta capacidad
-// debe fallar nombrandolo, no caer en silencio al driver por defecto.
+// TestUISwipeExplicitPreferThatCannotServeFailsLoudly covers the other
+// half: a --prefer-driver now valid as an id but unable to serve this
+// capability must fail naming it, not silently fall to the default driver.
 func TestUISwipeExplicitPreferThatCannotServeFailsLoudly(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
@@ -1860,10 +1861,10 @@ func TestUISwipeExplicitPreferThatCannotServeFailsLoudly(t *testing.T) {
 	allowFail(t, cli.Run(context.Background(), []string{"--prefer-driver", "simtime", "ui", "swipe", "up"}))
 	got := out.String()
 	if !strings.Contains(got, "fail code=prefer_driver_unusable") || !strings.Contains(got, "driver=simtime") {
-		t.Fatalf("un prefer que no puede servir swipe debe fallar nombrandolo, got %q", got)
+		t.Fatalf("a prefer that cannot serve swipe must fail naming it, got %q", got)
 	}
 	if containsCall(runner.commands, "axe swipe") {
-		t.Fatalf("no debe caer en silencio a axe: %v", runner.commands)
+		t.Fatalf("it must not silently fall to axe: %v", runner.commands)
 	}
 }
 
@@ -2649,9 +2650,9 @@ func fixtureConfigRoot(t *testing.T) string {
 	return root
 }
 
-// TestFixtureRunsBetweenInstallAndLaunch fija la ventana: el contenedor ya
-// existe y la app aun no ha arrancado, asi que nada tiene su base de datos
-// abierta. Antes o despues, sembrar es corromper.
+// TestFixtureRunsBetweenInstallAndLaunch pins the window: the container
+// already exists and the app has not started yet, so nothing has its
+// database open. Before or after, seeding is corrupting.
 func TestFixtureRunsBetweenInstallAndLaunch(t *testing.T) {
 	root := fixtureConfigRoot(t)
 	runner := &launchRecipeRunner{
@@ -2668,13 +2669,13 @@ func TestFixtureRunsBetweenInstallAndLaunch(t *testing.T) {
 	seed := strings.Index(joined, "seeding-one")
 	launch := strings.Index(joined, "simctl launch")
 	if install < 0 || seed < 0 || launch < 0 {
-		t.Fatalf("faltan pasos: %s", joined)
+		t.Fatalf("steps are missing: %s", joined)
 	}
 	if !(install < seed && seed < launch) {
-		t.Fatalf("orden incorrecto install=%d fixture=%d launch=%d:\n%s", install, seed, launch, joined)
+		t.Fatalf("wrong order install=%d fixture=%d launch=%d:\n%s", install, seed, launch, joined)
 	}
 	if !strings.Contains(out.String(), "fixture=seeded") {
-		t.Fatalf("el fixture aplicado debe salir en la respuesta: %q", out.String())
+		t.Fatalf("the applied fixture must appear in the response: %q", out.String())
 	}
 }
 
@@ -2689,10 +2690,10 @@ func TestFixtureNotFoundFailsListingAvailable(t *testing.T) {
 	allowFail(t, cli.Run(context.Background(), []string{"open", "--fixture", "nope"}))
 	got := out.String()
 	if !strings.Contains(got, "fail code=launch_step_failed") || !strings.Contains(got, "fixture_not_found") {
-		t.Fatalf("un fixture inexistente debe fallar nombrando los validos: %q", got)
+		t.Fatalf("a nonexistent fixture must fail naming the valid ones: %q", got)
 	}
 	if containsCall(runner.commands, "simctl launch") {
-		t.Fatalf("no debe lanzarse la app si el fixture no existe: %v", runner.commands)
+		t.Fatalf("the app must not launch when the fixture does not exist: %v", runner.commands)
 	}
 }
 
@@ -2702,11 +2703,11 @@ func TestFixtureRejectedWithNoRelaunch(t *testing.T) {
 	var out bytes.Buffer
 	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
 	allowFail(t, cli.Run(context.Background(), []string{"open", "--no-relaunch", "--fixture", "seeded"}))
-	// --no-relaunch se salta la receta entera, asi que el fixture no correria.
-	// Aceptarlo y no ejecutarlo dejaria al agente validando contra datos que
-	// nadie sembro.
+	// --no-relaunch skips the whole recipe, so the fixture would not run.
+	// Accepting it and not executing it would leave the agent validating
+	// against data nobody seeded.
 	if !strings.Contains(out.String(), "open_flags_invalid") {
-		t.Fatalf("--fixture con --no-relaunch debe rechazarse: %q", out.String())
+		t.Fatalf("--fixture with --no-relaunch must be rejected: %q", out.String())
 	}
 }
 
@@ -2724,10 +2725,10 @@ func TestFixtureFailureAbortsNamingTheStep(t *testing.T) {
 	allowFail(t, cli.Run(context.Background(), []string{"open", "--fixture", "seeded"}))
 	got := out.String()
 	if !strings.Contains(got, "step=fixture") || !strings.Contains(got, "fixture seeded step 2/2") {
-		t.Fatalf("el fallo debe nombrar el fixture y el paso: %q", got)
+		t.Fatalf("the failure must name the fixture and the step: %q", got)
 	}
 	if containsCall(runner.commands, "simctl launch") {
-		t.Fatalf("no debe lanzarse la app tras un fixture fallido: %v", runner.commands)
+		t.Fatalf("the app must not launch after a failed fixture: %v", runner.commands)
 	}
 }
 
@@ -2743,55 +2744,57 @@ func TestNoFixtureRunsNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	if containsCall(runner.commands, "seeding-one") {
-		t.Fatalf("sin --fixture no debe sembrarse nada: %v", runner.commands)
+		t.Fatalf("without --fixture nothing must be seeded: %v", runner.commands)
 	}
 	if strings.Contains(out.String(), "fixture=") {
-		t.Fatalf("sin --fixture no debe reportarse ninguno: %q", out.String())
+		t.Fatalf("without --fixture none must be reported: %q", out.String())
 	}
 }
 
-// TestTapVerificationSurvivesTheCoordinateFallback: cuando un tap semantico cae
-// a coordenadas, ese es el camino con mas probabilidad de pulsar donde no toca.
-// Perder ahi --verify seria perderlo justo donde hace falta.
+// TestTapVerificationSurvivesTheCoordinateFallback: when a semantic tap
+// falls back to coordinates, that is the path most likely to tap the wrong
+// place. Losing --verify there would be losing it exactly where it is
+// needed.
 func TestTapVerificationSurvivesTheCoordinateFallback(t *testing.T) {
 	got := onlyFastPathArgs([]string{"--id", "boton", "--verify", "--observe", "delta", "--wait-timeout", "2s"})
 	joined := strings.Join(got, " ")
 	if !strings.Contains(joined, "--verify") {
-		t.Fatalf("--verify debe sobrevivir a la caida a coordenadas: %v", got)
+		t.Fatalf("--verify must survive the coordinate fallback: %v", got)
 	}
 	if strings.Contains(joined, "--id") {
-		t.Fatalf("el selector no debe reenviarse: %v", got)
+		t.Fatalf("the selector must not be forwarded: %v", got)
 	}
 }
 
-// TestVerifyReportsUnknownRatherThanGuessing: la verificacion es un extra. Si no
-// se puede leer el arbol, no se puede afirmar que el tap funciono NI que fallo,
-// y decir cualquiera de las dos cosas seria peor que admitir que no se sabe.
+// TestVerifyReportsUnknownRatherThanGuessing: verification is an extra. If
+// the tree cannot be read, it cannot be claimed that the tap worked NOR
+// that it failed, and saying either would be worse than admitting it is
+// not known.
 func TestVerifyReportsUnknownRatherThanGuessing(t *testing.T) {
 	cli := CLI{Root: t.TempDir()}
 	if got := cli.verifyTapChangedSomething(context.Background(), Config{}, nil); got != "unknown" {
-		t.Fatalf("sin arbol previo no se puede verificar nada, got %q", got)
+		t.Fatalf("without a prior tree nothing can be verified, got %q", got)
 	}
 }
 
-// TestVerifyDistinguishesChangedFromUnchanged: el caso "unchanged" es la razon
-// entera de esta funcion -- un tap que reporta ok sin haber hecho nada -- asi
-// que conviene fijarlo sin depender de una app viva.
+// TestVerifyDistinguishesChangedFromUnchanged: the "unchanged" case is
+// this function's entire reason to exist, a tap that reports ok having
+// done nothing, so it is worth pinning without depending on a live app.
 func TestVerifyDistinguishesChangedFromUnchanged(t *testing.T) {
 	same := []Element{{ID: "a", Label: "Uno"}, {ID: "b", Label: "Dos"}}
 	if delta := TreeDiff(same, same); len(delta.Added)+len(delta.Removed)+len(delta.Changed) != 0 {
-		t.Fatalf("dos arboles identicos no tienen delta: %+v", delta)
+		t.Fatalf("two identical trees have no delta: %+v", delta)
 	}
 	moved := []Element{{ID: "a", Label: "Uno"}, {ID: "b", Label: "DOS"}}
 	delta := TreeDiff(same, moved)
 	if len(delta.Changed) == 0 {
-		t.Fatalf("un cambio de etiqueta debe detectarse: %+v", delta)
+		t.Fatalf("a label change must be detected: %+v", delta)
 	}
 }
 
-// TestCaptureHonoursPreferDriver: --prefer-driver se aceptaba en la linea de
-// comandos pero captureScreenshot lo tiraba y encaminaba siempre por coste, asi
-// que la unica forma de esquivar un driver roto en captura era desinstalarlo.
+// TestCaptureHonoursPreferDriver: --prefer-driver was accepted on the
+// command line but captureScreenshot dropped it and always routed by cost,
+// so the only way to dodge a broken capture driver was uninstalling it.
 func TestCaptureHonoursPreferDriver(t *testing.T) {
 	cfg := DefaultConfig(t.TempDir())
 	cfg.Tools["idb"] = true
@@ -2802,26 +2805,26 @@ func TestCaptureHonoursPreferDriver(t *testing.T) {
 		t.Fatal(err)
 	}
 	if strings.Contains(runner.command, "idb screenshot") {
-		t.Fatalf("--prefer-driver simctl ignorado, encamino por coste a idb: %q", runner.command)
+		t.Fatalf("--prefer-driver simctl ignored, routed by cost to idb: %q", runner.command)
 	}
 }
 
-// TestTapToolGateIsNotIOSShaped: la puerta preguntaba solo por axe, que en el
-// Mac no se instala nunca, asi que `ui tap` fallaba con tool_missing aun con el
-// driver de macOS sano -- y ademas nombraba una herramienta que ya no es la
-// unica que sirve input alli.
+// TestTapToolGateIsNotIOSShaped: the gate asked only for axe, which is
+// never installed on the Mac, so `ui tap` failed with tool_missing even
+// with the macOS driver healthy, and it also named a tool that is no
+// longer the only one serving input there.
 func TestTapToolGateIsNotIOSShaped(t *testing.T) {
 	mac := DefaultConfig(t.TempDir())
 	mac.TargetKind = "macos"
 	caps := Capabilities{Tools: map[string]bool{"cua-driver": true}}
 	if !tapToolPresent(caps, mac) {
-		t.Fatal("con el driver de macOS presente se puede pulsar, aunque no haya axe")
+		t.Fatal("with the macOS driver present tapping is possible, even without axe")
 	}
 	if tapToolPresent(Capabilities{Tools: map[string]bool{"axe": true}}, mac) {
-		t.Fatal("axe no sirve input en el Mac")
+		t.Fatal("axe does not serve input on the Mac")
 	}
 	if got := tapToolMissingFields(mac)["tool"]; got != "cua-driver" {
-		t.Fatalf("debe nombrar el canonico de macOS: %q", got)
+		t.Fatalf("it must name the macOS canonical tool: %q", got)
 	}
 
 	sim := DefaultConfig(t.TempDir())

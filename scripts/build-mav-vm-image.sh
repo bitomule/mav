@@ -1,14 +1,14 @@
 #!/bin/sh
-# Construye una imagen de tart con mav y sus drivers de macOS ya instalados.
+# Builds a tart image with mav and its macOS drivers already installed.
 #
-# Lo que NO hace, a propósito: conceder permisos TCC. Accessibility y Screen
-# Recording van a las herramientas y podrían hornearse, pero los que pide la app
-# bajo prueba (micrófono, calendario, Apple Events...) dependen de cada app, así
-# que una imagen "con permisos" sería una imagen por app. Esta trae herramientas;
-# los permisos se conceden después, contra la app concreta.
+# What it does NOT do, on purpose: grant TCC permissions. Accessibility and
+# Screen Recording go to the tools and could be baked in, but the ones the app
+# under test asks for (microphone, calendar, Apple Events...) depend on each
+# app, so an image "with permissions" would be one image per app. This one
+# ships tools; permissions are granted later, against the specific app.
 #
-# Transparente respecto a tu setup de tart: no toca TART_HOME ni asume dónde
-# guardas las imágenes. Si lo tienes en un disco externo, se usa el tuyo.
+# Transparent about your tart setup: it does not touch TART_HOME or assume
+# where you keep your images. If you keep them on an external disk, yours is used.
 set -eu
 
 BASE="${MAV_VM_BASE:-ghcr.io/cirruslabs/macos-tahoe-base:latest}"
@@ -16,35 +16,35 @@ NAME="${MAV_VM_NAME:-mav-macos}"
 USER_NAME="${MAV_VM_USER:-admin}"
 PASSWORD="${MAV_VM_PASSWORD:-admin}"
 
-command -v tart >/dev/null || { echo "tart no está instalado" >&2; exit 1; }
+command -v tart >/dev/null || { echo "tart is not installed" >&2; exit 1; }
 
-# tart >= 2.29: en 2.28.1 `tart exec` revienta sin TTY (try! sin guard sobre el
-# tamaño del terminal), y crabbox lo usa para inyectar la clave SSH. Con la
-# versión vieja, el provider entero no arranca desde un script.
+# tart >= 2.29: in 2.28.1 `tart exec` blows up without a TTY (unguarded try!
+# over the terminal size), and crabbox uses it to inject the SSH key. With the
+# old version, the whole provider fails to start from a script.
 VERSION=$(tart --version 2>/dev/null | head -1)
 case "$VERSION" in
-  2.2[0-8].*|2.1*|1.*) echo "tart $VERSION es demasiado antiguo; hace falta >= 2.29" >&2; exit 1 ;;
+  2.2[0-8].*|2.1*|1.*) echo "tart $VERSION is too old; >= 2.29 is required" >&2; exit 1 ;;
 esac
 
-echo "==> clonando $BASE -> $NAME"
+echo "==> cloning $BASE -> $NAME"
 tart clone "$BASE" "$NAME"
 
-echo "==> arrancando (headless)"
+echo "==> booting (headless)"
 tart run "$NAME" --no-graphics &
 RUN_PID=$!
 trap 'kill "$RUN_PID" 2>/dev/null || true' EXIT
 
-echo "==> esperando IP"
+echo "==> waiting for IP"
 IP=""
 for _ in $(seq 1 60); do
   IP=$(tart ip "$NAME" 2>/dev/null || true)
   [ -n "$IP" ] && break
   sleep 5
 done
-[ -n "$IP" ] || { echo "la VM no dio IP" >&2; exit 1; }
+[ -n "$IP" ] || { echo "the VM never got an IP" >&2; exit 1; }
 echo "    $IP"
 
-echo "==> esperando SSH"
+echo "==> waiting for SSH"
 for _ in $(seq 1 60); do
   SSHPASS="$PASSWORD" sshpass -e ssh -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5 \
@@ -52,12 +52,12 @@ for _ in $(seq 1 60); do
   sleep 5
 done
 
-echo "==> instalando mav y drivers"
-# El aprovisionamiento va en un fichero y no en un heredoc dentro de un `if`:
-# mezclar las dos cosas rompio el heredoc en una version anterior y las ultimas
-# lineas -- justo las que arreglan el PATH y verifican -- acabaron imprimiendose
-# como texto en vez de ejecutarse. La imagen salio sin PATH y el script no se
-# entero.
+echo "==> installing mav and drivers"
+# Provisioning goes in a file, not in a heredoc inside an `if`: mixing the
+# two broke the heredoc in an earlier version and the last lines -- exactly
+# the ones that fix the PATH and verify -- ended up printed as text instead
+# of executing. The image shipped without PATH and the script never
+# noticed.
 PROVISION_SCRIPT=$(mktemp)
 trap 'rm -f "$PROVISION_SCRIPT"; kill "$RUN_PID" 2>/dev/null || true' EXIT
 cat > "$PROVISION_SCRIPT" <<'PROVISION'
@@ -65,7 +65,7 @@ set -eu
 export NONINTERACTIVE=1
 
 if ! command -v brew >/dev/null 2>&1; then
-  echo "    instalando homebrew"
+  echo "    installing homebrew"
   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 fi
 eval "$(/opt/homebrew/bin/brew shellenv)"
@@ -73,47 +73,47 @@ eval "$(/opt/homebrew/bin/brew shellenv)"
 brew install bitomule/tap/mav bitomule/tap/axcli mitmproxy
 curl -fsSL https://cua.ai/driver/install.sh | bash
 
-# En una sesion SSH no interactiva el PATH es /usr/bin:/bin:/usr/sbin:/sbin, sin
-# /opt/homebrew/bin. Sin esto, todo lo que acaba de instalarse es invisible al
-# conducir la VM desde fuera -- incluido desde crabbox.
+# In a non-interactive SSH session the PATH is /usr/bin:/bin:/usr/sbin:/sbin,
+# without /opt/homebrew/bin. Without this, everything just installed is
+# invisible when driving the VM from outside -- including from crabbox.
 LINE='export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH'
 grep -qs "/opt/homebrew/bin" "$HOME/.zshenv" 2>/dev/null || echo "$LINE" >> "$HOME/.zshenv"
 grep -qs "/opt/homebrew/bin" "$HOME/.bashrc" 2>/dev/null || echo "$LINE" >> "$HOME/.bashrc"
 
-# Verificar, no confiar: `brew install` con varias formulas falla entero si una
-# no existe, y sin esta comprobacion el script reportaba exito con la imagen a
-# medio construir. Una imagen incompleta anunciada como lista es peor que un
-# fallo: el error reaparece en el primer run, sin relacion aparente con la causa.
+# Verify, do not trust: `brew install` with several formulas fails as a whole
+# if one does not exist, and without this check the script reported success
+# with a half-built image. An incomplete image announced as ready is worse
+# than a failure: the error resurfaces on the first run, unrelated to the cause.
 missing=""
 for t in mav cua-driver axcli mitmdump; do
   if command -v "$t" >/dev/null 2>&1; then
     printf "      %-10s %s\n" "$t" "$(command -v "$t")"
   else
-    printf "      %-10s NO INSTALADO\n" "$t"
+    printf "      %-10s NOT INSTALLED\n" "$t"
     missing="$missing $t"
   fi
 done
-[ -z "$missing" ] || { echo "faltan herramientas:$missing" >&2; exit 1; }
+[ -z "$missing" ] || { echo "missing tools:$missing" >&2; exit 1; }
 PROVISION
 
 if ! SSHPASS="$PASSWORD" sshpass -e ssh -o StrictHostKeyChecking=no \
   -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "$USER_NAME@$IP" \
   'bash -s' < "$PROVISION_SCRIPT"
 then
-  echo "el aprovisionamiento fallo; la VM $NAME queda en pie para inspeccionarla" >&2
+  echo "provisioning failed; the VM $NAME is left running for inspection" >&2
   trap 'rm -f "$PROVISION_SCRIPT"' EXIT
   exit 1
 fi
 
-echo "==> apagando"
+echo "==> shutting down"
 SSHPASS="$PASSWORD" sshpass -e ssh -o StrictHostKeyChecking=no \
   -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "$USER_NAME@$IP" \
   'sudo shutdown -h now' 2>/dev/null || true
 for _ in $(seq 1 30); do tart ip "$NAME" >/dev/null 2>&1 || break; sleep 2; done
 
 echo
-echo "Imagen lista: $NAME"
-echo "  usar con crabbox:  CRABBOX_TART_IMAGE=$NAME crabbox job run <job>"
-echo "  publicar:          tart push $NAME <registro>/<org>/mav-macos:latest"
+echo "Image ready: $NAME"
+echo "  use with crabbox:  CRABBOX_TART_IMAGE=$NAME crabbox job run <job>"
+echo "  publish:           tart push $NAME <registry>/<org>/mav-macos:latest"
 echo
-echo "Los permisos TCC NO vienen concedidos: dependen de la app bajo prueba."
+echo "TCC permissions are NOT granted: they depend on the app under test."

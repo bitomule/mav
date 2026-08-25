@@ -9,25 +9,25 @@ import (
 	"github.com/bitomule/mav/internal/mav/drivers"
 )
 
-// AxcliID es la clave de registro del driver.
+// AxcliID is the driver's registry key.
 const AxcliID = "axcli"
 
-// Axcli envuelve axcli, que existe en la mezcla por una sola razon: entrega los
-// eventos al proceso destino con CGEventPostToPid, sin activar la app, sin
-// mover el cursor y sin saltar de Space. Si un agente valida mientras trabajas,
-// eso no es un detalle de confort: es la diferencia entre poder usar el Mac y
-// no poder.
+// Axcli wraps axcli, which is in the mix for one reason only: it delivers
+// events to the target process with CGEventPostToPid, without activating the
+// app, without moving the cursor and without jumping Spaces. If an agent
+// validates while you work, that is not a comfort detail: it is the
+// difference between being able to use the Mac and not.
 //
-// Queda como escotilla frente a cua-driver, que es el canonico. La razon es
-// concreta: cua-driver resuelve la ventana por `list_windows`, que solo enumera
-// la capa 0, asi que una UI flotante -- panel, HUD, popover, un onboarding --
-// le resulta invisible. axcli apunta por `--app` y no necesita window id, asi
-// que alcanza justo esas ventanas.
+// It stays as an escape hatch next to cua-driver, which is the canonical
+// one. The reason is concrete: cua-driver resolves the window through
+// `list_windows`, which only enumerates layer 0, so a floating UI, a panel,
+// HUD, popover, an onboarding, is invisible to it. axcli targets by `--app`
+// and needs no window id, so it reaches exactly those windows.
 //
-// Su captura NO se declara, y no es una omision: devolvia el escritorio
-// recortado a las medidas de la ventana, sin error, cuando el proceso no tiene
-// sesion grafica -- y ademas activaba la app. Un PNG plausible pero falso es
-// peor que no tener captura.
+// Its capture is NOT declared, and that is not an omission: it returned the
+// desktop cropped to the window's dimensions, with no error, when the
+// process has no graphical session, and it also activated the app. A
+// plausible but false PNG is worse than having no capture.
 type Axcli struct {
 	exec drivers.Executor
 }
@@ -37,7 +37,7 @@ var (
 	_ drivers.TypeDriver = (*Axcli)(nil)
 )
 
-// NewAxcli construye el driver.
+// NewAxcli builds the driver.
 func NewAxcli(exec drivers.Executor) *Axcli { return &Axcli{exec: exec} }
 
 func (d *Axcli) ID() string { return AxcliID }
@@ -53,25 +53,26 @@ func (d *Axcli) Provides(target drivers.Target) drivers.CapabilitySet {
 	)
 }
 
-// Cost es donde se expresa el reparto con Peekaboo, sin rasgos nuevos en la
-// interfaz Driver.
+// Cost is where the split with Peekaboo is expressed, with no new traits on
+// the Driver interface.
 //
-// Los taps son coste 0: van por CGEventPostToPid, que es el default de axcli
-// para click y scroll, y no roban el foco.
+// Taps are cost 0: they go through CGEventPostToPid, axcli's default for
+// click and scroll, and they do not steal focus.
 //
-// Escribir NO es coste 0, y esto es facil de asumir mal: `input` y `fill`
-// activan la app antes de teclear -- lo hacen en el codigo, sin flag para
-// evitarlo -- asi que ahi axcli no es mejor que Peekaboo. Se declara igual de
-// caro para que el router no lo prefiera creyendo que gana algo.
+// Typing is NOT cost 0, and this is easy to get wrong: `input` and `fill`
+// activate the app before typing, they do it in the code, with no flag to
+// avoid it, so there axcli is no better than Peekaboo. It is declared
+// equally expensive so the router does not prefer it believing it gains
+// something.
 func (d *Axcli) Cost(c drivers.Capability, _ drivers.Target) int {
 	switch c {
 	case drivers.CapCoordTap, drivers.CapSemanticTap:
-		// Por detras de cua-driver (0), y no por ser peor entregando, sino por
-		// como pulsa: cg-pid sintetiza un evento de raton, y hay botones
-		// -- SwiftUI, medido -- que lo aceptan sin reaccionar. El click de
-		// cua-driver va por AXPress cuando el elemento lo expone, que sobre
-		// esos mismos botones si surte efecto. axcli sigue siendo la unica via
-		// cuando cua no puede resolver la ventana.
+		// Behind cua-driver (0), and not for being worse at delivery but for
+		// how it presses: cg-pid synthesizes a mouse event, and there are
+		// buttons, SwiftUI, measured, that accept it without reacting.
+		// cua-driver's click goes through AXPress when the element exposes
+		// it, which does take effect on those same buttons. axcli remains
+		// the only path when cua cannot resolve the window.
 		return 10
 	case drivers.CapType:
 		return 60
@@ -80,12 +81,12 @@ func (d *Axcli) Cost(c drivers.Capability, _ drivers.Target) int {
 	}
 }
 
-// Probe comprueba el binario. axcli no tiene comando de diagnostico: verifica
-// AXIsProcessTrusted al arrancar cualquier comando con destino y muere con
-// `error: accessibility not granted`. No se invoca aqui a proposito -- pedirle
-// permiso a una app real solo para sondear tendria efectos secundarios --, asi
-// que el estado de TCC lo reporta Peekaboo, que si sabe preguntarlo sin tocar
-// nada.
+// Probe checks the binary. axcli has no diagnostic command: it verifies
+// AXIsProcessTrusted when starting any targeted command and dies with
+// `error: accessibility not granted`. It is not invoked here on purpose,
+// asking a real app for permission just to probe would have side effects,
+// so the TCC state is reported by Peekaboo, which does know how to ask
+// without touching anything.
 func (d *Axcli) Probe(_ context.Context, p drivers.Probe) drivers.HealthReport {
 	path, err := p.LookPath("axcli")
 	if err != nil {
@@ -104,8 +105,8 @@ func (d *Axcli) Warm(_ context.Context, _ drivers.Target) <-chan error {
 	return ch
 }
 
-// axcliTargetArgs apunta a la app. axcli exige --app o --pid en todo comando
-// con destino.
+// axcliTargetArgs points at the app. axcli demands --app or --pid on every
+// targeted command.
 func axcliTargetArgs(target drivers.Target) ([]string, error) {
 	if target.PID > 0 {
 		return []string{"--pid", strconv.Itoa(target.PID)}, nil
@@ -116,10 +117,10 @@ func axcliTargetArgs(target drivers.Target) ([]string, error) {
 	return nil, errors.New("axcli: no app to target; set bundle_id or resolve the pid")
 }
 
-// axcliError traduce el fallo. axcli devuelve exit 1 para todo y escribe
-// `error: <mensaje>` en stderr, asi que el motivo solo esta en el texto. No se
-// intenta clasificarlo por substring mas alla de lo imprescindible: esos
-// mensajes son suyos y pueden cambiarlos cuando quieran.
+// axcliError translates the failure. axcli returns exit 1 for everything and
+// writes `error: <message>` to stderr, so the reason lives only in the text.
+// No attempt is made to classify it by substring beyond the essential: those
+// messages are theirs and they can change them whenever they want.
 func axcliError(res drivers.ExecResult) error {
 	detail := strings.TrimSpace(res.Stderr)
 	for _, line := range strings.Split(detail, "\n") {
@@ -134,26 +135,26 @@ func axcliError(res drivers.ExecResult) error {
 	return errors.New(firstLine(detail))
 }
 
-// Tap pulsa sin robar el foco.
+// Tap clicks without stealing focus.
 func (d *Axcli) Tap(ctx context.Context, target drivers.Target, spec drivers.TapSpec) (drivers.TapResult, error) {
 	base, err := axcliTargetArgs(target)
 	if err != nil {
 		return drivers.TapResult{}, err
 	}
-	// El cursor software que axcli dibuja por defecto es util para un humano
-	// mirando y ruido para un agente: contradice justo lo que se le pide, que
-	// es no notarse.
-	// --strategy cg-pid va EXPLICITO aunque sea el default. Dos motivos: deja
-	// escrito en el comando cual es la propiedad de la que depende mav, y si
-	// una version futura cambia el default, esto falla en vez de empezar a
-	// robar el foco en silencio.
+	// The software cursor axcli draws by default is useful for a watching
+	// human and noise for an agent: it contradicts exactly what is asked of
+	// it, going unnoticed.
+	// --strategy cg-pid is EXPLICIT even though it is the default. Two
+	// reasons: it leaves written in the command which property mav depends
+	// on, and if a future version changes the default, this fails instead
+	// of silently starting to steal focus.
 	//
-	// Y no es teorico: la 0.1.0 que publica crates.io no tiene esta opcion
-	// siquiera -- su click llama a activate() y clica por coordenadas moviendo
-	// el cursor real. Por eso la formula apunta a un commit de main y no a la
-	// version publicada.
+	// And it is not theoretical: the 0.1.0 published on crates.io does not
+	// even have this option, its click calls activate() and clicks by
+	// coordinates moving the real cursor. That is why the formula points at
+	// a commit of main and not at the published version.
 	//
-	// --app/--pid son flags del subcomando, no globales.
+	// --app/--pid are subcommand flags, not global ones.
 	args := []string{"click", "--strategy", "cg-pid"}
 	args = append(args, base...)
 	switch {
@@ -162,9 +163,9 @@ func (d *Axcli) Tap(ctx context.Context, target drivers.Target, spec drivers.Tap
 	case spec.Selector.Text != "":
 		args = append(args, `text="`+spec.Selector.Text+`"`)
 	case spec.X != 0 || spec.Y != 0:
-		// `mouse click` es global e ignora --app: mueve el cursor real y
-		// dispara sobre la ventana de encima. Deja de ser background-safe, asi
-		// que se dice en vez de fingir que lo es.
+		// `mouse click` is global and ignores --app: it moves the real
+		// cursor and fires on whatever window is on top. It stops being
+		// background-safe, so this says so instead of pretending it is.
 		return drivers.TapResult{}, errors.New("axcli: coordinate taps are not background-safe; use a selector")
 	default:
 		return drivers.TapResult{}, errors.New("axcli: tap requires an id or text selector")
@@ -175,9 +176,9 @@ func (d *Axcli) Tap(ctx context.Context, target drivers.Target, spec drivers.Tap
 	return drivers.TapResult{MatchedID: spec.Selector.ID, MatchedText: spec.Selector.Text}, nil
 }
 
-// Type escribe en un elemento concreto. Ojo: esto SI activa la app -- `fill`
-// llama a activate() antes de teclear y no hay forma de evitarlo -- de ahi que
-// Cost lo declare caro.
+// Type writes into a specific element. Beware: this DOES activate the app,
+// `fill` calls activate() before typing and there is no way around it, hence
+// Cost declares it expensive.
 func (d *Axcli) Type(ctx context.Context, target drivers.Target, spec drivers.TextSpec) error {
 	if spec.Text == "" {
 		return errors.New("axcli: type text missing")

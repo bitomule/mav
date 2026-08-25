@@ -103,11 +103,12 @@ func (c CLI) networkStart(ctx context.Context, _ GlobalOptions, args []string) e
 		"proxy_url":   result.ProxyURL,
 		"run":         run.ID,
 	}
-	// En macOS no basta con levantar el proxy: hay que apuntar el sistema a el,
-	// o mitmdump graba un fichero vacio sin dar un solo error. Lo hace mav
-	// porque es un comando fijo y sin decisiones, y sobre todo porque hay que
-	// DESHACERLO -- un agente que se olvide de restaurarlo deja la maquina
-	// apuntando a un proxy muerto, o sea sin red.
+	// On macOS bringing up the proxy is not enough: the system must be
+	// pointed at it, or mitmdump records an empty file without a single
+	// error. mav does it because it is a fixed command with no decisions,
+	// and above all because it must be UNDONE; an agent that forgets to
+	// restore it leaves the machine pointing at a dead proxy, that is,
+	// without network.
 	if targetKind(cfg) == drivers.KindMac {
 		if _, ok := c.pointMacAtProxy(ctx, run, result.ListenPort); ok {
 			fields["system_proxy"] = "set"
@@ -116,9 +117,10 @@ func (c CLI) networkStart(ctx context.Context, _ GlobalOptions, args []string) e
 			fields["next"] = "could not find the active network service; point the app at proxy_url yourself"
 		}
 		if !c.macProxyCATrusted(ctx) {
-			// Sin CA de confianza mitmdump sigue grabando, pero el https sale
-			// como tuneles CONNECT sin contenido: una captura que parece
-			// funcionar y no sirve. Se dice antes, no despues de mirar el HAR.
+			// Without a trusted CA mitmdump keeps recording, but the https
+			// comes out as CONNECT tunnels with no content: a capture that
+			// looks like it works and is useless. It is said up front, not
+			// after staring at the HAR.
 			fields["ca_trusted"] = "no"
 			fields["ca_next"] = "sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ~/.mitmproxy/mitmproxy-ca-cert.pem"
 		}

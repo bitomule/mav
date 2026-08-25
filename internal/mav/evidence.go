@@ -42,18 +42,18 @@ type EvidenceStep struct {
 type ReportData struct {
 	RunID     string `json:"run_id"`
 	CreatedAt string `json:"created_at"`
-	// Fixture es el estado con nombre que se sembro antes de lanzar la app, si
-	// hubo alguno. Sin esto el manifiesto no puede responder "de que estado
-	// partio esto?", y un run cuya evidencia no dice eso no es reproducible --
-	// que es justo lo que el manifiesto verificado promete.
+	// Fixture is the named state seeded before launching the app, if there
+	// was one. Without this the manifest cannot answer "what state did
+	// this start from?", and a run whose evidence does not say that is not
+	// reproducible, which is exactly what the verified manifest promises.
 	Fixture    string `json:"fixture,omitempty"`
 	Dir        string `json:"dir"`
 	Screenshot string `json:"screenshot,omitempty"`
-	// Puntero para poder estar AUSENTE. Como valor, un run sin captura de
-	// pantalla suelta -- que es todo flow -- serializaba
-	// `"screenshot_evidence":{"ok":false}`: un veredicto negativo sobre algo
-	// que nunca existio. En una capa de evidencia eso es peor que no decir
-	// nada, porque un agente no puede distinguirlo de una captura rota.
+	// A pointer so it can be ABSENT. As a value, a run without a loose
+	// screenshot, which is every flow, serialized
+	// `"screenshot_evidence":{"ok":false}`: a negative verdict on something
+	// that never existed. In an evidence layer that is worse than saying
+	// nothing, because an agent cannot tell it apart from a broken capture.
 	ScreenshotEvidence *ImageEvidence       `json:"screenshot_evidence,omitempty"`
 	Steps              []ReportEvidenceStep `json:"steps"`
 	Video              string               `json:"video,omitempty"`
@@ -402,8 +402,8 @@ func exists(path string) bool {
 	return err == nil
 }
 
-// runFixturePath es donde `mav open` deja constancia del fixture aplicado, para
-// que el manifiesto de evidencia pueda decir de que estado partio el run.
+// runFixturePath is where `mav open` records the applied fixture, so the
+// evidence manifest can say what state the run started from.
 func runFixturePath(run RunState) string {
 	return filepath.Join(run.Dir, "fixture.txt")
 }

@@ -1,9 +1,10 @@
-// Package macos agrupa los drivers que operan sobre apps del propio Mac.
+// Package macos groups the drivers that operate on the Mac's own apps.
 //
-// A diferencia de iOS, aqui no hay un unico CLI que lo haga todo: el arbol de
-// accesibilidad y los menus salen de una herramienta, el input de otra, y las
-// capturas del propio sistema. El router ya sabe repartir por capacidad y
-// coste, asi que cada driver declara lo que hace bien y deja lo demas.
+// Unlike iOS, there is no single CLI here that does everything: the
+// accessibility tree and the menus come from one tool, the input from
+// another, and the captures from the system itself. The router already
+// knows how to split by capability and cost, so each driver declares what
+// it does well and leaves the rest.
 package macos
 
 import (
@@ -15,26 +16,27 @@ import (
 	"github.com/bitomule/mav/internal/mav/drivers"
 )
 
-// ScreencaptureID es la clave de registro del driver de capturas del sistema.
+// ScreencaptureID is the registry key of the system capture driver.
 const ScreencaptureID = "screencapture"
 
-// Screencapture envuelve el `screencapture` que trae macOS. Es el ultimo
-// recurso para CapScreenshot: captura la pantalla entera, que como evidencia de
-// una app concreta es peor que una captura acotada a su ventana. Un driver que
-// sepa resolver el id de ventana debe declarar coste menor y ganarle.
+// Screencapture wraps the `screencapture` that ships with macOS. It is the
+// last resort for CapScreenshot: it captures the whole screen, which as
+// evidence of a specific app is worse than a capture bounded to its window.
+// A driver that can resolve the window id must declare a lower cost and
+// beat it.
 type Screencapture struct {
 	exec drivers.Executor
 }
 
 var _ drivers.ScreenshotDriver = (*Screencapture)(nil)
 
-// NewScreencapture construye el driver.
+// NewScreencapture builds the driver.
 func NewScreencapture(exec drivers.Executor) *Screencapture { return &Screencapture{exec: exec} }
 
 func (d *Screencapture) ID() string { return ScreencaptureID }
 
-// Provides solo declara capacidades en el Mac: en simulador y en dispositivo
-// hay caminos mejores y ya cubiertos.
+// Provides only declares capabilities on the Mac: on the simulator and on
+// device there are better paths already covered.
 func (d *Screencapture) Provides(target drivers.Target) drivers.CapabilitySet {
 	if target.Kind != drivers.KindMac {
 		return drivers.NewSet()
@@ -42,12 +44,12 @@ func (d *Screencapture) Provides(target drivers.Target) drivers.CapabilitySet {
 	return drivers.NewSet(drivers.CapScreenshot, drivers.CapVideo)
 }
 
-// Cost coloca a screencapture como fallback aceptable, no como camino
-// canonico: pantalla entera en vez de ventana.
+// Cost places screencapture as an acceptable fallback, not the canonical
+// path: whole screen instead of window.
 func (d *Screencapture) Cost(c drivers.Capability, _ drivers.Target) int {
 	switch c {
 	case drivers.CapVideo:
-		return 0 // nadie mas graba video en el Mac
+		return 0 // nobody else records video on the Mac
 	case drivers.CapScreenshot:
 		return 50
 	default:
@@ -55,10 +57,10 @@ func (d *Screencapture) Cost(c drivers.Capability, _ drivers.Target) int {
 	}
 }
 
-// Probe comprueba que el binario del sistema esta donde deberia. No puede
-// comprobar el permiso de Screen Recording: ese pertenece al proceso padre (la
-// terminal o el harness del agente), no a mav, y no hay forma barata de
-// preguntarlo sin intentar una captura de verdad.
+// Probe checks that the system binary is where it should be. It cannot
+// check the Screen Recording permission: that belongs to the parent process
+// (the terminal or the agent's harness), not to mav, and there is no cheap
+// way to ask without attempting a real capture.
 func (d *Screencapture) Probe(_ context.Context, p drivers.Probe) drivers.HealthReport {
 	path, err := p.LookPath("screencapture")
 	if err != nil {
@@ -77,8 +79,8 @@ func (d *Screencapture) Warm(_ context.Context, _ drivers.Target) <-chan error {
 	return ch
 }
 
-// Screenshot captura la pantalla. `-x` silencia el sonido del obturador, que en
-// una sesion automatizada solo es ruido.
+// Screenshot captures the screen. `-x` silences the shutter sound, which in
+// an automated session is only noise.
 func (d *Screencapture) Screenshot(ctx context.Context, _ drivers.Target, spec drivers.ScreenshotSpec) error {
 	if spec.OutPath == "" {
 		return errors.New("screencapture: screenshot output path missing")
@@ -90,8 +92,8 @@ func (d *Screencapture) Screenshot(ctx context.Context, _ drivers.Target, spec d
 	return nil
 }
 
-// VideoStart arranca una grabacion. screencapture -v graba hasta que se le
-// manda SIGINT, que es como VideoStop lo para.
+// VideoStart begins a recording. screencapture -v records until it is sent
+// SIGINT, which is how VideoStop stops it.
 func (d *Screencapture) VideoStart(ctx context.Context, _ drivers.Target, spec drivers.VideoSpec) (drivers.VideoResult, error) {
 	if spec.OutPath == "" {
 		return drivers.VideoResult{}, errors.New("screencapture: video output path missing")
@@ -103,8 +105,8 @@ func (d *Screencapture) VideoStart(ctx context.Context, _ drivers.Target, spec d
 	return drivers.VideoResult{PID: pid, OutPath: spec.OutPath}, nil
 }
 
-// VideoStop corta la grabacion con SIGINT. Matar con SIGKILL dejaria el .mov a
-// medio escribir y sin indice, es decir ilegible.
+// VideoStop cuts the recording with SIGINT. Killing with SIGKILL would
+// leave the .mov half-written and without an index, that is, unreadable.
 func (d *Screencapture) VideoStop(_ context.Context, _ drivers.Target, pid int) error {
 	if pid <= 0 {
 		return errors.New("screencapture: video pid missing")

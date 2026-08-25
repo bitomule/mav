@@ -27,9 +27,9 @@ type Capabilities struct {
 	IDBIssue             string
 	IDBNext              string
 
-	// macOS: TCC es el factor que decide, no la API. Se reporta aparte porque
-	// el titular del permiso NO es mav sino el proceso que lo ejecuta, y eso
-	// hay que decirlo o el usuario lo busca donde no esta.
+	// macOS: TCC is the deciding factor, not the API. It is reported
+	// separately because the permission holder is NOT mav but the process
+	// running it, and that must be said or the user looks where it is not.
 	MacPermissions     string
 	MacPermissionsNext string
 }
@@ -79,13 +79,13 @@ func (c CLI) resolveCapabilities(ctx context.Context, cfg Config) Capabilities {
 	return caps
 }
 
-// resolveMacPermissions pregunta a cua-driver por el estado de TCC.
+// resolveMacPermissions asks cua-driver for the TCC state.
 //
-// Y pregunta al DEMONIO, que es lo que hace util la respuesta: contesta con la
-// identidad de CuaDriver.app, que es quien tiene los permisos de verdad. Un
-// sondeo que mirara los permisos del proceso que corre mav no diria nada,
-// porque en macOS un CLI nunca los tiene: solo los procesos GUI interactivos
-// pueden tenerlos, y de ahi toda la arquitectura de broker.
+// And it asks the DAEMON, which is what makes the answer useful: it
+// answers with CuaDriver.app's identity, which is who really holds the
+// permissions. A probe looking at the permissions of the process running
+// mav would say nothing, because on macOS a CLI never has them: only
+// interactive GUI processes can, hence the whole broker architecture.
 func (c CLI) resolveMacPermissions(ctx context.Context, caps *Capabilities) {
 	if !caps.Tools["cua-driver"] {
 		caps.MacPermissions = "unknown"
@@ -99,21 +99,21 @@ func (c CLI) resolveMacPermissions(ctx context.Context, caps *Capabilities) {
 		return
 	}
 	caps.MacPermissions = strings.Join(missing, "+") + "_missing"
-	// Su propio flujo de concesion lanza la app por LaunchServices para que los
-	// dialogos se atribuyan a ella y la registra en los paneles. Conceder a la
-	// terminal no sirve: el que captura es el demonio.
+	// Its own grant flow launches the app through LaunchServices so the
+	// dialogs are attributed to it, and registers it in the panels.
+	// Granting to the terminal does not help: the daemon is who captures.
 	caps.MacPermissionsNext = "cua-driver permissions grant"
 }
 
-// macMissingPermissions lee la respuesta de `cua-driver permissions status`.
-// Deliberadamente tolerante: si la salida no se entiende, no se inventa un
-// estado -- devolver "todo bien" ante un formato desconocido seria peor que
-// admitir que no se sabe.
+// macMissingPermissions reads the `cua-driver permissions status` answer.
+// Deliberately tolerant: if the output is not understood, no state is
+// invented; returning "all good" for an unknown format would be worse than
+// admitting it is not known.
 func macMissingPermissions(stdout string) []string {
-	// Punteros y no bool: la respuesta trae `null` cuando no hay demonio al
-	// que preguntar, y un `false` implicito ahi seria mentir en la direccion
-	// contraria -- diria "falta permiso" cuando lo que pasa es que nadie ha
-	// contestado.
+	// Pointers and not bool: the answer carries `null` when there is no
+	// daemon to ask, and an implicit `false` there would lie in the
+	// opposite direction, it would say "permission missing" when what
+	// happened is that nobody answered.
 	var status struct {
 		Accessibility   *bool `json:"accessibility"`
 		ScreenRecording *bool `json:"screen_recording"`

@@ -27,11 +27,11 @@ func RegisterDefaultDrivers(reg *drivers.Registry, exec drivers.Executor) {
 	reg.Register(baguette.New(exec))
 	reg.Register(network.New(exec))
 	reg.Register(simtime.New(exec))
-	// macOS: cua-driver da arbol, captura de ventana e input en segundo plano
-	// en una sola herramienta; axcli
-	// el input que no roba el foco; screencapture el video y la captura de
-	// pantalla entera como ultimo recurso. El reparto entre los tres sale de
-	// sus tablas de Cost, no de ningun caso especial en el router.
+	// macOS: cua-driver gives the tree, window capture and background input
+	// in a single tool; axcli the input that does not steal focus;
+	// screencapture the video and the whole-screen capture as a last
+	// resort. The split among the three comes from their Cost tables, not
+	// from any special case in the router.
 	reg.Register(macos.NewCua(exec))
 	reg.Register(macos.NewAxcli(exec))
 	reg.Register(macos.NewScreencapture(exec))

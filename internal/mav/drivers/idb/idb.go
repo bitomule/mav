@@ -35,10 +35,10 @@ func (d *Driver) ID() string { return ID }
 // device lifecycle, device logs/crashes, coordinate taps, fallback screenshot
 // when AXe is missing.
 func (d *Driver) Provides(target drivers.Target) drivers.CapabilitySet {
-	// idb habla con simuladores y dispositivos iOS. Declarar capacidades en
-	// un target de macOS lo metia a competir por ellas: empataba a coste con
-	// el driver de macOS y desempataba el orden alfabetico, asi que un
-	// `ui tree` contra una app de Mac acababa invocando a idb sin udid.
+	// idb talks to iOS simulators and devices. Declaring capabilities on a
+	// macOS target put it in the running for them: it tied on cost with
+	// the macOS driver and the alphabetical order broke the tie, so a
+	// `ui tree` against a Mac app ended up invoking idb with no udid.
 	if target.Kind == drivers.KindMac {
 		return drivers.NewSet()
 	}

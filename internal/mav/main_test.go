@@ -37,13 +37,13 @@ func TestMain(m *testing.M) {
 }
 
 func TestExecRunnerStartDiscardsOutputWithoutALogPath(t *testing.T) {
-	// El lanzamiento de una app de macOS no tiene fichero de log al que
-	// apuntar: su canal de verdad es OSLog, que mav captura aparte. Antes esto
-	// moria con "open : no such file or directory", que no decia nada de la
-	// causa real.
+	// Launching a macOS app has no log file to point at: its real channel
+	// is OSLog, which mav captures separately. Before, this died with
+	// "open : no such file or directory", which said nothing about the real
+	// cause.
 	pid, err := ExecRunner{}.Start(context.Background(), "", "/usr/bin/true")
 	if err != nil {
-		t.Fatalf("un logPath vacio debe significar descartar, no fallar: %v", err)
+		t.Fatalf("an empty logPath must mean discard, not fail: %v", err)
 	}
 	if pid <= 0 {
 		t.Fatalf("pid=%d", pid)

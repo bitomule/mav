@@ -137,8 +137,8 @@ type flowStepPayload struct {
 	PreferDriver   string `yaml:"prefer-driver"`
 	ClearState     bool   `yaml:"clearState"`
 	ClearStateDash bool   `yaml:"clear-state"`
-	// Una sola grafia a proposito: el doblete clearState/clear-state de arriba
-	// es deuda que no hay motivo para repetir.
+	// A single spelling on purpose: the clearState/clear-state doublet
+	// above is debt there is no reason to repeat.
 	Fixture        string          `yaml:"fixture"`
 	Network        bool            `yaml:"network"`
 	Focused        string          `yaml:"focused"`

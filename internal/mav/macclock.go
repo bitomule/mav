@@ -6,35 +6,37 @@ import (
 	"time"
 )
 
-// El control de tiempo en macOS es de SISTEMA, no por proceso, y esa diferencia
-// con iOS no es un detalle de implementacion sino el hecho central.
+// Time control on macOS is SYSTEM-wide, not per process, and that
+// difference with iOS is not an implementation detail but the central fact.
 //
-// En simulador, simtime interpone el reloj que ve la app y no toca la maquina.
-// En macOS no existe ese equivalente: la unica via por proceso es libfaketime
-// con DYLD_INSERT_LIBRARIES, que el hardened runtime bloquea en cualquier app
-// firmada para distribuir -- o sea, funciona sobre tu build de Debug y sobre
-// nada mas. Lo que si funciona siempre es cambiar el reloj de la maquina, y por
-// eso es lo que mav ofrece, con la puerta cerrada por defecto.
+// On the simulator, simtime interposes the clock the app sees and does not
+// touch the machine. On macOS that equivalent does not exist: the only
+// per-process path is libfaketime with DYLD_INSERT_LIBRARIES, which the
+// hardened runtime blocks in any app signed for distribution, that is, it
+// works on your Debug build and on nothing else. What does always work is
+// changing the machine's clock, and that is why it is what mav offers, with
+// the gate closed by default.
 //
-// `freeze` y `scale` no se mapean a nada: un reloj de sistema corre, y no hay
-// forma de pararlo ni de acelerarlo.
+// `freeze` and `scale` map to nothing: a system clock runs, and there is no
+// way to stop it or speed it up.
 
-// macClockInVM dice si esto es un invitado de Virtualization.framework.
+// macClockInVM says whether this is a Virtualization.framework guest.
 //
-// Es la puerta: cambiar el reloj de una VM dedicada es barato y reversible;
-// hacerlo en el Mac de alguien le caduca certificados, le rompe sesiones y le
-// desordena los ficheros por fecha. Con --system-clock se puede forzar, porque
-// hay quien sabe lo que hace, pero tiene que decirlo.
+// It is the gate: changing the clock of a dedicated VM is cheap and
+// reversible; doing it on somebody's Mac expires their certificates, breaks
+// their sessions and shuffles their files by date. With --system-clock it
+// can be forced, because some people know what they are doing, but they
+// have to say so.
 func (c CLI) macClockInVM(ctx context.Context) bool {
 	res := c.Runner.Run(ctx, "sysctl", "-n", "kern.hv_vmm_present")
 	return strings.TrimSpace(res.Stdout) == "1"
 }
 
-// macTimeTravel lleva el reloj de la maquina a un instante.
+// macTimeTravel takes the machine's clock to an instant.
 //
-// La sincronizacion de red se apaga primero porque, si no, el sistema deshace
-// el cambio en cuanto le apetece consultar la hora -- y el sintoma seria una
-// prueba que pasa o falla segun el momento en que se ejecute.
+// Network time sync is turned off first because otherwise the system undoes
+// the change whenever it feels like checking the time, and the symptom
+// would be a test that passes or fails depending on when it runs.
 func (c CLI) macTimeTravel(ctx context.Context, at time.Time) error {
 	if res := c.Runner.Run(ctx, "sudo", "systemsetup", "-setusingnetworktime", "off"); res.Err != nil {
 		return res.Err
@@ -47,14 +49,14 @@ func (c CLI) macTimeTravel(ctx context.Context, at time.Time) error {
 	return res.Err
 }
 
-// macTimeReset devuelve el reloj al del mundo real.
+// macTimeReset returns the clock to the real world's.
 func (c CLI) macTimeReset(ctx context.Context) error {
 	res := c.Runner.Run(ctx, "sudo", "systemsetup", "-setusingnetworktime", "on")
 	return res.Err
 }
 
-// macTimeStatus reporta lo que hay, que en un reloj de sistema es la hora y si
-// alguien la esta sincronizando por debajo.
+// macTimeStatus reports what there is, which for a system clock is the time
+// and whether somebody is syncing it underneath.
 func (c CLI) macTimeStatus(ctx context.Context) map[string]string {
 	fields := map[string]string{"clock": "system"}
 	if res := c.Runner.Run(ctx, "date", "-u", "+%Y-%m-%dT%H:%M:%SZ"); strings.TrimSpace(res.Stdout) != "" {

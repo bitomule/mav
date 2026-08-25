@@ -13,9 +13,9 @@ import (
 	"github.com/bitomule/mav/internal/mav/drivers"
 )
 
-// targetKind es el unico sitio que decide QUE ES un target. Devuelve el enum
-// del router (drivers.TargetKind) en vez de un bool para que anadir un tercer
-// kind sea anadir un case, no auditar cada if del CLI.
+// targetKind is the only place that decides WHAT a target IS. It returns
+// the router's enum (drivers.TargetKind) instead of a bool so adding a
+// third kind means adding a case, not auditing every if in the CLI.
 func targetKind(cfg Config) drivers.TargetKind {
 	switch cfg.TargetKind {
 	case "device":
@@ -27,11 +27,11 @@ func targetKind(cfg Config) drivers.TargetKind {
 	}
 }
 
-// targetKindLabel es la grafia PUBLICA de un TargetKind: es lo que sale en el
-// campo target_kind de la salida del CLI, en MAV_TARGET_KIND y en el
-// target_kind de .mav/config.yaml. Deliberadamente NO es string(kind)
-// ("sim"), que es un token interno de routing: "simulator"/"device" son
-// contrato con los agentes y con los config.yaml ya escritos en disco.
+// targetKindLabel is the PUBLIC spelling of a TargetKind: it is what shows
+// up in the CLI output's target_kind field, in MAV_TARGET_KIND and in the
+// target_kind of .mav/config.yaml. It is deliberately NOT string(kind)
+// ("sim"), which is an internal routing token: "simulator"/"device" are
+// contract with the agents and with the config.yaml files already on disk.
 func targetKindLabel(kind drivers.TargetKind) string {
 	switch kind {
 	case drivers.KindDevice:
@@ -48,8 +48,9 @@ func targetUDID(cfg Config) string {
 	case drivers.KindDevice:
 		return cfg.DeviceUDID
 	case drivers.KindMac:
-		// Una app de macOS no tiene UDID: la maquina es esta. Devolver algo
-		// aqui haria que withResolvedTarget reportase un identificador falso.
+		// A macOS app has no UDID: the machine is this one. Returning
+		// something here would make withResolvedTarget report a fake
+		// identifier.
 		return ""
 	default:
 		return cfg.SimulatorUDID
@@ -114,17 +115,18 @@ func (c CLI) withResolvedTarget(fields map[string]string) map[string]string {
 	// resolveConfigTarget already applies the booted-simulator fallback to
 	// cfg itself (see its doc comment), so cfg is fully resolved by now --
 	// no separate fallback needed here just for the reported fields.
-	// El perfil activo se reporta por el mismo motivo que udid/target_kind: en
-	// uso en caliente, un agente encadena comandos sueltos y necesita leer de
-	// la respuesta contra que esta operando, en vez de recordarlo.
+	// The active profile is reported for the same reason as
+	// udid/target_kind: in hot use, an agent chains loose commands and
+	// needs to read from the response what it is operating against, instead
+	// of remembering it.
 	if cfg.ActiveProfile != "" {
 		if _, ok := fields["profile"]; !ok {
 			fields["profile"] = cfg.ActiveProfile
 		}
-		// Un perfil que declara runner: crabbox espera correr dentro de una VM.
-		// Si esta linea la esta leyendo alguien, mav esta corriendo AHI, sea
-		// dentro o fuera -- reportarlo evita el malentendido de creerse aislado
-		// cuando se lanzo el comando a pelo.
+		// A profile declaring runner: crabbox expects to run inside a VM.
+		// If somebody is reading this line, mav is running THERE, inside or
+		// outside; reporting it avoids the misunderstanding of believing
+		// yourself isolated when the command was launched bare.
 		if cfg.ProfileRunner != "" && cfg.ProfileRunner != "local" {
 			if _, ok := fields["runner"]; !ok {
 				fields["runner"] = cfg.ProfileRunner
@@ -134,12 +136,12 @@ func (c CLI) withResolvedTarget(fields map[string]string) map[string]string {
 	udid := targetUDID(cfg)
 	name := targetName(cfg)
 	kind := targetKindLabel(targetKind(cfg))
-	// El kind se reporta SIEMPRE, tambien cuando no hay udid. La guarda de
-	// abajo existe para el caso "no se ha podido resolver contra que
-	// simulador", pero en un target de macOS no hay udid por definicion --la
-	// maquina es esta-- y salir antes dejaba al agente sin saber que
-	// plataforma esta conduciendo, que es justo el dato que mas cambia lo que
-	// puede pedir a continuacion.
+	// The kind is ALWAYS reported, also when there is no udid. The guard
+	// below exists for the "could not resolve which simulator" case, but a
+	// macOS target has no udid by definition, the machine is this one, and
+	// returning early left the agent not knowing which platform it is
+	// driving, which is exactly the datum that most changes what it can ask
+	// for next.
 	if _, ok := fields["target_kind"]; !ok {
 		fields["target_kind"] = kind
 	}

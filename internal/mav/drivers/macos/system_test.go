@@ -26,9 +26,10 @@ func makeBundle(t *testing.T, name string, executables ...string) string {
 	return app
 }
 
-// TestSystemLaunchesTheBinaryNotOpen: `open` no propaga variables de entorno al
-// proceso que arranca, y el entorno es justo como mav inyecta su configuracion
-// -- el equivalente de los SIMCTL_CHILD_* del simulador.
+// TestSystemLaunchesTheBinaryNotOpen: `open` does not propagate environment
+// variables to the process it starts, and the environment is exactly how
+// mav injects its configuration, the equivalent of the simulator's
+// SIMCTL_CHILD_*.
 func TestSystemLaunchesTheBinaryNotOpen(t *testing.T) {
 	app := makeBundle(t, "Nokoru", "Nokoru")
 	f := &fakeExec{tools: map[string]bool{"open": true}}
@@ -37,18 +38,18 @@ func TestSystemLaunchesTheBinaryNotOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 	if res.PID == 0 {
-		t.Fatal("debe devolver el pid del proceso lanzado")
+		t.Fatal("it must return the pid of the launched process")
 	}
 	if len(f.commands) != 1 || !strings.Contains(f.commands[0], "Contents/MacOS/Nokoru") {
-		t.Fatalf("debe ejecutarse el binario del bundle, no `open`: %v", f.commands)
+		t.Fatalf("the bundle's binary must be executed, not `open`: %v", f.commands)
 	}
 	if strings.HasPrefix(f.commands[0], "open ") {
-		t.Fatalf("`open` perderia el entorno: %v", f.commands)
+		t.Fatalf("`open` would lose the environment: %v", f.commands)
 	}
 }
 
-// El binario no siempre se llama como el bundle, asi que se elige el unico que
-// haya antes de asumir el nombre.
+// The binary is not always named after the bundle, so the only one present
+// is picked before assuming the name.
 func TestSystemResolvesASingleExecutableWhateverItsName(t *testing.T) {
 	app := makeBundle(t, "Nokoru", "nNokoru")
 	f := &fakeExec{}
@@ -67,55 +68,55 @@ func TestSystemPrefersTheBundleNameWhenAmbiguous(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.HasSuffix(strings.TrimSpace(f.commands[0]), "/Nokoru") {
-		t.Fatalf("con varios candidatos manda la convencion del nombre: %v", f.commands)
+		t.Fatalf("with several candidates the naming convention rules: %v", f.commands)
 	}
 }
 
-// Install en macOS no copia nada: comprueba que el bundle esta donde la receta
-// dijo. Es la unica parte que puede fallar, y da un error util cuando el build
-// no produjo lo que creia.
+// Install on macOS copies nothing: it checks that the bundle is where the
+// recipe said. It is the only part that can fail, and it gives a useful
+// error when the build did not produce what it believed.
 func TestSystemInstallVerifiesTheBundleExists(t *testing.T) {
 	d := NewSystem(&fakeExec{})
 	if err := d.Install(context.Background(), drivers.Target{Kind: drivers.KindMac}, drivers.InstallSpec{Path: "/nope/Missing.app"}); err == nil {
-		t.Fatal("un bundle que no existe debe fallar aqui, no dos capas mas abajo")
+		t.Fatal("a bundle that does not exist must fail here, not two layers down")
 	}
 	app := makeBundle(t, "Nokoru", "Nokoru")
 	if err := d.Install(context.Background(), drivers.Target{Kind: drivers.KindMac}, drivers.InstallSpec{Path: app}); err != nil {
-		t.Fatalf("un bundle valido no debe fallar: %v", err)
+		t.Fatalf("a valid bundle must not fail: %v", err)
 	}
 }
 
-// TestSystemTerminateAsksForACleanQuit: el fixture necesita que la app haya
-// cerrado su base de datos, no que la hayan matado con el WAL a medias.
+// TestSystemTerminateAsksForACleanQuit: the fixture needs the app to have
+// closed its database, not to have been killed with the WAL half-written.
 func TestSystemTerminateAsksForACleanQuit(t *testing.T) {
 	f := &fakeExec{}
 	if err := NewSystem(f).Terminate(context.Background(), drivers.Target{Kind: drivers.KindMac}, "com.example.app"); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.commands) != 1 || !strings.Contains(f.commands[0], "to quit") {
-		t.Fatalf("debe pedirse un cierre limpio: %v", f.commands)
+		t.Fatalf("a clean quit must be requested: %v", f.commands)
 	}
 	if strings.Contains(f.commands[0], "kill") {
-		t.Fatalf("matarla dejaria el WAL a medias: %v", f.commands)
+		t.Fatalf("killing it would leave the WAL half-written: %v", f.commands)
 	}
 }
 
 func TestSystemProvidesTerminateOnMac(t *testing.T) {
-	// Sin esto, el cierre previo a sembrar un fixture era un no-op silencioso
-	// y el fixture escribia con la instancia anterior teniendo el sqlite
-	// abierto.
+	// Without this, the shutdown before seeding a fixture was a silent
+	// no-op and the fixture wrote while the previous instance kept the
+	// sqlite open.
 	caps := NewSystem(&fakeExec{}).Provides(drivers.Target{Kind: drivers.KindMac})
 	if !caps.Has(drivers.CapTerminate) {
-		t.Fatal("alguien tiene que proveer CapTerminate en el Mac")
+		t.Fatal("somebody has to provide CapTerminate on the Mac")
 	}
 	if len(NewSystem(&fakeExec{}).Provides(drivers.Target{Kind: drivers.KindSim})) != 0 {
-		t.Fatal("en simulador manda simctl")
+		t.Fatal("on the simulator simctl rules")
 	}
 }
 
 func TestSystemLocationIsHonestlyUnsupported(t *testing.T) {
 	d := NewSystem(&fakeExec{})
 	if err := d.SetLocation(context.Background(), drivers.Target{Kind: drivers.KindMac}, 1, 2); err == nil {
-		t.Fatal("macOS no permite sobreescribir la ubicacion de una app ya lanzada; hay que decirlo")
+		t.Fatal("macOS does not allow overriding the location of an already launched app; it must say so")
 	}
 }

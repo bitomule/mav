@@ -19,8 +19,8 @@ func diagnosticCrashRoots(cfg Config) []string {
 		roots = append(roots, filepath.Join(home, "Library", "Developer", "CoreSimulator", "Devices", cfg.SimulatorUDID))
 	}
 	if targetKind(cfg) == drivers.KindMac {
-		// Un crash de una app de macOS puede caer en la carpeta del usuario o
-		// en la del sistema segun quien lo genere; hay que mirar en las dos.
+		// A macOS app crash can land in the user folder or the system one
+		// depending on who generates it; both must be checked.
 		roots = append(roots, filepath.Join("/", "Library", "Logs", "DiagnosticReports"))
 	}
 	return roots

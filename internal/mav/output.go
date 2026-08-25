@@ -66,12 +66,12 @@ func (o Output) Write(w io.Writer) error {
 		return err
 	}
 	if !o.OK {
-		// Un fallo tiene que llegar a main, que es quien sabe salir con 1.
-		// Devolver nil convertia `mav ui tap ... && siguiente-paso` en una
-		// cadena que seguia adelante despues de un fallo, y obligaba a cada
-		// agente a leer stdout para saber si su propio comando habia
-		// funcionado. La linea `fail code=...` ya esta escrita; esto solo pone
-		// el codigo de salida de acuerdo con ella.
+		// A failure has to reach main, which is who knows how to exit with
+		// 1. Returning nil turned `mav ui tap ... && next-step` into a
+		// chain that carried on after a failure, and forced every agent to
+		// read stdout to know whether its own command had worked. The
+		// `fail code=...` line is already written; this only brings the
+		// exit code into agreement with it.
 		return CommandFailed{}
 	}
 	return nil

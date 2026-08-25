@@ -11,10 +11,10 @@ func TestRegisterDefaultDriversWiresAllBridges(t *testing.T) {
 	reg := drivers.NewRegistry()
 	RegisterDefaultDrivers(reg, NewExecutor(fakeRunner{}))
 
-	// Ordenados por ID, que es como los devuelve el registry. Los tres de
-	// macOS conviven con los de iOS sin excluirse: cada uno declara lo que
-	// provee segun el TargetKind, asi que en un run de simulador los de macOS
-	// simplemente no son candidatos.
+	// Sorted by ID, which is how the registry returns them. The three
+	// macOS ones coexist with the iOS ones without excluding each other:
+	// each declares what it provides per TargetKind, so in a simulator run
+	// the macOS ones are simply not candidates.
 	want := []string{"axcli", "axe", "baguette", "cua", "idb", "macsystem", "mitmproxy", "screencapture", "simctl", "simtime"}
 	got := reg.All()
 	if len(got) != len(want) {

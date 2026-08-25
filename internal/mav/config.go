@@ -44,18 +44,18 @@ type Config struct {
 	Launch            LaunchConfig
 	Tools             map[string]bool
 
-	// DefaultProfile y Profiles se conservan crudos para poder reescribirlos
-	// sin perderlos, y para que `mav doctor` pueda listarlos. ActiveProfile es
-	// el que se resolvio para esta invocacion ("" si ninguno).
+	// DefaultProfile and Profiles are kept raw so they can be rewritten
+	// without being lost, and so `mav doctor` can list them. ActiveProfile
+	// is the one resolved for this invocation ("" if none).
 	DefaultProfile string
 	Profiles       map[string]profileYAML
 	ActiveProfile  string
 	ProfileRunner  string
 	Fixtures       map[string][]string
 
-	// AppPath lo rellena la receta de lanzamiento en tiempo de ejecucion (paso
-	// app_path); no se lee ni se escribe en el YAML. Es como el driver de
-	// macOS sabe que bundle ejecutar, que es su equivalente del UDID.
+	// AppPath is filled by the launch recipe at run time (app_path step);
+	// it is neither read from nor written to the YAML. It is how the macOS
+	// driver knows which bundle to run, its equivalent of the UDID.
 	AppPath string
 }
 
@@ -64,12 +64,12 @@ type LaunchConfig struct {
 	Commands LaunchCommands `yaml:"commands"`
 }
 
-// LaunchCommands es la receta de lanzamiento de la config base. Los campos
-// llevan omitempty porque en la base "vacío" y "ausente" significan lo mismo:
-// no hay comando. La distinción sí importa en un perfil de plataforma, que
-// necesita poder *anular* un comando heredado -- por eso los perfiles usan su
-// propio tipo con punteros (ver profileLaunchCommandsYAML), en vez de
-// reutilizar este.
+// LaunchCommands is the base config's launch recipe. The fields carry
+// omitempty because in the base "empty" and "absent" mean the same thing:
+// no command. The distinction does matter in a platform profile, which
+// needs to be able to *override* an inherited command with nothing, which
+// is why profiles use their own pointer-based type (see
+// profileLaunchCommandsYAML) instead of reusing this one.
 type LaunchCommands struct {
 	Healthcheck string `yaml:"healthcheck,omitempty"`
 	Build       string `yaml:"build,omitempty"`
@@ -89,58 +89,61 @@ func DefaultConfig(root string) Config {
 	}
 }
 
-// LoadConfig carga .mav/config.yaml aplicando el perfil que corresponda segun
-// la precedencia documentada. Equivale a LoadConfigWithProfile(root, "").
+// LoadConfig loads .mav/config.yaml applying whichever profile the
+// documented precedence selects. Equivalent to
+// LoadConfigWithProfile(root, "").
 func LoadConfig(root string) (Config, error) {
 	return LoadConfigWithProfile(root, "")
 }
 
-// LoadConfigRaw carga la config SIN aplicar ningun perfil. Es lo que deben
-// usar los caminos que luego escriben (setup, sim select, device select): solo
-// una config sin overlay puede volver a disco sin aplanar el perfil sobre la
-// base. Ver el guardarrail de SaveConfig.
+// LoadConfigRaw loads the config WITHOUT applying any profile. It is what
+// the paths that later write (setup, sim select, device select) must use:
+// only a config without an overlay can go back to disk without flattening
+// the profile onto the base. See SaveConfig's guardrail.
 func LoadConfigRaw(root string) (Config, error) {
 	return loadConfig(root, "", true)
 }
 
-// LoadConfigWithProfile carga la config y superpone un perfil de plataforma.
+// LoadConfigWithProfile loads the config and overlays a platform profile.
 //
-// Precedencia de seleccion, de mas fuerte a mas debil:
+// Selection precedence, strongest to weakest:
 //
-//  1. profileOverride -- lo que venga de un --profile explicito
-//  2. MAV_PROFILE en el entorno
-//  3. default_profile en la propia config
-//  4. ninguno: los campos base se usan tal cual
+//  1. profileOverride, whatever an explicit --profile brings
+//  2. MAV_PROFILE in the environment
+//  3. default_profile in the config itself
+//  4. none: the base fields are used as is
 //
-// Un perfil pedido que no existe es un error, nunca un no-op: aceptar el flag
-// y seguir con la base seria configuracion muerta del mismo tipo que
-// target_command_ignored existe para hacer visible.
+// A requested profile that does not exist is an error, never a no-op:
+// accepting the flag and carrying on with the base would be dead
+// configuration of the same kind target_command_ignored exists to make
+// visible.
 func LoadConfigWithProfile(root, profileOverride string) (Config, error) {
 	return loadConfig(root, profileOverride, false)
 }
 
-// knownProfileKeys es el contrato de un perfil, escrito una sola vez.
+// knownProfileKeys is a profile's contract, written once.
 var knownProfileKeys = map[string]bool{
 	"target_kind": true, "app_target": true, "process_name": true,
 	"target_command": true, "log_subsystem": true, "log_category": true,
 	"launch": true, "runner": true,
 }
 
-// rejectUnknownProfileKeys convierte en error una clave que no existe dentro de
-// un perfil.
+// rejectUnknownProfileKeys turns a key that does not exist inside a
+// profile into an error.
 //
-// yaml.Unmarshal ignora en silencio lo que no conoce, y en un perfil eso es
-// especialmente caro: escribes `fixture: x`, no pasa nada, y no hay forma de
-// distinguirlo de que el fixture se aplicara y no hiciera efecto. Se acota a
-// los perfiles a proposito: son nuevos, asi que ninguna configuracion existente
-// puede romperse por esto, mientras que endurecer el fichero entero si podria.
+// yaml.Unmarshal silently ignores what it does not know, and in a profile
+// that is especially expensive: you write `fixture: x`, nothing happens,
+// and there is no way to tell it apart from the fixture applying and having
+// no effect. It is scoped to profiles on purpose: they are new, so no
+// existing configuration can break because of this, while hardening the
+// whole file could.
 func rejectUnknownProfileKeys(data []byte) error {
 	var doc struct {
 		Profiles map[string]map[string]yaml.Node `yaml:"profiles"`
 	}
 	if err := yaml.Unmarshal(data, &doc); err != nil {
-		// El error real ya lo dio el decodificado principal; aqui no se
-		// duplica.
+		// The main decode already gave the real error; it is not duplicated
+		// here.
 		return nil
 	}
 	for name, fields := range doc.Profiles {
@@ -195,9 +198,10 @@ func loadConfig(root, profileOverride string, skipProfile bool) (Config, error) 
 	if cfg.TargetKind == "" {
 		cfg.TargetKind = "simulator"
 	}
-	// El perfil se aplica ANTES que los MAV_TARGET_*: esas variables las fija
-	// `mav run --matrix` en sus hijos para clavar un dispositivo concreto, y
-	// clavar dispositivo es una decision mas especifica que elegir plataforma.
+	// The profile applies BEFORE the MAV_TARGET_* variables: those are set
+	// by `mav run --matrix` in its children to pin a specific device, and
+	// pinning a device is a more specific decision than choosing a
+	// platform.
 	if !skipProfile {
 		if err := applyProfile(&cfg, profileOverride); err != nil {
 			return Config{}, err
@@ -213,18 +217,19 @@ func loadConfig(root, profileOverride string, skipProfile bool) (Config, error) 
 			cfg.DeviceName = os.Getenv("MAV_TARGET_NAME")
 		}
 	}
-	// Al final a proposito: el target_kind puede venir del fichero, de un
-	// perfil o de MAV_TARGET_KIND, y las tres fuentes tienen que pasar por el
-	// mismo filtro. Validarlo antes del overlay dejaria pasar justo el caso
-	// que mas importa, que es un perfil declarando una plataforma que aun no
-	// existe.
+	// At the end on purpose: the target_kind can come from the file, from a
+	// profile or from MAV_TARGET_KIND, and all three sources have to pass
+	// through the same filter. Validating it before the overlay would let
+	// through exactly the case that matters most, a profile declaring a
+	// platform that does not exist yet.
 	if err := validateTargetKind(cfg.TargetKind); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
 }
 
-// applyProfile resuelve que perfil toca y superpone sus campos sobre cfg.
+// applyProfile resolves which profile applies and overlays its fields on
+// cfg.
 func applyProfile(cfg *Config, override string) error {
 	name := strings.TrimSpace(override)
 	if name == "" {
@@ -265,10 +270,10 @@ func applyProfile(cfg *Config, override string) error {
 	return nil
 }
 
-// overlayString aplica un campo de perfil sobre el de la base. Un puntero nil
-// significa "el perfil no dice nada, hereda"; un puntero a cadena vacia
-// significa "el perfil dice explicitamente que aqui no hay nada", que NO es lo
-// mismo.
+// overlayString applies a profile field over the base's. A nil pointer
+// means "the profile says nothing, inherit"; a pointer to the empty string
+// means "the profile explicitly says there is nothing here", which is NOT
+// the same.
 func overlayString(base *string, override *string) {
 	if override == nil {
 		return
@@ -310,25 +315,25 @@ type configYAML struct {
 	DefaultProfile string                 `yaml:"default_profile,omitempty"`
 	Profiles       map[string]profileYAML `yaml:"profiles,omitempty"`
 
-	// Fixtures son estados con nombre: listas de comandos que dejan la app en
-	// una situacion conocida antes de lanzarla. No son un formato de datos --
-	// mav no sabe que es un fixture por dentro, solo los ejecuta -- porque el
-	// como sembrar es especifico de cada app y formalizarlo aqui obligaria a
-	// todo el mundo al mismo formato.
+	// Fixtures are named states: lists of commands that leave the app in a
+	// known situation before launching it. They are not a data format, mav
+	// does not know what a fixture is inside, it only runs them, because
+	// how to seed is specific to each app and formalizing it here would
+	// force everyone into the same format.
 	Fixtures map[string][]string `yaml:"fixtures,omitempty"`
 }
 
-// profileYAML es la capa de overlay de un perfil de plataforma. Todos los
-// campos son punteros a proposito: yaml.Unmarshal sobre un string plano no
-// distingue "ausente" de `""`, y esa distincion es justo lo que un perfil
-// necesita. Un campo nil se hereda de la base; un campo presente gana, incluso
-// cuando vale cadena vacia -- que es como el perfil de macOS anula el
-// `simctl install` heredado.
+// profileYAML is a platform profile's overlay layer. All fields are
+// pointers on purpose: yaml.Unmarshal onto a plain string does not
+// distinguish "absent" from `""`, and that distinction is exactly what a
+// profile needs. A nil field inherits from the base; a present field wins,
+// even when it holds the empty string, which is how the macOS profile
+// cancels the inherited `simctl install`.
 //
-// La lista de campos es deliberadamente cerrada, no abierta: si configYAML
-// gana un campo nuevo que deberia poder sobreescribirse, hay que anadirlo aqui
-// a mano. TestProfileOverridableFieldsAreExhaustive existe para que ese olvido
-// rompa el build en vez de ignorarse en silencio.
+// The field list is deliberately closed, not open: if configYAML gains a
+// new field that should be overridable, it must be added here by hand.
+// TestProfileOverridableFieldsAreExhaustive exists so that omission breaks
+// the build instead of being silently ignored.
 type profileYAML struct {
 	TargetKind    *string            `yaml:"target_kind,omitempty"`
 	AppTarget     *string            `yaml:"app_target,omitempty"`
@@ -338,11 +343,11 @@ type profileYAML struct {
 	LogCategory   *string            `yaml:"log_category,omitempty"`
 	Launch        *profileLaunchYAML `yaml:"launch,omitempty"`
 
-	// Runner dice DONDE corre este perfil: "local" (por defecto) o "crabbox".
-	// mav no orquesta maquinas -- eso es crabbox, que ya sabe alquilar una VM
-	// de macOS con tart, sincronizar el checkout sucio y devolverla al acabar.
-	// Este campo solo declara la intencion; quien la ejecuta es el envoltorio,
-	// no mav.
+	// Runner says WHERE this profile runs: "local" (default) or "crabbox".
+	// mav does not orchestrate machines, that is crabbox, which already
+	// knows how to lease a macOS VM with tart, sync the dirty checkout and
+	// return it when done. This field only declares the intent; the wrapper
+	// executes it, not mav.
 	Runner *string `yaml:"runner,omitempty"`
 }
 
@@ -376,24 +381,24 @@ func firstNonEmpty(values ...string) string {
 
 // SaveConfig serializa cfg a .mav/config.yaml.
 //
-// Usa yaml.Marshal deliberadamente en vez del escritor a mano que había aquí
-// antes: aquel omitía los valores vacíos (writeCommandKV), lo que hace
-// imposible expresar "este campo está presente y vale cadena vacía". Esa
-// distinción no importaba mientras la config era plana, pero es justo la que
-// los perfiles de plataforma necesitan para que un perfil pueda *anular* un
-// comando heredado de la base en vez de heredarlo.
+// It uses yaml.Marshal deliberately instead of the hand-written writer
+// that lived here before: that one omitted empty values (writeCommandKV),
+// which makes it impossible to express "this field is present and holds
+// the empty string". That distinction did not matter while the config was
+// flat, but it is exactly the one platform profiles need so a profile can
+// *cancel* a command inherited from the base instead of inheriting it.
 //
-// Nota sobre lo que NO cambia: esta función reconstruye el fichero entero, así
-// que los comentarios que el usuario haya escrito a mano se pierden. Ya pasaba
-// con el escritor anterior -- SaveConfig nunca ha leído el fichero previo para
-// preservar nada.
+// Note on what does NOT change: this function rebuilds the whole file, so
+// comments the user wrote by hand are lost. That already happened with the
+// previous writer; SaveConfig has never read the prior file to preserve
+// anything.
 func SaveConfig(root string, cfg Config) error {
-	// Un cfg con perfil aplicado ya NO es la base: sus campos son el resultado
-	// del overlay. Escribirlo aplanaria el perfil sobre la base -- un
-	// `mav sim select` en un repo con default_profile: macos dejaria el
-	// app_target de macOS como app_target base y el perfil dejaria de tener
-	// sentido, en silencio y sin vuelta atras. Se rechaza por construccion en
-	// vez de confiar en que ningun llamante se equivoque.
+	// A cfg with a profile applied is NO longer the base: its fields are
+	// the overlay's result. Writing it would flatten the profile onto the
+	// base; a `mav sim select` in a repo with default_profile: macos would
+	// leave the macOS app_target as the base app_target and the profile
+	// would stop making sense, silently and with no way back. It is
+	// rejected by construction instead of trusting no caller ever slips.
 	if cfg.ActiveProfile != "" {
 		return fmt.Errorf("config_save_with_active_profile profile=%s (next: reload the config without a profile before saving)", cfg.ActiveProfile)
 	}
@@ -407,10 +412,9 @@ func SaveConfig(root string, cfg Config) error {
 		DeviceTarget: cfg.DeviceTarget,
 		DeviceUDID:   cfg.DeviceUDID,
 		DeviceName:   cfg.DeviceName,
-		// bundle_id y process_name se escriben en los dos sitios a propósito:
-		// LoadConfig los lee con firstNonEmpty(raw.App.X, raw.X), así que una
-		// config escrita por mav tiene que seguir siendo legible por ambos
-		// caminos.
+		// bundle_id and process_name are written in both places on purpose:
+		// LoadConfig reads them with firstNonEmpty(raw.App.X, raw.X), so a
+		// config written by mav has to remain readable through both paths.
 		App: configAppYAML{
 			BundleID:    cfg.BundleID,
 			ProcessName: cfg.ProcessName,
@@ -954,14 +958,16 @@ func processNameFromBundle(bundleID, fallback string) string {
 	return parts[len(parts)-1]
 }
 
-// persistTargetSelection guarda en disco SOLO la seleccion de target (que
-// simulador o dispositivo, y locale/idioma) sin arrastrar el resto del cfg en
-// memoria, que puede venir con un perfil ya superpuesto.
+// persistTargetSelection writes to disk ONLY the target selection (which
+// simulator or device, plus locale/language) without dragging along the
+// rest of the in-memory cfg, which may come with a profile already
+// overlaid.
 //
-// Existe porque `mav sim select`, `mav device select` y el pin explicito de
-// `mav open --device/--ios/--udid` son las tres unicas cosas que escriben
-// config a media sesion, y las tres parten de un cfg resuelto. Guardarlo
-// entero aplanaria el perfil sobre la base (ver el guardarrail de SaveConfig).
+// It exists because `mav sim select`, `mav device select` and the explicit
+// pin of `mav open --device/--ios/--udid` are the only three things that
+// write config mid-session, and all three start from a resolved cfg.
+// Saving it whole would flatten the profile onto the base (see SaveConfig's
+// guardrail).
 func persistTargetSelection(root string, cfg Config) error {
 	base, err := LoadConfigRaw(root)
 	if err != nil {
@@ -978,23 +984,23 @@ func persistTargetSelection(root string, cfg Config) error {
 	return SaveConfig(root, base)
 }
 
-// validateTargetKind rechaza los labels de target_kind que mav no conoce.
+// validateTargetKind rejects target_kind labels mav does not know.
 //
-// Sin esto la config falla ABIERTA, que en este caso concreto es peligroso:
-// targetKind() devuelve KindDevice solo para el literal "device" y manda todo
-// lo demas a KindSim, y targetKindLabel() lo normaliza de vuelta a "simulator"
-// al escribir. Asi que un `target_kind: macos` escrito a mano no da error --
-// se comporta como simulador de principio a fin.
+// Without this the config fails OPEN, which in this specific case is
+// dangerous: targetKind() returns KindDevice only for the literal "device"
+// and sends everything else to KindSim, and targetKindLabel() normalizes
+// it back to "simulator" on write. So a hand-written `target_kind: macos`
+// gives no error; it behaves as a simulator from start to finish.
 //
-// El desenlace no es teorico: ese run resolveria target_command (un
-// `simpool lease` de iPhone), alquilaria y arrancaria un simulador, y con
-// --clear-state encaminaria CapUninstall contra el usando el bundle_id, que en
-// una app multiplataforma como Nokoru es el MISMO en iOS y macOS. Es decir,
-// desinstalaria la app de iOS del simulador durante un run "de macOS". Y el
-// resultado del uninstall ni siquiera se miraba hasta hace poco.
+// The outcome is not theoretical: that run would resolve target_command
+// (an iPhone `simpool lease`), lease and boot a simulator, and with
+// --clear-state route CapUninstall against it using the bundle_id, which
+// in a multiplatform app like Nokoru is the SAME on iOS and macOS. That
+// is, it would uninstall the iOS app from the simulator during a "macOS"
+// run. And the uninstall's result was not even checked until recently.
 //
-// Cuando llegue drivers.KindMac, "macos" pasa a ser un valor valido y se anade
-// aqui. Hasta entonces, ruido en vez de silencio.
+// When drivers.KindMac arrives, "macos" becomes a valid value and is added
+// here. Until then, noise instead of silence.
 func validateTargetKind(kind string) error {
 	switch kind {
 	case "simulator", "device", "macos":
@@ -1004,10 +1010,10 @@ func validateTargetKind(kind string) error {
 	}
 }
 
-// validateProfileRunner rechaza runners que mav no conoce, por el mismo motivo
-// que un target_kind desconocido: un valor mal escrito que se ignora en
-// silencio es configuracion muerta, y aqui ademas significaria correr en local
-// algo que el usuario creia aislado en una VM.
+// validateProfileRunner rejects runners mav does not know, for the same
+// reason as an unknown target_kind: a misspelled value that is silently
+// ignored is dead configuration, and here it would also mean running
+// locally something the user believed isolated in a VM.
 func validateProfileRunner(runner string) error {
 	switch runner {
 	case "", "local", "crabbox":

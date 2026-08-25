@@ -7,10 +7,10 @@ type TargetKind string
 const (
 	KindSim    TargetKind = "sim"
 	KindDevice TargetKind = "device"
-	// KindMac es una app corriendo en el propio Mac. Se comporta como
-	// KindDevice mas que como KindSim: es una maquina real y compartida, no
-	// desechable, asi que no admite erase ni matrix ni lease. La variante
-	// desechable de macOS es una VM, y esa llega despues.
+	// KindMac is an app running on the Mac itself. It behaves like
+	// KindDevice more than KindSim: it is a real, shared machine, not a
+	// disposable one, so it admits no erase, no matrix, no lease. The
+	// disposable macOS variant is a VM, and that comes later.
 	KindMac TargetKind = "mac"
 )
 
@@ -26,10 +26,10 @@ type Target struct {
 	Locale   string
 	Language string
 
-	// AppPath y PID identifican una app de macOS, que no tiene UDID: su
-	// identidad es la ruta del .app y el proceso vivo. Se anaden JUNTO a UDID,
-	// no en su lugar, porque un target de iOS los deja vacios y uno de macOS
-	// deja UDID vacio.
+	// AppPath and PID identify a macOS app, which has no UDID: its
+	// identity is the .app path and the live process. They are added
+	// ALONGSIDE UDID, not in its place, because an iOS target leaves them
+	// empty and a macOS one leaves UDID empty.
 	AppPath string
 	PID     int
 }

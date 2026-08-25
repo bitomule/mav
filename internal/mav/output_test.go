@@ -25,13 +25,12 @@ func TestCompactOutputSortsAndQuotes(t *testing.T) {
 
 func TestFailOutput(t *testing.T) {
 	var b bytes.Buffer
-	// Un fallo devuelve CommandFailed ADEMAS de escribir la linea: es lo que
-	// hace que el codigo de salida del proceso coincida con lo que dice la
-	// salida. Escribir y devolver nil dejaba `mav ... && siguiente` encadenando
-	// despues de un fallo.
+	// A failure returns CommandFailed BESIDES writing the line: it is what
+	// makes the process exit code match what the output says. Writing and
+	// returning nil left `mav ... && next` chaining after a failure.
 	var failed CommandFailed
 	if err := Fail("screen_not_found", map[string]string{"screen": "settings"}).Write(&b); !errors.As(err, &failed) {
-		t.Fatalf("un fallo debe propagarse: %v", err)
+		t.Fatalf("a failure must propagate: %v", err)
 	}
 	got := strings.TrimSpace(b.String())
 	want := "fail code=screen_not_found screen=settings"
@@ -40,10 +39,10 @@ func TestFailOutput(t *testing.T) {
 	}
 }
 
-// allowFail acepta el error que ahora acompana a una linea `fail`, y sigue
-// tratando cualquier otro como error de verdad. Los tests que lo usan ya
-// afirman el codigo concreto en stdout, que es la comprobacion util; lo que no
-// pueden es exigir exito.
+// allowFail accepts the error that now accompanies a `fail` line, and
+// keeps treating any other as a real error. The tests using it already
+// assert the specific code on stdout, which is the useful check; what they
+// cannot do is demand success.
 func allowFail(t *testing.T, err error) {
 	t.Helper()
 	var failed CommandFailed

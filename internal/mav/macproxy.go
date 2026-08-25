@@ -9,13 +9,13 @@ import (
 	"strings"
 )
 
-// macProxyStateFile guarda el estado previo del proxy dentro del run.
+// macProxyStateFile stores the previous proxy state inside the run.
 //
-// Va a disco y no en memoria porque `network start` y `network stop` son dos
-// invocaciones distintas: sin esto, parar la captura no sabria a que devolver
-// el sistema y lo dejaria apuntando a un proxy muerto -- que es peor que no
-// haber capturado, porque rompe la red de la maquina entera hasta que alguien
-// se da cuenta.
+// It goes to disk and not memory because `network start` and `network stop`
+// are two separate invocations: without this, stopping the capture would
+// not know what to restore the system to and would leave it pointing at a
+// dead proxy, which is worse than not having captured, because it breaks
+// the whole machine's network until somebody notices.
 const macProxyStateFile = "network-proxy.json"
 
 type macProxyState struct {
@@ -25,13 +25,13 @@ type macProxyState struct {
 	Port    string `json:"port"`
 }
 
-// macNetworkService averigua por que servicio sale el trafico.
+// macNetworkService finds out which service the traffic leaves through.
 //
-// No vale con coger el primero de `-listallnetworkservices`: esa lista incluye
-// los interfaces virtuales que dejan las VMs y los tuneles, y fijar el proxy en
-// el equivocado no da error -- simplemente no captura nada. Se parte de la ruta
-// por defecto, que es la unica fuente que dice por donde sale el trafico de
-// verdad.
+// Taking the first entry of `-listallnetworkservices` is not enough: that
+// list includes the virtual interfaces left behind by VMs and tunnels, and
+// setting the proxy on the wrong one gives no error, it simply captures
+// nothing. The starting point is the default route, the only source that
+// says where the traffic really goes out.
 func (c CLI) macNetworkService(ctx context.Context) string {
 	route := c.Runner.Run(ctx, "route", "-n", "get", "default")
 	device := ""
@@ -49,7 +49,7 @@ func (c CLI) macNetworkService(ctx context.Context) string {
 		if !strings.Contains(line, "Device: "+device+")") {
 			continue
 		}
-		// El nombre del servicio esta en la linea ANTERIOR, con la forma
+		// The service name is on the PREVIOUS line, in the form
 		// "(4) Ethernet".
 		if i == 0 {
 			return ""
@@ -62,7 +62,7 @@ func (c CLI) macNetworkService(ctx context.Context) string {
 	return ""
 }
 
-// readMacProxy lee el estado actual para poder devolverlo tal cual.
+// readMacProxy reads the current state so it can be restored as is.
 func (c CLI) readMacProxy(ctx context.Context, service string) macProxyState {
 	state := macProxyState{Service: service}
 	res := c.Runner.Run(ctx, "networksetup", "-getwebproxy", service)
@@ -84,11 +84,12 @@ func (c CLI) readMacProxy(ctx context.Context, service string) macProxyState {
 	return state
 }
 
-// pointMacAtProxy apunta el sistema al proxy y deja escrito a que devolverlo.
+// pointMacAtProxy points the system at the proxy and records what to
+// restore it to.
 //
-// Se fijan los dos, HTTP y HTTPS: una app que solo hable https -- que son casi
-// todas -- ignoraria el primero, y el sintoma seria una captura vacia sin un
-// solo error.
+// Both HTTP and HTTPS are set: an app that only speaks https, which is
+// almost all of them, would ignore the former, and the symptom would be an
+// empty capture without a single error.
 func (c CLI) pointMacAtProxy(ctx context.Context, run RunState, port int) (macProxyState, bool) {
 	service := c.macNetworkService(ctx)
 	if service == "" {
@@ -113,12 +114,12 @@ func (c CLI) pointMacAtProxy(ctx context.Context, run RunState, port int) (macPr
 	return previous, true
 }
 
-// restoreMacProxy devuelve el sistema a como estaba.
+// restoreMacProxy returns the system to how it was.
 //
-// Se llama tambien desde `mav stop`, no solo desde `network stop`: si el run
-// muere por el camino, dejar la maquina apuntando a un proxy que ya no existe
-// la deja sin red. Es idempotente a proposito -- restaurar dos veces tiene que
-// ser inofensivo.
+// It is also called from `mav stop`, not only from `network stop`: if the
+// run dies along the way, leaving the machine pointing at a proxy that no
+// longer exists leaves it without network. It is idempotent on purpose,
+// restoring twice has to be harmless.
 func (c CLI) restoreMacProxy(ctx context.Context, run RunState) bool {
 	path := filepath.Join(run.Dir, macProxyStateFile)
 	data, err := os.ReadFile(path)
@@ -140,10 +141,11 @@ func (c CLI) restoreMacProxy(ctx context.Context, run RunState) bool {
 	return true
 }
 
-// macProxyCATrusted dice si el CA de mitmproxy esta en el llavero del sistema.
+// macProxyCATrusted says whether the mitmproxy CA is in the system keychain.
 //
-// Sin el, mitmdump sigue grabando pero el trafico https sale como tuneles
-// CONNECT sin contenido: una captura que parece funcionar y no sirve de nada.
+// Without it, mitmdump keeps recording but the https traffic comes out as
+// CONNECT tunnels with no content: a capture that looks like it works and
+// is useless.
 func (c CLI) macProxyCATrusted(ctx context.Context) bool {
 	res := c.Runner.Run(ctx, "security", "find-certificate", "-c", "mitmproxy", "-a", "/Library/Keychains/System.keychain")
 	return strings.Contains(res.Stdout, "mitmproxy")

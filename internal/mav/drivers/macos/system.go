@@ -10,17 +10,17 @@ import (
 	"github.com/bitomule/mav/internal/mav/drivers"
 )
 
-// SystemID es la clave de registro del driver.
+// SystemID is the driver's registry key.
 const SystemID = "macsystem"
 
-// System cubre el ciclo de vida y las utilidades de una app de macOS con las
-// herramientas que trae el propio sistema. No envuelve ningun CLI de terceros
-// porque no hace falta: `open`, `pbcopy`, `pbpaste` y el filesystem bastan.
+// System covers the lifecycle and utilities of a macOS app with the tools
+// the system itself ships. It wraps no third-party CLI because none is
+// needed: `open`, `pbcopy`, `pbpaste` and the filesystem are enough.
 //
-// Existe sobre todo por una razon concreta: sin un proveedor de CapTerminate en
-// el Mac, el cierre de la app previo a sembrar un fixture era un no-op
-// silencioso, y el fixture escribiria la base de datos con la instancia
-// anterior teniendola abierta.
+// It exists above all for one concrete reason: without a CapTerminate
+// provider on the Mac, closing the app before seeding a fixture was a
+// silent no-op, and the fixture would write the database while the previous
+// instance kept it open.
 type System struct {
 	exec drivers.Executor
 }
@@ -30,7 +30,7 @@ var (
 	_ drivers.DeviceUtilityDriver = (*System)(nil)
 )
 
-// NewSystem construye el driver.
+// NewSystem builds the driver.
 func NewSystem(exec drivers.Executor) *System { return &System{exec: exec} }
 
 func (d *System) ID() string { return SystemID }
@@ -50,12 +50,12 @@ func (d *System) Provides(target drivers.Target) drivers.CapabilitySet {
 	)
 }
 
-// Cost: es el unico proveedor de todo esto en el Mac.
+// Cost: it is the only provider of all this on the Mac.
 func (d *System) Cost(drivers.Capability, drivers.Target) int { return 0 }
 
-// Probe no necesita comprobar nada instalable: son binarios del sistema. Lo que
-// si comprueba es que estamos en macOS, porque un target mac en otro sistema no
-// es un fallo recuperable sino una config imposible.
+// Probe needs to check nothing installable: these are system binaries. What
+// it does check is that we are on macOS, because a mac target on another
+// system is not a recoverable failure but an impossible config.
 func (d *System) Probe(_ context.Context, p drivers.Probe) drivers.HealthReport {
 	if _, err := p.LookPath("open"); err != nil {
 		return drivers.HealthReport{
@@ -72,10 +72,11 @@ func (d *System) Warm(_ context.Context, _ drivers.Target) <-chan error {
 	return ch
 }
 
-// Install en macOS no copia nada a /Applications: para validar se ejecuta la
-// app donde la dejo el build. "Instalar" aqui es comprobar que el bundle esta
-// donde decimos, que es la unica parte que puede fallar y la que da un error
-// util cuando la receta de lanzamiento no produjo lo que creia.
+// Install on macOS copies nothing to /Applications: to validate, the app is
+// run from wherever the build left it. "Installing" here is checking that
+// the bundle is where we say, which is the only part that can fail and the
+// one that gives a useful error when the launch recipe did not produce what
+// it believed.
 func (d *System) Install(_ context.Context, _ drivers.Target, spec drivers.InstallSpec) error {
 	if strings.TrimSpace(spec.Path) == "" {
 		return errors.New("macsystem: no app path; the launch recipe must produce one via app_path")
@@ -90,12 +91,12 @@ func (d *System) Install(_ context.Context, _ drivers.Target, spec drivers.Insta
 	return nil
 }
 
-// Launch ejecuta el binario de dentro del bundle en vez de usar `open`.
+// Launch runs the binary inside the bundle instead of using `open`.
 //
-// No es un capricho: `open` no propaga variables de entorno al proceso que
-// arranca, y el entorno es justo como mav inyecta su configuracion (el
-// equivalente de los SIMCTL_CHILD_* del simulador). Ejecutar
-// Contents/MacOS/<binario> directamente lo hereda todo.
+// It is not a whim: `open` does not propagate environment variables to the
+// process it starts, and the environment is exactly how mav injects its
+// configuration (the equivalent of the simulator's SIMCTL_CHILD_*). Running
+// Contents/MacOS/<binary> directly inherits everything.
 func (d *System) Launch(ctx context.Context, target drivers.Target, spec drivers.LaunchSpec) (drivers.LaunchResult, error) {
 	if target.AppPath == "" {
 		return drivers.LaunchResult{}, errors.New("macsystem: launch needs the app bundle path")
@@ -111,10 +112,10 @@ func (d *System) Launch(ctx context.Context, target drivers.Target, spec drivers
 	return drivers.LaunchResult{PID: pid, BundleID: spec.BundleID}, nil
 }
 
-// bundleExecutable resuelve Contents/MacOS/<binario>. Se elige el unico
-// ejecutable que haya ahi en vez de asumir que se llama como el bundle, porque
-// no siempre coincide -- el de Nokoru, sin ir mas lejos, no se llama Nokoru en
-// todas sus variantes.
+// bundleExecutable resolves Contents/MacOS/<binary>. It picks the only
+// executable in there instead of assuming it is named after the bundle,
+// because they do not always match, Nokoru's, to name one, is not called
+// Nokoru in all its variants.
 func bundleExecutable(appPath string) (string, error) {
 	dir := filepath.Join(appPath, "Contents", "MacOS")
 	entries, err := os.ReadDir(dir)
@@ -134,7 +135,7 @@ func bundleExecutable(appPath string) (string, error) {
 	case 1:
 		return candidates[0], nil
 	default:
-		// Con varios, el que se llama como el bundle es la convencion.
+		// With several, the one named after the bundle is the convention.
 		want := strings.TrimSuffix(filepath.Base(appPath), ".app")
 		for _, candidate := range candidates {
 			if filepath.Base(candidate) == want {
@@ -145,9 +146,9 @@ func bundleExecutable(appPath string) (string, error) {
 	}
 }
 
-// Uninstall es el equivalente honesto de `simctl uninstall` en el Mac: no
-// desinstala la app -- que se ejecuta desde donde este -- sino que borra su
-// estado, que es lo que --clear-state quiere decir de verdad.
+// Uninstall is the honest equivalent of `simctl uninstall` on the Mac: it
+// does not uninstall the app, which runs from wherever it is, but deletes
+// its state, which is what --clear-state really means.
 func (d *System) Uninstall(ctx context.Context, _ drivers.Target, bundleID string) error {
 	if bundleID == "" {
 		return errors.New("macsystem: uninstall needs a bundle id")
@@ -156,8 +157,9 @@ func (d *System) Uninstall(ctx context.Context, _ drivers.Target, bundleID strin
 	if err != nil {
 		return err
 	}
-	// Sandboxed: todo cuelga del contenedor. Sin sandbox, los preferences
-	// viven aparte, asi que hay que borrar los dos y no dar por hecho cual es.
+	// Sandboxed: everything hangs off the container. Without a sandbox, the
+	// preferences live separately, so both must be deleted rather than
+	// assuming which one it is.
 	container := filepath.Join(home, "Library", "Containers", bundleID)
 	if err := os.RemoveAll(container); err != nil {
 		return err
@@ -166,12 +168,12 @@ func (d *System) Uninstall(ctx context.Context, _ drivers.Target, bundleID strin
 	return nil
 }
 
-// Boot no existe en el Mac: la maquina ya esta arrancada.
+// Boot does not exist on the Mac: the machine is already booted.
 func (d *System) Boot(_ context.Context, _ drivers.Target) error { return nil }
 
-// Terminate cierra la app. `osascript quit` pide un cierre limpio, que es lo
-// que permite a la app cerrar su base de datos en vez de dejar el WAL a medias
-// -- justo lo que el fixture necesita antes de sembrar.
+// Terminate closes the app. `osascript quit` asks for a clean shutdown,
+// which is what lets the app close its database instead of leaving the WAL
+// half-written, exactly what the fixture needs before seeding.
 func (d *System) Terminate(ctx context.Context, _ drivers.Target, bundleID string) error {
 	if bundleID == "" {
 		return errors.New("macsystem: terminate needs a bundle id")
@@ -217,10 +219,10 @@ func (d *System) ListApps(ctx context.Context, _ drivers.Target) (string, error)
 	return res.Stdout, nil
 }
 
-// SetLocation y ResetLocation no tienen equivalente: macOS no permite
-// sobreescribir la ubicacion de una app ya lanzada. El camino que si existe es
-// el "Simulate Location" de un scheme de Xcode, que ocurre en el lanzamiento y
-// no aqui.
+// SetLocation and ResetLocation have no equivalent: macOS does not allow
+// overriding the location of an already launched app. The path that does
+// exist is an Xcode scheme's "Simulate Location", which happens at launch
+// and not here.
 func (d *System) SetLocation(context.Context, drivers.Target, float64, float64) error {
 	return errors.New("location_unsupported_on_macos")
 }

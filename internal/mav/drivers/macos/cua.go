@@ -13,40 +13,40 @@ import (
 	"github.com/bitomule/mav/internal/mav/drivers"
 )
 
-// CuaID es la clave de registro del driver.
+// CuaID is the driver's registry key.
 const CuaID = "cua"
 
-// Cua envuelve cua-driver (trycua/cua, MIT), el driver canonico de mav en macOS.
+// Cua wraps cua-driver (trycua/cua, MIT), mav's canonical driver on macOS.
 //
-// Entra por una razon estructural, no por preferencia: en macOS los permisos de
-// Accessibility y Screen Recording se conceden SOLO a procesos GUI
-// interactivos. Un CLI no puede tenerlos por mucho que se los concedas a la
-// terminal. La unica arquitectura que funciona es un broker -- una app con los
-// permisos, y un socket -- y cua-driver la trae de serie: el binario que
-// invocamos vive dentro de /Applications/CuaDriver.app.
+// It is here for a structural reason, not preference: on macOS the
+// Accessibility and Screen Recording permissions are granted ONLY to
+// interactive GUI processes. A CLI cannot hold them no matter how much you
+// grant them to the terminal. The only architecture that works is a broker,
+// an app holding the permissions plus a socket, and cua-driver ships it
+// built in: the binary we invoke lives inside /Applications/CuaDriver.app.
 //
-// Lo que aporta frente a lo que habia, medido dentro de una VM contra una
-// ventana flotante (layer != 0), que es el caso que rompia a los demas:
+// What it adds over what was there before, measured inside a VM against a
+// floating window (layer != 0), which is the case that broke the others:
 //
-//   - Peekaboo enumeraba esa ventana y la descartaba sola por la capa: ni
-//     arbol ni captura.
-//   - axcli leia el arbol, pero su captura devolvia el ESCRITORIO recortado a
-//     las medidas de la ventana -- sin error -- y ademas activaba la app.
-//   - cua-driver devuelve arbol CON geometria y la captura de la ventana con
-//     contenido real en la MISMA llamada, y el click llega en segundo plano.
+//   - Peekaboo enumerated that window and discarded it on its own because
+//     of the layer: no tree, no capture.
+//   - axcli read the tree, but its capture returned the DESKTOP cropped to
+//     the window's dimensions, with no error, and it also activated the app.
+//   - cua-driver returns a tree WITH geometry and a window capture with real
+//     content in the SAME call, and the click lands in the background.
 //
-// Dos limites conocidos, ambos suyos:
+// Two known limits, both its own:
 //
-//   - `list_windows` es layer-0 only por diseno declarado, asi que una ventana
-//     flotante no aparece en el descubrimiento.
-//   - sus elementos no exponen AXIdentifier: solo element_token (valido dentro
-//     del snapshot), rol, etiqueta y frame.
+//   - `list_windows` is layer-0 only by declared design, so a floating
+//     window does not show up in discovery.
+//   - its elements expose no AXIdentifier: only element_token (valid within
+//     the snapshot), role, label and frame.
 type Cua struct {
 	exec drivers.Executor
 
-	// daemonAttempted acota el autoarranque a un intento por proceso. Si el
-	// demonio no levanta, insistir en cada comando convierte un fallo claro en
-	// una sucesion de esperas.
+	// daemonAttempted caps the autostart at one try per process. If the
+	// daemon does not come up, insisting on every command turns a clear
+	// failure into a string of waits.
 	daemonAttempted bool
 }
 
@@ -59,7 +59,7 @@ var (
 	_ drivers.TextDriver       = (*Cua)(nil)
 )
 
-// NewCua construye el driver.
+// NewCua builds the driver.
 func NewCua(exec drivers.Executor) *Cua { return &Cua{exec: exec} }
 
 func (d *Cua) ID() string { return CuaID }
@@ -79,8 +79,8 @@ func (d *Cua) Provides(target drivers.Target) drivers.CapabilitySet {
 	)
 }
 
-// Cost lo declara canonico en todo lo que provee: es el unico que cubre las
-// cuatro capacidades con entrega en segundo plano verificada.
+// Cost declares it canonical for everything it provides: it is the only one
+// covering all four capabilities with verified background delivery.
 func (d *Cua) Cost(c drivers.Capability, _ drivers.Target) int {
 	switch c {
 	case drivers.CapTreeAX, drivers.CapScreenshot, drivers.CapCoordTap, drivers.CapSemanticTap, drivers.CapType, drivers.CapSwipe, drivers.CapErase:
@@ -90,12 +90,13 @@ func (d *Cua) Cost(c drivers.Capability, _ drivers.Target) int {
 	}
 }
 
-// Probe pregunta por los permisos al demonio, no al proceso que corre mav.
+// Probe asks the daemon about permissions, not the process running mav.
 //
-// Es la diferencia que importa: `permissions status` responde con la identidad
-// de CuaDriver (com.trycua.driver) porque es su propio proceso responsable. Si
-// no hay demonio contesta `unknown` en vez de mentir con los permisos de tu
-// terminal, y por eso ese caso se reporta como degradado y no como sano.
+// That is the difference that matters: `permissions status` answers with
+// CuaDriver's identity (com.trycua.driver) because it is its own responsible
+// process. With no daemon it answers `unknown` instead of lying with your
+// terminal's permissions, which is why that case is reported as degraded and
+// not as healthy.
 func (d *Cua) Probe(ctx context.Context, p drivers.Probe) drivers.HealthReport {
 	path, err := p.LookPath("cua-driver")
 	if err != nil {
@@ -127,10 +128,10 @@ func (d *Cua) Probe(ctx context.Context, p drivers.Probe) drivers.HealthReport {
 	if len(missing) > 0 {
 		report.State = drivers.HealthDegraded
 		report.Detail = "missing TCC permission: " + strings.Join(missing, ", ")
-		// Su comando de concesion lanza la app por LaunchServices para que los
-		// dialogos se atribuyan a ella y la registra en los paneles. Es la
-		// unica herramienta de las probadas que automatiza esto; a las demas
-		// hay que anadirlas a mano con el "+".
+		// Its grant command launches the app through LaunchServices so the
+		// dialogs are attributed to it, and registers it in the panels. It
+		// is the only tool among those tested that automates this; the
+		// others must be added by hand with the "+".
 		report.Next = "cua-driver permissions grant"
 	}
 	return report
@@ -142,19 +143,20 @@ func (d *Cua) Warm(_ context.Context, _ drivers.Target) <-chan error {
 	return ch
 }
 
-// cuaCall invoca una herramienta del driver. La forma es siempre
-// `cua-driver call <tool> '<json>'` y la respuesta es JSON por stdout.
+// cuaCall invokes a driver tool. The shape is always
+// `cua-driver call <tool> '<json>'` and the response is JSON on stdout.
 func (d *Cua) cuaCall(ctx context.Context, tool string, args map[string]any) ([]byte, error) {
 	raw, err := d.rawCall(ctx, tool, args)
 	if err == nil || !isCuaDaemonDown(err) || d.daemonAttempted {
 		return raw, err
 	}
-	// El demonio se cae, o simplemente no se ha arrancado nunca en esta
-	// sesion. Levantarlo es un comando fijo y sin decisiones, asi que lo hace
-	// mav: si cada agente tiene que aprender el conjuro, la mitad no lo hara y
-	// la otra mitad lo hara mal -- arrancando `cua-driver serve` suelto, que
-	// segun su propia documentacion no esta soportado fuera de la app y ademas
-	// pierde la atribucion de permisos, que es TODO lo que aporta el broker.
+	// The daemon is down, or simply was never started in this session.
+	// Bringing it up is a fixed command with no decisions, so mav does it:
+	// if every agent has to learn the incantation, half will not and the
+	// other half will do it wrong, starting a bare `cua-driver serve`, which
+	// per its own documentation is unsupported outside the app and also
+	// loses the permission attribution, which is EVERYTHING the broker
+	// provides.
 	d.daemonAttempted = true
 	if startErr := d.startDaemon(ctx); startErr != nil {
 		return nil, err
@@ -162,17 +164,18 @@ func (d *Cua) cuaCall(ctx context.Context, tool string, args map[string]any) ([]
 	return d.rawCall(ctx, tool, args)
 }
 
-// startDaemon levanta el demonio por LaunchServices y espera a que conteste.
+// startDaemon brings the daemon up through LaunchServices and waits for it
+// to answer.
 //
-// `open -g` deja la app en segundo plano: arrancar el driver no puede robarle
-// el foco a nadie, que es la propiedad por la que se eligio este driver.
+// `open -g` keeps the app in the background: starting the driver cannot
+// steal focus from anyone, which is the property this driver was chosen for.
 func (d *Cua) startDaemon(ctx context.Context) error {
 	if res := d.exec.Run(ctx, "open", "-n", "-g", "-a", "CuaDriver", "--args", "serve"); res.Err != nil {
 		return fmt.Errorf("cua: could not start the CuaDriver daemon: %s", firstLine(res.Stderr))
 	}
-	// Sondeo en vez de una espera fija: en frio tarda unos segundos y en
-	// caliente responde enseguida, asi que una espera fija seria a la vez
-	// demasiado corta y demasiado larga.
+	// Polling instead of a fixed wait: cold it takes a few seconds and warm
+	// it answers right away, so a fixed wait would be both too short and too
+	// long.
 	for attempt := 0; attempt < 30; attempt++ {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -189,10 +192,10 @@ func (d *Cua) startDaemon(ctx context.Context) error {
 	return errors.New("cua: the CuaDriver daemon did not answer after starting")
 }
 
-// isCuaDaemonDown reconoce el unico fallo que mav puede resolver solo.
+// isCuaDaemonDown recognizes the only failure mav can fix on its own.
 //
-// Se mira el texto porque no hay nada mejor: ese caso sale con codigo de salida
-// CERO y un mensaje para humanos, no un error estructurado.
+// It matches on text because there is nothing better: that case exits with
+// code ZERO and a message for humans, not a structured error.
 func isCuaDaemonDown(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "daemon is not running")
 }
@@ -212,8 +215,8 @@ func (d *Cua) rawCall(ctx context.Context, tool string, args map[string]any) ([]
 		}
 		return nil, fmt.Errorf("cua-driver %s: empty response", tool)
 	}
-	// Un rechazo llega con exit 0 y un objeto `refusal`, asi que mirar el
-	// codigo de salida no basta.
+	// A refusal arrives with exit 0 and a `refusal` object, so checking the
+	// exit code is not enough.
 	var refusal struct {
 		Refusal *struct {
 			Code    string `json:"code"`
@@ -226,7 +229,7 @@ func (d *Cua) rawCall(ctx context.Context, tool string, args map[string]any) ([]
 	return []byte(res.Stdout), nil
 }
 
-// cuaWindow es una fila de list_windows.
+// cuaWindow is one row of list_windows.
 type cuaWindow struct {
 	WindowID int    `json:"window_id"`
 	PID      int    `json:"pid"`
@@ -239,12 +242,12 @@ type cuaWindow struct {
 	} `json:"bounds"`
 }
 
-// resolvePID traduce bundle id a pid.
+// resolvePID translates bundle id to pid.
 //
-// mav identifica una app de macOS por su bundle, que es lo estable entre runs;
-// cua-driver trabaja siempre por pid, que cambia en cada lanzamiento. La
-// traduccion se hace aqui y no en la capa de target porque es una propiedad de
-// esta herramienta, no del modelo de destino.
+// mav identifies a macOS app by its bundle, which is what stays stable
+// across runs; cua-driver always works by pid, which changes on every
+// launch. The translation happens here and not in the target layer because
+// it is a property of this tool, not of the target model.
 func (d *Cua) resolvePID(ctx context.Context, target drivers.Target) (int, error) {
 	if target.PID > 0 {
 		return target.PID, nil
@@ -268,8 +271,8 @@ func (d *Cua) resolvePID(ctx context.Context, target drivers.Target) (int, error
 	return 0, fmt.Errorf("cua: %s is not running", target.BundleID)
 }
 
-// cuaApp es una fila de list_apps. Incluye instaladas y no arrancadas, de ahi
-// que haya que filtrar por Running antes de fiarse del pid.
+// cuaApp is one row of list_apps. It includes installed but not running
+// apps, hence the Running filter before trusting the pid.
 type cuaApp struct {
 	BundleID string `json:"bundle_id"`
 	Name     string `json:"name"`
@@ -296,22 +299,22 @@ func decodeCuaApps(raw []byte) ([]cuaApp, error) {
 	return nil, nil
 }
 
-// resolveWindow elige la ventana de la app.
+// resolveWindow picks the app's window.
 //
-// El criterio es el area visible mayor y no el z-order porque z_index puede
-// venir nulo -- la propia herramienta avisa de que entonces no se puede
-// inferir orden -- mientras que las medidas siempre estan.
+// The criterion is the largest visible area and not z-order because z_index
+// can come back null, the tool itself warns that no order can be inferred
+// then, while the dimensions are always there.
 func (d *Cua) resolveWindow(ctx context.Context, target drivers.Target) (cuaWindow, error) {
 	pid, err := d.resolvePID(ctx, target)
 	if err != nil {
 		return cuaWindow{}, err
 	}
 	target.PID = pid
-	// El pid va en la peticion y no se filtra despues, y no es una
-	// optimizacion: sin pid la herramienta enumera solo la capa 0 -- para no
-	// inundar al llamante con tooltips, popovers, menus y el Dock -- mientras
-	// que nombrando el proceso admite todas las capas. Es la unica forma de
-	// alcanzar una app cuya UI entera vive en una ventana accesoria.
+	// The pid goes in the request and is not filtered afterwards, and it is
+	// not an optimization: without a pid the tool enumerates only layer 0,
+	// to avoid flooding the caller with tooltips, popovers, menus and the
+	// Dock, while naming the process admits every layer. It is the only way
+	// to reach an app whose entire UI lives in an accessory window.
 	raw, err := d.cuaCall(ctx, "list_windows", map[string]any{"pid": pid})
 	if err != nil {
 		return cuaWindow{}, err
@@ -332,17 +335,17 @@ func (d *Cua) resolveWindow(ctx context.Context, target drivers.Target) (cuaWind
 		}
 	}
 	if bestArea == 0 {
-		// Caso real y no hipotetico: una ventana flotante (panel, HUD,
-		// popover, onboarding) no sale en list_windows porque la herramienta
-		// solo enumera la capa 0. El mensaje lo dice para que nadie lo lea
-		// como "la app no esta abierta", que es a lo que se parece.
+		// A real case, not a hypothetical: a floating window (panel, HUD,
+		// popover, onboarding) does not show up in list_windows because the
+		// tool only enumerates layer 0. The message says so, so nobody
+		// reads it as "the app is not open", which is what it looks like.
 		return cuaWindow{}, fmt.Errorf("cua: no on-screen window for pid %d", pid)
 	}
 	return best, nil
 }
 
-// decodeCuaWindows saca la lista venga plana o dentro de structuredContent,
-// que depende del transporte.
+// decodeCuaWindows extracts the list whether it comes flat or inside
+// structuredContent, which depends on the transport.
 func decodeCuaWindows(raw []byte) ([]cuaWindow, error) {
 	var flat struct {
 		Windows    []cuaWindow `json:"windows"`
@@ -362,7 +365,7 @@ func decodeCuaWindows(raw []byte) ([]cuaWindow, error) {
 	return nil, nil
 }
 
-// cuaState es la respuesta de get_window_state: arbol Y captura a la vez.
+// cuaState is the get_window_state response: tree AND capture at once.
 type cuaState struct {
 	PID            int           `json:"pid"`
 	SnapshotID     string        `json:"snapshot_id"`
@@ -417,7 +420,7 @@ func (s *cuaState) normalize() {
 	}
 }
 
-// windowState pide arbol y captura de la ventana de la app.
+// windowState requests the tree and capture of the app's window.
 func (d *Cua) windowState(ctx context.Context, target drivers.Target) (cuaState, error) {
 	win, err := d.resolveWindow(ctx, target)
 	if err != nil {
@@ -444,7 +447,7 @@ func (d *Cua) windowState(ctx context.Context, target drivers.Target) (cuaState,
 	return state, nil
 }
 
-// Tree devuelve el arbol de accesibilidad de la ventana.
+// Tree returns the window's accessibility tree.
 func (d *Cua) Tree(ctx context.Context, target drivers.Target, _ drivers.TreeSpec) (drivers.TreeResult, error) {
 	state, err := d.windowState(ctx, target)
 	if err != nil {
@@ -457,13 +460,13 @@ func (d *Cua) Tree(ctx context.Context, target drivers.Target, _ drivers.TreeSpe
 	return drivers.TreeResult{JSON: encoded}, nil
 }
 
-// cuaElementsToNodes traduce al vocabulario de mav.
+// cuaElementsToNodes translates into mav's vocabulary.
 //
-// `identifier` sale del element_token y NO del AXIdentifier, que cua-driver no
-// expone. Se rellena igualmente porque `ui tap --id` tiene que poder apuntar a
-// algo dentro del mismo run, pero ese valor NO sobrevive al siguiente
-// snapshot: la propia herramienta rechaza indices caducados en vez de actuar
-// sobre el elemento equivocado.
+// `identifier` comes from the element_token and NOT from AXIdentifier, which
+// cua-driver does not expose. It is filled anyway because `ui tap --id` has
+// to be able to point at something within the same run, but that value does
+// NOT survive the next snapshot: the tool itself rejects stale indexes
+// instead of acting on the wrong element.
 func cuaElementsToNodes(elements []cuaElement) []map[string]any {
 	out := make([]map[string]any, 0, len(elements))
 	for _, el := range elements {
@@ -484,12 +487,12 @@ func cuaElementsToNodes(elements []cuaElement) []map[string]any {
 	return out
 }
 
-// Screenshot escribe la captura de la ventana.
+// Screenshot writes the window capture.
 //
-// Sale del mismo get_window_state que el arbol, en base64, asi que imagen y
-// arbol describen el MISMO instante -- que para una evidencia que acompana a un
-// arbol es justo lo que se quiere -- y no hay una segunda invocacion que pueda
-// pillar la pantalla ya cambiada.
+// It comes from the same get_window_state as the tree, in base64, so image
+// and tree describe the SAME instant, which for evidence accompanying a tree
+// is exactly what you want, and there is no second invocation that could
+// catch the screen already changed.
 func (d *Cua) Screenshot(ctx context.Context, target drivers.Target, spec drivers.ScreenshotSpec) error {
 	if spec.OutPath == "" {
 		return errors.New("cua: screenshot output path missing")
@@ -499,10 +502,10 @@ func (d *Cua) Screenshot(ctx context.Context, target drivers.Target, spec driver
 		return err
 	}
 	if state.ScreenshotB64 == "" {
-		// La herramienta omite la imagen a proposito cuando no puede probar
-		// que corresponde a las medidas pedidas, en vez de entregar una
-		// transformacion adivinada. Se propaga tal cual: una captura que no se
-		// puede probar no es evidencia.
+		// The tool omits the image on purpose when it cannot prove it
+		// matches the requested dimensions, instead of delivering a guessed
+		// transformation. It is propagated as is: a capture that cannot be
+		// proven is not evidence.
 		return errors.New("cua: no provable screenshot for this window")
 	}
 	png, err := base64.StdEncoding.DecodeString(state.ScreenshotB64)
@@ -512,7 +515,7 @@ func (d *Cua) Screenshot(ctx context.Context, target drivers.Target, spec driver
 	return os.WriteFile(spec.OutPath, png, 0o644)
 }
 
-// findCuaElement localiza el elemento del selector dentro de un snapshot.
+// findCuaElement locates the selector's element within a snapshot.
 func findCuaElement(state cuaState, selector drivers.ElementSelector) (cuaElement, bool) {
 	for _, el := range state.Elements {
 		if selector.ID != "" && el.Token == selector.ID {
@@ -525,12 +528,12 @@ func findCuaElement(state cuaState, selector drivers.ElementSelector) (cuaElemen
 	return cuaElement{}, false
 }
 
-// Tap pulsa sin traer la app al frente.
+// Tap clicks without bringing the app to the front.
 //
-// Son dos llamadas y no una a proposito: la herramienta exige un snapshot
-// fresco antes de cada accion por elemento e invalida el mapa de indices en
-// cuanto haces otro. Reusar un snapshot viejo es exactamente como se acaba
-// pulsando lo que no era.
+// It is two calls and not one on purpose: the tool demands a fresh snapshot
+// before every per-element action and invalidates the index map as soon as
+// you take another. Reusing an old snapshot is exactly how you end up
+// clicking the wrong thing.
 func (d *Cua) Tap(ctx context.Context, target drivers.Target, spec drivers.TapSpec) (drivers.TapResult, error) {
 	state, err := d.windowState(ctx, target)
 	if err != nil {
@@ -555,7 +558,7 @@ func (d *Cua) Tap(ctx context.Context, target drivers.Target, spec drivers.TapSp
 	return drivers.TapResult{MatchedID: spec.Selector.ID, MatchedText: spec.Selector.Text}, nil
 }
 
-// Type escribe en el elemento del selector.
+// Type writes into the selector's element.
 func (d *Cua) Type(ctx context.Context, target drivers.Target, spec drivers.TextSpec) error {
 	if spec.Text == "" {
 		return errors.New("cua: type text missing")
@@ -576,12 +579,12 @@ func (d *Cua) Type(ctx context.Context, target drivers.Target, spec drivers.Text
 	return err
 }
 
-// Swipe desplaza el contenido de la ventana.
+// Swipe scrolls the window's content.
 //
-// En un Mac un swipe ES un scroll: no hay dedo, hay rueda. La direccion se
-// invierte a proposito -- deslizar hacia arriba en un movil sube el contenido,
-// que es lo que en escritorio se pide como scroll hacia abajo -- para que un
-// flow escrito una vez signifique lo mismo en las dos plataformas.
+// On a Mac a swipe IS a scroll: there is no finger, there is a wheel. The
+// direction is inverted on purpose, swiping up on a phone moves the content
+// up, which on desktop is requested as scrolling down, so a flow written
+// once means the same on both platforms.
 func (d *Cua) Swipe(ctx context.Context, target drivers.Target, spec drivers.SwipeSpec) error {
 	direction := map[string]string{
 		"up": "down", "down": "up", "left": "right", "right": "left",
@@ -601,13 +604,13 @@ func (d *Cua) Swipe(ctx context.Context, target drivers.Target, spec drivers.Swi
 	return err
 }
 
-// Pinch, Rotate, TwoFingerPan y W3CActions existen porque GestureDriver es una
-// interfaz entera, y fallan diciendo por que.
+// Pinch, Rotate, TwoFingerPan and W3CActions exist because GestureDriver is
+// a whole interface, and they fail saying why.
 //
-// No es una laguna que llenar mas adelante: un trackpad envia gestos al sistema
-// y a la app en foco, no a un PID, asi que reproducirlos en segundo plano
-// contra una ventana concreta no es cuestion de esfuerzo sino de que no existe
-// la via. Un mensaje que lo diga ahorra la busqueda.
+// It is not a gap to fill later: a trackpad sends gestures to the system and
+// to the focused app, not to a PID, so reproducing them in the background
+// against a specific window is not a matter of effort but of there being no
+// path. A message that says so saves the search.
 func (d *Cua) Pinch(context.Context, drivers.Target, drivers.PinchSpec) error {
 	return errors.New("cua: multitouch gestures cannot be delivered to a pid on macOS")
 }
@@ -624,12 +627,12 @@ func (d *Cua) W3CActions(context.Context, drivers.Target, []byte) error {
 	return errors.New("cua: W3C action chains are an iOS driver feature; use ui tap/type/swipe")
 }
 
-// Erase vacia un campo.
+// Erase empties a field.
 //
-// Va por set_value y no por teclear borrados: escribir la cadena vacia deja el
-// campo vacio de una vez, mientras que mandar N pulsaciones de Delete depende
-// de acertar cuantas -- y de que el campo tenga el foco, que es justo lo que
-// este driver evita necesitar.
+// It goes through set_value and not by typing deletions: writing the empty
+// string leaves the field empty in one shot, while sending N Delete
+// keystrokes depends on guessing how many, and on the field having focus,
+// which is exactly what this driver avoids needing.
 func (d *Cua) Erase(ctx context.Context, target drivers.Target, spec drivers.TextSpec) error {
 	state, err := d.windowState(ctx, target)
 	if err != nil {
@@ -647,8 +650,8 @@ func (d *Cua) Erase(ctx context.Context, target drivers.Target, spec drivers.Tex
 	return err
 }
 
-// HideKeyboard no existe en macOS: no hay teclado en pantalla que esconder. Se
-// declara porque TextDriver es una interfaz entera, y no hace nada en vez de
-// fallar, porque un flow compartido entre iOS y Mac lo llamara y aqui es
-// simplemente innecesario.
+// HideKeyboard does not exist on macOS: there is no on-screen keyboard to
+// hide. It is declared because TextDriver is a whole interface, and it does
+// nothing instead of failing, because a flow shared between iOS and Mac will
+// call it and here it is simply unnecessary.
 func (d *Cua) HideKeyboard(context.Context, drivers.Target) error { return nil }

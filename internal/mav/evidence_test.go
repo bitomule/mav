@@ -189,9 +189,9 @@ func writeTestPNG(path string) error {
 	return png.Encode(file, img)
 }
 
-// TestReportRecordsTheFixtureApplied: un run cuyo estado lo sembro un fixture y
-// cuyo manifiesto no dice cual no es reproducible desde su propia evidencia,
-// que es justo lo que el manifiesto verificado promete.
+// TestReportRecordsTheFixtureApplied: a run whose state a fixture seeded
+// and whose manifest does not say which one is not reproducible from its
+// own evidence, which is exactly what the verified manifest promises.
 func TestReportRecordsTheFixtureApplied(t *testing.T) {
 	run, err := NewRunState()
 	if err != nil {
@@ -211,7 +211,7 @@ func TestReportRecordsTheFixtureApplied(t *testing.T) {
 		t.Fatal(err)
 	}
 	if report.Fixture != "seeded-meetings" {
-		t.Fatalf("report.json debe registrar el fixture aplicado, got %q", report.Fixture)
+		t.Fatalf("report.json must record the applied fixture, got %q", report.Fixture)
 	}
 }
 
@@ -229,15 +229,15 @@ func TestReportOmitsFixtureWhenNoneApplied(t *testing.T) {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(data), "\"fixture\"") {
-		t.Fatalf("sin fixture no debe aparecer el campo:\n%s", data)
+		t.Fatalf("without a fixture the field must not appear:\n%s", data)
 	}
 }
 
-// TestReportOmitsScreenshotVerdictWhenThereIsNoScreenshot: un flow no deja
-// captura suelta, y el campo salia igualmente como {"ok":false}. Un veredicto
-// negativo sobre algo que nunca existio es indistinguible de una captura rota
-// para quien lee el JSON, que es justo lo que una capa de evidencia no puede
-// permitirse.
+// TestReportOmitsScreenshotVerdictWhenThereIsNoScreenshot: a flow leaves
+// no loose capture, and the field came out anyway as {"ok":false}. A
+// negative verdict on something that never existed is indistinguishable
+// from a broken capture for whoever reads the JSON, which is exactly what
+// an evidence layer cannot afford.
 func TestReportOmitsScreenshotVerdictWhenThereIsNoScreenshot(t *testing.T) {
 	dir := t.TempDir()
 	run := RunState{ID: "sin-captura", Dir: dir}
@@ -254,9 +254,9 @@ func TestReportOmitsScreenshotVerdictWhenThereIsNoScreenshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	if populated.ScreenshotEvidence != nil {
-		t.Fatalf("sin captura no debe haber veredicto: %+v", populated.ScreenshotEvidence)
+		t.Fatalf("without a capture there must be no verdict: %+v", populated.ScreenshotEvidence)
 	}
 	if strings.Contains(string(encoded), "screenshot_evidence") {
-		t.Fatalf("el campo debe estar ausente, no en falso: %s", encoded)
+		t.Fatalf("the field must be absent, not false: %s", encoded)
 	}
 }

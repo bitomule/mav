@@ -16,10 +16,10 @@ type launchStep struct {
 	Command string
 }
 
-// runLaunchRecipe ejecuta la receta de lanzamiento del proyecto. Devuelve, por
-// orden: la ruta del .app resuelta, el paso que falló (nil si todo fue bien),
-// su resultado, y un aviso no fatal para los casos en los que seguir es
-// correcto pero callarse no.
+// runLaunchRecipe runs the project's launch recipe. It returns, in order:
+// the resolved .app path, the step that failed (nil if all went well), its
+// result, and a non-fatal warning for the cases where continuing is right
+// but staying quiet is not.
 func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clearState bool, fixture string) (string, *launchStep, CommandResult, string) {
 	commands := effectiveLaunchCommands(cfg)
 	steps := []launchStep{
@@ -38,20 +38,21 @@ func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clea
 	env := launchEnv(cfg, run, appPath)
 	warn := ""
 	if clearState && cfg.BundleID != "" {
-		// Un uninstall que falla NO es fatal: el caso corriente es que la app
-		// todavía no estuviera instalada (primer run del proyecto, simulador
-		// recién creado), y ahí abortar sería peor que seguir. Pero descartar
-		// el resultado -- que es lo que este código hacía -- deja mudo también
-		// el caso en el que el uninstall falla de verdad, y entonces
-		// --clear-state miente: el usuario cree que parte de cero y arrastra
-		// el estado del run anterior, que es exactamente el bug irreproducible
-		// que --clear-state existe para evitar.
+		// A failing uninstall is NOT fatal: the common case is that the app
+		// was not installed yet (the project's first run, a freshly created
+		// simulator), and aborting there would be worse than continuing.
+		// But discarding the result, which is what this code did, also
+		// mutes the case where the uninstall genuinely fails, and then
+		// --clear-state lies: the user believes they start from zero and
+		// drags the previous run's state along, which is exactly the
+		// irreproducible bug --clear-state exists to avoid.
 		//
-		// No se intenta distinguir "no había nada que desinstalar" de "falló
-		// de verdad": eso obligaría a leer el stderr de simctl/idb, que es
-		// suyo y pueden cambiarlo cuando quieran (la misma razón por la que
-		// isSimulatorBooted pregunta a CoreSimulator en vez de adivinar por el
-		// texto del error). Se avisa siempre y decide quien lee.
+		// No attempt is made to distinguish "there was nothing to
+		// uninstall" from "genuinely failed": that would require reading
+		// simctl/idb's stderr, which is theirs and they can change whenever
+		// they want (the same reason isSimulatorBooted asks CoreSimulator
+		// instead of guessing from the error text). It always warns and the
+		// reader decides.
 		if result := c.runDriverLifecycle(ctx, cfg, run, launchStep{Name: "clear_state"}, appPath); result.Err != nil {
 			detail := firstLine(strings.TrimSpace(result.Stderr))
 			if detail == "" {
@@ -112,10 +113,10 @@ func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clea
 			}
 		}
 	}
-	// El fixture va aqui, entre install y launch, y no es casualidad: el
-	// contenedor de la app ya existe (lo acaba de crear el install) y la app
-	// todavia no ha arrancado, asi que nada tiene su base de datos abierta.
-	// Antes o despues de esta ventana, sembrar es corromper.
+	// The fixture goes here, between install and launch, and it is no
+	// accident: the app's container already exists (the install just
+	// created it) and the app has not started yet, so nothing has its
+	// database open. Before or after this window, seeding is corrupting.
 	if fixture != "" {
 		commandsForFixture, ok := cfg.Fixtures[fixture]
 		if !ok {
@@ -125,11 +126,11 @@ func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clea
 				Err:    fmt.Errorf("fixture_not_found"),
 			}, warn
 		}
-		// Una instancia viva de un run anterior tendria la base de datos
-		// abierta mientras el fixture la reescribe. Matarla es best-effort: si
-		// no habia nada corriendo el terminate falla y da igual, y no hay
-		// forma barata de distinguirlo del fallo real sin leer el stderr del
-		// driver, que es suyo.
+		// A live instance from a previous run would have the database open
+		// while the fixture rewrites it. Killing it is best-effort: if
+		// nothing was running the terminate fails and it does not matter,
+		// and there is no cheap way to tell that apart from a real failure
+		// without reading the driver's stderr, which is its own.
 		c.terminateBeforeFixture(ctx, cfg, run)
 		for i, command := range commandsForFixture {
 			if strings.TrimSpace(command) == "" {
@@ -182,9 +183,9 @@ func shouldUseDriverLaunch(cfg Config, commands LaunchCommands) bool {
 }
 
 func (c CLI) runDriverLifecycle(ctx context.Context, cfg Config, run RunState, step launchStep, appPath string) CommandResult {
-	// El paso app_path de la receta es quien resuelve donde quedo el bundle, y
-	// para un target de macOS eso es su identidad: el driver no tiene UDID al
-	// que hablarle, tiene una ruta que ejecutar.
+	// The recipe's app_path step is what resolves where the bundle ended
+	// up, and for a macOS target that is its identity: the driver has no
+	// UDID to talk to, it has a path to run.
 	cfg.AppPath = appPath
 	target := targetFromConfig(cfg)
 	capability := drivers.CapLaunch
@@ -379,9 +380,9 @@ func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
-// terminateBeforeFixture cierra la app antes de que un fixture le reescriba el
-// estado. Best-effort a proposito: el caso corriente es que no hubiera nada
-// corriendo, y ahi fallar seria absurdo.
+// terminateBeforeFixture closes the app before a fixture rewrites its
+// state. Best-effort on purpose: the common case is that nothing was
+// running, and failing there would be absurd.
 func (c CLI) terminateBeforeFixture(ctx context.Context, cfg Config, run RunState) {
 	if cfg.BundleID == "" {
 		return

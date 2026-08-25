@@ -1,80 +1,81 @@
-# Correr `mav` contra una app de macOS dentro de una VM desechable
+# Running `mav` against a macOS app inside a disposable VM
 
-Esta es la Fase 4 del [análisis de scope](../../docs/macos-scope-evaluation.md), y lo
-importante es lo que **no** hay aquí: código de MAV. MAV no orquesta máquinas. Envuelve
-drivers y produce evidencia; la máquina la pone [crabbox](https://github.com/openclaw/crabbox),
-que ya sabe alquilar una VM de macOS con `tart`, sincronizar el checkout sucio, ejecutar y
-devolverla al acabar.
+This is Phase 4 of the [scope evaluation](../../docs/macos-scope-evaluation.md), and what
+matters is what is **not** here: MAV code. MAV does not orchestrate machines. It wraps
+drivers and produces evidence; the machine comes from [crabbox](https://github.com/openclaw/crabbox),
+which already knows how to lease a macOS VM with `tart`, sync the dirty checkout, execute,
+and hand it back when done.
 
-## Por qué molestarse
+## Why bother
 
-En tu propio Mac, validar una app de macOS tiene dos problemas que no se arreglan con
-código:
+On your own Mac, validating a macOS app has two problems that code does not fix:
 
-1. **TCC.** Una app real pide varios permisos (micrófono, calendario, Apple Events…). O ya
-   se los concediste —y entonces tu test no parte de limpio— o te comes un prompt a mitad
-   del run. Y Screen Recording y micrófono son *deny-only* en PPPC: ni un admin de MDM
-   puede pre-autorizarlos.
-2. **Estado.** `--clear-state` borra el contenedor de la app, pero no el resto de rastro
-   que deja en el sistema.
+1. **TCC.** A real app asks for several permissions (microphone, calendar, Apple Events...).
+   Either you already granted them, and then your test does not start clean, or you eat a
+   prompt mid-run. And Screen Recording and microphone are *deny-only* in PPPC: not even
+   an MDM admin can pre-authorize them.
+2. **State.** `--clear-state` wipes the app container, but not the rest of the traces it
+   leaves on the system.
 
-En una VM cuya imagen fabricas tú, el segundo desaparece: tiras la VM y el estado se va con ella.
+In a VM whose image you build yourself, the second one disappears: throw the VM away and the state goes with it.
 
-El primero **no**, y esto contradice lo que dice la mayoría de guías sobre el tema.
+The first one does **not**, and this contradicts what most guides on the subject say.
 
-### Sembrar `TCC.db` NO funciona en macOS 26
+### Seeding `TCC.db` does NOT work on macOS 26
 
-Probado en una VM real de macOS 26.0 con SIP desactivado, y falla en las cuatro variantes:
+Tested on a real macOS 26.0 VM with SIP disabled, and it fails in all four variants:
 
-| Intento | Resultado |
+| Attempt | Result |
 |---|---|
-| `INSERT` por ruta, `client_type=1` | ignorado |
-| Identificador de firma, `client_type=0`, sin `csreq` | ignorado |
-| Identificador de firma, `client_type=0`, **con `csreq` válido de 172 bytes** | ignorado |
-| Lo anterior sobre toda la cadena de proceso responsable (`bash`, `zsh`, `ssh`, `sshd`) | ignorado |
+| `INSERT` by path, `client_type=1` | ignored |
+| Signing identifier, `client_type=0`, no `csreq` | ignored |
+| Signing identifier, `client_type=0`, **with a valid 172-byte `csreq`** | ignored |
+| The above over the whole responsible process chain (`bash`, `zsh`, `ssh`, `sshd`) | ignored |
 
-Con `tccd` reiniciado en cada intento, y con un reinicio completo de la VM al final. `csrutil status`
-confirmaba `disabled` todo el rato, y las filas quedaban en la base con `auth_value=2`.
+With `tccd` restarted on every attempt, and a full VM reboot at the end. `csrutil status`
+reported `disabled` the whole time, and the rows stayed in the database with `auth_value=2`.
 
-Las guías que dicen que esto funciona —y el orb de CircleCI— son de macOS anteriores. En macOS 26,
-escribir en la `TCC.db` del sistema deja de bastar aunque SIP esté desactivado.
+The guides that say this works, and the CircleCI orb, are from earlier macOS versions. On
+macOS 26, writing to the system `TCC.db` stops being enough even with SIP disabled.
 
-### Lo que sí funciona: conceder por el ratón virtual del hipervisor
+### What does work: granting through the hypervisor's virtual mouse
 
-El permiso no se puede conceder **desde dentro** de la VM: cualquier forma de pulsar el botón de System
-Settings necesitaría ya el permiso de accesibilidad que intentas conceder. Es circular.
+The permission cannot be granted **from inside** the VM: any way of pressing the button in
+System Settings would already need the accessibility permission you are trying to grant. It
+is circular.
 
-Pero sí **desde fuera**. La VM tiene teclado y ratón virtuales a nivel de hipervisor
-(`configuration.keyboards` y `configuration.pointingDevices` en `VM.swift` de tart), y tart expone un
-servidor VNC contra ellos (`tart run --vnc-experimental`, que además funciona antes del login y en modo
-recuperación). Para el guest, esos eventos son **hardware**, no eventos sintéticos de un proceso — y TCC
-sólo gobierna los sintéticos.
+But it can **from outside**. The VM has a virtual keyboard and mouse at the hypervisor level
+(`configuration.keyboards` and `configuration.pointingDevices` in tart's `VM.swift`), and tart
+exposes a VNC server against them (`tart run --vnc-experimental`, which also works before
+login and in recovery mode). To the guest, those events are **hardware**, not synthetic
+events from a process, and TCC only governs the synthetic ones.
 
-Verificado en una VM de macOS 26.0 con cero permisos concedidos:
+Verified on a macOS 26.0 VM with zero permissions granted:
 
 ```sh
 tart run mav-macos-test --no-graphics --vnc-experimental
-# imprime: VNC server is running at vnc://:<password>@127.0.0.1:<puerto>
+# prints: VNC server is running at vnc://:<password>@127.0.0.1:<port>
 
-vncdo -s 127.0.0.1::<puerto> -p <password> capture pantalla.png   # → framebuffer completo
-vncdo -s 127.0.0.1::<puerto> -p <password> move 52 28 click 1     # → abre el menú Apple
+vncdo -s 127.0.0.1::<port> -p <password> capture screen.png   # → full framebuffer
+vncdo -s 127.0.0.1::<port> -p <password> move 52 28 click 1   # → opens the Apple menu
 ```
 
-La captura salió (2,5 MB de escritorio real) y el click abrió el menú. Desde ahí, `System Settings…` está
-en ese mismo menú: el camino entero hasta activar la casilla de Accesibilidad es clickable por este canal.
+The capture came out (2.5 MB of real desktop) and the click opened the menu. From there,
+`System Settings…` sits in that same menu: the whole path to enabling the Accessibility
+checkbox is clickable through this channel.
 
-**Consecuencia**: el bootstrap de permisos SÍ es automatizable, y no hace falta una imagen distinta por
-combinación de permisos. Se conduce la primera concesión por VNC, y a partir de ahí el guest ya puede
-usar sus propias herramientas.
+**Consequence**: permission bootstrap IS automatable, and there is no need for a separate
+image per permission combination. Drive the first grant over VNC, and from then on the
+guest can use its own tools.
 
-Ni crabbox ni Peekaboo hacen esto: crabbox no menciona TCC en toda su documentación, y la de Peekaboo
-dice explícitamente que hay que concederlo a mano.
+Neither crabbox nor Peekaboo does this: crabbox does not mention TCC anywhere in its
+documentation, and Peekaboo's says explicitly that you grant it by hand.
 
-## La receta
+## The recipe
 
-**Requisito de versión, y es la trampa que más tiempo cuesta**: hace falta **tart >= 2.29** (probado con
-2.35.0). En 2.28.1 `tart exec` calcula el tamaño del terminal **siempre**, con un `try!` sin guard, así que
-revienta cuando no hay TTY:
+**Version requirement, and it is the trap that costs the most time**: you need **tart >= 2.29**
+(tested with 2.35.0). In 2.28.1 `tart exec` computes the terminal size **always**, with an
+unguarded `try!`, so it blows up when there is no TTY:
 
 ```
 tart/Exec.swift:91: Fatal error: 'try!' expression unexpectedly raised an error:
@@ -82,11 +83,11 @@ failed to get terminal size: Inappropriate ioctl for device
 ssh key injection failed
 ```
 
-crabbox usa `tart exec` para inyectar la clave SSH, así que con tart 2.28.1 **el provider entero no
-arranca desde ningún contexto no interactivo** — que es justo para lo que existe. En `main` está envuelto
-en `if tty` y ya no pasa. No es un bug que reportar: es actualizar.
+crabbox uses `tart exec` to inject the SSH key, so with tart 2.28.1 **the whole provider
+fails to start from any non-interactive context**, which is exactly what it exists for. On
+`main` it is wrapped in `if tty` and no longer happens. Not a bug to report: just update.
 
-`.crabbox.yaml` en la raíz del repo (ver `crabbox.yaml.example` aquí al lado):
+`.crabbox.yaml` at the repo root (see `crabbox.yaml.example` next to this file):
 
 ```yaml
 jobs:
@@ -102,137 +103,145 @@ jobs:
     stop: always
 ```
 
-La imagen se elige con `CRABBOX_TART_IMAGE` o `--tart-image`. Comprobado end-to-end con
-`ghcr.io/cirruslabs/macos-tahoe-xcode:latest`: crabbox alquila la VM, inyecta la clave, sincroniza el
-checkout sucio, ejecuta, y libera el lease al terminar. Cuando el comando falla deja un bundle de fallo
-local y sugiere los `crabbox ssh` / `run --id` / `stop` concretos para retomar sobre el mismo lease.
+The image is picked with `CRABBOX_TART_IMAGE` or `--tart-image`. Checked end-to-end with
+`ghcr.io/cirruslabs/macos-tahoe-xcode:latest`: crabbox leases the VM, injects the key, syncs
+the dirty checkout, runs, and releases the lease when done. When the command fails it leaves
+a local failure bundle and suggests the exact `crabbox ssh` / `run --id` / `stop` invocations
+to resume on the same lease.
 
-### Quién monta qué
+### Who sets up what
 
-La separación de responsabilidades es de crabbox, no invención nuestra — su propia documentación la fija:
-*"Crabbox owns the lease lifecycle, sync, execution and cleanup. The repository owns the command string,
-package-manager setup, test environment"*.
+The separation of responsibilities is crabbox's, not our invention. Its own documentation
+pins it down: *"Crabbox owns the lease lifecycle, sync, execution and cleanup. The repository
+owns the command string, package-manager setup, test environment"*.
 
-| Capa | Quién | Qué monta |
+| Layer | Who | What it sets up |
 |---|---|---|
-| Imagen | `scripts/build-mav-vm-image.sh`, una vez | mav, peekaboo, axcli |
-| Máquina | **crabbox** | lease, sync del checkout, ejecución, limpieza |
-| App | **mav** (`fixtures`) | el estado de la app antes de lanzarla |
-| Permisos | quien prueba, contra su app | TCC — ver abajo |
+| Image | `scripts/build-mav-vm-image.sh`, once | mav, peekaboo, axcli |
+| Machine | **crabbox** | lease, checkout sync, execution, cleanup |
+| App | **mav** (`fixtures`) | the app's state before launching it |
+| Permissions | whoever tests, against their app | TCC, see below |
 
-Ojo con la palabra "fixture": crabbox no la usa para esto. Su `warmup`/`prewarm` prepara **la caja**, no
-la app. El estado de la app es cosa de mav. E instalar mav y los drivers **no va en un hook de crabbox**:
-va en la imagen, o acabas reinstalándolo en cada run.
+Watch the word "fixture": crabbox does not use it for this. Its `warmup`/`prewarm` prepares
+**the box**, not the app. App state is mav's job. And installing mav and the drivers **does
+not go in a crabbox hook**: it goes in the image, or you reinstall it on every run.
 
-### Por qué la imagen NO trae permisos concedidos
+### Why the image does NOT ship with permissions granted
 
-Se podría hornear Accessibility y Screen Recording, porque van a las *herramientas* y son las mismas
-siempre. Pero la app bajo prueba pide los suyos —Nokoru quiere micrófono, calendario y Apple Events— y
-esos cambian con cada app. Una imagen "con permisos" sería **una imagen por app**, que es justo lo que no
-queremos.
+Accessibility and Screen Recording could be baked in, because they go to the *tools* and are
+the same every time. But the app under test asks for its own, Nokoru wants microphone,
+calendar and Apple Events, and those change with every app. An image "with permissions"
+would be **one image per app**, which is exactly what we do not want.
 
-Así que la imagen trae herramientas y nada más. Los permisos se conceden después, contra la app concreta,
-por el canal del hipervisor descrito arriba. Eso mantiene una sola imagen sirviendo a cualquier app.
+So the image ships tools and nothing else. Permissions are granted afterwards, against the
+specific app, through the hypervisor channel described above. That keeps a single image
+serving any app.
 
-## Lo probado de verdad, y dónde para
+## What was actually tested, and where it stops
 
-Ejecutado contra NokoruMac en una VM de macOS 26.0:
+Run against NokoruMac in a macOS 26.0 VM:
 
-| Paso | Resultado |
+| Step | Result |
 |---|---|
-| Imagen con mav + peekaboo + axcli | ✅ construida y verificada |
+| Image with mav + peekaboo + axcli | ✅ built and verified |
 | crabbox: lease, sync, run, cleanup | ✅ end-to-end |
-| App corriendo dentro de la VM | ✅ |
-| Fixture (`vacio` borra el contenedor) | ✅ la app arrancó mostrando el onboarding de primer uso |
-| Accessibility + Event Synthesizing | ✅ **concedidos por el canal del hipervisor, sin tocar el host** |
-| Screen Recording | ❌ ver abajo |
-| `mav ui tree` / `mav capture` | ❌ bloqueados por lo anterior |
+| App running inside the VM | ✅ |
+| Fixture (`vacio` wipes the container) | ✅ the app launched showing the first-run onboarding |
+| Accessibility + Event Synthesizing | ✅ **granted through the hypervisor channel, without touching the host** |
+| Screen Recording | ❌ see below |
+| `mav ui tree` / `mav capture` | ❌ blocked by the above |
 
-### Tres cosas que salieron al ejecutarlo
+### Three things that surfaced when running it
 
-**1. Una app firmada para desarrollo no arranca en la VM.** NokoruMac lleva `embedded.provisionprofile`
-y entitlements restringidos (iCloud, push) atados a un equipo y unos dispositivos. En una VM limpia,
-AMFI la mata con SIGKILL sin mensaje. Para validar UI no hacen falta esos entitlements: re-firmar ad-hoc
-(`codesign -f -s - --deep`) la deja arrancar. Es un compromiso consciente — se pierde iCloud y push — y
-hay que decirlo, porque ya no estás probando exactamente el binario que distribuyes.
+**1. A development-signed app does not launch in the VM.** NokoruMac carries
+`embedded.provisionprofile` and restricted entitlements (iCloud, push) tied to a team and a
+device list. In a clean VM, AMFI kills it with SIGKILL and no message. Validating UI does not
+need those entitlements: re-signing ad-hoc (`codesign -f -s - --deep`) lets it launch. It is
+a deliberate trade, iCloud and push are lost, and it has to be said, because you are no
+longer testing the exact binary you ship.
 
-**2. `mav ui tree` en macOS necesita los DOS permisos, no sólo Accessibility.** `peekaboo see` enumera
-ventanas con ScreenCaptureKit, así que sin Screen Recording falla con `WINDOW_NOT_FOUND` aunque
-Accessibility esté concedida. Su propio log lo dice: *"rejected onDemand host … missing Screen
-Recording"*.
+**2. `mav ui tree` on macOS needs BOTH permissions, not just Accessibility.** `peekaboo see`
+enumerates windows with ScreenCaptureKit, so without Screen Recording it fails with
+`WINDOW_NOT_FOUND` even with Accessibility granted. Its own log says so: *"rejected onDemand
+host … missing Screen Recording"*.
 
-**3. Screen Recording no se puede conceder a un binario CLI por la vía normal.** A diferencia de
-Accessibility —donde macOS registró `sshd-keygen-wrapper` solo y bastó activar el interruptor— el panel
-de Screen Recording aparece vacío y su botón "+" abre un selector pensado para `.app`. Provocar la
-petición desde un proceso sin GUI no registra ninguna entrada.
+**3. Screen Recording cannot be granted to a CLI binary the normal way.** Unlike
+Accessibility, where macOS registered `sshd-keygen-wrapper` on its own and flipping the
+switch was enough, the Screen Recording pane comes up empty and its "+" button opens a
+picker meant for `.app` bundles. Triggering the request from a process with no GUI registers
+no entry.
 
-Vías que quedan por explorar, ninguna probada aún: conceder a `Terminal.app` y conducir desde una
-terminal dentro de la sesión gráfica en vez de por SSH; o capturar la pantalla **desde fuera** por el
-propio VNC del hipervisor, que no necesita permiso alguno — la evidencia visual de esta prueba se obtuvo
-justo así.
+Paths left to explore, none tested yet: grant to `Terminal.app` and drive from a terminal
+inside the graphical session instead of over SSH; or capture the screen **from outside**
+through the hypervisor's own VNC, which needs no permission at all. The visual evidence for
+this test was obtained exactly that way.
 
-**4. La captura acotada a la app choca además con un filtro de Peekaboo v4, no sólo con TCC.** Corriendo
-en la sesión gráfica, `peekaboo see --app nNokoru` enumera las ventanas candidatas y las descarta una a
-una diciendo por qué:
+**4. App-scoped capture also hits a Peekaboo v4 filter, not just TCC.** Running in the
+graphical session, `peekaboo see --app nNokoru` enumerates the candidate windows and
+discards them one by one, saying why:
 
 ```
 Desktop observation target was not found: shareable window for nNokoru.
 Candidates: #2 id=107 '<untitled>' 640x640 alpha=1.00 reason=layer != 0
 ```
 
-`id=107` **es** la ventana visible de la app. Peekaboo sólo acepta ventanas en la capa 0, y el onboarding
-de Nokoru es una ventana flotante. O sea: cualquier app cuya UI viva en un panel flotante, un HUD o un
-popover queda fuera de la captura por app de Peekaboo aunque los permisos estén perfectos. `axcli
-snapshot` lee el árbol de esa misma ventana sin problema (9 elementos interactivos, botón "Get started"
-incluido), así que el árbol y la captura no fallan por lo mismo y no se arreglan igual.
+`id=107` **is** the app's visible window. Peekaboo only accepts windows on layer 0, and
+Nokoru's onboarding is a floating window. So: any app whose UI lives in a floating panel, a
+HUD or a popover is out of reach for Peekaboo's per-app capture even with permissions in
+perfect shape. `axcli snapshot` reads the tree of that same window without trouble (9
+interactive elements, "Get started" button included), so the tree and the capture do not
+fail for the same reason and do not get fixed the same way.
 
-**5. Ejecutar `mav` por SSH lo deja en la sesión equivocada.** Un proceso lanzado desde SSH no está en la
-sesión Aqua: `screencapture` responde `could not create image from display` porque no ve pantalla
-ninguna. `sudo launchctl asuser 501 …` sí entra en la sesión gráfica, pero entonces se pierde la
-atribución TCC que le daba el bridge de Peekaboo.app y la respuesta pasa a ser `Screen Recording
-permission is required`. Son dos fallos distintos con la misma causa de fondo — la identidad del proceso
-responsable — y ninguno se arregla concediendo más permisos a `mav`.
+**5. Running `mav` over SSH leaves it in the wrong session.** A process launched from SSH is
+not in the Aqua session: `screencapture` answers `could not create image from display`
+because it sees no display at all. `sudo launchctl asuser 501 …` does enter the graphical
+session, but then the TCC attribution the Peekaboo.app bridge provided is lost and the
+answer becomes `Screen Recording permission is required`. Two different failures with the
+same underlying cause, the identity of the responsible process, and neither is fixed by
+granting `mav` more permissions.
 
-**7. La captura por app dentro de la VM sólo funciona por el bridge de Peekaboo.app, y el fallo
-alternativo es silencioso.** Concedido Screen Recording a `axcli` —se puede, aunque el panel no registre
-el intento denegado: hay que añadirlo con "+" y escribir la ruta a mano—, `axcli screenshot` reporta
-éxito, escribe el PNG y acierta las medidas de la ventana (`Capturing window 640x640 at (192,52)`). Lo
-que hay dentro del PNG es **el fondo de escritorio**. Con `--legacy` igual. Peekaboo, sobre la misma
-ventana y en el mismo instante, devuelve el contenido real. La diferencia es que su CLI delega en
-Peekaboo.app, que vive en la sesión gráfica, mientras que axcli captura desde su propio proceso — y ese
-proceso, lanzado por SSH, no tiene sesión gráfica. Control con TextEdit: mismo resultado, así que no es
-cosa de la app bajo prueba.
+**7. Per-app capture inside the VM only works through the Peekaboo.app bridge, and the
+alternative failure is silent.** With Screen Recording granted to `axcli`, which is possible
+even though the pane does not register the denied attempt: you add it with "+" and type the
+path by hand, `axcli screenshot` reports success, writes the PNG and gets the window
+measurements right (`Capturing window 640x640 at (192,52)`). What is inside the PNG is
+**the desktop wallpaper**. Same with `--legacy`. Peekaboo, on the same window at the same
+moment, returns the real content. The difference is that its CLI delegates to Peekaboo.app,
+which lives in the graphical session, while axcli captures from its own process, and that
+process, launched over SSH, has no graphical session. Control with TextEdit: same result, so
+it is not the app under test.
 
-Que un driver devuelva un PNG plausible en vez de un error es peor que fallar: por eso axcli queda como
-escotilla de escape (`--prefer-driver axcli`) para las ventanas flotantes que Peekaboo rechaza, y no como
-camino por defecto.
+A driver returning a plausible PNG instead of an error is worse than failing: that is why
+axcli stays as an escape hatch (`--prefer-driver axcli`) for the floating windows Peekaboo
+rejects, and not as the default path.
 
-**6. `cg-pid` puede fallar en silencio al pulsar, y aquí lo hizo.** El riesgo anotado como hipótesis en el
-plan quedó demostrado: `axcli click --strategy cg-pid "text=Get started"` reportó éxito
-(`cg-pid click pid=1740 wid=107 screen=(512,641)`) y el onboarding **no avanzó** — seguía en "Step 1 of
-5". El mismo clic con `--strategy ax` (AXPress) avanzó a "Step 2 of 5" a la primera. Para botones SwiftUI
-conviene AXPress; para lo demás, `cg-pid` sigue siendo lo que no roba el foco. Es la razón por la que
-`mav ui tap --verify` existe: sin comprobar el efecto, un tap que no hizo nada se reporta como `ok`.
+**6. `cg-pid` can fail silently on click, and here it did.** The risk noted as a hypothesis
+in the plan got proven: `axcli click --strategy cg-pid "text=Get started"` reported success
+(`cg-pid click pid=1740 wid=107 screen=(512,641)`) and the onboarding **did not advance**,
+still on "Step 1 of 5". The same click with `--strategy ax` (AXPress) advanced to "Step 2 of
+5" on the first try. For SwiftUI buttons AXPress is the right choice; for everything else,
+`cg-pid` remains the one that does not steal focus. This is why `mav ui tap --verify`
+exists: without checking the effect, a tap that did nothing gets reported as `ok`.
 
-## Lo que no funciona todavía
+## What does not work yet
 
-`crabbox run --artifact-glob` **rechaza los targets nativos de macOS**, que es justo el
-mecanismo con el que sacarías `.mav/runs/<id>/` de la VM. Está identificado aguas arriba en
-[crabbox#1393](https://github.com/openclaw/crabbox/issues/1393). Mientras tanto:
+`crabbox run --artifact-glob` **rejects native macOS targets**, which is exactly the
+mechanism you would use to pull `.mav/runs/<id>/` out of the VM. Tracked upstream in
+[crabbox#1393](https://github.com/openclaw/crabbox/issues/1393). Meanwhile:
 
 ```sh
-crabbox warmup --provider tart          # imprime el slug del lease
+crabbox warmup --provider tart          # prints the lease slug
 crabbox run --id <slug> -- mav run flows/smoke.yaml --profile mac-vm
 rsync -a "$(crabbox ssh --id <slug> --print-target)":.mav/runs/ ./.mav/runs/
 ```
 
-La salida de `mav` en sí no necesita nada de esto: su línea `ok cmd=… k=v` vuelve por
-stdout tal cual. Lo que se queda dentro es la evidencia visual.
+`mav`'s own output needs none of this: its `ok cmd=… k=v` line comes back over stdout as
+is. What stays inside is the visual evidence.
 
-## Dos límites que conviene saber antes de montarlo
+## Two limits worth knowing before setting this up
 
-- **Máximo 2 VMs de macOS concurrentes.** Es límite de `Virtualization.framework` *y* del
-  EULA de macOS, no se salta con más RAM. Por eso el leasing de crabbox pasa de cómodo a
-  obligatorio.
-- **El provider `tart` de crabbox no expone `--audio`.** Si lo que validas necesita
-  micrófono, esa VM no lo tendrá aunque tart sí sepa hacerlo.
+- **At most 2 concurrent macOS VMs.** It is a limit of `Virtualization.framework` *and* of
+  the macOS EULA; more RAM does not lift it. This is why crabbox's leasing goes from
+  convenient to mandatory.
+- **crabbox's `tart` provider does not expose `--audio`.** If what you validate needs a
+  microphone, that VM will not have one even though tart itself can do it.
