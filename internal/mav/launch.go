@@ -16,7 +16,11 @@ type launchStep struct {
 	Command string
 }
 
-func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clearState bool) (string, *launchStep, CommandResult) {
+// runLaunchRecipe runs the project's launch recipe. It returns, in order:
+// the resolved .app path, the step that failed (nil if all went well), its
+// result, and a non-fatal warning for the cases where continuing is right
+// but staying quiet is not.
+func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clearState bool, fixture string) (string, *launchStep, CommandResult, string) {
 	commands := effectiveLaunchCommands(cfg)
 	steps := []launchStep{
 		{Name: "healthcheck", Command: commands.Healthcheck},
@@ -26,14 +30,36 @@ func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clea
 	appPath := ""
 	driverLaunch := shouldUseDriverLaunch(cfg, commands)
 	if strings.TrimSpace(commands.Launch) == "" && !driverLaunch {
-		return appPath, &launchStep{Name: "launch"}, CommandResult{Stderr: "launch command missing; run mav setup or add launch.commands.launch to .mav/config.yaml", Err: fmt.Errorf("launch_command_missing")}
+		return appPath, &launchStep{Name: "launch"}, CommandResult{Stderr: "launch command missing; run mav setup or add launch.commands.launch to .mav/config.yaml", Err: fmt.Errorf("launch_command_missing")}, ""
 	}
 	if clearState && strings.TrimSpace(commands.Install) == "" && strings.TrimSpace(commands.AppPath) == "" {
-		return appPath, &launchStep{Name: "clear_state"}, CommandResult{Stderr: "clearState requires an install command in the launch recipe; add launch.commands.install to .mav/config.yaml", Err: fmt.Errorf("clear_state_install_missing")}
+		return appPath, &launchStep{Name: "clear_state"}, CommandResult{Stderr: "clearState requires an install command in the launch recipe; add launch.commands.install to .mav/config.yaml", Err: fmt.Errorf("clear_state_install_missing")}, ""
 	}
 	env := launchEnv(cfg, run, appPath)
+	warn := ""
 	if clearState && cfg.BundleID != "" {
-		_ = c.runDriverLifecycle(ctx, cfg, run, launchStep{Name: "clear_state"}, appPath)
+		// A failing uninstall is NOT fatal: the common case is that the app
+		// was not installed yet (the project's first run, a freshly created
+		// simulator), and aborting there would be worse than continuing.
+		// But discarding the result, which is what this code did, also
+		// mutes the case where the uninstall genuinely fails, and then
+		// --clear-state lies: the user believes they start from zero and
+		// drags the previous run's state along, which is exactly the
+		// irreproducible bug --clear-state exists to avoid.
+		//
+		// No attempt is made to distinguish "there was nothing to
+		// uninstall" from "genuinely failed": that would require reading
+		// simctl/idb's stderr, which is theirs and they can change whenever
+		// they want (the same reason isSimulatorBooted asks CoreSimulator
+		// instead of guessing from the error text). It always warns and the
+		// reader decides.
+		if result := c.runDriverLifecycle(ctx, cfg, run, launchStep{Name: "clear_state"}, appPath); result.Err != nil {
+			detail := firstLine(strings.TrimSpace(result.Stderr))
+			if detail == "" {
+				detail = result.Err.Error()
+			}
+			warn = fmt.Sprintf("clear_state_incomplete: uninstall of %s did not complete: %s (next: the app may still carry state from an earlier run; check launch.clear_state in the run's commands trail)", cfg.BundleID, detail)
+		}
 	}
 	for _, step := range steps {
 		if step.Name == "build" && os.Getenv("MAV_SKIP_BUILD") == "1" {
@@ -50,17 +76,17 @@ func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clea
 					env = launchEnv(cfg, run, appPath)
 					continue
 				} else {
-					return appPath, &step, retryResult
+					return appPath, &step, retryResult, warn
 				}
 			}
-			return appPath, &step, result
+			return appPath, &step, result, warn
 		}
 		if step.Name == "app_path" {
 			resolved, err := parseAppPath(result.Stdout)
 			if err != nil {
 				result.Err = err
 				result.Stderr = err.Error()
-				return appPath, &step, result
+				return appPath, &step, result, warn
 			}
 			appPath = resolved
 			env = launchEnv(cfg, run, appPath)
@@ -80,10 +106,40 @@ func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clea
 					appPath = retryPath
 					env = launchEnv(cfg, run, appPath)
 				} else {
-					return appPath, &step, retryResult
+					return appPath, &step, retryResult, warn
 				}
 			} else {
-				return appPath, &step, result
+				return appPath, &step, result, warn
+			}
+		}
+	}
+	// The fixture goes here, between install and launch, and it is no
+	// accident: the app's container already exists (the install just
+	// created it) and the app has not started yet, so nothing has its
+	// database open. Before or after this window, seeding is corrupting.
+	if fixture != "" {
+		commandsForFixture, ok := cfg.Fixtures[fixture]
+		if !ok {
+			step := launchStep{Name: "fixture"}
+			return appPath, &step, CommandResult{
+				Stderr: fmt.Sprintf("fixture_not_found name=%s available=%s", fixture, strings.Join(fixtureNames(cfg), ",")),
+				Err:    fmt.Errorf("fixture_not_found"),
+			}, warn
+		}
+		// A live instance from a previous run would have the database open
+		// while the fixture rewrites it. Killing it is best-effort: if
+		// nothing was running the terminate fails and it does not matter,
+		// and there is no cheap way to tell that apart from a real failure
+		// without reading the driver's stderr, which is its own.
+		c.terminateBeforeFixture(ctx, cfg, run)
+		for i, command := range commandsForFixture {
+			if strings.TrimSpace(command) == "" {
+				continue
+			}
+			step := launchStep{Name: "fixture", Command: command}
+			if result := c.runLaunchCommand(ctx, cfg, run, step, env); result.Err != nil {
+				result.Stderr = fmt.Sprintf("fixture %s step %d/%d failed: %s", fixture, i+1, len(commandsForFixture), result.Stderr)
+				return appPath, &step, result, warn
 			}
 		}
 	}
@@ -96,17 +152,17 @@ func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clea
 			result = c.runLaunchCommand(ctx, cfg, run, step, env)
 		}
 		if result.Err != nil {
-			return appPath, &step, result
+			return appPath, &step, result, warn
 		}
 	}
 	if strings.TrimSpace(commands.Cleanup) != "" {
 		step := launchStep{Name: "cleanup", Command: commands.Cleanup}
 		result := c.runLaunchCommand(ctx, cfg, run, step, env)
 		if result.Err != nil {
-			return appPath, &step, result
+			return appPath, &step, result, warn
 		}
 	}
-	return appPath, nil, CommandResult{}
+	return appPath, nil, CommandResult{}, warn
 }
 
 func shouldUseDriverInstall(cfg Config, commands LaunchCommands) bool {
@@ -127,6 +183,10 @@ func shouldUseDriverLaunch(cfg Config, commands LaunchCommands) bool {
 }
 
 func (c CLI) runDriverLifecycle(ctx context.Context, cfg Config, run RunState, step launchStep, appPath string) CommandResult {
+	// The recipe's app_path step is what resolves where the bundle ended
+	// up, and for a macOS target that is its identity: the driver has no
+	// UDID to talk to, it has a path to run.
+	cfg.AppPath = appPath
 	target := targetFromConfig(cfg)
 	capability := drivers.CapLaunch
 	if step.Name == "install" || step.Name == "install_retry" {
@@ -180,6 +240,10 @@ func launchEnv(cfg Config, run RunState, appPath string) map[string]string {
 	if targetKind(cfg) == drivers.KindDevice {
 		isDevice = "true"
 	}
+	platform := "ios"
+	if targetKind(cfg) == drivers.KindMac {
+		platform = "macos"
+	}
 	return map[string]string{
 		"MAV_ROOT":        cfg.Root,
 		"MAV_RUN_DIR":     run.Dir,
@@ -190,7 +254,7 @@ func launchEnv(cfg Config, run RunState, appPath string) map[string]string {
 		"MAV_APP_PATH":    appPath,
 		"MAV_DEVICE_NAME": targetName(cfg),
 		"MAV_RUNTIME":     targetRuntime(cfg),
-		"MAV_PLATFORM":    "ios",
+		"MAV_PLATFORM":    platform,
 	}
 }
 
@@ -314,4 +378,34 @@ func shellQuote(value string) string {
 		return "''"
 	}
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
+// terminateBeforeFixture closes the app before a fixture rewrites its
+// state. Best-effort on purpose: the common case is that nothing was
+// running, and failing there would be absurd.
+func (c CLI) terminateBeforeFixture(ctx context.Context, cfg Config, run RunState) {
+	if cfg.BundleID == "" {
+		return
+	}
+	target := targetFromConfig(cfg)
+	driver, _, err := c.router().Route(ctx, drivers.CapTerminate, target, "")
+	if err != nil {
+		return
+	}
+	utility, ok := driver.(drivers.DeviceUtilityDriver)
+	if !ok {
+		return
+	}
+	if err := utility.Terminate(ctx, target, cfg.BundleID); err != nil {
+		appendFile(run.LogsPath, "mav fixture: terminate before seeding did not run: "+err.Error()+"\n")
+	}
+}
+
+func fixtureNames(cfg Config) []string {
+	names := make([]string, 0, len(cfg.Fixtures))
+	for name := range cfg.Fixtures {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

@@ -52,7 +52,7 @@ func TestGenerateReport(t *testing.T) {
 	if filepath.Base(path) != "report.json" {
 		t.Fatalf("report path=%s", path)
 	}
-	if report.Logs != "hello log\n" || report.ScreenshotEvidence.Width != 32 || report.ValidStepCount != 1 {
+	if report.Logs != "hello log\n" || report.ScreenshotEvidence == nil || report.ScreenshotEvidence.Width != 32 || report.ValidStepCount != 1 {
 		t.Fatalf("unexpected report data: %+v", report)
 	}
 	for _, want := range []string{"notifications-before", "before toggling notifications"} {
@@ -187,4 +187,76 @@ func writeTestPNG(path string) error {
 	}
 	defer file.Close()
 	return png.Encode(file, img)
+}
+
+// TestReportRecordsTheFixtureApplied: a run whose state a fixture seeded
+// and whose manifest does not say which one is not reproducible from its
+// own evidence, which is exactly what the verified manifest promises.
+func TestReportRecordsTheFixtureApplied(t *testing.T) {
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeRunFixture(run, "seeded-meetings")
+	path, err := GenerateReport(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report ReportData
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Fixture != "seeded-meetings" {
+		t.Fatalf("report.json must record the applied fixture, got %q", report.Fixture)
+	}
+}
+
+func TestReportOmitsFixtureWhenNoneApplied(t *testing.T) {
+	run, err := NewRunState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := GenerateReport(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "\"fixture\"") {
+		t.Fatalf("without a fixture the field must not appear:\n%s", data)
+	}
+}
+
+// TestReportOmitsScreenshotVerdictWhenThereIsNoScreenshot: a flow leaves
+// no loose capture, and the field came out anyway as {"ok":false}. A
+// negative verdict on something that never existed is indistinguishable
+// from a broken capture for whoever reads the JSON, which is exactly what
+// an evidence layer cannot afford.
+func TestReportOmitsScreenshotVerdictWhenThereIsNoScreenshot(t *testing.T) {
+	dir := t.TempDir()
+	run := RunState{ID: "sin-captura", Dir: dir}
+	path, err := GenerateReport(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var populated ReportData
+	if err := json.Unmarshal(encoded, &populated); err != nil {
+		t.Fatal(err)
+	}
+	if populated.ScreenshotEvidence != nil {
+		t.Fatalf("without a capture there must be no verdict: %+v", populated.ScreenshotEvidence)
+	}
+	if strings.Contains(string(encoded), "screenshot_evidence") {
+		t.Fatalf("the field must be absent, not false: %s", encoded)
+	}
 }

@@ -2,7 +2,10 @@ package mav
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
+
+	"github.com/bitomule/mav/internal/mav/drivers"
 )
 
 type Capabilities struct {
@@ -23,6 +26,12 @@ type Capabilities struct {
 	Debug                bool
 	IDBIssue             string
 	IDBNext              string
+
+	// macOS: TCC is the deciding factor, not the API. It is reported
+	// separately because the permission holder is NOT mav but the process
+	// running it, and that must be said or the user looks where it is not.
+	MacPermissions     string
+	MacPermissionsNext string
 }
 
 func (c CLI) resolveCapabilities(ctx context.Context, cfg Config) Capabilities {
@@ -60,6 +69,9 @@ func (c CLI) resolveCapabilities(ctx context.Context, cfg Config) Capabilities {
 		caps.NetworkCapture = true
 		caps.NetworkCaptureDriver = "mitmproxy"
 	}
+	if targetKind(cfg) == drivers.KindMac {
+		c.resolveMacPermissions(ctx, &caps)
+	}
 	caps.WallClock = tools["simtime"]
 	if tools["xcrun"] {
 		caps.Debug = c.Runner.Run(ctx, "xcrun", "--find", "lldb-dap").Err == nil
@@ -67,8 +79,63 @@ func (c CLI) resolveCapabilities(ctx context.Context, cfg Config) Capabilities {
 	return caps
 }
 
+// resolveMacPermissions asks cua-driver for the TCC state.
+//
+// And it asks the DAEMON, which is what makes the answer useful: it
+// answers with CuaDriver.app's identity, which is who really holds the
+// permissions. A probe looking at the permissions of the process running
+// mav would say nothing, because on macOS a CLI never has them: only
+// interactive GUI processes can, hence the whole broker architecture.
+func (c CLI) resolveMacPermissions(ctx context.Context, caps *Capabilities) {
+	if !caps.Tools["cua-driver"] {
+		caps.MacPermissions = "unknown"
+		caps.MacPermissionsNext = "mav setup --install cua-driver to report Accessibility and Screen Recording state"
+		return
+	}
+	res := c.Runner.Run(ctx, "cua-driver", "permissions", "status", "--json")
+	missing := macMissingPermissions(res.Stdout)
+	if len(missing) == 0 {
+		caps.MacPermissions = "ok"
+		return
+	}
+	caps.MacPermissions = strings.Join(missing, "+") + "_missing"
+	// Its own grant flow launches the app through LaunchServices so the
+	// dialogs are attributed to it, and registers it in the panels.
+	// Granting to the terminal does not help: the daemon is who captures.
+	caps.MacPermissionsNext = "cua-driver permissions grant"
+}
+
+// macMissingPermissions reads the `cua-driver permissions status` answer.
+// Deliberately tolerant: if the output is not understood, no state is
+// invented; returning "all good" for an unknown format would be worse than
+// admitting it is not known.
+func macMissingPermissions(stdout string) []string {
+	// Pointers and not bool: the answer carries `null` when there is no
+	// daemon to ask, and an implicit `false` there would lie in the
+	// opposite direction, it would say "permission missing" when what
+	// happened is that nobody answered.
+	var status struct {
+		Accessibility   *bool `json:"accessibility"`
+		ScreenRecording *bool `json:"screen_recording"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &status); err != nil {
+		return []string{"unreadable"}
+	}
+	if status.Accessibility == nil && status.ScreenRecording == nil {
+		return []string{"unreadable"}
+	}
+	var missing []string
+	if status.Accessibility == nil || !*status.Accessibility {
+		missing = append(missing, "accessibility")
+	}
+	if status.ScreenRecording == nil || !*status.ScreenRecording {
+		missing = append(missing, "screen_recording")
+	}
+	return missing
+}
+
 func knownTools() []string {
-	return []string{"go", "bazelisk", "xcrun", "axe", "idb", "baguette", "simtime", "lldb-dap", "mitmdump", "pipx", "python3.12", "python3.13", "python3.14"}
+	return []string{"go", "bazelisk", "xcrun", "axe", "idb", "baguette", "simtime", "lldb-dap", "mitmdump", "pipx", "python3.12", "python3.13", "python3.14", "cua-driver", "axcli", "screencapture"}
 }
 
 func (c CLI) resolveConfigTools(cfg *Config) {
@@ -142,6 +209,12 @@ func (caps Capabilities) fields() map[string]string {
 	} else {
 		fields["debug"] = "missing"
 		fields["debug_next"] = "mav setup --install lldb-dap"
+	}
+	if caps.MacPermissions != "" {
+		fields["mac_permissions"] = caps.MacPermissions
+		if caps.MacPermissionsNext != "" {
+			fields["mac_permissions_next"] = caps.MacPermissionsNext
+		}
 	}
 	if caps.IDBIssue != "" {
 		fields["idb_issue"] = caps.IDBIssue

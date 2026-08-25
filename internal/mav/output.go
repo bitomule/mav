@@ -62,8 +62,19 @@ func (o Output) Write(w io.Writer) error {
 		}
 		parts = append(parts, key+"="+quoteIfNeeded(o.Fields[key]))
 	}
-	_, err := fmt.Fprintln(w, strings.Join(parts, " "))
-	return err
+	if _, err := fmt.Fprintln(w, strings.Join(parts, " ")); err != nil {
+		return err
+	}
+	if !o.OK {
+		// A failure has to reach main, which is who knows how to exit with
+		// 1. Returning nil turned `mav ui tap ... && next-step` into a
+		// chain that carried on after a failure, and forced every agent to
+		// read stdout to know whether its own command had worked. The
+		// `fail code=...` line is already written; this only brings the
+		// exit code into agreement with it.
+		return CommandFailed{}
+	}
+	return nil
 }
 
 func quoteIfNeeded(value string) string {

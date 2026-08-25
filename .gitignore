@@ -3,3 +3,6 @@ dist/
 .DS_Store
 .mav/
 .claude/
+
+# Captures and leases crabbox leaves behind when running against a VM.
+.crabbox/

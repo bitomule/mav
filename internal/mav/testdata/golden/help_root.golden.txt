@@ -31,6 +31,8 @@ Commands:
 Global flags:
   --raw       Emit raw underlying tool output where supported.
   --verbose   Print extra debug details where supported.
-  --prefer-driver auto|axe
-              Prefer a UI driver for semantic tree/tap commands.
+  --prefer-driver auto|<driver-id>
+              Prefer a registered driver. Use mav doctor to list them.
+  --profile NAME
+              Select a platform profile from .mav/config.yaml.
   --help,-h   Show help.

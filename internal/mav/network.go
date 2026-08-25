@@ -95,14 +95,37 @@ func (c CLI) networkStart(ctx context.Context, _ GlobalOptions, args []string) e
 	// run even when mitmdump was started without ever going through open().
 	c.ensureRunWorker(run)
 
-	return c.OK("network.start", map[string]string{
+	fields := map[string]string{
 		"driver":      driver.ID(),
 		"pid":         strconv.Itoa(result.PID),
 		"har":         result.OutPath,
 		"listen_port": strconv.Itoa(result.ListenPort),
 		"proxy_url":   result.ProxyURL,
 		"run":         run.ID,
-	}).Write(c.Stdout)
+	}
+	// On macOS bringing up the proxy is not enough: the system must be
+	// pointed at it, or mitmdump records an empty file without a single
+	// error. mav does it because it is a fixed command with no decisions,
+	// and above all because it must be UNDONE; an agent that forgets to
+	// restore it leaves the machine pointing at a dead proxy, that is,
+	// without network.
+	if targetKind(cfg) == drivers.KindMac {
+		if _, ok := c.pointMacAtProxy(ctx, run, result.ListenPort); ok {
+			fields["system_proxy"] = "set"
+		} else {
+			fields["system_proxy"] = "unset"
+			fields["next"] = "could not find the active network service; point the app at proxy_url yourself"
+		}
+		if !c.macProxyCATrusted(ctx) {
+			// Without a trusted CA mitmdump keeps recording, but the https
+			// comes out as CONNECT tunnels with no content: a capture that
+			// looks like it works and is useless. It is said up front, not
+			// after staring at the HAR.
+			fields["ca_trusted"] = "no"
+			fields["ca_next"] = "sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ~/.mitmproxy/mitmproxy-ca-cert.pem"
+		}
+	}
+	return c.OK("network.start", fields).Write(c.Stdout)
 }
 
 // networkStop terminates the background mitmdump for the current run.
@@ -142,10 +165,11 @@ func (c CLI) networkStop(ctx context.Context, _ GlobalOptions, args []string) er
 		}).Write(c.Stdout)
 	}
 	removeProcess(run, pid)
-	return c.OK("network.stop", map[string]string{
-		"pid": strconv.Itoa(pid),
-		"run": run.ID,
-	}).Write(c.Stdout)
+	fields := map[string]string{"pid": strconv.Itoa(pid), "run": run.ID}
+	if c.restoreMacProxy(ctx, run) {
+		fields["system_proxy"] = "restored"
+	}
+	return c.OK("network.stop", fields).Write(c.Stdout)
 }
 
 // findRunningNetworkPID scans processes.jsonl for the latest "network" kind

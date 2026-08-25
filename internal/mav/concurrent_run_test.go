@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -677,8 +678,12 @@ func TestFlowRunRejectsUnknownRunID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = cli.Run(context.Background(), []string{"run", flowPath, "--run", "bogus123"})
-	if err != nil {
+	// A flow failure comes out as a `fail` line AND as CommandFailed, so
+	// the exit code matches what the output says. What is still not
+	// acceptable is a raw Go error, which carries no code an agent can
+	// read.
+	var failed CommandFailed
+	if err = cli.Run(context.Background(), []string{"run", flowPath, "--run", "bogus123"}); err != nil && !errors.As(err, &failed) {
 		t.Fatalf("runFlow returned a Go error instead of a Fail() payload: %v", err)
 	}
 	if !strings.Contains(out.String(), "fail code=run_not_found") {

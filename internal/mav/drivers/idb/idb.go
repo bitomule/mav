@@ -34,8 +34,16 @@ func (d *Driver) ID() string { return ID }
 // Provides covers the operations idb is currently responsible for in cli.go:
 // device lifecycle, device logs/crashes, coordinate taps, fallback screenshot
 // when AXe is missing.
-func (d *Driver) Provides(_ drivers.Target) drivers.CapabilitySet {
+func (d *Driver) Provides(target drivers.Target) drivers.CapabilitySet {
+	// idb talks to iOS simulators and devices. Declaring capabilities on a
+	// macOS target put it in the running for them: it tied on cost with
+	// the macOS driver and the alphabetical order broke the tie, so a
+	// `ui tree` against a Mac app ended up invoking idb with no udid.
+	if target.Kind == drivers.KindMac {
+		return drivers.NewSet()
+	}
 	return drivers.NewSet(
+		drivers.CapTreeAX,
 		drivers.CapCoordTap,
 		drivers.CapSwipe,
 		drivers.CapScreenshot,
@@ -104,6 +112,11 @@ func (d *Driver) Cost(c drivers.Capability, target drivers.Target) int {
 		return 0
 	}
 	switch c {
+	case drivers.CapTreeAX:
+		// Behind AXe, which is the canonical tree on a simulator. idb is what
+		// is left when AXe is not healthy, and on a physical device it is the
+		// only one: AXe cannot reach one at all.
+		return 60
 	case drivers.CapCoordTap, drivers.CapSwipe:
 		return 50
 	default:
@@ -254,4 +267,17 @@ func parseCrashNames(stdout string) []string {
 		}
 	}
 	return out
+}
+
+// Tree returns the accessibility tree as idb reports it.
+//
+// The shape is not AXe's, and that is on purpose: the element extractor already
+// reads both, and translating one into the other here would add a lossy step to
+// the only path a physical device has.
+func (d *Driver) Tree(ctx context.Context, target drivers.Target, _ drivers.TreeSpec) (drivers.TreeResult, error) {
+	res := d.exec.Run(ctx, "idb", targetArgs(target, "ui", "describe-all", "--json", "--nested")...)
+	if res.Err != nil {
+		return drivers.TreeResult{}, errors.New(firstLine(res.Stderr))
+	}
+	return drivers.TreeResult{JSON: []byte(res.Stdout)}, nil
 }

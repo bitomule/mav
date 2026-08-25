@@ -12,9 +12,9 @@ import (
 	"github.com/bitomule/mav/internal/mav/drivers"
 )
 
-// driverRegistry construye el registry contra el que rutea esta invocacion.
-// Separado de router() porque la validacion de --prefer-driver necesita
-// preguntar QUE drivers existen antes de que haya nada que rutear.
+// driverRegistry builds the registry this invocation routes against.
+// Separate from router() because --prefer-driver validation needs to ask
+// WHICH drivers exist before there is anything to route.
 func (c CLI) driverRegistry() *drivers.Registry {
 	reg := drivers.NewRegistry()
 	RegisterDefaultDrivers(reg, NewExecutor(c.Runner))
@@ -41,6 +41,10 @@ func targetFromConfig(cfg Config) drivers.Target {
 	case drivers.KindDevice:
 		target.UDID = cfg.DeviceUDID
 		target.Name = cfg.DeviceName
+	case drivers.KindMac:
+		// No UDID: a macOS app's identity is its bundle and its path.
+		target.Name = "localhost"
+		target.AppPath = cfg.AppPath
 	default:
 		target.UDID = cfg.SimulatorUDID
 		target.Name = cfg.SimulatorName

@@ -43,6 +43,20 @@ type Config struct {
 	TargetCommand     string
 	Launch            LaunchConfig
 	Tools             map[string]bool
+
+	// DefaultProfile and Profiles are kept raw so they can be rewritten
+	// without being lost, and so `mav doctor` can list them. ActiveProfile
+	// is the one resolved for this invocation ("" if none).
+	DefaultProfile string
+	Profiles       map[string]profileYAML
+	ActiveProfile  string
+	ProfileRunner  string
+	Fixtures       map[string][]string
+
+	// AppPath is filled by the launch recipe at run time (app_path step);
+	// it is neither read from nor written to the YAML. It is how the macOS
+	// driver knows which bundle to run, its equivalent of the UDID.
+	AppPath string
 }
 
 type LaunchConfig struct {
@@ -50,13 +64,19 @@ type LaunchConfig struct {
 	Commands LaunchCommands `yaml:"commands"`
 }
 
+// LaunchCommands is the base config's launch recipe. The fields carry
+// omitempty because in the base "empty" and "absent" mean the same thing:
+// no command. The distinction does matter in a platform profile, which
+// needs to be able to *override* an inherited command with nothing, which
+// is why profiles use their own pointer-based type (see
+// profileLaunchCommandsYAML) instead of reusing this one.
 type LaunchCommands struct {
-	Healthcheck string `yaml:"healthcheck"`
-	Build       string `yaml:"build"`
-	AppPath     string `yaml:"app_path"`
-	Install     string `yaml:"install"`
-	Launch      string `yaml:"launch"`
-	Cleanup     string `yaml:"cleanup"`
+	Healthcheck string `yaml:"healthcheck,omitempty"`
+	Build       string `yaml:"build,omitempty"`
+	AppPath     string `yaml:"app_path,omitempty"`
+	Install     string `yaml:"install,omitempty"`
+	Launch      string `yaml:"launch,omitempty"`
+	Cleanup     string `yaml:"cleanup,omitempty"`
 }
 
 func DefaultConfig(root string) Config {
@@ -69,7 +89,74 @@ func DefaultConfig(root string) Config {
 	}
 }
 
+// LoadConfig loads .mav/config.yaml applying whichever profile the
+// documented precedence selects. Equivalent to
+// LoadConfigWithProfile(root, "").
 func LoadConfig(root string) (Config, error) {
+	return LoadConfigWithProfile(root, "")
+}
+
+// LoadConfigRaw loads the config WITHOUT applying any profile. It is what
+// the paths that later write (setup, sim select, device select) must use:
+// only a config without an overlay can go back to disk without flattening
+// the profile onto the base. See SaveConfig's guardrail.
+func LoadConfigRaw(root string) (Config, error) {
+	return loadConfig(root, "", true)
+}
+
+// LoadConfigWithProfile loads the config and overlays a platform profile.
+//
+// Selection precedence, strongest to weakest:
+//
+//  1. profileOverride, whatever an explicit --profile brings
+//  2. MAV_PROFILE in the environment
+//  3. default_profile in the config itself
+//  4. none: the base fields are used as is
+//
+// A requested profile that does not exist is an error, never a no-op:
+// accepting the flag and carrying on with the base would be dead
+// configuration of the same kind target_command_ignored exists to make
+// visible.
+func LoadConfigWithProfile(root, profileOverride string) (Config, error) {
+	return loadConfig(root, profileOverride, false)
+}
+
+// knownProfileKeys is a profile's contract, written once.
+var knownProfileKeys = map[string]bool{
+	"target_kind": true, "app_target": true, "process_name": true,
+	"target_command": true, "log_subsystem": true, "log_category": true,
+	"launch": true, "runner": true,
+}
+
+// rejectUnknownProfileKeys turns a key that does not exist inside a
+// profile into an error.
+//
+// yaml.Unmarshal silently ignores what it does not know, and in a profile
+// that is especially expensive: you write `fixture: x`, nothing happens,
+// and there is no way to tell it apart from the fixture applying and having
+// no effect. It is scoped to profiles on purpose: they are new, so no
+// existing configuration can break because of this, while hardening the
+// whole file could.
+func rejectUnknownProfileKeys(data []byte) error {
+	var doc struct {
+		Profiles map[string]map[string]yaml.Node `yaml:"profiles"`
+	}
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		// The main decode already gave the real error; it is not duplicated
+		// here.
+		return nil
+	}
+	for name, fields := range doc.Profiles {
+		for key := range fields {
+			if !knownProfileKeys[key] {
+				return fmt.Errorf("profile_unknown_key profile=%s key=%s", name, key)
+			}
+		}
+	}
+	return nil
+}
+
+func loadConfig(root, profileOverride string, skipProfile bool) (Config, error) {
 	path := filepath.Join(root, ConfigFile)
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -78,6 +165,9 @@ func LoadConfig(root string) (Config, error) {
 	cfg := DefaultConfig(root)
 	var raw configYAML
 	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return Config{}, err
+	}
+	if err := rejectUnknownProfileKeys(data); err != nil {
 		return Config{}, err
 	}
 	cfg.ProjectName = raw.ProjectName
@@ -99,11 +189,23 @@ func LoadConfig(root string) (Config, error) {
 	cfg.AllowShell = raw.AllowShell
 	cfg.TargetCommand = raw.TargetCommand
 	cfg.Launch = raw.Launch
+	cfg.DefaultProfile = raw.DefaultProfile
+	cfg.Profiles = raw.Profiles
+	cfg.Fixtures = raw.Fixtures
 	if cfg.Launch.Mode == "" && hasLaunchCommands(cfg.Launch.Commands) {
 		cfg.Launch.Mode = "custom"
 	}
 	if cfg.TargetKind == "" {
 		cfg.TargetKind = "simulator"
+	}
+	// The profile applies BEFORE the MAV_TARGET_* variables: those are set
+	// by `mav run --matrix` in its children to pin a specific device, and
+	// pinning a device is a more specific decision than choosing a
+	// platform.
+	if !skipProfile {
+		if err := applyProfile(&cfg, profileOverride); err != nil {
+			return Config{}, err
+		}
 	}
 	if kind := os.Getenv("MAV_TARGET_KIND"); kind != "" {
 		cfg.TargetKind = kind
@@ -115,16 +217,86 @@ func LoadConfig(root string) (Config, error) {
 			cfg.DeviceName = os.Getenv("MAV_TARGET_NAME")
 		}
 	}
+	// At the end on purpose: the target_kind can come from the file, from a
+	// profile or from MAV_TARGET_KIND, and all three sources have to pass
+	// through the same filter. Validating it before the overlay would let
+	// through exactly the case that matters most, a profile declaring a
+	// platform that does not exist yet.
+	if err := validateTargetKind(cfg.TargetKind); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
+}
+
+// applyProfile resolves which profile applies and overlays its fields on
+// cfg.
+func applyProfile(cfg *Config, override string) error {
+	name := strings.TrimSpace(override)
+	if name == "" {
+		name = strings.TrimSpace(os.Getenv("MAV_PROFILE"))
+	}
+	if name == "" {
+		name = strings.TrimSpace(cfg.DefaultProfile)
+	}
+	if name == "" {
+		return nil
+	}
+	profile, ok := cfg.Profiles[name]
+	if !ok {
+		return fmt.Errorf("profile_not_found name=%s available=%s", name, strings.Join(profileNames(*cfg), ","))
+	}
+	cfg.ActiveProfile = name
+	overlayString(&cfg.TargetKind, profile.TargetKind)
+	overlayString(&cfg.AppTarget, profile.AppTarget)
+	overlayString(&cfg.ProcessName, profile.ProcessName)
+	overlayString(&cfg.TargetCommand, profile.TargetCommand)
+	overlayString(&cfg.LogSubsystem, profile.LogSubsystem)
+	overlayString(&cfg.LogCategory, profile.LogCategory)
+	overlayString(&cfg.ProfileRunner, profile.Runner)
+	if err := validateProfileRunner(cfg.ProfileRunner); err != nil {
+		return err
+	}
+	if profile.Launch != nil {
+		overlayString(&cfg.Launch.Mode, profile.Launch.Mode)
+		if c := profile.Launch.Commands; c != nil {
+			overlayString(&cfg.Launch.Commands.Healthcheck, c.Healthcheck)
+			overlayString(&cfg.Launch.Commands.Build, c.Build)
+			overlayString(&cfg.Launch.Commands.AppPath, c.AppPath)
+			overlayString(&cfg.Launch.Commands.Install, c.Install)
+			overlayString(&cfg.Launch.Commands.Launch, c.Launch)
+			overlayString(&cfg.Launch.Commands.Cleanup, c.Cleanup)
+		}
+	}
+	return nil
+}
+
+// overlayString applies a profile field over the base's. A nil pointer
+// means "the profile says nothing, inherit"; a pointer to the empty string
+// means "the profile explicitly says there is nothing here", which is NOT
+// the same.
+func overlayString(base *string, override *string) {
+	if override == nil {
+		return
+	}
+	*base = *override
+}
+
+func profileNames(cfg Config) []string {
+	names := make([]string, 0, len(cfg.Profiles))
+	for name := range cfg.Profiles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 type configYAML struct {
 	ProjectName       string        `yaml:"project_name"`
 	TargetKind        string        `yaml:"target_kind"`
-	AppTarget         string        `yaml:"app_target"`
-	DeviceTarget      string        `yaml:"device_target"`
-	DeviceUDID        string        `yaml:"device_udid"`
-	DeviceName        string        `yaml:"device_name"`
+	AppTarget         string        `yaml:"app_target,omitempty"`
+	DeviceTarget      string        `yaml:"device_target,omitempty"`
+	DeviceUDID        string        `yaml:"device_udid,omitempty"`
+	DeviceName        string        `yaml:"device_name,omitempty"`
 	BundleID          string        `yaml:"bundle_id"`
 	ProcessName       string        `yaml:"process_name"`
 	App               configAppYAML `yaml:"app"`
@@ -136,9 +308,61 @@ type configYAML struct {
 	LogSubsystem      string        `yaml:"log_subsystem"`
 	LogCategory       string        `yaml:"log_category"`
 	PreferredUIDriver string        `yaml:"preferred_ui_driver"`
-	AllowShell        bool          `yaml:"allow_shell"`
-	TargetCommand     string        `yaml:"target_command"`
-	Launch            LaunchConfig  `yaml:"launch"`
+	AllowShell        bool          `yaml:"allow_shell,omitempty"`
+	TargetCommand     string        `yaml:"target_command,omitempty"`
+	Launch            LaunchConfig  `yaml:"launch,omitempty"`
+
+	DefaultProfile string                 `yaml:"default_profile,omitempty"`
+	Profiles       map[string]profileYAML `yaml:"profiles,omitempty"`
+
+	// Fixtures are named states: lists of commands that leave the app in a
+	// known situation before launching it. They are not a data format, mav
+	// does not know what a fixture is inside, it only runs them, because
+	// how to seed is specific to each app and formalizing it here would
+	// force everyone into the same format.
+	Fixtures map[string][]string `yaml:"fixtures,omitempty"`
+}
+
+// profileYAML is a platform profile's overlay layer. All fields are
+// pointers on purpose: yaml.Unmarshal onto a plain string does not
+// distinguish "absent" from `""`, and that distinction is exactly what a
+// profile needs. A nil field inherits from the base; a present field wins,
+// even when it holds the empty string, which is how the macOS profile
+// cancels the inherited `simctl install`.
+//
+// The field list is deliberately closed, not open: if configYAML gains a
+// new field that should be overridable, it must be added here by hand.
+// TestProfileOverridableFieldsAreExhaustive exists so that omission breaks
+// the build instead of being silently ignored.
+type profileYAML struct {
+	TargetKind    *string            `yaml:"target_kind,omitempty"`
+	AppTarget     *string            `yaml:"app_target,omitempty"`
+	ProcessName   *string            `yaml:"process_name,omitempty"`
+	TargetCommand *string            `yaml:"target_command,omitempty"`
+	LogSubsystem  *string            `yaml:"log_subsystem,omitempty"`
+	LogCategory   *string            `yaml:"log_category,omitempty"`
+	Launch        *profileLaunchYAML `yaml:"launch,omitempty"`
+
+	// Runner says WHERE this profile runs: "local" (default) or "crabbox".
+	// mav does not orchestrate machines, that is crabbox, which already
+	// knows how to lease a macOS VM with tart, sync the dirty checkout and
+	// return it when done. This field only declares the intent; the wrapper
+	// executes it, not mav.
+	Runner *string `yaml:"runner,omitempty"`
+}
+
+type profileLaunchYAML struct {
+	Mode     *string                    `yaml:"mode,omitempty"`
+	Commands *profileLaunchCommandsYAML `yaml:"commands,omitempty"`
+}
+
+type profileLaunchCommandsYAML struct {
+	Healthcheck *string `yaml:"healthcheck,omitempty"`
+	Build       *string `yaml:"build,omitempty"`
+	AppPath     *string `yaml:"app_path,omitempty"`
+	Install     *string `yaml:"install,omitempty"`
+	Launch      *string `yaml:"launch,omitempty"`
+	Cleanup     *string `yaml:"cleanup,omitempty"`
 }
 
 type configAppYAML struct {
@@ -155,72 +379,74 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+// SaveConfig serializa cfg a .mav/config.yaml.
+//
+// It uses yaml.Marshal deliberately instead of the hand-written writer
+// that lived here before: that one omitted empty values (writeCommandKV),
+// which makes it impossible to express "this field is present and holds
+// the empty string". That distinction did not matter while the config was
+// flat, but it is exactly the one platform profiles need so a profile can
+// *cancel* a command inherited from the base instead of inheriting it.
+//
+// Note on what does NOT change: this function rebuilds the whole file, so
+// comments the user wrote by hand are lost. That already happened with the
+// previous writer; SaveConfig has never read the prior file to preserve
+// anything.
 func SaveConfig(root string, cfg Config) error {
+	// A cfg with a profile applied is NO longer the base: its fields are
+	// the overlay's result. Writing it would flatten the profile onto the
+	// base; a `mav sim select` in a repo with default_profile: macos would
+	// leave the macOS app_target as the base app_target and the profile
+	// would stop making sense, silently and with no way back. It is
+	// rejected by construction instead of trusting no caller ever slips.
+	if cfg.ActiveProfile != "" {
+		return fmt.Errorf("config_save_with_active_profile profile=%s (next: reload the config without a profile before saving)", cfg.ActiveProfile)
+	}
 	if err := os.MkdirAll(filepath.Join(root, MavDir), 0o755); err != nil {
 		return err
 	}
-	var b strings.Builder
-	writeKV := func(key, value string) {
-		b.WriteString(key)
-		b.WriteString(": ")
-		b.WriteString(yamlQuote(value))
-		b.WriteString("\n")
-	}
-	writeKV("project_name", cfg.ProjectName)
-	writeKV("target_kind", targetKindLabel(targetKind(cfg)))
-	if cfg.AppTarget != "" {
-		writeKV("app_target", cfg.AppTarget)
-	}
-	if cfg.DeviceTarget != "" {
-		writeKV("device_target", cfg.DeviceTarget)
-	}
-	if cfg.DeviceUDID != "" {
-		writeKV("device_udid", cfg.DeviceUDID)
-	}
-	if cfg.DeviceName != "" {
-		writeKV("device_name", cfg.DeviceName)
-	}
-	b.WriteString("app:\n")
-	b.WriteString("  bundle_id: ")
-	b.WriteString(yamlQuote(cfg.BundleID))
-	b.WriteString("\n")
-	b.WriteString("  process_name: ")
-	b.WriteString(yamlQuote(cfg.ProcessName))
-	b.WriteString("\n")
-	writeKV("bundle_id", cfg.BundleID)
-	writeKV("process_name", cfg.ProcessName)
-	writeKV("simulator_udid", cfg.SimulatorUDID)
-	writeKV("simulator_name", cfg.SimulatorName)
-	writeKV("simulator_runtime", cfg.SimulatorRuntime)
-	writeKV("locale", cfg.Locale)
-	writeKV("language", cfg.Language)
-	writeKV("log_subsystem", probeLogSubsystem(cfg))
-	writeKV("log_category", probeLogCategory(cfg))
-	writeKV("preferred_ui_driver", cfg.PreferredUIDriver)
-	if cfg.AllowShell {
-		b.WriteString("allow_shell: true\n")
-	}
-	if strings.TrimSpace(cfg.TargetCommand) != "" {
-		writeKV("target_command", cfg.TargetCommand)
+	raw := configYAML{
+		ProjectName:  cfg.ProjectName,
+		TargetKind:   targetKindLabel(targetKind(cfg)),
+		AppTarget:    cfg.AppTarget,
+		DeviceTarget: cfg.DeviceTarget,
+		DeviceUDID:   cfg.DeviceUDID,
+		DeviceName:   cfg.DeviceName,
+		// bundle_id and process_name are written in both places on purpose:
+		// LoadConfig reads them with firstNonEmpty(raw.App.X, raw.X), so a
+		// config written by mav has to remain readable through both paths.
+		App: configAppYAML{
+			BundleID:    cfg.BundleID,
+			ProcessName: cfg.ProcessName,
+		},
+		BundleID:          cfg.BundleID,
+		ProcessName:       cfg.ProcessName,
+		SimulatorUDID:     cfg.SimulatorUDID,
+		SimulatorName:     cfg.SimulatorName,
+		SimulatorRuntime:  cfg.SimulatorRuntime,
+		Locale:            cfg.Locale,
+		Language:          cfg.Language,
+		LogSubsystem:      probeLogSubsystem(cfg),
+		LogCategory:       probeLogCategory(cfg),
+		PreferredUIDriver: cfg.PreferredUIDriver,
+		AllowShell:        cfg.AllowShell,
+		TargetCommand:     strings.TrimSpace(cfg.TargetCommand),
+		DefaultProfile:    cfg.DefaultProfile,
+		Profiles:          cfg.Profiles,
+		Fixtures:          cfg.Fixtures,
 	}
 	if cfg.Launch.Mode != "" || hasLaunchCommands(cfg.Launch.Commands) {
 		mode := cfg.Launch.Mode
 		if mode == "" {
 			mode = "custom"
 		}
-		b.WriteString("launch:\n")
-		b.WriteString("  mode: ")
-		b.WriteString(yamlQuote(mode))
-		b.WriteString("\n")
-		b.WriteString("  commands:\n")
-		writeCommandKV(&b, "healthcheck", cfg.Launch.Commands.Healthcheck)
-		writeCommandKV(&b, "build", cfg.Launch.Commands.Build)
-		writeCommandKV(&b, "app_path", cfg.Launch.Commands.AppPath)
-		writeCommandKV(&b, "install", cfg.Launch.Commands.Install)
-		writeCommandKV(&b, "launch", cfg.Launch.Commands.Launch)
-		writeCommandKV(&b, "cleanup", cfg.Launch.Commands.Cleanup)
+		raw.Launch = LaunchConfig{Mode: mode, Commands: cfg.Launch.Commands}
 	}
-	return os.WriteFile(filepath.Join(root, ConfigFile), []byte(b.String()), 0o644)
+	data, err := yaml.Marshal(raw)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(root, ConfigFile), data, 0o644)
 }
 
 func writeCommandKV(b *strings.Builder, key, value string) {
@@ -730,4 +956,69 @@ func processNameFromBundle(bundleID, fallback string) string {
 		return fallback
 	}
 	return parts[len(parts)-1]
+}
+
+// persistTargetSelection writes to disk ONLY the target selection (which
+// simulator or device, plus locale/language) without dragging along the
+// rest of the in-memory cfg, which may come with a profile already
+// overlaid.
+//
+// It exists because `mav sim select`, `mav device select` and the explicit
+// pin of `mav open --device/--ios/--udid` are the only three things that
+// write config mid-session, and all three start from a resolved cfg.
+// Saving it whole would flatten the profile onto the base (see SaveConfig's
+// guardrail).
+func persistTargetSelection(root string, cfg Config) error {
+	base, err := LoadConfigRaw(root)
+	if err != nil {
+		return err
+	}
+	base.TargetKind = cfg.TargetKind
+	base.SimulatorUDID = cfg.SimulatorUDID
+	base.SimulatorName = cfg.SimulatorName
+	base.SimulatorRuntime = cfg.SimulatorRuntime
+	base.DeviceUDID = cfg.DeviceUDID
+	base.DeviceName = cfg.DeviceName
+	base.Locale = cfg.Locale
+	base.Language = cfg.Language
+	return SaveConfig(root, base)
+}
+
+// validateTargetKind rejects target_kind labels mav does not know.
+//
+// Without this the config fails OPEN, which in this specific case is
+// dangerous: targetKind() returns KindDevice only for the literal "device"
+// and sends everything else to KindSim, and targetKindLabel() normalizes
+// it back to "simulator" on write. So a hand-written `target_kind: macos`
+// gives no error; it behaves as a simulator from start to finish.
+//
+// The outcome is not theoretical: that run would resolve target_command
+// (an iPhone `simpool lease`), lease and boot a simulator, and with
+// --clear-state route CapUninstall against it using the bundle_id, which
+// in a multiplatform app like Nokoru is the SAME on iOS and macOS. That
+// is, it would uninstall the iOS app from the simulator during a "macOS"
+// run. And the uninstall's result was not even checked until recently.
+//
+// When drivers.KindMac arrives, "macos" becomes a valid value and is added
+// here. Until then, noise instead of silence.
+func validateTargetKind(kind string) error {
+	switch kind {
+	case "simulator", "device", "macos":
+		return nil
+	default:
+		return fmt.Errorf("target_kind_invalid value=%s valid=simulator,device,macos", kind)
+	}
+}
+
+// validateProfileRunner rejects runners mav does not know, for the same
+// reason as an unknown target_kind: a misspelled value that is silently
+// ignored is dead configuration, and here it would also mean running
+// locally something the user believed isolated in a VM.
+func validateProfileRunner(runner string) error {
+	switch runner {
+	case "", "local", "crabbox":
+		return nil
+	default:
+		return fmt.Errorf("profile_runner_invalid value=%s valid=local,crabbox", runner)
+	}
 }

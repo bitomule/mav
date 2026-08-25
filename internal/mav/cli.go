@@ -38,6 +38,7 @@ type GlobalOptions struct {
 	Raw          bool
 	Help         bool
 	PreferDriver string
+	Profile      string
 }
 
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
@@ -51,6 +52,17 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 func (c CLI) Run(ctx context.Context, args []string) error {
 	opts, rest := parseGlobal(args)
+	// --profile propagates through the environment instead of being threaded
+	// through the ~50 LoadConfig call sites. Two reasons: the documented
+	// precedence (--profile beats MAV_PROFILE) still holds because the flag
+	// overwrites the variable, and the children, flows, matrix children, and
+	// the launch recipe's own commands, inherit the profile without anyone
+	// having to remember to forward it everywhere.
+	if opts.Profile != "" {
+		if err := os.Setenv("MAV_PROFILE", opts.Profile); err != nil {
+			return err
+		}
+	}
 	if len(rest) == 0 {
 		return c.help(opts, "")
 	}
@@ -138,9 +150,18 @@ func parseGlobal(args []string) (GlobalOptions, []string) {
 			} else {
 				rest = append(rest, arg)
 			}
+		case "--profile":
+			if i+1 < len(args) {
+				opts.Profile = args[i+1]
+				i++
+			} else {
+				rest = append(rest, arg)
+			}
 		default:
 			if strings.HasPrefix(arg, "--prefer-driver=") {
 				opts.PreferDriver = strings.TrimPrefix(arg, "--prefer-driver=")
+			} else if strings.HasPrefix(arg, "--profile=") {
+				opts.Profile = strings.TrimPrefix(arg, "--profile=")
 			} else {
 				rest = append(rest, arg)
 			}
@@ -149,13 +170,13 @@ func parseGlobal(args []string) (GlobalOptions, []string) {
 	return opts, rest
 }
 
-// preferDriverAuto es el centinela que significa "decide tu por coste".
+// preferDriverAuto is the sentinel meaning "you decide, by cost".
 const preferDriverAuto = "auto"
 
-// normalizePreferDriver valida --prefer-driver contra el registry de drivers
-// en vez de contra una lista congelada, de modo que un driver recien
-// registrado es seleccionable sin tocar el parser. Devuelve "auto" o el id
-// del driver.
+// normalizePreferDriver validates --prefer-driver against the driver
+// registry instead of a frozen list, so a freshly registered driver is
+// selectable without touching the parser. Returns "auto" or the driver's
+// id.
 func (c CLI) normalizePreferDriver(value string) (string, error) {
 	if strings.TrimSpace(value) == "" {
 		return preferDriverAuto, nil
@@ -169,9 +190,9 @@ func (c CLI) normalizePreferDriver(value string) (string, error) {
 	return value, nil
 }
 
-// preferDriverUsage enumera los ids realmente registrados, para que el error
-// no mienta cuando el portfolio de drivers cambia. Registry.All() ya viene
-// ordenado por ID, asi que la salida es determinista.
+// preferDriverUsage enumerates the actually registered ids, so the error
+// does not lie when the driver portfolio changes. Registry.All() already
+// comes sorted by ID, so the output is deterministic.
 func (c CLI) preferDriverUsage() string {
 	ids := []string{preferDriverAuto}
 	for _, d := range c.driverRegistry().All() {
@@ -180,8 +201,8 @@ func (c CLI) preferDriverUsage() string {
 	return "--prefer-driver " + strings.Join(ids, "|")
 }
 
-// routerPrefer traduce el valor normalizado al hint que espera
-// Router.Route: "auto" es ausencia de hint.
+// routerPrefer translates the normalized value into the hint Router.Route
+// expects: "auto" is the absence of a hint.
 func routerPrefer(prefer string) string {
 	if prefer == preferDriverAuto {
 		return ""
@@ -232,8 +253,10 @@ Commands:
 Global flags:
   --raw       Emit raw underlying tool output where supported.
   --verbose   Print extra debug details where supported.
-  --prefer-driver auto|axe
-              Prefer a UI driver for semantic tree/tap commands.
+  --prefer-driver auto|<driver-id>
+              Prefer a registered driver. Use mav doctor to list them.
+  --profile NAME
+              Select a platform profile from .mav/config.yaml.
   --help,-h   Show help.
 `
 	case "setup":
@@ -275,7 +298,7 @@ Selects a physical iOS device and switches target_kind to device.
 `
 	case "open":
 		return `Usage:
-  mav open [--device NAME] [--ios VERSION] [--udid UDID] [--locale LOCALE] [--language LANG] [--clear-state] [--time-control] [--no-relaunch] [--force]
+  mav open [--device NAME] [--ios VERSION] [--udid UDID] [--locale LOCALE] [--language LANG] [--clear-state] [--fixture NAME] [--time-control] [--no-relaunch] [--force]
 
 --no-relaunch reuses the app already running on the selected target. It starts or reuses a MAV run without executing the launch recipe.
 --force ignores a fresh MAV simulator lock when you know the run is yours.
@@ -283,7 +306,7 @@ Selects a physical iOS device and switches target_kind to device.
 	case "ui":
 		return `Usage:
   mav ui tree [--prefer-driver auto|axe] [--include-system]
-  mav ui tap --id ID [--prefer-driver auto|axe]
+  mav ui tap --id ID [--verify] [--prefer-driver auto|<driver-id>]
   mav ui tap --x X --y Y
   mav ui tap --text TEXT [--prefer-driver auto|axe]
   mav ui tap --value VALUE
@@ -307,7 +330,7 @@ Selects a physical iOS device and switches target_kind to device.
 		return "Usage: mav ui tree [--prefer-driver auto|axe] [--include-system] [--agent] [--with-frame]\n\nPrints compact screen metadata followed by bounded node lines with id, label, role, value, enabled, subrole, title, pid, focused, and frame when available. --include-system asks the system/SpringBoard tree via baguette when a system service, permission prompt, or cross-app view is in front. Simulator only.\n\n--agent emits a ranked 40-element view that puts focused + actionable elements first and drops frame to save tokens. Combine with --with-frame to keep coordinates.\n"
 	case "ui tap":
 		return `Usage:
-  mav ui tap --id ID [--prefer-driver auto|axe]
+  mav ui tap --id ID [--verify] [--prefer-driver auto|<driver-id>]
   mav ui tap --x X --y Y
   mav ui tap --text TEXT [--prefer-driver auto|axe]
   mav ui tap --value VALUE
@@ -526,6 +549,14 @@ func (c CLI) setup(ctx context.Context, opts GlobalOptions, args []string) error
 		"baguette":  {"brew", "install", "tddworks/tap/baguette"},
 		"mitmproxy": {"brew", "install", "mitmproxy"},
 		"simtime":   {"brew", "install", "mobai-app/tap/simtime"},
+		// macOS drivers. cua-driver installs with its own script, which is
+		// what puts /Applications/CuaDriver.app in place, and that app is
+		// the one holding the permissions, so dropping a bare binary on the
+		// PATH is not enough. axcli publishes no upstream formula, so it
+		// goes through mav's tap as a mirror formula: it points at the
+		// original author's release, not a fork.
+		"cua-driver": {"sh", "-c", "curl -fsSL https://cua.ai/driver/install.sh | bash"},
+		"axcli":      {"brew", "install", "bitomule/tap/axcli"},
 	}
 	for _, tool := range tools {
 		if tool == "simtime" {
@@ -679,7 +710,9 @@ func (c CLI) installSkills(ctx context.Context) error {
 
 func (c CLI) setupProject(opts GlobalOptions, args []string) error {
 	cfg, err := SetupConfig(c.Root, c.Runner)
-	if existing, loadErr := LoadConfig(c.Root); loadErr == nil {
+	// No overlay: this branch ends in SaveConfig, and saving a config with a
+	// profile applied would flatten the profile onto the base.
+	if existing, loadErr := LoadConfigRaw(c.Root); loadErr == nil {
 		cfg = mergeSetupConfig(existing, cfg)
 	}
 	interactive := !hasFlag(args, "--non-interactive")
@@ -905,7 +938,7 @@ func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 		if language := flagValue(args[1:], "--language"); language != "" {
 			cfg.Language = language
 		}
-		if err := SaveConfig(c.Root, cfg); err != nil {
+		if err := persistTargetSelection(c.Root, cfg); err != nil {
 			return err
 		}
 		return c.OK("sim.select", map[string]string{"udid": sim.UDID, "name": sim.Name, "runtime": sim.Runtime}).Write(c.Stdout)
@@ -985,7 +1018,7 @@ func (c CLI) device(ctx context.Context, opts GlobalOptions, args []string) erro
 		cfg.TargetKind = "device"
 		cfg.DeviceUDID = device.UDID
 		cfg.DeviceName = device.Name
-		if err := SaveConfig(c.Root, cfg); err != nil {
+		if err := persistTargetSelection(c.Root, cfg); err != nil {
 			return err
 		}
 		return c.OK("device.select", map[string]string{"udid": device.UDID, "name": device.Name}).Write(c.Stdout)
@@ -1012,6 +1045,15 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	noRelaunch := hasFlag(args, "--no-relaunch")
 	if noRelaunch && hasFlag(args, "--clear-state") {
 		return Fail("open_flags_invalid", map[string]string{"usage": "--no-relaunch cannot be combined with --clear-state"}).Write(c.Stdout)
+	}
+	fixture := flagValue(args, "--fixture")
+	// Same treatment as --clear-state, and for the same reason: --no-relaunch
+	// skips the whole recipe, so the fixture would never get to run.
+	// Accepting the flag and not executing it would leave the agent
+	// validating against data nobody seeded, with the assertions passing or
+	// failing for the wrong reason.
+	if noRelaunch && fixture != "" {
+		return Fail("open_flags_invalid", map[string]string{"usage": "--no-relaunch cannot be combined with --fixture"}).Write(c.Stdout)
 	}
 	// A run bound via withRun (i.e. this open is a step inside a flow that
 	// already allocated its own run) is authoritative: open neither reads
@@ -1066,10 +1108,11 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 		appendFile(run.LogsPath, "mav probe log capture failed: "+probeLogErr.Error()+"\n")
 	}
 	appPath := ""
+	clearStateWarn := ""
 	if !noRelaunch {
 		var failedStep *launchStep
 		var failedResult CommandResult
-		appPath, failedStep, failedResult = c.runLaunchRecipe(ctx, cfg, run, hasFlag(args, "--clear-state"))
+		appPath, failedStep, failedResult, clearStateWarn = c.runLaunchRecipe(ctx, cfg, run, hasFlag(args, "--clear-state"), fixture)
 		if failedStep != nil {
 			fields := map[string]string{"run": run.ID, "logs": run.LogsPath, "step": failedStep.Name, "stderr": firstLine(failedResult.Stderr)}
 			if fields["stderr"] == "" && failedResult.Err != nil {
@@ -1077,6 +1120,7 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 			}
 			return Fail("launch_step_failed", fields).Write(c.Stdout)
 		}
+		writeRunFixture(run, fixture)
 	}
 	if hasFlag(args, "--time-control") {
 		if targetKind(cfg) != drivers.KindSim {
@@ -1116,6 +1160,12 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 		}
 	}
 	fields["target_kind"] = targetKindLabel(targetKind(cfg))
+	if clearStateWarn != "" {
+		fields["clear_state_warn"] = clearStateWarn
+	}
+	if fixture != "" {
+		fields["fixture"] = fixture
+	}
 	fields["session"] = "direct"
 	if _, ok := c.Runner.(ExecRunner); ok {
 		if session, workerErr := startRunWorker(c.Root, run); workerErr == nil {
@@ -1144,6 +1194,9 @@ func (c CLI) timeControl(ctx context.Context, opts GlobalOptions, args []string)
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
 	c.resolveConfigTarget(&cfg)
+	if targetKind(cfg) == drivers.KindMac {
+		return c.macTime(ctx, cfg, args)
+	}
 	if targetKind(cfg) != drivers.KindSim {
 		return Fail("time_control_unsupported_on_device", nil).Write(c.Stdout)
 	}
@@ -1268,7 +1321,7 @@ func (c CLI) applyOpenTargetOverrides(ctx context.Context, cfg *Config, args []s
 		return fmt.Errorf("%s", firstLine(boot.Stderr))
 	}
 	_ = c.Runner.Run(ctx, "xcrun", "simctl", "bootstatus", sim.UDID, "-b")
-	return SaveConfig(c.Root, *cfg)
+	return persistTargetSelection(c.Root, *cfg)
 }
 
 func simctlLaunchLanguageArgs(cfg Config) []string {
@@ -1290,6 +1343,18 @@ func (c CLI) startProbeLogs(ctx context.Context, cfg Config, run RunState) (int,
 	// without ever going through open() -- see ensureRunWorker.
 	defer c.ensureRunWorker(run)
 	predicate := probeLogPredicate(cfg)
+	if targetKind(cfg) == drivers.KindMac {
+		// On the Mac the stream is the host's own: the same line as on the
+		// simulator minus the leading `simctl spawn <udid>`. The predicate
+		// and the format do not change, so everything consuming logs.txt
+		// downstream keeps working as is.
+		args := []string{"stream", "--style", "compact", "--level", "debug", "--predicate", predicate}
+		pid, err := c.Runner.Start(ctx, run.LogsPath, "log", args...)
+		if err == nil {
+			appendProcess(run, "probe-logs", pid, "log "+strings.Join(args, " "))
+		}
+		return pid, err
+	}
 	if targetKind(cfg) == drivers.KindDevice {
 		if !hasTool(cfg, "idb") {
 			return 0, fmt.Errorf("idb_missing")
@@ -1372,11 +1437,14 @@ func (c CLI) ui(ctx context.Context, opts GlobalOptions, args []string) error {
 	out := c.dispatchWithStaleTargetRetry(cfg, func(callee CLI, cfg Config) {
 		dispatchErr = callee.dispatchUICommand(ctx, opts, cfg, args)
 	})
-	if dispatchErr != nil {
-		return dispatchErr
+	// The output is ALWAYS written, also when the command failed: the
+	// `fail code=...` line is the result, not a side effect of success.
+	// Returning before writing it left the user with nothing to read exactly
+	// in the case where it matters most.
+	if _, writeErr := io.WriteString(c.Stdout, out); writeErr != nil {
+		return writeErr
 	}
-	_, writeErr := io.WriteString(c.Stdout, out)
-	return writeErr
+	return dispatchErr
 }
 
 // dispatchUICommand is the actual `mav ui <verb>` switch, split out of ui so
@@ -1586,29 +1654,26 @@ func (c CLI) describeUITree(ctx context.Context, cfg Config, prefer string, incl
 		}
 	}
 	target := targetFromConfig(cfg)
-	if hasTool(cfg, "axe") {
-		driver, _, err := c.router().Route(ctx, drivers.CapTreeAX, target, routerPrefer(prefer))
-		if err != nil {
-			return describedUITree{}, err
-		}
-		treeDriver, ok := driver.(drivers.TreeDriver)
-		if !ok {
-			return describedUITree{}, fmt.Errorf("tree_tool_missing")
-		}
-		tree, err := treeDriver.Tree(ctx, target, drivers.TreeSpec{})
-		if err != nil {
-			return describedUITree{Driver: driver.ID(), Result: CommandResult{Stderr: err.Error(), Err: err}}, nil
-		}
-		return describedUITree{Driver: driver.ID(), Result: CommandResult{Stdout: string(tree.JSON)}}, nil
+	// No per-tool gate: the router decides. Asking first for
+	// `hasTool(cfg, "axe")` duplicated the decision outside of it, and that
+	// went unnoticed while every target was served by axe. As soon as one
+	// appeared that was not (macOS), this `if` sent axe anyway and the tree
+	// died asking for a --udid that does not exist. If there is no driver
+	// for this capability on this target, ErrNoDriver itself explains it
+	// better than a boolean can.
+	driver, _, err := c.router().Route(ctx, drivers.CapTreeAX, target, routerPrefer(prefer))
+	if err != nil {
+		return describedUITree{}, err
 	}
-	if prefer == "axe" {
+	treeDriver, ok := driver.(drivers.TreeDriver)
+	if !ok {
 		return describedUITree{}, fmt.Errorf("tree_tool_missing")
 	}
-	if hasTool(cfg, "idb") {
-		result := c.runIDBCommand(ctx, idbTargetArgs(cfg, "ui", "describe-all", "--json", "--nested")...)
-		return describedUITree{Driver: "idb", Result: result}, nil
+	tree, err := treeDriver.Tree(ctx, target, drivers.TreeSpec{})
+	if err != nil {
+		return describedUITree{Driver: driver.ID(), Result: CommandResult{Stderr: err.Error(), Err: err}}, nil
 	}
-	return describedUITree{}, fmt.Errorf("tree_tool_missing")
+	return describedUITree{Driver: driver.ID(), Result: CommandResult{Stdout: string(tree.JSON)}}, nil
 }
 
 func (c CLI) recoverEmptyAXTree(ctx context.Context, cfg Config) error {
@@ -1686,6 +1751,174 @@ func (c CLI) waitForTreeReady(ctx context.Context, cfg Config, timeout time.Dura
 	return readyUITree{}, fmt.Errorf("tree_not_ready")
 }
 
+// tapToolMissingFields explains what is missing to be able to tap, and on
+// macOS that is NOT the same as on iOS.
+//
+// The iOS message suggests falling back to coordinates, which there is a
+// reasonable workaround. On the Mac it would be the opposite of the right
+// advice: tapping by coordinates is exactly the path that can land in
+// another application if the window moved. What is missing there is a
+// driver that delivers by PID.
+// snapshotForVerification reads the tree so it can be compared after an
+// action. Returns nil if it cannot be read: verification is an extra, and
+// not being able to do it must never turn a correct tap into a failure.
+func (c CLI) snapshotForVerification(ctx context.Context, cfg Config) []Element {
+	described, err := c.describeUITree(ctx, cfg, "auto", false)
+	if err != nil || described.Result.Err != nil {
+		return nil
+	}
+	return ExtractElements(described.Result.Stdout)
+}
+
+// verifyTapChangedSomething answers the question mav's evidence layer
+// cannot afford to leave unanswered: did the tap do anything?
+//
+// It exists because a tap can report success having done nothing. AXPress
+// returns OK and does nothing on browser-rendered views, and a synthetic
+// event can end up in a window that is no longer where it was. Reporting
+// "ok" there is worse than failing: the agent keeps building on a screen
+// that did not change, and the failure shows up three steps later with no
+// apparent relation to the cause.
+//
+// Returns "changed", "unchanged" or "unknown". CAREFUL with "unchanged": it
+// does not always mean the tap failed, some actions legitimately do not
+// change the tree, so it is a signal for the reader to weigh, not a
+// verdict.
+func (c CLI) verifyTapChangedSomething(ctx context.Context, cfg Config, before []Element) string {
+	if before == nil {
+		return "unknown"
+	}
+	after := c.snapshotForVerification(ctx, cfg)
+	if after == nil {
+		return "unknown"
+	}
+	delta := TreeDiff(before, after)
+	if len(delta.Added) == 0 && len(delta.Removed) == 0 && len(delta.Changed) == 0 {
+		return "unchanged"
+	}
+	return "changed"
+}
+
+// tapToolPresent answers whether ANY tool capable of tapping exists.
+//
+// It used to ask only for axe, which is never installed on the Mac, so
+// `ui tap` failed with tool_missing even with the macOS driver healthy,
+// asking for a tool that is no longer the only one serving input there.
+func tapToolPresent(caps Capabilities, cfg Config) bool {
+	if targetKind(cfg) == drivers.KindMac {
+		return caps.Tools["cua-driver"] || caps.Tools["axcli"]
+	}
+	return caps.Tools["axe"]
+}
+
+// swipeToolMissingFields names each platform's scrolling tool. On the Mac
+// neither axe nor idb exists, so asking for them sent people to install iOS
+// tools that fix nothing.
+func swipeToolMissingFields(cfg Config) map[string]string {
+	if targetKind(cfg) == drivers.KindMac {
+		return map[string]string{"tool": "cua-driver", "next": "mav setup --install cua-driver"}
+	}
+	return map[string]string{"tool": "axe|idb"}
+}
+
+// typeToolMissingFields names each platform's typing tool.
+func typeToolMissingFields(cfg Config) map[string]string {
+	if targetKind(cfg) == drivers.KindMac {
+		return map[string]string{"tool": "cua-driver", "next": "mav setup --install cua-driver"}
+	}
+	return map[string]string{"tool": "axe", "next": "mav setup --install axe"}
+}
+
+// macTime controls the clock on macOS, which is the whole machine's.
+//
+// It splits from the simtime path on purpose instead of pretending they are
+// the same: `freeze` and `scale` do not exist here, a system clock runs and
+// cannot be stopped or sped up, and time travel has a different scope.
+// Mixing them would have given an API that says yes to things that then do
+// not happen.
+func (c CLI) macTime(ctx context.Context, _ Config, args []string) error {
+	switch args[0] {
+	case "status":
+		return c.OK("time.status", c.macTimeStatus(ctx)).Write(c.Stdout)
+	case "freeze", "scale":
+		return Fail("time_control_unsupported_on_macos", map[string]string{
+			"command": args[0],
+			"why":     "the macOS clock is the machine's; it cannot be frozen or scaled, only moved",
+			"next":    "use mav time travel --to TIMESTAMP",
+		}).Write(c.Stdout)
+	case "reset":
+		if !c.macClockAllowed(ctx, args) {
+			return c.macClockRefusal().Write(c.Stdout)
+		}
+		if err := c.macTimeReset(ctx); err != nil {
+			return Fail("time_reset_failed", map[string]string{"error": firstLine(err.Error())}).Write(c.Stdout)
+		}
+		return c.OK("time.reset", c.macTimeStatus(ctx)).Write(c.Stdout)
+	case "travel":
+		to := flagValue(args[1:], "--to")
+		if to == "" {
+			return Fail("time_travel_target_missing", map[string]string{"usage": "mav time travel --to 2030-01-01T00:00:00Z"}).Write(c.Stdout)
+		}
+		at, err := time.Parse(time.RFC3339, to)
+		if err != nil {
+			return Fail("time_travel_target_invalid", map[string]string{"to": to, "usage": "RFC3339, e.g. 2030-01-01T00:00:00Z"}).Write(c.Stdout)
+		}
+		if !c.macClockAllowed(ctx, args) {
+			return c.macClockRefusal().Write(c.Stdout)
+		}
+		if err := c.macTimeTravel(ctx, at); err != nil {
+			return Fail("time_travel_failed", map[string]string{"error": firstLine(err.Error())}).Write(c.Stdout)
+		}
+		fields := c.macTimeStatus(ctx)
+		fields["to"] = to
+		return c.OK("time.travel", fields).Write(c.Stdout)
+	default:
+		return Fail("time_unknown_command", map[string]string{"command": args[0]}).Write(c.Stdout)
+	}
+}
+
+// macClockAllowed keeps the gate closed by default outside a VM.
+func (c CLI) macClockAllowed(ctx context.Context, args []string) bool {
+	return c.macClockInVM(ctx) || hasFlag(args, "--system-clock")
+}
+
+func (c CLI) macClockRefusal() Output {
+	return Fail("time_control_needs_system_clock", map[string]string{
+		"why":  "on macOS this moves the whole machine's clock, not just the app's",
+		"next": "run it inside a macOS VM, or pass --system-clock if you mean the host",
+	})
+}
+
+// locationUnsupportedFields explains why there is no fake location on
+// macOS, instead of leaving a bare "unsupported" that invites an afternoon
+// of searching.
+//
+// Xcode's "Simulate Location" is NOT the debugger's: it travels over the
+// DVT channel, which belongs to iOS devices, and does nothing against a
+// macOS app. lldb has no equivalent command, and the tools that exist,
+// LocationSimulator and company, fake a connected iPhone, not the Mac.
+// CoreLocationCLI only reads. All that remains is private locationd API or
+// disabled SIP, and neither is a path mav is going to take.
+func locationUnsupportedFields(cfg Config) map[string]string {
+	if targetKind(cfg) != drivers.KindMac {
+		return nil
+	}
+	return map[string]string{
+		"why":  "macOS has no supported way to feed CoreLocation a fake fix; Xcode's Simulate Location is an iOS-device feature and does nothing for a Mac app",
+		"next": "run the location-dependent path on a simulator target",
+	}
+}
+
+func tapToolMissingFields(cfg Config) map[string]string {
+	if targetKind(cfg) == drivers.KindMac {
+		return map[string]string{
+			"tool": "cua-driver",
+			"next": "mav setup --install cua-driver; taps on macOS need PID-targeted delivery, coordinates can land on another app",
+		}
+	}
+	return map[string]string{"tool": "axe", "next": "use mav ui tap --x X --y Y when AXe is unavailable"}
+}
+
 func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
 	selector, selectorErr := selectorFromCLI(args)
 	if selectorErr != nil {
@@ -1714,8 +1947,8 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			fields["value"] = value
 			command += " --value " + value
 		}
-		if !caps.Tools["axe"] {
-			return Fail("tool_missing", map[string]string{"tool": "axe", "next": "use mav ui tap --x X --y Y when AXe is unavailable"}).Write(c.Stdout)
+		if !tapToolPresent(caps, cfg) {
+			return Fail("tool_missing", tapToolMissingFields(cfg)).Write(c.Stdout)
 		}
 		if isSimpleSemanticSelector(selector) && value != "" {
 			return Fail("tap_target_missing", map[string]string{"usage": "mav ui tap --value VALUE requires another predicate or a stable --id"}).Write(c.Stdout)
@@ -1738,11 +1971,18 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		target := targetFromConfig(cfg)
 		driver, _, err := c.router().Route(ctx, drivers.CapSemanticTap, target, routerPrefer(prefer))
 		if err != nil {
-			return Fail("tool_missing", map[string]string{"tool": "axe", "next": "use mav ui tap --x X --y Y when AXe is unavailable"}).Write(c.Stdout)
+			return Fail("tool_missing", tapToolMissingFields(cfg)).Write(c.Stdout)
 		}
 		td, ok := driver.(drivers.TapDriver)
 		if !ok {
 			return Fail("tool_missing", map[string]string{"tool": "axe"}).Write(c.Stdout)
+		}
+		// The BEFORE tree is only read when verification is requested,
+		// because reading it costs seconds and this is the hot loop.
+		verify := hasFlag(args, "--verify")
+		var before []Element
+		if verify {
+			before = c.snapshotForVerification(ctx, cfg)
 		}
 		_, tapErr := td.Tap(ctx, target, drivers.TapSpec{Selector: drivers.ElementSelector{ID: id, Text: text}})
 		result := CommandResult{}
@@ -1752,9 +1992,20 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			if hasTextDiagnostic {
 				return Fail("ui_tap_text_no_label_match", diagnosticFields).Write(c.Stdout)
 			}
-			return Fail("ui_tap_failed", map[string]string{"stderr": firstLine(result.Stderr)}).Write(c.Stdout)
+			tapFields := map[string]string{"stderr": firstLine(result.Stderr)}
+			// An ambiguous locator is not a tap failure: the selector
+			// describes several things and the tool refuses to choose on
+			// its own, which is correct. But the message is the tool's and
+			// does not say what to do, so the agent is left staring.
+			if strings.Contains(result.Stderr, "must be unique") {
+				tapFields["next"] = "the selector matches more than one element; use --id, or a longer --text that only matches one"
+			}
+			return Fail("ui_tap_failed", tapFields).Write(c.Stdout)
 		}
 		fields["driver"] = driver.ID()
+		if verify {
+			fields["verified"] = c.verifyTapChangedSomething(ctx, cfg, before)
+		}
 		c.appendCurrentCommand(command, result)
 		return c.writeFastPathResult(ctx, cfg, args, "ui.tap", fields)
 	}
@@ -1769,8 +2020,9 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		xi, _ := strconv.Atoi(x)
 		yi, _ := strconv.Atoi(y)
 		target := targetFromConfig(cfg)
-		// CapCoordTap: en sim axe/baguette/idb empatan a coste 50 y el desempate
-		// por ID daria axe, no idb -- sin este prefer cambiaria el driver= de salida.
+		// CapCoordTap: on sim axe/baguette/idb tie at cost 50 and the ID
+		// tiebreak would give axe, not idb; without this prefer the output's
+		// driver= would change.
 		driver, _, err := c.router().Route(ctx, drivers.CapCoordTap, target, "idb")
 		if err != nil {
 			return Fail("tool_missing", map[string]string{"tool": "idb"}).Write(c.Stdout)
@@ -1784,7 +2036,15 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		result := CommandResult{}
 		if tapErr != nil {
 			result = CommandResult{Stderr: tapErr.Error(), Err: tapErr}
-			return Fail("ui_tap_failed", map[string]string{"stderr": firstLine(result.Stderr)}).Write(c.Stdout)
+			tapFields := map[string]string{"stderr": firstLine(result.Stderr)}
+			// An ambiguous locator is not a tap failure: the selector
+			// describes several things and the tool refuses to choose on
+			// its own, which is correct. But the message is the tool's and
+			// does not say what to do, so the agent is left staring.
+			if strings.Contains(result.Stderr, "must be unique") {
+				tapFields["next"] = "the selector matches more than one element; use --id, or a longer --text that only matches one"
+			}
+			return Fail("ui_tap_failed", tapFields).Write(c.Stdout)
 		}
 		c.appendCurrentCommand("mav ui tap --x "+x+" --y "+y, result)
 		return c.writeFastPathResult(ctx, cfg, args, "ui.tap", map[string]string{"x": x, "y": y, "driver": driver.ID(), "route_recorded": "false"})
@@ -1859,7 +2119,10 @@ func onlyFastPathArgs(args []string) []string {
 	out := []string{}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if !strings.HasPrefix(arg, "--wait-") && arg != "--observe" {
+		// --verify is kept: the fallback to coordinates is exactly the path
+		// most likely to tap the wrong place, so losing verification there
+		// would be losing it where it is needed most.
+		if !strings.HasPrefix(arg, "--wait-") && arg != "--observe" && arg != "--verify" {
 			continue
 		}
 		out = append(out, arg)
@@ -2106,12 +2369,19 @@ func (c CLI) uiType(ctx context.Context, opts GlobalOptions, cfg Config, args []
 		}
 	}
 	target := targetFromConfig(cfg)
-	// CapType: axe gana el desempate por coste igualmente, pero sin este
-	// prefer el router tambien sondearia baguette, cuyo Probe ejecuta un
-	// subproceso real (`baguette list --json`) en cada `mav ui type`.
-	driver, _, err := c.router().Route(ctx, drivers.CapType, target, "axe")
+	// CapType: axe wins the cost tiebreak anyway, but without this prefer
+	// the router would also probe baguette, whose Probe runs a real
+	// subprocess (`baguette list --json`) on every `mav ui type`.
+	// The prefer is only named where axe is the canonical one. On macOS
+	// forcing it shut out the driver that does know how to type there, and
+	// the error ended up asking to install an iOS tool.
+	typePrefer := "axe"
+	if targetKind(cfg) == drivers.KindMac {
+		typePrefer = ""
+	}
+	driver, _, err := c.router().Route(ctx, drivers.CapType, target, typePrefer)
 	if err != nil {
-		return Fail("tool_missing", map[string]string{"tool": "axe", "next": "mav setup --install axe"}).Write(c.Stdout)
+		return Fail("tool_missing", typeToolMissingFields(cfg)).Write(c.Stdout)
 	}
 	td, ok := driver.(drivers.TypeDriver)
 	if !ok {
@@ -2142,7 +2412,10 @@ func isSelectorCLIFlag(value string) bool {
 
 func (c CLI) uiErase(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
 	_ = opts
-	if targetKind(cfg) != drivers.KindSim {
+	// macOS can: the driver empties the field by setting the empty value,
+	// which depends neither on guessing how many deletions to send nor on
+	// the field having focus. On a real iPhone there is still no path.
+	if kind := targetKind(cfg); kind != drivers.KindSim && kind != drivers.KindMac {
 		return Fail("erase_unsupported_on_device", map[string]string{"next": "device erase is not supported; tap and retype the field"}).Write(c.Stdout)
 	}
 	id := flagValue(args, "--id")
@@ -2172,6 +2445,14 @@ func (c CLI) uiErase(ctx context.Context, opts GlobalOptions, cfg Config, args [
 func (c CLI) uiHideKeyboard(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
 	_ = opts
 	_ = args
+	// On macOS there is no on-screen keyboard to hide, so this does not
+	// fail: it does nothing. A flow shared between iOS and Mac will call
+	// it, and breaking it over something superfluous there would force
+	// forking the flow by platform, which is exactly what profiles exist to
+	// avoid.
+	if targetKind(cfg) == drivers.KindMac {
+		return c.OK("ui.hideKeyboard", map[string]string{"note": "no on-screen keyboard on macOS"}).Write(c.Stdout)
+	}
 	if targetKind(cfg) != drivers.KindSim {
 		return Fail("hide_keyboard_unsupported_on_device", map[string]string{"next": "device hide-keyboard is not supported; tap outside the field"}).Write(c.Stdout)
 	}
@@ -2219,17 +2500,17 @@ func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args [
 	preferred := ""
 	switch {
 	case prefer != "" && prefer != "auto":
-		// Un --prefer-driver explicito manda. Aceptar el flag y luego
-		// sobreescribirlo con "axe" seria configuracion muerta del mismo tipo
-		// que target_command_ignored existe para hacer visible: el usuario
-		// pide un driver, mav dice que si, y corre otro sin decir nada.
+		// An explicit --prefer-driver rules. Accepting the flag and then
+		// overwriting it with "axe" would be dead configuration of the same
+		// kind target_command_ignored exists to make visible: the user asks
+		// for a driver, mav says yes, and runs another without a word.
 		preferred = prefer
 	case hasTool(cfg, "axe"):
 		preferred = "axe"
 	}
-	// CapSwipe: mismo coste de Probe que CapType, mas cfg.Tools["axe"]=true sin
-	// axe en PATH debe seguir siendo un error duro en vez de un fallback
-	// silencioso a baguette/idb (ver TestUISwipePreferAxeDoesNotFallbackToIDB).
+	// CapSwipe: same Probe cost as CapType, plus cfg.Tools["axe"]=true with
+	// no axe on PATH must remain a hard error instead of a silent fallback
+	// to baguette/idb (see TestUISwipePreferAxeDoesNotFallbackToIDB).
 	driver, _, err := c.router().Route(ctx, drivers.CapSwipe, target, preferred)
 	if err != nil {
 		if prefer == "axe" {
@@ -2238,13 +2519,13 @@ func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args [
 		if prefer != "" && prefer != "auto" {
 			return Fail("prefer_driver_unusable", map[string]string{"driver": prefer, "capability": string(drivers.CapSwipe), "next": "use --prefer-driver auto to let mav route ui swipe"}).Write(c.Stdout)
 		}
-		return Fail("tool_missing", map[string]string{"tool": "axe|idb"}).Write(c.Stdout)
+		return Fail("tool_missing", swipeToolMissingFields(cfg)).Write(c.Stdout)
 	}
 	gd, ok := driver.(interface {
 		Swipe(context.Context, drivers.Target, drivers.SwipeSpec) error
 	})
 	if !ok {
-		return Fail("tool_missing", map[string]string{"tool": "axe|idb"}).Write(c.Stdout)
+		return Fail("tool_missing", swipeToolMissingFields(cfg)).Write(c.Stdout)
 	}
 	sx, _ := strconv.Atoi(startX)
 	sy, _ := strconv.Atoi(startY)
@@ -2981,11 +3262,11 @@ func (c CLI) location(ctx context.Context, opts GlobalOptions, args []string) er
 	}
 	driver, _, err := c.router().Route(ctx, drivers.CapLocation, target, "")
 	if err != nil {
-		return Fail("location_unsupported", nil).Write(c.Stdout)
+		return Fail("location_unsupported", locationUnsupportedFields(cfg)).Write(c.Stdout)
 	}
 	utility, ok := driver.(drivers.DeviceUtilityDriver)
 	if !ok {
-		return Fail("location_unsupported", nil).Write(c.Stdout)
+		return Fail("location_unsupported", locationUnsupportedFields(cfg)).Write(c.Stdout)
 	}
 	switch args[0] {
 	case "set":
@@ -3017,7 +3298,11 @@ func (c CLI) location(ctx context.Context, opts GlobalOptions, args []string) er
 
 func (c CLI) clipboard(ctx context.Context, opts GlobalOptions, args []string) error {
 	_ = opts
-	if targetKind(c.mustLoadConfig()) != drivers.KindSim {
+	// The Mac's clipboard is the system's own, and the macOS driver already
+	// served it: what failed was this gate, which treated everything that
+	// was not a simulator as a physical device. On a real iPhone there is
+	// still no way to read it.
+	if kind := targetKind(c.mustLoadConfig()); kind != drivers.KindSim && kind != drivers.KindMac {
 		return Fail("clipboard_unsupported_on_device", nil).Write(c.Stdout)
 	}
 	if len(args) == 0 {
@@ -3073,8 +3358,12 @@ func (c CLI) capture(ctx context.Context, opts GlobalOptions, args []string) err
 		}
 		_ = SaveCurrentRun(c.Root, run)
 	}
+	prefer, err := c.normalizePreferDriver(opts.PreferDriver)
+	if err != nil {
+		return Fail("prefer_driver_invalid", map[string]string{"usage": c.preferDriverUsage()}).Write(c.Stdout)
+	}
 	path := uniqueCapturePath(run, flagValue(args, "--name"))
-	result, err := c.captureScreenshot(ctx, cfg, path)
+	result, err := c.captureScreenshotWith(ctx, cfg, path, routerPrefer(prefer))
 	if err != nil {
 		return Fail("tool_missing", map[string]string{"tool": "axe|idb|xcrun"}).Write(c.Stdout)
 	}
@@ -3106,20 +3395,26 @@ func uniqueCapturePath(run RunState, name string) string {
 }
 
 func (c CLI) captureScreenshot(ctx context.Context, cfg Config, path string) (CommandResult, error) {
+	return c.captureScreenshotWith(ctx, cfg, path, "")
+}
+
+// captureScreenshotWith is captureScreenshot honoring --prefer-driver. The
+// prefer-less version exists because most calls are internal (failure fast
+// path, flow steps) and there is no user flag to respect there.
+func (c CLI) captureScreenshotWith(ctx context.Context, cfg Config, path, prefer string) (CommandResult, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return CommandResult{}, err
 	}
 	target := targetFromConfig(cfg)
-	prefer := ""
-	switch {
-	case targetKind(cfg) == drivers.KindDevice:
+	// A driver is only named for device, where idb is canonical by explicit
+	// decision. For the rest the router decides by cost: the hasTool
+	// cascade that used to live here replicated that worse, because it
+	// looked at PATH presence instead of health, and it also shut out any
+	// non-iOS target. On macOS it ended up naming axe, which does not even
+	// provide the capability there, and the capture died with
+	// capture_tool_missing.
+	if prefer == "" && targetKind(cfg) == drivers.KindDevice {
 		prefer = "idb"
-	case hasTool(cfg, "axe"):
-		prefer = "axe"
-	case hasTool(cfg, "idb"):
-		prefer = "idb"
-	case hasTool(cfg, "xcrun"):
-		prefer = "simctl"
 	}
 	driver, _, err := c.router().Route(ctx, drivers.CapScreenshot, target, prefer)
 	if err != nil {
@@ -3903,7 +4198,7 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 	}
 	switch step.Action {
 	case "open":
-		args := flowArgs(step.Params, "--device", "device", "--ios", "ios", "--udid", "udid", "--locale", "locale", "--language", "language")
+		args := flowArgs(step.Params, "--device", "device", "--ios", "ios", "--udid", "udid", "--locale", "locale", "--language", "language", "--fixture", "fixture")
 		if step.Params["clearState"] == "true" {
 			args = append(args, "--clear-state")
 		}
@@ -5165,6 +5460,12 @@ func (c CLI) stop(ctx context.Context, opts GlobalOptions, args []string) error 
 	if cfg, err := LoadConfig(c.Root); err == nil && cfg.SimulatorUDID != "" {
 		removeSimulatorLock(cfg.SimulatorUDID, c.Root)
 	}
+	// Here too, not only in `network stop`: if the run dies along the way,
+	// leaving the machine pointing at a proxy that no longer exists leaves
+	// it without network.
+	if c.restoreMacProxy(ctx, run) {
+		fields["system_proxy"] = "restored"
+	}
 	if failed > 0 {
 		return Fail("stop_failed", fields).Write(c.Stdout)
 	}
@@ -5259,6 +5560,14 @@ func (c CLI) crashes(ctx context.Context, opts GlobalOptions, args []string) err
 	c.resolveConfigTools(&cfg)
 	c.resolveConfigTarget(&cfg)
 	if targetKind(cfg) == drivers.KindSim && !opts.Raw {
+		return c.crashesFromDiagnosticReports("")
+	}
+	if targetKind(cfg) == drivers.KindMac {
+		// On the Mac the .ips files are on the local disk and are the SAME
+		// JSON format iOS 15 and macOS 12 introduced, so ParseIPS works
+		// untouched. There is no idb in between and nothing that can fail
+		// besides the filesystem itself, so there is no --raw mode to offer
+		// either.
 		return c.crashesFromDiagnosticReports("")
 	}
 	if !hasTool(cfg, "idb") {

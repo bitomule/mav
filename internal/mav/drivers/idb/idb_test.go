@@ -53,3 +53,32 @@ func TestScreenshotBuildsCommand(t *testing.T) {
 		t.Fatalf("command=%q want=%q", exec.commands[0], want)
 	}
 }
+
+// TestIDBServesTheTreeOnDevices: AXe cannot reach a physical device, so idb is
+// the only tree there. It used to be reached by a hand-written fallback in the
+// CLI, which a router-only rewrite left unreachable: the tree started failing on
+// devices instead of falling back. Declaring the capability is what makes the
+// router able to do the job the fallback did.
+func TestIDBServesTheTreeOnDevices(t *testing.T) {
+	device := drivers.Target{Kind: drivers.KindDevice, UDID: "REAL-1"}
+	d := New(&fakeExec{result: drivers.ExecResult{Stdout: `[{"AXLabel":"Save"}]`}})
+	if !d.Provides(device).Has(drivers.CapTreeAX) {
+		t.Fatal("without this, ui tree on a device has no driver at all")
+	}
+	res, err := d.Tree(context.Background(), device, drivers.TreeSpec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(res.JSON), "AXLabel") {
+		t.Fatalf("the tree must come through untranslated: %s", res.JSON)
+	}
+}
+
+// TestIDBTreeStaysBehindAXeOnSimulators keeps the split: AXe is canonical where
+// it works, idb is what is left when it does not.
+func TestIDBTreeStaysBehindAXeOnSimulators(t *testing.T) {
+	sim := drivers.Target{Kind: drivers.KindSim, UDID: "SIM-1"}
+	if cost := New(&fakeExec{}).Cost(drivers.CapTreeAX, sim); cost == 0 {
+		t.Fatal("idb must not tie with AXe for the tree on a simulator")
+	}
+}

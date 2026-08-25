@@ -1,6 +1,7 @@
 package mav
 
 import (
+	"github.com/bitomule/mav/internal/mav/drivers"
 	"os"
 	"path/filepath"
 	"sort"
@@ -16,6 +17,11 @@ func diagnosticCrashRoots(cfg Config) []string {
 	roots := []string{filepath.Join(home, "Library", "Logs", "DiagnosticReports")}
 	if cfg.SimulatorUDID != "" {
 		roots = append(roots, filepath.Join(home, "Library", "Developer", "CoreSimulator", "Devices", cfg.SimulatorUDID))
+	}
+	if targetKind(cfg) == drivers.KindMac {
+		// A macOS app crash can land in the user folder or the system one
+		// depending on who generates it; both must be checked.
+		roots = append(roots, filepath.Join("/", "Library", "Logs", "DiagnosticReports"))
 	}
 	return roots
 }

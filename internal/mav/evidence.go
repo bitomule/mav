@@ -40,11 +40,21 @@ type EvidenceStep struct {
 }
 
 type ReportData struct {
-	RunID              string               `json:"run_id"`
-	CreatedAt          string               `json:"created_at"`
-	Dir                string               `json:"dir"`
-	Screenshot         string               `json:"screenshot,omitempty"`
-	ScreenshotEvidence ImageEvidence        `json:"screenshot_evidence"`
+	RunID     string `json:"run_id"`
+	CreatedAt string `json:"created_at"`
+	// Fixture is the named state seeded before launching the app, if there
+	// was one. Without this the manifest cannot answer "what state did
+	// this start from?", and a run whose evidence does not say that is not
+	// reproducible, which is exactly what the verified manifest promises.
+	Fixture    string `json:"fixture,omitempty"`
+	Dir        string `json:"dir"`
+	Screenshot string `json:"screenshot,omitempty"`
+	// A pointer so it can be ABSENT. As a value, a run without a loose
+	// screenshot, which is every flow, serialized
+	// `"screenshot_evidence":{"ok":false}`: a negative verdict on something
+	// that never existed. In an evidence layer that is worse than saying
+	// nothing, because an agent cannot tell it apart from a broken capture.
+	ScreenshotEvidence *ImageEvidence       `json:"screenshot_evidence,omitempty"`
 	Steps              []ReportEvidenceStep `json:"steps"`
 	Video              string               `json:"video,omitempty"`
 	VideoMP4           string               `json:"video_mp4,omitempty"`
@@ -101,6 +111,7 @@ func GenerateReport(run RunState) (string, error) {
 		RunID:     run.ID,
 		CreatedAt: time.Now().Format(time.RFC3339),
 		Dir:       run.Dir,
+		Fixture:   readRunFixture(run),
 	}
 	for index, step := range LoadEvidenceSteps(run) {
 		reportStep := ReportEvidenceStep{
@@ -146,12 +157,13 @@ func GenerateReport(run RunState) (string, error) {
 		}
 	}
 	if data.Screenshot != "" {
-		data.ScreenshotEvidence = ValidateEvidenceImage(data.Screenshot)
-		if !data.ScreenshotEvidence.OK {
+		evidence := ValidateEvidenceImage(data.Screenshot)
+		data.ScreenshotEvidence = &evidence
+		if !evidence.OK {
 			data.Issues = append(data.Issues, ReportIssue{
 				Severity: "warning",
 				Title:    "Current screenshot is not usable",
-				Detail:   data.ScreenshotEvidence.Issue,
+				Detail:   evidence.Issue,
 			})
 		}
 	}
@@ -388,4 +400,25 @@ func LoadEvidenceSteps(run RunState) []EvidenceStep {
 func exists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// runFixturePath is where `mav open` records the applied fixture, so the
+// evidence manifest can say what state the run started from.
+func runFixturePath(run RunState) string {
+	return filepath.Join(run.Dir, "fixture.txt")
+}
+
+func writeRunFixture(run RunState, fixture string) {
+	if fixture == "" {
+		return
+	}
+	_ = os.WriteFile(runFixturePath(run), []byte(fixture+"\n"), 0o644)
+}
+
+func readRunFixture(run RunState) string {
+	data, err := os.ReadFile(runFixturePath(run))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }

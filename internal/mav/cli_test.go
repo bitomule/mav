@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -222,6 +223,16 @@ func (r *launchRecipeRunner) Run(ctx context.Context, name string, args ...strin
 			if strings.Contains(script, needle) {
 				return result
 			}
+		}
+		return CommandResult{}
+	}
+	// Steps that go through a driver (simctl/idb via the router) do not
+	// pass through the shell, so they match against the full line. Without
+	// this a test cannot simulate the failure of, say, clear_state's
+	// uninstall.
+	for needle, result := range r.results {
+		if strings.Contains(command, needle) {
+			return result
 		}
 	}
 	return CommandResult{}
@@ -488,9 +499,7 @@ func TestOpenRefusesFreshSimulatorLockFromOtherProject(t *testing.T) {
 	}
 	var out bytes.Buffer
 	cli := CLI{Runner: fakeRunner{tools: map[string]bool{"xcrun": true}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
-	if err := cli.Run(context.Background(), []string{"open"}); err != nil {
-		t.Fatal(err)
-	}
+	allowFail(t, cli.Run(context.Background(), []string{"open"}))
 	if !strings.Contains(out.String(), "fail code=sim_locked") || !strings.Contains(out.String(), "SIM-LOCKED") {
 		t.Fatalf("got %q", out.String())
 	}
@@ -738,9 +747,7 @@ func TestSandboxHintForUITreeFailure(t *testing.T) {
 	var out bytes.Buffer
 	runner := errorRunner{tools: cfg.Tools, result: CommandResult{Stderr: "CoreSimulator operation not permitted", Err: os.ErrPermission}}
 	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
-	if err := cli.Run(context.Background(), []string{"ui", "tree"}); err != nil {
-		t.Fatal(err)
-	}
+	allowFail(t, cli.Run(context.Background(), []string{"ui", "tree"}))
 	if got := out.String(); !strings.Contains(got, "next=") || !strings.Contains(got, "rerun outside sandbox") {
 		t.Fatalf("got %q", got)
 	}
@@ -765,9 +772,7 @@ func TestInstallSkillsRunsVercelSkillsCLI(t *testing.T) {
 func TestInstallSkillsRequiresNpx(t *testing.T) {
 	var out bytes.Buffer
 	cli := CLI{Runner: &recordingRunner{}, Root: t.TempDir(), Stdout: &out, Stderr: &bytes.Buffer{}}
-	if err := cli.Run(context.Background(), []string{"install-skills"}); err != nil {
-		t.Fatal(err)
-	}
+	allowFail(t, cli.Run(context.Background(), []string{"install-skills"}))
 	if !strings.Contains(out.String(), "fail code=install_skills_unavailable") || !strings.Contains(out.String(), "tool=npx") {
 		t.Fatalf("got %q", out.String())
 	}
@@ -800,9 +805,7 @@ func TestSetupRejectsAppium(t *testing.T) {
 	}
 	var out bytes.Buffer
 	cli := CLI{Runner: &sequenceRecordingRunner{}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
-	if err := cli.Run(context.Background(), []string{"setup", "--install", "appium"}); err != nil {
-		t.Fatal(err)
-	}
+	allowFail(t, cli.Run(context.Background(), []string{"setup", "--install", "appium"}))
 	if !strings.Contains(out.String(), "fail code=setup_unknown_tool") || !strings.Contains(out.String(), "tool=appium") {
 		t.Fatalf("got %q", out.String())
 	}
@@ -817,9 +820,7 @@ func TestPreferDriverRejectsAppium(t *testing.T) {
 	}
 	var out bytes.Buffer
 	cli := CLI{Runner: fakeRunner{tools: cfg.Tools}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
-	if err := cli.Run(context.Background(), []string{"--prefer-driver", "appium", "ui", "tree"}); err != nil {
-		t.Fatal(err)
-	}
+	allowFail(t, cli.Run(context.Background(), []string{"--prefer-driver", "appium", "ui", "tree"}))
 	if !strings.Contains(out.String(), "fail code=prefer_driver_invalid") {
 		t.Fatalf("got %q", out.String())
 	}
@@ -863,14 +864,12 @@ func TestPreferDriverUsageListsRegisteredDrivers(t *testing.T) {
 	}
 	var out bytes.Buffer
 	cli := CLI{Runner: fakeRunner{tools: cfg.Tools}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
-	if err := cli.Run(context.Background(), []string{"--prefer-driver", "appium", "ui", "tree"}); err != nil {
-		t.Fatal(err)
-	}
+	allowFail(t, cli.Run(context.Background(), []string{"--prefer-driver", "appium", "ui", "tree"}))
 	got := out.String()
 	if !strings.Contains(got, "fail code=prefer_driver_invalid") {
 		t.Fatalf("got %q", got)
 	}
-	if !strings.Contains(got, "auto|axe|baguette|idb|mitmproxy|simctl|simtime") {
+	if !strings.Contains(got, "auto|axcli|axe|baguette|cua|idb|macsystem|mitmproxy|screencapture|simctl|simtime") {
 		t.Fatalf("usage field should list registered drivers, got %q", got)
 	}
 }
@@ -943,9 +942,7 @@ func TestUIWaitMatchesSpecificElementFields(t *testing.T) {
 	}
 	var out bytes.Buffer
 	cli := CLI{Runner: fakeRunner{tools: cfg.Tools, out: map[string]string{"axe describe-ui": `{"AXLabel":"Email"}`}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
-	if err := cli.Run(context.Background(), []string{"ui", "wait", "--value", "Email", "--timeout", "1ms"}); err != nil {
-		t.Fatal(err)
-	}
+	allowFail(t, cli.Run(context.Background(), []string{"ui", "wait", "--value", "Email", "--timeout", "1ms"}))
 	got := out.String()
 	if !strings.Contains(got, "fail code=ui_wait_timeout") || !strings.Contains(got, "value=Email") {
 		t.Fatalf("got %q", got)
@@ -968,9 +965,7 @@ func TestUITapTextFailureReportsValueMatch(t *testing.T) {
 	}
 	var out bytes.Buffer
 	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
-	if err := cli.Run(context.Background(), []string{"--prefer-driver", "axe", "ui", "tap", "--text", "Email"}); err != nil {
-		t.Fatal(err)
-	}
+	allowFail(t, cli.Run(context.Background(), []string{"--prefer-driver", "axe", "ui", "tap", "--text", "Email"}))
 	got := out.String()
 	for _, want := range []string{"fail code=ui_tap_text_no_label_match", "matched_value=1", "matched_label=0"} {
 		if !strings.Contains(got, want) {
@@ -1422,9 +1417,7 @@ func TestEvidenceStartRejectsRunWithExistingVideo(t *testing.T) {
 	}
 	var out bytes.Buffer
 	cli := CLI{Runner: fakeRunner{tools: cfg.Tools}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
-	if err := cli.Run(context.Background(), []string{"evidence", "start", "--run", run.ID}); err != nil {
-		t.Fatal(err)
-	}
+	allowFail(t, cli.Run(context.Background(), []string{"evidence", "start", "--run", run.ID}))
 	if !strings.Contains(out.String(), "fail code=evidence_run_not_clean") {
 		t.Fatalf("got %q", out.String())
 	}
@@ -1763,9 +1756,7 @@ func TestUISwipePreferAxeDoesNotFallbackToIDB(t *testing.T) {
 	runner := &sequenceRecordingRunner{tools: cfg.Tools}
 	var out bytes.Buffer
 	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
-	if err := cli.Run(context.Background(), []string{"--prefer-driver", "axe", "ui", "swipe", "up"}); err != nil {
-		t.Fatal(err)
-	}
+	allowFail(t, cli.Run(context.Background(), []string{"--prefer-driver", "axe", "ui", "swipe", "up"}))
 	got := out.String()
 	if !strings.Contains(got, "fail code=tool_missing") || !strings.Contains(got, "tool=axe") {
 		t.Fatalf("got %q", got)
@@ -1775,13 +1766,59 @@ func TestUISwipePreferAxeDoesNotFallbackToIDB(t *testing.T) {
 	}
 }
 
-// TestUISwipeExplicitPreferIsHonoured guards the regression that abrir
-// --prefer-driver a cualquier id registrado introduce: uiSwipe fijaba
-// preferred="axe" en cuanto cfg tenia axe, asi que un --prefer-driver que
-// antes se rechazaba de plano (prefer_driver_invalid) pasaba a aceptarse y
-// ejecutarse con axe sin decir nada. Aceptar un flag y luego ignorarlo es
-// exactamente la clase de configuracion muerta que target_command_ignored
-// existe para hacer visible.
+// TestUISwipeExplicitPreferIsHonoured guards the regression that opening
+// --prefer-driver to any registered id introduces: uiSwipe pinned
+// preferred="axe" as soon as cfg had axe, so a --prefer-driver that was
+// previously rejected outright (prefer_driver_invalid) became accepted and
+// executed with axe without a word. Accepting a flag and then ignoring it
+// is exactly the kind of dead configuration target_command_ignored exists
+// to make visible.
+// TestOpenClearStateFailureWarnsInsteadOfBeingSilent pins the behavior
+// that replaces the `_ =` that discarded the uninstall's result: a failing
+// clear_state does NOT abort the open, the common case is that the app was
+// not installed yet, but it cannot disappear either, because then
+// --clear-state lies and the run drags the previous one's state along.
+func TestOpenClearStateFailureWarnsInsteadOfBeingSilent(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.app"
+	cfg.SimulatorUDID = "SIM"
+	cfg.Launch = LaunchConfig{Mode: "custom", Commands: LaunchCommands{
+		AppPath: "make ios-app-path",
+		Install: `xcrun simctl install "$MAV_UDID" "$MAV_APP_PATH"`,
+		Launch:  `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`,
+	}}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runner := &launchRecipeRunner{
+		tools: map[string]bool{"xcrun": true},
+		results: map[string]CommandResult{
+			"make ios-app-path": {Stdout: "/tmp/App.app\n"},
+			`xcrun simctl uninstall SIM com.example.app`: {
+				Stderr: "An error was encountered processing the command",
+				Code:   1,
+				Err:    errors.New("exit status 1"),
+			},
+		},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"open", "--clear-state"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if strings.HasPrefix(strings.TrimSpace(got), "fail ") {
+		t.Fatalf("a failed clear_state must not abort the open: %q", got)
+	}
+	if !strings.Contains(got, "clear_state_warn=") || !strings.Contains(got, "clear_state_incomplete") {
+		t.Fatalf("the uninstall failure must surface as a warning in the response: %q", got)
+	}
+	if !containsCall(runner.commands, "simctl install") {
+		t.Fatalf("the open must carry on to the install: %v", runner.commands)
+	}
+}
+
 func TestUISwipeExplicitPreferIsHonoured(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
@@ -1799,16 +1836,16 @@ func TestUISwipeExplicitPreferIsHonoured(t *testing.T) {
 	}
 	got := out.String()
 	if !strings.Contains(got, "driver=baguette") {
-		t.Fatalf("--prefer-driver baguette debe servirse con baguette, no sobreescribirse con axe: %q", got)
+		t.Fatalf("--prefer-driver baguette must be served with baguette, not overwritten with axe: %q", got)
 	}
 	if containsCall(runner.commands, "axe swipe") {
-		t.Fatalf("--prefer-driver baguette no debe ejecutarse en silencio con axe: %v", runner.commands)
+		t.Fatalf("--prefer-driver baguette must not silently run with axe: %v", runner.commands)
 	}
 }
 
-// TestUISwipeExplicitPreferThatCannotServeFailsLoudly cubre la otra mitad: un
-// --prefer-driver ahora valido como id pero incapaz de servir esta capacidad
-// debe fallar nombrandolo, no caer en silencio al driver por defecto.
+// TestUISwipeExplicitPreferThatCannotServeFailsLoudly covers the other
+// half: a --prefer-driver now valid as an id but unable to serve this
+// capability must fail naming it, not silently fall to the default driver.
 func TestUISwipeExplicitPreferThatCannotServeFailsLoudly(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
@@ -1821,15 +1858,13 @@ func TestUISwipeExplicitPreferThatCannotServeFailsLoudly(t *testing.T) {
 	runner := &sequenceRecordingRunner{tools: cfg.Tools}
 	var out bytes.Buffer
 	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
-	if err := cli.Run(context.Background(), []string{"--prefer-driver", "simtime", "ui", "swipe", "up"}); err != nil {
-		t.Fatal(err)
-	}
+	allowFail(t, cli.Run(context.Background(), []string{"--prefer-driver", "simtime", "ui", "swipe", "up"}))
 	got := out.String()
 	if !strings.Contains(got, "fail code=prefer_driver_unusable") || !strings.Contains(got, "driver=simtime") {
-		t.Fatalf("un prefer que no puede servir swipe debe fallar nombrandolo, got %q", got)
+		t.Fatalf("a prefer that cannot serve swipe must fail naming it, got %q", got)
 	}
 	if containsCall(runner.commands, "axe swipe") {
-		t.Fatalf("no debe caer en silencio a axe: %v", runner.commands)
+		t.Fatalf("it must not silently fall to axe: %v", runner.commands)
 	}
 }
 
@@ -2025,9 +2060,7 @@ func TestOpenClearStateRequiresInstallCommand(t *testing.T) {
 	}
 	var out bytes.Buffer
 	cli := CLI{Runner: &launchRecipeRunner{tools: map[string]bool{"xcrun": true}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
-	if err := cli.Run(context.Background(), []string{"open", "--clear-state"}); err != nil {
-		t.Fatal(err)
-	}
+	allowFail(t, cli.Run(context.Background(), []string{"open", "--clear-state"}))
 	got := out.String()
 	if !strings.Contains(got, "fail code=launch_step_failed") || !strings.Contains(got, "step=clear_state") || !strings.Contains(got, "clearState requires an install command") {
 		t.Fatalf("got %q", got)
@@ -2051,9 +2084,7 @@ func TestRunFlowFailsWhenOpenClearStateCannotInstall(t *testing.T) {
 	}
 	var out bytes.Buffer
 	cli := CLI{Runner: &launchRecipeRunner{tools: map[string]bool{"xcrun": true}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
-	if err := cli.Run(context.Background(), []string{"run", flowPath}); err != nil {
-		t.Fatal(err)
-	}
+	allowFail(t, cli.Run(context.Background(), []string{"run", flowPath}))
 	got := out.String()
 	if !strings.Contains(got, "fail code=open_failed") || !strings.Contains(got, "action=open") {
 		t.Fatalf("got %q", got)
@@ -2094,9 +2125,7 @@ func TestEraseOnDeviceFailsWithStructuredError(t *testing.T) {
 	}
 	var out bytes.Buffer
 	cli := CLI{Runner: &sequenceRecordingRunner{tools: map[string]bool{"idb": true}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
-	if err := cli.Run(context.Background(), []string{"ui", "erase", "--focused"}); err != nil {
-		t.Fatal(err)
-	}
+	allowFail(t, cli.Run(context.Background(), []string{"ui", "erase", "--focused"}))
 	if !strings.Contains(out.String(), "fail code=erase_unsupported_on_device") {
 		t.Fatalf("got %q", out.String())
 	}
@@ -2112,9 +2141,7 @@ func TestHideKeyboardOnDeviceFailsWithStructuredError(t *testing.T) {
 	}
 	var out bytes.Buffer
 	cli := CLI{Runner: &sequenceRecordingRunner{tools: map[string]bool{"idb": true}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
-	if err := cli.Run(context.Background(), []string{"ui", "hideKeyboard"}); err != nil {
-		t.Fatal(err)
-	}
+	allowFail(t, cli.Run(context.Background(), []string{"ui", "hideKeyboard"}))
 	if !strings.Contains(out.String(), "fail code=hide_keyboard_unsupported_on_device") {
 		t.Fatalf("got %q", out.String())
 	}
@@ -2158,9 +2185,7 @@ func TestPinchOnDeviceFailsWithStructuredError(t *testing.T) {
 	}
 	var out bytes.Buffer
 	cli := CLI{Runner: &sequenceRecordingRunner{tools: map[string]bool{"idb": true}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
-	if err := cli.Run(context.Background(), []string{"ui", "pinch", "--x", "100", "--y", "100", "--scale", "1.5"}); err != nil {
-		t.Fatal(err)
-	}
+	allowFail(t, cli.Run(context.Background(), []string{"ui", "pinch", "--x", "100", "--y", "100", "--scale", "1.5"}))
 	if !strings.Contains(out.String(), "fail code=gesture_unsupported_on_device") {
 		t.Fatalf("got %q", out.String())
 	}
@@ -2177,9 +2202,7 @@ func TestUITreeIncludeSystemOnDeviceFailsWithStructuredError(t *testing.T) {
 	}
 	var out bytes.Buffer
 	cli := CLI{Runner: &sequenceRecordingRunner{tools: cfg.Tools}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
-	if err := cli.Run(context.Background(), []string{"ui", "tree", "--include-system"}); err != nil {
-		t.Fatal(err)
-	}
+	allowFail(t, cli.Run(context.Background(), []string{"ui", "tree", "--include-system"}))
 	if !strings.Contains(out.String(), "fail code=tree_system_unsupported_on_device") {
 		t.Fatalf("got %q", out.String())
 	}
@@ -2261,9 +2284,7 @@ func TestDeviceSelectReportsNotFound(t *testing.T) {
 	devices := `{"result":{"devices":[{"identifier":"REAL-1","name":"David iPhone"}]}}`
 	var out bytes.Buffer
 	cli := CLI{Runner: deviceListRunner{tools: map[string]bool{"xcrun": true}, devices: devices}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
-	if err := cli.Run(context.Background(), []string{"device", "select", "--udid", "MISSING"}); err != nil {
-		t.Fatal(err)
-	}
+	allowFail(t, cli.Run(context.Background(), []string{"device", "select", "--udid", "MISSING"}))
 	if !strings.Contains(out.String(), "fail code=device_not_found") {
 		t.Fatalf("got %q", out.String())
 	}
@@ -2304,9 +2325,7 @@ func TestSimBootRejectsPhysicalTarget(t *testing.T) {
 	}
 	var out bytes.Buffer
 	cli := CLI{Runner: &sequenceRecordingRunner{}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
-	if err := cli.Run(context.Background(), []string{"sim", "boot"}); err != nil {
-		t.Fatal(err)
-	}
+	allowFail(t, cli.Run(context.Background(), []string{"sim", "boot"}))
 	if !strings.Contains(out.String(), "fail code=sim_not_applicable") {
 		t.Fatalf("got %q", out.String())
 	}
@@ -2480,9 +2499,7 @@ func TestVideoStartUnsupportedOnDevice(t *testing.T) {
 	}
 	var out bytes.Buffer
 	cli := CLI{Runner: &sequenceRecordingRunner{}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
-	if err := cli.Run(context.Background(), []string{"evidence", "start"}); err != nil {
-		t.Fatal(err)
-	}
+	allowFail(t, cli.Run(context.Background(), []string{"evidence", "start"}))
 	if !strings.Contains(out.String(), "fail code=video_unsupported") || !strings.Contains(out.String(), "target=device") {
 		t.Fatalf("got %q", out.String())
 	}
@@ -2546,9 +2563,7 @@ func TestFlowLintFailsExecWithoutAllowShell(t *testing.T) {
 	}
 	var out bytes.Buffer
 	cli := CLI{Runner: fakeRunner{}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
-	if err := cli.Run(context.Background(), []string{"flow", "lint", flowPath}); err != nil {
-		t.Fatal(err)
-	}
+	allowFail(t, cli.Run(context.Background(), []string{"flow", "lint", flowPath}))
 	got := out.String()
 	if !strings.Contains(got, "fail code=flow_lint_failed") || !strings.Contains(got, "errors=1") {
 		t.Fatalf("lint output=%q", got)
@@ -2612,5 +2627,208 @@ steps:
 	}
 	if args := selectorCLIArgs(step.Where); len(args) != 0 {
 		t.Fatalf("text-only type step must not produce tap-target args, got %v", args)
+	}
+}
+
+func fixtureConfigRoot(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.app"
+	cfg.SimulatorUDID = "SIM"
+	cfg.Launch = LaunchConfig{Mode: "custom", Commands: LaunchCommands{
+		AppPath: "make ios-app-path",
+		Install: `xcrun simctl install "$MAV_UDID" "$MAV_APP_PATH"`,
+		Launch:  `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`,
+	}}
+	cfg.Fixtures = map[string][]string{
+		"seeded": {"echo seeding-one", "echo seeding-two"},
+	}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+// TestFixtureRunsBetweenInstallAndLaunch pins the window: the container
+// already exists and the app has not started yet, so nothing has its
+// database open. Before or after, seeding is corrupting.
+func TestFixtureRunsBetweenInstallAndLaunch(t *testing.T) {
+	root := fixtureConfigRoot(t)
+	runner := &launchRecipeRunner{
+		tools:   map[string]bool{"xcrun": true},
+		results: map[string]CommandResult{"make ios-app-path": {Stdout: "/tmp/App.app\n"}},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"open", "--fixture", "seeded"}); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(runner.commands, "\n")
+	install := strings.Index(joined, "simctl install")
+	seed := strings.Index(joined, "seeding-one")
+	launch := strings.Index(joined, "simctl launch")
+	if install < 0 || seed < 0 || launch < 0 {
+		t.Fatalf("steps are missing: %s", joined)
+	}
+	if !(install < seed && seed < launch) {
+		t.Fatalf("wrong order install=%d fixture=%d launch=%d:\n%s", install, seed, launch, joined)
+	}
+	if !strings.Contains(out.String(), "fixture=seeded") {
+		t.Fatalf("the applied fixture must appear in the response: %q", out.String())
+	}
+}
+
+func TestFixtureNotFoundFailsListingAvailable(t *testing.T) {
+	root := fixtureConfigRoot(t)
+	runner := &launchRecipeRunner{
+		tools:   map[string]bool{"xcrun": true},
+		results: map[string]CommandResult{"make ios-app-path": {Stdout: "/tmp/App.app\n"}},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	allowFail(t, cli.Run(context.Background(), []string{"open", "--fixture", "nope"}))
+	got := out.String()
+	if !strings.Contains(got, "fail code=launch_step_failed") || !strings.Contains(got, "fixture_not_found") {
+		t.Fatalf("a nonexistent fixture must fail naming the valid ones: %q", got)
+	}
+	if containsCall(runner.commands, "simctl launch") {
+		t.Fatalf("the app must not launch when the fixture does not exist: %v", runner.commands)
+	}
+}
+
+func TestFixtureRejectedWithNoRelaunch(t *testing.T) {
+	root := fixtureConfigRoot(t)
+	runner := &launchRecipeRunner{tools: map[string]bool{"xcrun": true}}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	allowFail(t, cli.Run(context.Background(), []string{"open", "--no-relaunch", "--fixture", "seeded"}))
+	// --no-relaunch skips the whole recipe, so the fixture would not run.
+	// Accepting it and not executing it would leave the agent validating
+	// against data nobody seeded.
+	if !strings.Contains(out.String(), "open_flags_invalid") {
+		t.Fatalf("--fixture with --no-relaunch must be rejected: %q", out.String())
+	}
+}
+
+func TestFixtureFailureAbortsNamingTheStep(t *testing.T) {
+	root := fixtureConfigRoot(t)
+	runner := &launchRecipeRunner{
+		tools: map[string]bool{"xcrun": true},
+		results: map[string]CommandResult{
+			"make ios-app-path": {Stdout: "/tmp/App.app\n"},
+			"seeding-two":       {Stderr: "boom", Code: 1, Err: errors.New("exit status 1")},
+		},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	allowFail(t, cli.Run(context.Background(), []string{"open", "--fixture", "seeded"}))
+	got := out.String()
+	if !strings.Contains(got, "step=fixture") || !strings.Contains(got, "fixture seeded step 2/2") {
+		t.Fatalf("the failure must name the fixture and the step: %q", got)
+	}
+	if containsCall(runner.commands, "simctl launch") {
+		t.Fatalf("the app must not launch after a failed fixture: %v", runner.commands)
+	}
+}
+
+func TestNoFixtureRunsNothing(t *testing.T) {
+	root := fixtureConfigRoot(t)
+	runner := &launchRecipeRunner{
+		tools:   map[string]bool{"xcrun": true},
+		results: map[string]CommandResult{"make ios-app-path": {Stdout: "/tmp/App.app\n"}},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"open"}); err != nil {
+		t.Fatal(err)
+	}
+	if containsCall(runner.commands, "seeding-one") {
+		t.Fatalf("without --fixture nothing must be seeded: %v", runner.commands)
+	}
+	if strings.Contains(out.String(), "fixture=") {
+		t.Fatalf("without --fixture none must be reported: %q", out.String())
+	}
+}
+
+// TestTapVerificationSurvivesTheCoordinateFallback: when a semantic tap
+// falls back to coordinates, that is the path most likely to tap the wrong
+// place. Losing --verify there would be losing it exactly where it is
+// needed.
+func TestTapVerificationSurvivesTheCoordinateFallback(t *testing.T) {
+	got := onlyFastPathArgs([]string{"--id", "boton", "--verify", "--observe", "delta", "--wait-timeout", "2s"})
+	joined := strings.Join(got, " ")
+	if !strings.Contains(joined, "--verify") {
+		t.Fatalf("--verify must survive the coordinate fallback: %v", got)
+	}
+	if strings.Contains(joined, "--id") {
+		t.Fatalf("the selector must not be forwarded: %v", got)
+	}
+}
+
+// TestVerifyReportsUnknownRatherThanGuessing: verification is an extra. If
+// the tree cannot be read, it cannot be claimed that the tap worked NOR
+// that it failed, and saying either would be worse than admitting it is
+// not known.
+func TestVerifyReportsUnknownRatherThanGuessing(t *testing.T) {
+	cli := CLI{Root: t.TempDir()}
+	if got := cli.verifyTapChangedSomething(context.Background(), Config{}, nil); got != "unknown" {
+		t.Fatalf("without a prior tree nothing can be verified, got %q", got)
+	}
+}
+
+// TestVerifyDistinguishesChangedFromUnchanged: the "unchanged" case is
+// this function's entire reason to exist, a tap that reports ok having
+// done nothing, so it is worth pinning without depending on a live app.
+func TestVerifyDistinguishesChangedFromUnchanged(t *testing.T) {
+	same := []Element{{ID: "a", Label: "Uno"}, {ID: "b", Label: "Dos"}}
+	if delta := TreeDiff(same, same); len(delta.Added)+len(delta.Removed)+len(delta.Changed) != 0 {
+		t.Fatalf("two identical trees have no delta: %+v", delta)
+	}
+	moved := []Element{{ID: "a", Label: "Uno"}, {ID: "b", Label: "DOS"}}
+	delta := TreeDiff(same, moved)
+	if len(delta.Changed) == 0 {
+		t.Fatalf("a label change must be detected: %+v", delta)
+	}
+}
+
+// TestCaptureHonoursPreferDriver: --prefer-driver was accepted on the
+// command line but captureScreenshot dropped it and always routed by cost,
+// so the only way to dodge a broken capture driver was uninstalling it.
+func TestCaptureHonoursPreferDriver(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Tools["idb"] = true
+	cfg.Tools["simctl"] = true
+	runner := &recordingRunner{tools: map[string]bool{"idb": true, "xcrun": true, "simctl": true}}
+	cli := CLI{Runner: runner, Root: t.TempDir(), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	if _, err := cli.captureScreenshotWith(context.Background(), cfg, filepath.Join(t.TempDir(), "s.png"), "simctl"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(runner.command, "idb screenshot") {
+		t.Fatalf("--prefer-driver simctl ignored, routed by cost to idb: %q", runner.command)
+	}
+}
+
+// TestTapToolGateIsNotIOSShaped: the gate asked only for axe, which is
+// never installed on the Mac, so `ui tap` failed with tool_missing even
+// with the macOS driver healthy, and it also named a tool that is no
+// longer the only one serving input there.
+func TestTapToolGateIsNotIOSShaped(t *testing.T) {
+	mac := DefaultConfig(t.TempDir())
+	mac.TargetKind = "macos"
+	caps := Capabilities{Tools: map[string]bool{"cua-driver": true}}
+	if !tapToolPresent(caps, mac) {
+		t.Fatal("with the macOS driver present tapping is possible, even without axe")
+	}
+	if tapToolPresent(Capabilities{Tools: map[string]bool{"axe": true}}, mac) {
+		t.Fatal("axe does not serve input on the Mac")
+	}
+	if got := tapToolMissingFields(mac)["tool"]; got != "cua-driver" {
+		t.Fatalf("it must name the macOS canonical tool: %q", got)
+	}
+
+	sim := DefaultConfig(t.TempDir())
+	if !tapToolPresent(Capabilities{Tools: map[string]bool{"axe": true}}, sim) {
+		t.Fatal("en simulador sigue siendo axe")
 	}
 }

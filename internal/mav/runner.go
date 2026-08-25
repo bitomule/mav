@@ -50,7 +50,18 @@ func (ExecRunner) Run(ctx context.Context, name string, args ...string) CommandR
 	return CommandResult{Stdout: stdout.String(), Stderr: stderr.String(), Code: code, Err: err}
 }
 
+// Start launches a background process and returns its PID.
+//
+// An empty logPath means "discard the output", not an error. Launching a
+// macOS app needs it: there stdout and stderr are not the real log
+// channel, OSLog is, and mav already captures that on its own with
+// `log stream`, so forcing the driver to invent a file just to throw it
+// away would be worse. Before this, an empty logPath died with an
+// `open : no such file or directory` that said nothing about the cause.
 func (ExecRunner) Start(ctx context.Context, logPath string, name string, args ...string) (int, error) {
+	if logPath == "" {
+		logPath = os.DevNull
+	}
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
 		return 0, err
 	}
