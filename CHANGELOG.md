@@ -1,5 +1,92 @@
 # Changelog
 
+## v0.13.0
+
+### macOS video
+
+- **`mav evidence start` records video on macOS.** The drivers have been able to since
+  v0.12.0 and nothing ever reached them: `startVideoRecording` went straight to `simctl`
+  and refused anything that was not a simulator, so `evidence start` answered
+  `video_unsupported target=device` on a Mac. It routes `CapVideo` now, and the failure
+  it can still produce names the real target instead of `device`.
+- **It records through the driver daemon, which is what makes it work over SSH.**
+  `screencapture -v` needs mav to already be inside the graphical session; in a VM it is
+  not, and it sees no display at all. The daemon is in that session and holds the Screen
+  Recording grant, so recording through it works in both places. `screencapture` stays as
+  the fallback for a local Mac.
+- **The recording is held open by a session for the length of the run.** The daemon
+  records only while a client stays connected, so mav keeps one, and `evidence stop` asks
+  the daemon to finalize before anything signals it: only the daemon writes the mp4's
+  index, and a file cut off without one is a plausible-looking video no player opens.
+  Measured alternatives that do not work, in case anyone tries them again: the persistent
+  `recording start` captures per-action stills and its video flag does nothing,
+  `recording render` refuses without an mp4 only the other path produces, and the
+  hypervisor's own desktop recording rejects macOS targets outright.
+- No transcode when the recorder already produced H.264: on macOS the output is the mp4,
+  not a `.mov` to convert.
+
+### macOS in a disposable VM
+
+- **`vm: true` next to `target_kind: macos` runs the app under test in a throwaway
+  machine, and nothing about driving mav changes.** `open`, `ui tree`, `ui tap`,
+  `capture`, `run`, `logs`, `crashes`, `evidence` and `network` take the same arguments
+  and answer the same way; the only new field is `vm=true`, so an agent chaining loose
+  commands can tell whether what it just drove was the VM's app or this machine's.
+- **That one key is the whole config surface.** No host, no IP, no job name, no tool
+  name, no key path. Which hypervisor provides the machine is mav's business, so the day
+  it changes no `config.yaml` on anybody's disk has to. It replaces `runner:
+  local|crabbox`, which shipped in v0.12.0, only declared an intent and did nothing.
+- **Evidence lands in the local `.mav/runs/<id>/`**, which is the part that decides
+  whether the feature is real. Captures, trees, logs, HAR and `report.json` are rsynced
+  out of the guest after every command, not once at the end: an agent driving mav command
+  by command never reaches anything that would be "the end", and evidence it cannot read
+  until some later command happens to sync is evidence it reasons about stale. The
+  upstream artifact mechanism was not an option: `crabbox run --artifact-glob` rejects
+  native macOS targets ([crabbox#1393](https://github.com/openclaw/crabbox/issues/1393)).
+- **The machine is handed back on `mav stop`, at the end of a flow, and on an idle
+  timeout.** Not tidiness: Virtualization.framework *and* the macOS EULA cap you at two
+  concurrent macOS VMs, so a leaked lease blocks the next run. The idle path rides the
+  run worker's existing lease expiry, which is the one place mav already knows the run's
+  owner is gone, so an agent that crashes releases the machine without anybody's help.
+  Evidence always comes home before the release: the order has one safe direction and no
+  second chance.
+- **The remote project root is the same absolute path as the local one.** mav computes
+  artifact paths everywhere, and any other choice would mean translating each one at each
+  call site with a silent wrong-file bug waiting on every one it missed.
+- **The launch recipe splits across the two machines.** `healthcheck`, `build` and
+  `app_path` stay here, because a VM image carrying every project's build dependencies is
+  not an image anybody can share; `install`, the fixture, `launch` and `cleanup` run
+  there, because that is where the app runs. The checkout and the built bundle are shipped
+  across in between.
+- **Guest processes are stopped on the guest.** The PIDs a run records in VM mode belong
+  to the other machine, and signalling them here does not fail loudly, it kills whatever
+  local process happens to hold that number. `Runner` grew an optional `Stop`, which is
+  the seam that makes the difference visible instead of catastrophic.
+- **`mav setup --install vm` installs the VM tooling**, and every VM failure ends naming
+  it. It is a tool in that list and not a command of its own on purpose: there should be
+  one place to look for "mav is missing something I need", and everything else mav can
+  install already lives behind that flag. Nobody writing `vm: true` is told which
+  hypervisor to go and install, because that is exactly the detail the config surface
+  exists to hide, and nothing in the output names it either, including on success.
+  `mav setup` without `--install` stays interactive and now offers `vm` for a macOS
+  project. `mav doctor` reports `vm_tooling`, `vm_image` and the current lease without
+  ever leasing a machine to do it -- with a budget of two, a diagnostic that takes a slot
+  is not a diagnostic.
+- **The guest's copy of the bundle is re-signed ad-hoc when it would otherwise not
+  launch**, and `open` says so with `resigned=adhoc`. A development-signed app carries
+  entitlements tied to a team and a device list, and in a clean VM the kernel kills it on
+  launch with no message; the symptom three commands later is "the app is not running",
+  which points at everything except the signature. It is a real trade, iCloud and push go
+  with it, so it is reported rather than done quietly, and only the guest's copy is
+  touched.
+- **An outdated hypervisor is caught before anything is leased.** Below 2.29 it dies while
+  injecting the SSH key with a message about terminal sizes, and nothing in that message
+  points at the version. `mav doctor` reports `vm_tooling=outdated` and
+  `mav setup --install vm` upgrades it.
+- `vm: true` is rejected on a simulator or device target instead of ignored. A simulator
+  is reached from this machine and a phone is plugged into it; accepting the flag there
+  would leave somebody believing they were isolated when nothing had changed.
+
 ## v0.12.0
 
 ### macOS
@@ -66,8 +153,7 @@
   Selected with `--profile`, `MAV_PROFILE` or `default_profile`, in that order; a profile
   that doesn't exist fails naming the valid ones instead of quietly falling back. They are an
   overlay over the flat fields: a single-platform repo writes none and nothing changes for
-  it. `runner: local|crabbox` declares **where** a profile runs; mav does not orchestrate
-  machines, and the recipe for a throwaway VM lives in `examples/macos-vm/`.
+  it.
 - **Fixtures**: named states, lists of commands, that leave the app in a known situation.
   They run between `install` and `launch`, the only window where the container already exists
   and nothing holds its database open, which is also why the app is closed before seeding.

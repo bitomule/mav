@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/bitomule/mav/internal/mav/drivers"
 )
 
 const (
@@ -50,8 +52,12 @@ type Config struct {
 	DefaultProfile string
 	Profiles       map[string]profileYAML
 	ActiveProfile  string
-	ProfileRunner  string
 	Fixtures       map[string][]string
+
+	// VM says the target app runs inside a disposable macOS VM instead of
+	// on this machine. Which tool provides that VM is mav's business, not
+	// the config's: see internal/mav/vm.go.
+	VM bool
 
 	// AppPath is filled by the launch recipe at run time (app_path step);
 	// it is neither read from nor written to the YAML. It is how the macOS
@@ -125,7 +131,7 @@ func LoadConfigWithProfile(root, profileOverride string) (Config, error) {
 var knownProfileKeys = map[string]bool{
 	"target_kind": true, "app_target": true, "process_name": true,
 	"target_command": true, "log_subsystem": true, "log_category": true,
-	"launch": true, "runner": true,
+	"launch": true, "vm": true,
 }
 
 // rejectUnknownProfileKeys turns a key that does not exist inside a
@@ -188,6 +194,7 @@ func loadConfig(root, profileOverride string, skipProfile bool) (Config, error) 
 	cfg.PreferredUIDriver = raw.PreferredUIDriver
 	cfg.AllowShell = raw.AllowShell
 	cfg.TargetCommand = raw.TargetCommand
+	cfg.VM = raw.VM
 	cfg.Launch = raw.Launch
 	cfg.DefaultProfile = raw.DefaultProfile
 	cfg.Profiles = raw.Profiles
@@ -225,6 +232,12 @@ func loadConfig(root, profileOverride string, skipProfile bool) (Config, error) 
 	if err := validateTargetKind(cfg.TargetKind); err != nil {
 		return Config{}, err
 	}
+	// After validateTargetKind for the same reason it runs last: `vm` and
+	// `target_kind` can each arrive from the file, a profile or the
+	// environment, and the pair is only coherent once both are settled.
+	if err := validateVM(cfg); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
 }
 
@@ -252,10 +265,7 @@ func applyProfile(cfg *Config, override string) error {
 	overlayString(&cfg.TargetCommand, profile.TargetCommand)
 	overlayString(&cfg.LogSubsystem, profile.LogSubsystem)
 	overlayString(&cfg.LogCategory, profile.LogCategory)
-	overlayString(&cfg.ProfileRunner, profile.Runner)
-	if err := validateProfileRunner(cfg.ProfileRunner); err != nil {
-		return err
-	}
+	overlayBool(&cfg.VM, profile.VM)
 	if profile.Launch != nil {
 		overlayString(&cfg.Launch.Mode, profile.Launch.Mode)
 		if c := profile.Launch.Commands; c != nil {
@@ -268,6 +278,15 @@ func applyProfile(cfg *Config, override string) error {
 		}
 	}
 	return nil
+}
+
+// overlayBool is overlayString for a bool field, with the same "nil means
+// inherit" contract.
+func overlayBool(base *bool, override *bool) {
+	if override == nil {
+		return
+	}
+	*base = *override
 }
 
 // overlayString applies a profile field over the base's. A nil pointer
@@ -310,6 +329,7 @@ type configYAML struct {
 	PreferredUIDriver string        `yaml:"preferred_ui_driver"`
 	AllowShell        bool          `yaml:"allow_shell,omitempty"`
 	TargetCommand     string        `yaml:"target_command,omitempty"`
+	VM                bool          `yaml:"vm,omitempty"`
 	Launch            LaunchConfig  `yaml:"launch,omitempty"`
 
 	DefaultProfile string                 `yaml:"default_profile,omitempty"`
@@ -343,12 +363,11 @@ type profileYAML struct {
 	LogCategory   *string            `yaml:"log_category,omitempty"`
 	Launch        *profileLaunchYAML `yaml:"launch,omitempty"`
 
-	// Runner says WHERE this profile runs: "local" (default) or "crabbox".
-	// mav does not orchestrate machines, that is crabbox, which already
-	// knows how to lease a macOS VM with tart, sync the dirty checkout and
-	// return it when done. This field only declares the intent; the wrapper
-	// executes it, not mav.
-	Runner *string `yaml:"runner,omitempty"`
+	// VM overlays the base's `vm`. A pointer for the same reason as the
+	// rest: a profile has to be able to turn it OFF for a profile that
+	// inherits a base with `vm: true`, and `false` is indistinguishable
+	// from absent on a plain bool.
+	VM *bool `yaml:"vm,omitempty"`
 }
 
 type profileLaunchYAML struct {
@@ -431,6 +450,7 @@ func SaveConfig(root string, cfg Config) error {
 		PreferredUIDriver: cfg.PreferredUIDriver,
 		AllowShell:        cfg.AllowShell,
 		TargetCommand:     strings.TrimSpace(cfg.TargetCommand),
+		VM:                cfg.VM,
 		DefaultProfile:    cfg.DefaultProfile,
 		Profiles:          cfg.Profiles,
 		Fixtures:          cfg.Fixtures,
@@ -1010,15 +1030,17 @@ func validateTargetKind(kind string) error {
 	}
 }
 
-// validateProfileRunner rejects runners mav does not know, for the same
-// reason as an unknown target_kind: a misspelled value that is silently
-// ignored is dead configuration, and here it would also mean running
-// locally something the user believed isolated in a VM.
-func validateProfileRunner(runner string) error {
-	switch runner {
-	case "", "local", "crabbox":
+// validateVM rejects `vm: true` on a target mav cannot put in a VM. Only
+// macOS can: a simulator or a physical device is reached from this machine,
+// and a nested VM would either be a second simulator nobody asked for or an
+// iPhone that is not plugged into it. Accepting the flag there and ignoring
+// it would leave someone believing they are isolated when nothing changed.
+func validateVM(cfg Config) error {
+	if !cfg.VM {
 		return nil
-	default:
-		return fmt.Errorf("profile_runner_invalid value=%s valid=local,crabbox", runner)
 	}
+	if targetKind(cfg) != drivers.KindMac {
+		return fmt.Errorf("vm_unsupported_target target_kind=%s valid=macos", targetKindLabel(targetKind(cfg)))
+	}
+	return nil
 }

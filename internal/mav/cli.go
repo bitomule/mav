@@ -31,6 +31,19 @@ type CLI struct {
 	Stderr io.Writer
 	Root   string
 	run    *RunState // nil = fall back to reading .mav/current-run from disk
+
+	// host and vm are set only while an invocation is attached to a leased
+	// machine (see withVM). host keeps the local Runner reachable for the
+	// half of the launch recipe that has to stay here -- the build -- and
+	// vm carries the file transfer that brings evidence back.
+	host  Runner
+	vmRun *vmRunner
+
+	// keepVM survives a `stop` without handing the machine back. It exists
+	// for exactly one caller: `open` tearing down the run it supersedes,
+	// which is about that run's processes and not about the machine the new
+	// run is one line away from using.
+	keepVM bool
 }
 
 type GlobalOptions struct {
@@ -81,6 +94,14 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 	}
 	stopLeaseHeartbeat := c.keepRunLeaseAlive(rest[0])
 	defer stopLeaseHeartbeat()
+	// Attaching happens before dispatch, not inside each command, so the
+	// list of commands that work against a VM is exactly the list of
+	// commands that work at all. A command added tomorrow inherits it.
+	c, detachVM, err := c.withVM(ctx, rest[0])
+	if err != nil {
+		return Fail("vm_unavailable", vmFailureFields(err)).Write(c.Stdout)
+	}
+	defer detachVM()
 	switch rest[0] {
 	case "__worker":
 		return c.runInternalWorker(ctx, rest[1:])
@@ -260,9 +281,19 @@ Global flags:
   --help,-h   Show help.
 `
 	case "setup":
-		return "Usage:\n  mav setup [--non-interactive]\n  mav setup --install axe idb baguette simtime lldb-dap\n"
+		return `Usage:
+  mav setup [--non-interactive]
+  mav setup --install axe idb baguette simtime lldb-dap cua-driver axcli mitmproxy vm
+
+Without --install it configures the project, interactively unless --non-interactive.
+With --install it installs tools and configures nothing.
+
+  vm    the tooling a project with vm: true needs to lease a disposable macOS
+        machine. Build the image once with scripts/build-mav-vm-image.sh.
+`
 	case "install-skills":
 		return "Usage: mav install-skills\n"
+
 	case "sim":
 		return `Usage:
   mav sim list
@@ -483,6 +514,7 @@ func (c CLI) doctor(ctx context.Context, opts GlobalOptions) error {
 		fields["next"] = "mav setup --install " + strings.Join(missing, " ")
 	}
 	addDoctorMatrixFields(fields, caps)
+	c.vmDoctorFields(ctx, cfg, fields)
 	if targetKind(cfg) == drivers.KindSim && cfg.SimulatorUDID != "" {
 		if lock, locked := simulatorLockedByOther(cfg.SimulatorUDID, c.Root); locked {
 			fields["sim_contention"] = "locked"
@@ -544,6 +576,7 @@ func (c CLI) setup(ctx context.Context, opts GlobalOptions, args []string) error
 	if len(tools) == 0 {
 		return Fail("setup_install_missing", nil).Write(c.Stdout)
 	}
+	extra := map[string]string{}
 	commands := map[string][]string{
 		"axe":       {"brew", "install", "cameroncooke/axe/axe"},
 		"baguette":  {"brew", "install", "tddworks/tap/baguette"},
@@ -598,6 +631,16 @@ func (c CLI) setup(ctx context.Context, opts GlobalOptions, args []string) error
 			}
 			continue
 		}
+		if tool == "vm" {
+			fields, err := c.setupVM(ctx)
+			if err != nil {
+				return err
+			}
+			for key, value := range fields {
+				extra[key] = value
+			}
+			continue
+		}
 		cmd, ok := commands[tool]
 		if !ok {
 			return Fail("setup_unknown_tool", map[string]string{"tool": tool}).Write(c.Stdout)
@@ -610,7 +653,11 @@ func (c CLI) setup(ctx context.Context, opts GlobalOptions, args []string) error
 			return Fail("setup_failed", map[string]string{"tool": tool, "stderr": firstLine(result.Stderr)}).Write(c.Stdout)
 		}
 	}
-	return c.OK("setup", map[string]string{"installed": strings.Join(tools, ",")}).Write(c.Stdout)
+	fields := map[string]string{"installed": strings.Join(tools, ",")}
+	for key, value := range extra {
+		fields[key] = value
+	}
+	return c.OK("setup", fields).Write(c.Stdout)
 }
 
 func (c CLI) verifySimtime(ctx context.Context) error {
@@ -793,6 +840,16 @@ func (c CLI) promptSetupConfig(cfg Config) (Config, error) {
 	cfg.AllowShell, err = c.promptBool(prompts, reader, "allow_shell", cfg.AllowShell)
 	if err != nil {
 		return cfg, err
+	}
+	// Only for a macOS project, because that is the only place `vm` means
+	// anything: a simulator is reached from this machine and a phone is
+	// plugged into it. Asking everyone would be offering a setting that
+	// LoadConfig then rejects.
+	if targetKind(cfg) == drivers.KindMac {
+		cfg.VM, err = c.promptBool(prompts, reader, "vm", cfg.VM)
+		if err != nil {
+			return cfg, err
+		}
 	}
 	if cfg.Launch.Mode, err = c.promptString(prompts, reader, "launch.mode", cfg.Launch.Mode); err != nil {
 		return cfg, err
@@ -1077,7 +1134,9 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 		return err
 	}
 	if previousRunID != "" {
-		_ = c.withStdout(io.Discard).stop(ctx, GlobalOptions{}, []string{"--run", previousRunID})
+		superseding := c.withStdout(io.Discard)
+		superseding.keepVM = true
+		_ = superseding.stop(ctx, GlobalOptions{}, []string{"--run", previousRunID})
 	}
 	if !hasBoundRun {
 		if err := SaveCurrentRun(c.Root, run); err != nil {
@@ -1101,7 +1160,7 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	// tear down the video recording, worker, or sim-lock that
 	// evidence.start / other earlier steps may have set up for this run.
 	if hasBoundRun {
-		stopProbeLogs(run)
+		stopProbeLogs(c.Runner, run)
 	}
 	probeLogPID, probeLogErr := c.startProbeLogs(ctx, cfg, run)
 	if probeLogErr != nil {
@@ -1166,8 +1225,17 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	if fixture != "" {
 		fields["fixture"] = fixture
 	}
+	if c.vmRun != nil && c.vmRun.resigned {
+		fields["resigned"] = "adhoc"
+		fields["resigned_note"] = "the guest's copy lost its provisioning profile and the entitlements tied to it (iCloud, push) so it could launch there; this is no longer the exact binary you ship"
+	}
 	fields["session"] = "direct"
-	if _, ok := c.Runner.(ExecRunner); ok {
+	// The worker is a LOCAL process even in VM mode: it watches this run's
+	// lease and reaps it when nobody renews. That reaping is what hands a
+	// leased machine back after the agent driving it crashes, so keying the
+	// decision off c.Runner -- which is the guest's in VM mode -- would
+	// switch off exactly the safety net the VM needs most.
+	if _, ok := c.hostRunner().(ExecRunner); ok {
 		if session, workerErr := startRunWorker(c.Root, run); workerErr == nil {
 			fields["session"] = session
 		} else {
@@ -4936,12 +5004,12 @@ func appendFlowStep(run RunState, index int, action string, elapsed time.Duratio
 // Abandonment and failure cleanup call this afterward, because for them
 // there is no such caller coming -- if they don't kill it here, nothing
 // ever will.
-func stopVideoRecording(run RunState) {
+func stopVideoRecording(runner Runner, run RunState) {
 	pid, err := readPID(filepath.Join(run.Dir, "video.pid"))
 	if err != nil {
 		return
 	}
-	_ = stopProcess(pid)
+	_ = stopRunProcess(runner, pid)
 	_ = os.Remove(filepath.Join(run.Dir, "video.pid"))
 	removeProcess(run, pid)
 }
@@ -4955,7 +5023,11 @@ func stopVideoRecording(run RunState) {
 // hold a simulator the run's owner can no longer release.
 func (c CLI) reapAbandonedRun(ctx context.Context, run RunState) {
 	_ = c.withStdout(io.Discard).stop(ctx, GlobalOptions{}, []string{"--run", run.ID})
-	stopVideoRecording(run)
+	stopVideoRecording(c.Runner, run)
+	// The crash case the VM lease exists to survive: nobody renewed, so
+	// nobody is coming back to call `mav stop`, and a machine left leased
+	// here is one of the two the next run will not get.
+	_ = c.releaseVMLease(ctx, c.hostRunner())
 }
 
 // ensureRunWorker best-effort starts (or confirms) the run's watchdog worker,
@@ -5448,7 +5520,7 @@ func (c CLI) stop(ctx context.Context, opts GlobalOptions, args []string) error 
 		if record.Kind == "video" && fileExists(filepath.Join(run.Dir, "video.pid")) {
 			continue
 		}
-		if err := stopProcess(record.PID); err != nil {
+		if err := stopRunProcess(c.Runner, record.PID); err != nil {
 			failed++
 			appendCommand(run, "mav stop "+strconv.Itoa(record.PID), CommandResult{Stderr: err.Error(), Code: 1, Err: err})
 			continue
@@ -5465,6 +5537,13 @@ func (c CLI) stop(ctx context.Context, opts GlobalOptions, args []string) error 
 	// it without network.
 	if c.restoreMacProxy(ctx, run) {
 		fields["system_proxy"] = "restored"
+	}
+	// The machine goes back here and not only on an idle timeout: `mav
+	// stop` is the agent saying it is done, and two concurrent macOS VMs is
+	// the whole budget -- waiting out a timeout would block the next run
+	// for no reason.
+	if !c.keepVM && c.releaseVM(ctx) {
+		fields["vm"] = "released"
 	}
 	if failed > 0 {
 		return Fail("stop_failed", fields).Write(c.Stdout)
@@ -5542,12 +5621,12 @@ func removeProcess(run RunState, pid int) {
 // for run. Used by open when it's about to start a fresh probe-logs capture
 // on a run it's reusing (a flow's second open step), so the previous log
 // stream doesn't keep writing into the same logs.txt forever.
-func stopProbeLogs(run RunState) {
+func stopProbeLogs(runner Runner, run RunState) {
 	for _, record := range loadProcessRecords(run) {
 		if record.Kind != "probe-logs" || record.PID <= 0 {
 			continue
 		}
-		_ = stopProcess(record.PID)
+		_ = stopRunProcess(runner, record.PID)
 		removeProcess(run, record.PID)
 	}
 }
@@ -5768,7 +5847,13 @@ func (c CLI) evidenceStart(ctx context.Context, opts GlobalOptions, args []strin
 	path, pid, err := c.startVideoRecording(ctx, cfg, run)
 	if err != nil {
 		if err.Error() == "video_unsupported" {
-			return Fail("video_unsupported", map[string]string{"target": "device", "next": "use simulator video or capture screenshots; device video is not supported in this PR"}).Write(c.Stdout)
+			// The target is reported from the config and not hardcoded:
+			// this used to answer target=device on a macOS run, which sent
+			// whoever read it looking in the wrong place.
+			return Fail("video_unsupported", map[string]string{
+				"target": targetKindLabel(targetKind(cfg)),
+				"next":   "capture screenshots with mav evidence step; this target has no recorder",
+			}).Write(c.Stdout)
 		}
 		return Fail("evidence_start_failed", map[string]string{"run": run.ID, "error": err.Error()}).Write(c.Stdout)
 	}
@@ -5788,7 +5873,7 @@ func (c CLI) evidenceStart(ctx context.Context, opts GlobalOptions, args []strin
 			networkArgs = append(networkArgs, "--port", port)
 		}
 		if err := commandOutputErr(c.withStdout(&out).networkStart(ctx, GlobalOptions{}, networkArgs), out.String(), "network_start_failed"); err != nil {
-			_ = stopProcess(pid)
+			_ = stopRunProcess(c.Runner, pid)
 			_ = os.Remove(filepath.Join(run.Dir, "video.pid"))
 			removeProcess(run, pid)
 			return Fail("evidence_network_start_failed", map[string]string{
@@ -5854,10 +5939,30 @@ func (c CLI) evidenceStop(ctx context.Context, opts GlobalOptions, args []string
 	if err != nil {
 		return Fail("video_not_running", map[string]string{"run": run.ID}).Write(c.Stdout)
 	}
-	_ = stopProcess(pid)
+	cfg, cfgErr := LoadConfig(c.Root)
+	if cfgErr == nil {
+		c.resolveConfigTools(&cfg)
+		c.resolveConfigTarget(&cfg)
+	}
+	// The recorder is asked to stop BEFORE the process holding it is
+	// signalled. On macOS only the daemon can write the mp4's index, and a
+	// file cut off without one is a plausible-looking video no player will
+	// open, which is worse than no video at all.
+	videoStopWarn := c.stopVideoThroughDriver(ctx, cfg, run, pid)
+	_ = stopRunProcess(c.Runner, pid)
 	_ = os.Remove(filepath.Join(run.Dir, "video.pid"))
 	removeProcess(run, pid)
-	fields := map[string]string{"run": run.ID, "file": filepath.Join(run.Dir, "video.mov")}
+	// Everything below reads the video off this machine's disk, and when the
+	// run happened in a VM the recorder wrote it on the other one. Without
+	// this the checks fail on a video that exists, and the run reports
+	// video_not_written about a file that arrives seconds later with the
+	// normal evidence sync.
+	c.syncVMEvidence(ctx)
+	c.pruneMacVideoLeftovers(cfg, run)
+	fields := map[string]string{"run": run.ID, "file": evidenceVideoPath(cfg, run)}
+	if videoStopWarn != "" {
+		fields["video_warn"] = videoStopWarn
+	}
 	if issue := videoLogIssue(filepath.Join(run.Dir, "video.log")); issue != "" {
 		return Fail("video_recording_failed", map[string]string{"run": run.ID, "file": fields["file"], "log": filepath.Join(run.Dir, "video.log"), "error": issue}).Write(c.Stdout)
 	}
@@ -5876,7 +5981,11 @@ func (c CLI) evidenceStop(ctx context.Context, opts GlobalOptions, args []string
 		return Fail("video_invalid", map[string]string{"run": run.ID, "file": fields["file"], "duration": duration, "issue": validation.Issue, "log": filepath.Join(run.Dir, "video.log")}).Write(c.Stdout)
 	}
 	fields["duration"] = validation.Duration.String()
-	if mp4, err := c.transcodeEvidenceVideo(ctx, fields["file"]); err == nil {
+	if filepath.Ext(fields["file"]) == ".mp4" {
+		// Already H.264: transcoding it would spend ffmpeg on producing the
+		// same thing under a different name.
+		fields["video_mp4"] = fields["file"]
+	} else if mp4, err := c.transcodeEvidenceVideo(ctx, fields["file"]); err == nil {
 		fields["video_mp4"] = mp4
 	} else {
 		fields["video_mp4_warn"] = err.Error()
@@ -6156,7 +6265,45 @@ func isSwipeDirection(direction string) bool {
 	}
 }
 
+// evidenceVideoPath is where this target's recorder writes. The extension
+// is not cosmetic: the simulator's recorder produces QuickTime and the
+// Mac's produces H.264, and reportVideo/transcodeEvidenceVideo both branch
+// on which one they are looking at.
+func evidenceVideoPath(cfg Config, run RunState) string {
+	if targetKind(cfg) == drivers.KindMac {
+		return filepath.Join(run.Dir, "video.mp4")
+	}
+	return filepath.Join(run.Dir, "video.mov")
+}
+
+// startMacVideoRecording routes CapVideo instead of naming a tool, which is
+// the whole reason macOS gets video at all now: the drivers have recorded
+// video since v0.12.0 and nothing ever reached them, because this function
+// went straight to simctl and refused anything that was not a simulator.
+func (c CLI) startMacVideoRecording(ctx context.Context, cfg Config, run RunState) (string, int, error) {
+	target := targetFromConfig(cfg)
+	driver, _, err := c.router().Route(ctx, drivers.CapVideo, target, "")
+	if err != nil {
+		return "", 0, fmt.Errorf("video_unsupported")
+	}
+	recorder, ok := driver.(drivers.VideoDriver)
+	if !ok {
+		return "", 0, fmt.Errorf("video_unsupported")
+	}
+	path := evidenceVideoPath(cfg, run)
+	result, err := recorder.VideoStart(ctx, target, drivers.VideoSpec{OutPath: path})
+	if err != nil {
+		return "", 0, err
+	}
+	appendProcess(run, "video", result.PID, "video."+driver.ID())
+	c.ensureRunWorker(run)
+	return path, result.PID, nil
+}
+
 func (c CLI) startVideoRecording(ctx context.Context, cfg Config, run RunState) (string, int, error) {
+	if targetKind(cfg) == drivers.KindMac {
+		return c.startMacVideoRecording(ctx, cfg, run)
+	}
 	if targetKind(cfg) != drivers.KindSim {
 		return "", 0, fmt.Errorf("video_unsupported")
 	}

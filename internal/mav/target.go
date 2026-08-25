@@ -123,14 +123,13 @@ func (c CLI) withResolvedTarget(fields map[string]string) map[string]string {
 		if _, ok := fields["profile"]; !ok {
 			fields["profile"] = cfg.ActiveProfile
 		}
-		// A profile declaring runner: crabbox expects to run inside a VM.
-		// If somebody is reading this line, mav is running THERE, inside or
-		// outside; reporting it avoids the misunderstanding of believing
-		// yourself isolated when the command was launched bare.
-		if cfg.ProfileRunner != "" && cfg.ProfileRunner != "local" {
-			if _, ok := fields["runner"]; !ok {
-				fields["runner"] = cfg.ProfileRunner
-			}
+	}
+	// Reported outside the profile branch: `vm` is a base-level field too,
+	// and an agent chaining loose commands has no other way to tell whether
+	// what it just drove was the VM's app or this machine's.
+	if cfg.VM {
+		if _, ok := fields["vm"]; !ok {
+			fields["vm"] = "true"
 		}
 	}
 	udid := targetUDID(cfg)

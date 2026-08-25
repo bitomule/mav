@@ -1,10 +1,13 @@
 # Running `mav` against a macOS app inside a disposable VM
 
-This is Phase 4 of the [scope evaluation](../../docs/macos-scope-evaluation.md), and what
-matters is what is **not** here: MAV code. MAV does not orchestrate machines. It wraps
-drivers and produces evidence; the machine comes from [crabbox](https://github.com/openclaw/crabbox),
-which already knows how to lease a macOS VM with `tart`, sync the dirty checkout, execute,
-and hand it back when done.
+This is where the measurements behind `vm: true` live. **The feature itself needs none of
+this**: put `vm: true` next to `target_kind: macos`, run `mav setup --install vm` once and
+`scripts/build-mav-vm-image.sh` once, and mav leases the machine, ships the app across,
+drives it and hands the machine back on its own. See the README's *Running the app in a
+disposable VM*.
+
+What follows is the record of what was tried and what it cost, kept because most of it
+contradicts the guides on the subject and rediscovering it is expensive.
 
 ## Why bother
 
@@ -71,11 +74,11 @@ guest can use its own tools.
 Neither crabbox nor Peekaboo does this: crabbox does not mention TCC anywhere in its
 documentation, and Peekaboo's says explicitly that you grant it by hand.
 
-## The recipe
+## The version floor, and it is the trap that costs the most time
 
-**Version requirement, and it is the trap that costs the most time**: you need **tart >= 2.29**
-(tested with 2.35.0). In 2.28.1 `tart exec` computes the terminal size **always**, with an
-unguarded `try!`, so it blows up when there is no TTY:
+You need **tart >= 2.29** (measured working with 2.32.1). In 2.28.1 `tart exec` computes
+the terminal size **always**, with an unguarded `try!`, so it blows up when there is no
+TTY:
 
 ```
 tart/Exec.swift:91: Fatal error: 'try!' expression unexpectedly raised an error:
@@ -83,48 +86,25 @@ failed to get terminal size: Inappropriate ioctl for device
 ssh key injection failed
 ```
 
-crabbox uses `tart exec` to inject the SSH key, so with tart 2.28.1 **the whole provider
-fails to start from any non-interactive context**, which is exactly what it exists for. On
-`main` it is wrapped in `if tty` and no longer happens. Not a bug to report: just update.
-
-`.crabbox.yaml` at the repo root (see `crabbox.yaml.example` next to this file):
-
-```yaml
-jobs:
-  mav-macos:
-    provider: tart
-    target: macos
-    idleTimeout: 30m
-    shell: true
-    command: >
-      export PATH=/usr/local/bin:/opt/homebrew/bin:$PATH &&
-      mav doctor &&
-      mav --profile mac run flows/smoke.yaml
-    stop: always
-```
-
-The image is picked with `CRABBOX_TART_IMAGE` or `--tart-image`. Checked end-to-end with
-`ghcr.io/cirruslabs/macos-tahoe-xcode:latest`: crabbox leases the VM, injects the key, syncs
-the dirty checkout, runs, and releases the lease when done. When the command fails it leaves
-a local failure bundle and suggests the exact `crabbox ssh` / `run --id` / `stop` invocations
-to resume on the same lease.
+The lease tool uses `tart exec` to inject the SSH key, so with 2.28.1 **the whole
+provider fails to start from any non-interactive context**, which is exactly what it
+exists for. Nothing in that message points at the version, which is why `mav doctor`
+reports `vm_tooling=outdated` and `mav setup --install vm` upgrades it rather than leaving you
+to read a stack trace about ioctls.
 
 ### Who sets up what
 
-The separation of responsibilities is crabbox's, not our invention. Its own documentation
-pins it down: *"Crabbox owns the lease lifecycle, sync, execution and cleanup. The repository
-owns the command string, package-manager setup, test environment"*.
-
 | Layer | Who | What it sets up |
 |---|---|---|
-| Image | `scripts/build-mav-vm-image.sh`, once | mav, peekaboo, axcli |
-| Machine | **crabbox** | lease, checkout sync, execution, cleanup |
+| Image | `scripts/build-mav-vm-image.sh`, once | mav, cua-driver, axcli, mitmproxy, the driver's TCC grants |
+| Machine | **mav** (`vm: true`) | lease, checkout and bundle sync, execution, evidence pull, release |
 | App | **mav** (`fixtures`) | the app's state before launching it |
-| Permissions | whoever tests, against their app | TCC, see below |
+| Permissions the app itself asks for | whoever tests, against their app | TCC, see below |
 
-Watch the word "fixture": crabbox does not use it for this. Its `warmup`/`prewarm` prepares
-**the box**, not the app. App state is mav's job. And installing mav and the drivers **does
-not go in a crabbox hook**: it goes in the image, or you reinstall it on every run.
+Installing mav and the drivers goes **in the image**, not in a per-run hook, or you
+reinstall them on every run. The image's own `.zshenv` does not put `~/.local/bin` on the
+PATH, which is where the driver installer leaves its binary; mav exports the full PATH on
+every remote call rather than depending on which shell the guest picks.
 
 ### Why the image does NOT ship with permissions granted
 
@@ -139,26 +119,34 @@ serving any app.
 
 ## What was actually tested, and where it stops
 
-Run against NokoruMac in a macOS 26.0 VM:
+Two rounds, both against NokoruMac in a macOS 26.0 VM. The first used Peekaboo and got
+stuck; the second, after cua-driver replaced it and its grants were baked into the image,
+went the whole way through `mav` alone.
 
-| Step | Result |
-|---|---|
-| Image with mav + peekaboo + axcli | ✅ built and verified |
-| crabbox: lease, sync, run, cleanup | ✅ end-to-end |
-| App running inside the VM | ✅ |
-| Fixture (`vacio` wipes the container) | ✅ the app launched showing the first-run onboarding |
-| Accessibility + Event Synthesizing | ✅ **granted through the hypervisor channel, without touching the host** |
-| Screen Recording | ❌ see below |
-| `mav ui tree` / `mav capture` | ❌ blocked by the above |
+| Step | Peekaboo, first round | cua-driver, with `vm: true` |
+|---|---|---|
+| Image with mav and the drivers | ✅ | ✅ |
+| Lease, sync, run, cleanup | ✅ | ✅ driven by `mav` itself |
+| App running inside the VM | ✅ | ✅ after ad-hoc re-signing, see below |
+| Accessibility + Screen Recording | ✅ granted through the hypervisor channel | ✅ baked into the image |
+| `mav ui tree` | ❌ blocked by Screen Recording | ✅ 76 nodes |
+| `mav capture` | ❌ same | ✅ real window content, in the local run dir |
+| `mav ui tap` | not reached | ✅ onboarding advanced |
+| `mav network start/stop` | not reached | ✅ proxy set and restored **inside** the VM |
+| `mav evidence step` / `report` | not reached | ✅ |
+| `mav evidence start` (video) | not reached | ✅ 1m31s of H.264, through the driver daemon |
+| `mav stop` | not reached | ✅ machine handed back, VM gone |
 
-### Three things that surfaced when running it
+### What surfaced when running it
 
 **1. A development-signed app does not launch in the VM.** NokoruMac carries
 `embedded.provisionprofile` and restricted entitlements (iCloud, push) tied to a team and a
-device list. In a clean VM, AMFI kills it with SIGKILL and no message. Validating UI does not
-need those entitlements: re-signing ad-hoc (`codesign -f -s - --deep`) lets it launch. It is
-a deliberate trade, iCloud and push are lost, and it has to be said, because you are no
-longer testing the exact binary you ship.
+device list. In a clean VM, AMFI kills it with SIGKILL and no message; three commands later
+the symptom is "the app is not running", which points at everything except the signature.
+Re-signing ad-hoc (`codesign -f -s - --deep`) lets it launch, and validating UI does not
+need those entitlements. `mav` does this to the guest's copy and reports `resigned=adhoc`
+on `open`: it is a deliberate trade, iCloud and push go with it, and it has to be said,
+because you are no longer testing the exact binary you ship.
 
 **2. `mav ui tree` on macOS needs BOTH permissions, not just Accessibility.** `peekaboo see`
 enumerates windows with ScreenCaptureKit, so without Screen Recording it fails with
@@ -223,25 +211,29 @@ still on "Step 1 of 5". The same click with `--strategy ax` (AXPress) advanced t
 `cg-pid` remains the one that does not steal focus. This is why `mav ui tap --verify`
 exists: without checking the effect, a tap that did nothing gets reported as `ok`.
 
-## What does not work yet
+## The evidence channel, and why it is mav's
 
 `crabbox run --artifact-glob` **rejects native macOS targets**, which is exactly the
 mechanism you would use to pull `.mav/runs/<id>/` out of the VM. Tracked upstream in
-[crabbox#1393](https://github.com/openclaw/crabbox/issues/1393). Meanwhile:
+[crabbox#1393](https://github.com/openclaw/crabbox/issues/1393). So mav rsyncs the run
+directory back itself, over the lease's own SSH, after every command.
 
-```sh
-crabbox warmup --provider tart          # prints the lease slug
-crabbox run --id <slug> -- mav run flows/smoke.yaml --profile mac-vm
-rsync -a "$(crabbox ssh --id <slug> --print-target)":.mav/runs/ ./.mav/runs/
-```
-
-`mav`'s own output needs none of this: its `ok cmd=… k=v` line comes back over stdout as
-is. What stays inside is the visual evidence.
+It does it per command and not once at the end because an agent driving mav command by
+command never reaches anything that would be "the end", and evidence it cannot read until
+some later command happens to sync is evidence it reasons about stale.
 
 ## Two limits worth knowing before setting this up
 
 - **At most 2 concurrent macOS VMs.** It is a limit of `Virtualization.framework` *and* of
-  the macOS EULA; more RAM does not lift it. This is why crabbox's leasing goes from
-  convenient to mandatory.
-- **crabbox's `tart` provider does not expose `--audio`.** If what you validate needs a
+  the macOS EULA; more RAM does not lift it. This is why leasing goes from convenient to
+  mandatory, and why mav hands the machine back on `mav stop`, at the end of a flow, and
+  on an idle timeout rather than trusting anyone to remember.
+- **The `tart` provider does not expose `--audio`.** If what you validate needs a
   microphone, that VM will not have one even though tart itself can do it.
+- **Video has exactly one working path in here, and three that look like they should.**
+  `screencapture -v` sees no display over SSH. The driver's persistent `recording start`
+  captures per-action stills and its video flag does nothing there, while
+  `recording render` refuses without an mp4 only the other path produces. The
+  hypervisor's own desktop recording answers *"artifacts video currently requires
+  target=linux or native Windows desktop capture"*. What works is holding an MCP session
+  open against the driver daemon for the length of the recording, which is what mav does.

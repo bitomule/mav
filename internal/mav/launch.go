@@ -61,6 +61,16 @@ func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clea
 			warn = fmt.Sprintf("clear_state_incomplete: uninstall of %s did not complete: %s (next: the app may still carry state from an earlier run; check launch.clear_state in the run's commands trail)", cfg.BundleID, detail)
 		}
 	}
+	// The recipe splits where the machines differ. healthcheck, build and
+	// app_path answer questions about the checkout and the toolchain, both
+	// of which are here: a VM image carrying every project's build
+	// dependencies is not an image anybody can share. install, fixture,
+	// launch and cleanup act on the app, so they belong where the app runs.
+	// Without a VM the two halves are the same machine and this is a no-op.
+	builder := c
+	if cfg.VM {
+		builder = c.hostCLI()
+	}
 	for _, step := range steps {
 		if step.Name == "build" && os.Getenv("MAV_SKIP_BUILD") == "1" {
 			continue
@@ -68,7 +78,7 @@ func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clea
 		if strings.TrimSpace(step.Command) == "" {
 			continue
 		}
-		result := c.runLaunchCommand(ctx, cfg, run, step, env)
+		result := builder.runLaunchCommand(ctx, cfg, run, step, env)
 		if result.Err != nil {
 			if step.Name == "install" && shouldRetryInstallFromWritableCopy(result, appPath) {
 				if retryResult, retryPath := c.retryInstallFromWritableCopy(ctx, cfg, run, appPath); retryResult.Err == nil {
@@ -90,6 +100,15 @@ func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clea
 			}
 			appPath = resolved
 			env = launchEnv(cfg, run, appPath)
+		}
+	}
+	// Between the two halves, and only here: this is the first moment mav
+	// knows which bundle the recipe produced, and the last one before
+	// anything tries to install or launch it on the other machine.
+	if cfg.VM {
+		if err := c.vmPrepareGuest(ctx, run, appPath); err != nil {
+			step := launchStep{Name: "vm_sync"}
+			return appPath, &step, CommandResult{Stderr: err.Error(), Err: err}, warn
 		}
 	}
 	if strings.TrimSpace(commands.Install) != "" || appPath != "" {

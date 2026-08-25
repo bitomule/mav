@@ -76,6 +76,7 @@ func (d *Cua) Provides(target drivers.Target) drivers.CapabilitySet {
 		drivers.CapType,
 		drivers.CapSwipe,
 		drivers.CapErase,
+		drivers.CapVideo,
 	)
 }
 
@@ -84,6 +85,12 @@ func (d *Cua) Provides(target drivers.Target) drivers.CapabilitySet {
 func (d *Cua) Cost(c drivers.Capability, _ drivers.Target) int {
 	switch c {
 	case drivers.CapTreeAX, drivers.CapScreenshot, drivers.CapCoordTap, drivers.CapSemanticTap, drivers.CapType, drivers.CapSwipe, drivers.CapErase:
+		return 0
+	case drivers.CapVideo:
+		// Ahead of screencapture, which only records when mav already runs
+		// inside the graphical session. Over SSH -- which is every run in a
+		// VM -- it sees no display and fails, while this path goes through
+		// the daemon, which is in that session and holds the grant.
 		return 0
 	default:
 		return 100
