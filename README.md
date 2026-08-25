@@ -240,12 +240,55 @@ wherever it was built — and an empty launch routes to the driver, which execut
 `Contents/MacOS/<binary>` directly because `open` does not propagate environment
 variables, and the environment is how mav injects its configuration.
 
-Profiles also accept `runner: local|crabbox`, which declares **where** the profile
-runs. mav does not orchestrate machines; the full recipe for a disposable macOS VM,
-with verified findings about TCC bootstrap, lives in
-[`examples/macos-vm/`](examples/macos-vm/), and
-`scripts/build-mav-vm-image.sh` builds a base VM image with mav, cua-driver, axcli,
-and mitmproxy preinstalled.
+### Running the app in a disposable VM
+
+A macOS target can run inside a throwaway VM instead of on your machine. The whole
+config surface is one key:
+
+```yaml
+target_kind: macos
+vm: true
+```
+
+There is no host, no IP, no job name and no tool name to configure, and that is
+deliberate: which hypervisor mav leases the machine from is mav's business, and the
+day it changes no `config.yaml` on anybody's disk should have to. `vm` also works
+inside a profile, so one repo can carry a `mac` profile that runs here and a `mac-vm`
+profile that does not.
+
+Nothing else changes. `mav open`, `mav ui tree`, `mav ui tap`, `mav capture`,
+`mav logs`, `mav crashes`, `mav network` and `mav evidence` take the same arguments and
+answer the same way; only `vm=true` appears in their output so an agent chaining loose
+commands can tell what it just drove. Evidence lands in the local `.mav/runs/<id>/`,
+same as always — captures, trees, logs, HAR and `report.json` are pulled back out of
+the guest after every command, because evidence that stays inside a machine that is
+then handed back is not evidence.
+
+The launch recipe splits across the two machines: `healthcheck`, `build` and `app_path`
+run here, because a VM image carrying every project's build dependencies is not an
+image anybody can share; `install`, the fixture, `launch` and `cleanup` run there,
+because that is where the app runs. mav ships the checkout and the built bundle across
+in between, at the same absolute paths they have here.
+
+The machine is handed back on `mav stop`, at the end of a flow, and on an idle timeout
+so an agent that crashes does not leave one running. That last one is not tidiness:
+Virtualization.framework **and** the macOS EULA cap you at two concurrent macOS VMs, so
+a leaked lease blocks the next run.
+
+Two commands set it up:
+
+```sh
+mav vm install                    # installs the VM tooling
+./scripts/build-mav-vm-image.sh   # builds the image, once
+```
+
+`mav doctor` reports `vm_tooling`, `vm_image` and the current lease, and any VM failure
+names `mav vm install` rather than dying deep inside a run. The image build ends with
+two switches you flip by hand — macOS 26 has no scriptable way to grant Accessibility
+or Screen Recording — and after that they live on the disk that becomes the image.
+
+The measured findings behind all of this, including four ways of seeding `TCC.db` that
+do not work on macOS 26, live in [`examples/macos-vm/`](examples/macos-vm/).
 
 ### Fixtures
 

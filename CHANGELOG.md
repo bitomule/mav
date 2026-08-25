@@ -1,5 +1,53 @@
 # Changelog
 
+## v0.13.0
+
+### macOS in a disposable VM
+
+- **`vm: true` next to `target_kind: macos` runs the app under test in a throwaway
+  machine, and nothing about driving mav changes.** `open`, `ui tree`, `ui tap`,
+  `capture`, `run`, `logs`, `crashes`, `evidence` and `network` take the same arguments
+  and answer the same way; the only new field is `vm=true`, so an agent chaining loose
+  commands can tell whether what it just drove was the VM's app or this machine's.
+- **That one key is the whole config surface.** No host, no IP, no job name, no tool
+  name, no key path. Which hypervisor provides the machine is mav's business, so the day
+  it changes no `config.yaml` on anybody's disk has to. It replaces `runner:
+  local|crabbox`, which shipped in v0.12.0, only declared an intent and did nothing.
+- **Evidence lands in the local `.mav/runs/<id>/`**, which is the part that decides
+  whether the feature is real. Captures, trees, logs, HAR and `report.json` are rsynced
+  out of the guest after every command, not once at the end: an agent driving mav command
+  by command never reaches anything that would be "the end", and evidence it cannot read
+  until some later command happens to sync is evidence it reasons about stale. The
+  upstream artifact mechanism was not an option: `crabbox run --artifact-glob` rejects
+  native macOS targets ([crabbox#1393](https://github.com/openclaw/crabbox/issues/1393)).
+- **The machine is handed back on `mav stop`, at the end of a flow, and on an idle
+  timeout.** Not tidiness: Virtualization.framework *and* the macOS EULA cap you at two
+  concurrent macOS VMs, so a leaked lease blocks the next run. The idle path rides the
+  run worker's existing lease expiry, which is the one place mav already knows the run's
+  owner is gone, so an agent that crashes releases the machine without anybody's help.
+  Evidence always comes home before the release: the order has one safe direction and no
+  second chance.
+- **The remote project root is the same absolute path as the local one.** mav computes
+  artifact paths everywhere, and any other choice would mean translating each one at each
+  call site with a silent wrong-file bug waiting on every one it missed.
+- **The launch recipe splits across the two machines.** `healthcheck`, `build` and
+  `app_path` stay here, because a VM image carrying every project's build dependencies is
+  not an image anybody can share; `install`, the fixture, `launch` and `cleanup` run
+  there, because that is where the app runs. The checkout and the built bundle are shipped
+  across in between.
+- **Guest processes are stopped on the guest.** The PIDs a run records in VM mode belong
+  to the other machine, and signalling them here does not fail loudly, it kills whatever
+  local process happens to hold that number. `Runner` grew an optional `Stop`, which is
+  the seam that makes the difference visible instead of catastrophic.
+- **`mav vm install` installs the VM tooling**, and every VM failure ends naming it.
+  Nobody writing `vm: true` is told which hypervisor to go and install, because that is
+  exactly the detail the config surface exists to hide. `mav doctor` reports
+  `vm_tooling`, `vm_image` and the current lease without ever leasing a machine to do
+  it -- with a budget of two, a diagnostic that takes a slot is not a diagnostic.
+- `vm: true` is rejected on a simulator or device target instead of ignored. A simulator
+  is reached from this machine and a phone is plugged into it; accepting the flag there
+  would leave somebody believing they were isolated when nothing had changed.
+
 ## v0.12.0
 
 ### macOS
@@ -66,8 +114,7 @@
   Selected with `--profile`, `MAV_PROFILE` or `default_profile`, in that order; a profile
   that doesn't exist fails naming the valid ones instead of quietly falling back. They are an
   overlay over the flat fields: a single-platform repo writes none and nothing changes for
-  it. `runner: local|crabbox` declares **where** a profile runs; mav does not orchestrate
-  machines, and the recipe for a throwaway VM lives in `examples/macos-vm/`.
+  it.
 - **Fixtures**: named states, lists of commands, that leave the app in a known situation.
   They run between `install` and `launch`, the only window where the container already exists
   and nothing holds its database open, which is also why the app is closed before seeding.

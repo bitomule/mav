@@ -617,6 +617,7 @@ func TestProfileOverridableFieldsAreExhaustive(t *testing.T) {
 		"log_subsystem":  true,
 		"log_category":   true,
 		"launch":         true, // different recipes per platform
+		"vm":             true, // a macOS profile in a VM, a local one beside it
 	}
 	notOverridable := map[string]string{
 		"project_name":        "the project is the same on every platform",
@@ -752,25 +753,48 @@ func TestMacMissingPermissionsRefusesToGuess(t *testing.T) {
 	}
 }
 
-func TestProfileRunnerRejectsUnknownValues(t *testing.T) {
+// TestVMOnlyAppliesToMacOS: `vm: true` on a simulator or a device profile
+// would leave someone believing their run is isolated in a throwaway
+// machine when it is driving the same simulator as everything else.
+func TestVMOnlyAppliesToMacOS(t *testing.T) {
 	root := t.TempDir()
-	writeRawConfig(t, root, "project_name: x\nprofiles:\n  mac:\n    runner: podman\n")
-	// A misspelled runner silently ignored would mean running locally
-	// something the user believed isolated in a VM.
-	if _, err := LoadConfigWithProfile(root, "mac"); err == nil {
-		t.Fatal("an unknown runner must fail")
-	} else if !strings.Contains(err.Error(), "profile_runner_invalid") {
+	writeRawConfig(t, root, "project_name: x\nprofiles:\n  sim:\n    target_kind: simulator\n    vm: true\n")
+	if _, err := LoadConfigWithProfile(root, "sim"); err == nil {
+		t.Fatal("vm: true on a simulator profile must fail")
+	} else if !strings.Contains(err.Error(), "vm_unsupported_target") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	root2 := t.TempDir()
-	writeRawConfig(t, root2, "project_name: x\nprofiles:\n  mac:\n    runner: crabbox\n")
-	cfg, err := LoadConfigWithProfile(root2, "mac")
+	mac := t.TempDir()
+	writeRawConfig(t, mac, "project_name: x\nprofiles:\n  mac:\n    target_kind: macos\n    vm: true\n")
+	cfg, err := LoadConfigWithProfile(mac, "mac")
 	if err != nil {
-		t.Fatalf("crabbox is valid: %v", err)
+		t.Fatalf("vm on a macOS profile is valid: %v", err)
 	}
-	if cfg.ProfileRunner != "crabbox" {
-		t.Fatalf("runner=%q", cfg.ProfileRunner)
+	if !cfg.VM {
+		t.Fatal("the profile asked for a VM and the config came back without one")
+	}
+}
+
+// TestProfileCanTurnVMOff: a base with `vm: true` plus a profile that runs
+// on this machine has to be expressible, or the only way to test locally is
+// editing the base and remembering to put it back.
+func TestProfileCanTurnVMOff(t *testing.T) {
+	root := t.TempDir()
+	writeRawConfig(t, root, "project_name: x\ntarget_kind: macos\nvm: true\nprofiles:\n  here:\n    vm: false\n")
+	cfg, err := LoadConfigWithProfile(root, "here")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.VM {
+		t.Fatal("the profile said vm: false and it was ignored")
+	}
+	base, err := LoadConfigWithProfile(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !base.VM {
+		t.Fatal("without a profile the base's vm: true must stand")
 	}
 }
 
@@ -791,7 +815,7 @@ func TestProfileUnknownKeyIsAnError(t *testing.T) {
 
 	// And what is valid keeps loading.
 	ok := t.TempDir()
-	writeRawConfig(t, ok, "project_name: x\nprofiles:\n  mac:\n    target_kind: macos\n    runner: local\n")
+	writeRawConfig(t, ok, "project_name: x\nprofiles:\n  mac:\n    target_kind: macos\n    vm: true\n")
 	if _, err := LoadConfigWithProfile(ok, "mac"); err != nil {
 		t.Fatal(err)
 	}

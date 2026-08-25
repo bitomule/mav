@@ -31,6 +31,19 @@ type CLI struct {
 	Stderr io.Writer
 	Root   string
 	run    *RunState // nil = fall back to reading .mav/current-run from disk
+
+	// host and vm are set only while an invocation is attached to a leased
+	// machine (see withVM). host keeps the local Runner reachable for the
+	// half of the launch recipe that has to stay here -- the build -- and
+	// vm carries the file transfer that brings evidence back.
+	host  Runner
+	vmRun *vmRunner
+
+	// keepVM survives a `stop` without handing the machine back. It exists
+	// for exactly one caller: `open` tearing down the run it supersedes,
+	// which is about that run's processes and not about the machine the new
+	// run is one line away from using.
+	keepVM bool
 }
 
 type GlobalOptions struct {
@@ -81,6 +94,14 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 	}
 	stopLeaseHeartbeat := c.keepRunLeaseAlive(rest[0])
 	defer stopLeaseHeartbeat()
+	// Attaching happens before dispatch, not inside each command, so the
+	// list of commands that work against a VM is exactly the list of
+	// commands that work at all. A command added tomorrow inherits it.
+	c, detachVM, err := c.withVM(ctx, rest[0])
+	if err != nil {
+		return Fail("vm_unavailable", vmFailureFields(err)).Write(c.Stdout)
+	}
+	defer detachVM()
 	switch rest[0] {
 	case "__worker":
 		return c.runInternalWorker(ctx, rest[1:])
@@ -94,6 +115,8 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 		return c.sim(ctx, opts, rest[1:])
 	case "device":
 		return c.device(ctx, opts, rest[1:])
+	case "vm":
+		return c.vmCommand(ctx, opts, rest[1:])
 	case "open":
 		return c.open(ctx, opts, rest[1:])
 	case "ui":
@@ -233,6 +256,7 @@ Commands:
               Install the MAV agent skill globally for all supported agents.
   sim         List, select, or boot simulators.
   device      List or select physical iOS devices.
+  vm          Install the tooling that runs a macOS app in a disposable VM.
   open        Build, install, launch, and start run logs.
   ui          Inspect and control the current UI.
   capture     Capture the current screen.
@@ -263,6 +287,13 @@ Global flags:
 		return "Usage:\n  mav setup [--non-interactive]\n  mav setup --install axe idb baguette simtime lldb-dap\n"
 	case "install-skills":
 		return "Usage: mav install-skills\n"
+	case "vm", "vm install":
+		return `Usage: mav vm install
+
+Installs the tooling a project with vm: true needs to lease a disposable macOS
+machine, and reports whether the prepared image is present. Build the image once
+with scripts/build-mav-vm-image.sh.
+`
 	case "sim":
 		return `Usage:
   mav sim list
@@ -483,6 +514,7 @@ func (c CLI) doctor(ctx context.Context, opts GlobalOptions) error {
 		fields["next"] = "mav setup --install " + strings.Join(missing, " ")
 	}
 	addDoctorMatrixFields(fields, caps)
+	c.vmDoctorFields(ctx, cfg, fields)
 	if targetKind(cfg) == drivers.KindSim && cfg.SimulatorUDID != "" {
 		if lock, locked := simulatorLockedByOther(cfg.SimulatorUDID, c.Root); locked {
 			fields["sim_contention"] = "locked"
@@ -1077,7 +1109,9 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 		return err
 	}
 	if previousRunID != "" {
-		_ = c.withStdout(io.Discard).stop(ctx, GlobalOptions{}, []string{"--run", previousRunID})
+		superseding := c.withStdout(io.Discard)
+		superseding.keepVM = true
+		_ = superseding.stop(ctx, GlobalOptions{}, []string{"--run", previousRunID})
 	}
 	if !hasBoundRun {
 		if err := SaveCurrentRun(c.Root, run); err != nil {
@@ -1101,7 +1135,7 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	// tear down the video recording, worker, or sim-lock that
 	// evidence.start / other earlier steps may have set up for this run.
 	if hasBoundRun {
-		stopProbeLogs(run)
+		stopProbeLogs(c.Runner, run)
 	}
 	probeLogPID, probeLogErr := c.startProbeLogs(ctx, cfg, run)
 	if probeLogErr != nil {
@@ -4936,12 +4970,12 @@ func appendFlowStep(run RunState, index int, action string, elapsed time.Duratio
 // Abandonment and failure cleanup call this afterward, because for them
 // there is no such caller coming -- if they don't kill it here, nothing
 // ever will.
-func stopVideoRecording(run RunState) {
+func stopVideoRecording(runner Runner, run RunState) {
 	pid, err := readPID(filepath.Join(run.Dir, "video.pid"))
 	if err != nil {
 		return
 	}
-	_ = stopProcess(pid)
+	_ = stopRunProcess(runner, pid)
 	_ = os.Remove(filepath.Join(run.Dir, "video.pid"))
 	removeProcess(run, pid)
 }
@@ -4955,7 +4989,11 @@ func stopVideoRecording(run RunState) {
 // hold a simulator the run's owner can no longer release.
 func (c CLI) reapAbandonedRun(ctx context.Context, run RunState) {
 	_ = c.withStdout(io.Discard).stop(ctx, GlobalOptions{}, []string{"--run", run.ID})
-	stopVideoRecording(run)
+	stopVideoRecording(c.Runner, run)
+	// The crash case the VM lease exists to survive: nobody renewed, so
+	// nobody is coming back to call `mav stop`, and a machine left leased
+	// here is one of the two the next run will not get.
+	_ = c.releaseVMLease(ctx, c.hostRunner())
 }
 
 // ensureRunWorker best-effort starts (or confirms) the run's watchdog worker,
@@ -5448,7 +5486,7 @@ func (c CLI) stop(ctx context.Context, opts GlobalOptions, args []string) error 
 		if record.Kind == "video" && fileExists(filepath.Join(run.Dir, "video.pid")) {
 			continue
 		}
-		if err := stopProcess(record.PID); err != nil {
+		if err := stopRunProcess(c.Runner, record.PID); err != nil {
 			failed++
 			appendCommand(run, "mav stop "+strconv.Itoa(record.PID), CommandResult{Stderr: err.Error(), Code: 1, Err: err})
 			continue
@@ -5465,6 +5503,13 @@ func (c CLI) stop(ctx context.Context, opts GlobalOptions, args []string) error 
 	// it without network.
 	if c.restoreMacProxy(ctx, run) {
 		fields["system_proxy"] = "restored"
+	}
+	// The machine goes back here and not only on an idle timeout: `mav
+	// stop` is the agent saying it is done, and two concurrent macOS VMs is
+	// the whole budget -- waiting out a timeout would block the next run
+	// for no reason.
+	if !c.keepVM && c.releaseVM(ctx) {
+		fields["vm"] = "released"
 	}
 	if failed > 0 {
 		return Fail("stop_failed", fields).Write(c.Stdout)
@@ -5542,12 +5587,12 @@ func removeProcess(run RunState, pid int) {
 // for run. Used by open when it's about to start a fresh probe-logs capture
 // on a run it's reusing (a flow's second open step), so the previous log
 // stream doesn't keep writing into the same logs.txt forever.
-func stopProbeLogs(run RunState) {
+func stopProbeLogs(runner Runner, run RunState) {
 	for _, record := range loadProcessRecords(run) {
 		if record.Kind != "probe-logs" || record.PID <= 0 {
 			continue
 		}
-		_ = stopProcess(record.PID)
+		_ = stopRunProcess(runner, record.PID)
 		removeProcess(run, record.PID)
 	}
 }
@@ -5788,7 +5833,7 @@ func (c CLI) evidenceStart(ctx context.Context, opts GlobalOptions, args []strin
 			networkArgs = append(networkArgs, "--port", port)
 		}
 		if err := commandOutputErr(c.withStdout(&out).networkStart(ctx, GlobalOptions{}, networkArgs), out.String(), "network_start_failed"); err != nil {
-			_ = stopProcess(pid)
+			_ = stopRunProcess(c.Runner, pid)
 			_ = os.Remove(filepath.Join(run.Dir, "video.pid"))
 			removeProcess(run, pid)
 			return Fail("evidence_network_start_failed", map[string]string{
@@ -5854,7 +5899,7 @@ func (c CLI) evidenceStop(ctx context.Context, opts GlobalOptions, args []string
 	if err != nil {
 		return Fail("video_not_running", map[string]string{"run": run.ID}).Write(c.Stdout)
 	}
-	_ = stopProcess(pid)
+	_ = stopRunProcess(c.Runner, pid)
 	_ = os.Remove(filepath.Join(run.Dir, "video.pid"))
 	removeProcess(run, pid)
 	fields := map[string]string{"run": run.ID, "file": filepath.Join(run.Dir, "video.mov")}

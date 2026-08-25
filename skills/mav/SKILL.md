@@ -57,6 +57,37 @@ Selectors behave differently from iOS: the driver does not expose AXIdentifier, 
 Re-read the tree before acting on it; a stale token is refused rather than applied to the
 wrong element. `--text` is the selector that survives across snapshots.
 
+### macOS in a disposable VM
+
+`vm: true` next to `target_kind: macos` runs the app in a throwaway machine instead of
+on the user's. That is the entire config surface; there is no host, key or tool to
+name.
+
+```yaml
+target_kind: macos
+vm: true
+```
+
+**Nothing about how you drive mav changes.** Same commands, same arguments, same
+output, and evidence still lands in the local `.mav/runs/<id>/`. The one visible
+difference is `vm=true` in the response fields, which is how you tell whether what you
+just drove was the VM's app or the user's own machine.
+
+What you do need to know:
+
+- `mav doctor` reports `vm_tooling`, `vm_image` and `vm_lease`. Run it first when a VM
+  project misbehaves.
+- Any VM failure (`vm_tooling_missing`, `vm_image_missing`, `vm_lease_failed`) carries
+  `next=mav vm install`. Tell the user to run that; do not go looking for the
+  underlying hypervisor.
+- **Call `mav stop` when you are done.** Only two macOS VMs can exist at once, so a
+  machine you leave leased blocks the next run. An idle timeout catches the case where
+  you crash, but it costs the user twenty minutes of a slot they could be using.
+- The first `mav open` is slow: it boots a machine and ships the built bundle across.
+  Later commands reuse it.
+- `build` still runs on the user's machine; only the app runs in the VM. A build
+  failure is a build failure, not a VM problem.
+
 ## Fixtures
 
 `fixtures` are named states — lists of commands that leave the app in a known situation:
