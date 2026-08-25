@@ -2,6 +2,20 @@
 
 ## v0.12.0
 
+- **The VM image now ships everything ready.** It builds cua-driver from the fork carrying
+  [trycua/cua#3375](https://github.com/trycua/cua/pull/3375) instead of taking the released
+  one, because the released driver cannot see an accessory window and an app whose whole UI
+  is one would be unreachable. Built from source inside the VM, so the image stays
+  reproducible; the day the PR lands, the block goes away and the upstream installer is
+  enough. mitmproxy is installed too, so network capture works out of the box.
+- And the builder **refuses to call the image ready while the driver is blind**. It
+  registers CuaDriver in both privacy panes and then verifies the grants, stopping with the
+  exact two switches to flip if they are off. macOS 26 has no scriptable way to grant them:
+  seeding TCC.db does not work (tried four ways, including a valid csreq and a reboot),
+  PPPC profiles are only honored from an MDM, and AppleScript cannot reach System Settings
+  over SSH. Flipping them once at build time is enough: the grants live on the disk that
+  becomes the image, so no agent ever clicks anything at run time.
+
 - **`ui tree` on a physical device had stopped falling back to idb.** Replacing the
   per-tool gate with the router left the idb path behind an unconditional block that
   always returns, so it became dead code and `go vet` was the only one saying so. idb now
