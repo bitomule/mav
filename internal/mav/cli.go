@@ -2418,7 +2418,10 @@ func isSelectorCLIFlag(value string) bool {
 
 func (c CLI) uiErase(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
 	_ = opts
-	if targetKind(cfg) != drivers.KindSim {
+	// macOS si puede: el driver vacia el campo poniendole el valor vacio, que
+	// no depende de acertar cuantos borrados mandar ni de que el campo tenga el
+	// foco. En un iPhone real sigue sin haber via.
+	if kind := targetKind(cfg); kind != drivers.KindSim && kind != drivers.KindMac {
 		return Fail("erase_unsupported_on_device", map[string]string{"next": "device erase is not supported; tap and retype the field"}).Write(c.Stdout)
 	}
 	id := flagValue(args, "--id")
@@ -2448,6 +2451,13 @@ func (c CLI) uiErase(ctx context.Context, opts GlobalOptions, cfg Config, args [
 func (c CLI) uiHideKeyboard(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
 	_ = opts
 	_ = args
+	// En macOS no hay teclado en pantalla que esconder, asi que esto no falla:
+	// no hace nada. Un flow compartido entre iOS y Mac lo llamara, y romperlo
+	// por algo que alli sobra obligaria a bifurcar el flow por plataforma, que
+	// es justo lo que los perfiles existen para evitar.
+	if targetKind(cfg) == drivers.KindMac {
+		return c.OK("ui.hideKeyboard", map[string]string{"note": "no on-screen keyboard on macOS"}).Write(c.Stdout)
+	}
 	if targetKind(cfg) != drivers.KindSim {
 		return Fail("hide_keyboard_unsupported_on_device", map[string]string{"next": "device hide-keyboard is not supported; tap outside the field"}).Write(c.Stdout)
 	}

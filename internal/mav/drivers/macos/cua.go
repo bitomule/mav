@@ -56,6 +56,7 @@ var (
 	_ drivers.TapDriver        = (*Cua)(nil)
 	_ drivers.TypeDriver       = (*Cua)(nil)
 	_ drivers.GestureDriver    = (*Cua)(nil)
+	_ drivers.TextDriver       = (*Cua)(nil)
 )
 
 // NewCua construye el driver.
@@ -74,6 +75,7 @@ func (d *Cua) Provides(target drivers.Target) drivers.CapabilitySet {
 		drivers.CapSemanticTap,
 		drivers.CapType,
 		drivers.CapSwipe,
+		drivers.CapErase,
 	)
 }
 
@@ -81,7 +83,7 @@ func (d *Cua) Provides(target drivers.Target) drivers.CapabilitySet {
 // cuatro capacidades con entrega en segundo plano verificada.
 func (d *Cua) Cost(c drivers.Capability, _ drivers.Target) int {
 	switch c {
-	case drivers.CapTreeAX, drivers.CapScreenshot, drivers.CapCoordTap, drivers.CapSemanticTap, drivers.CapType, drivers.CapSwipe:
+	case drivers.CapTreeAX, drivers.CapScreenshot, drivers.CapCoordTap, drivers.CapSemanticTap, drivers.CapType, drivers.CapSwipe, drivers.CapErase:
 		return 0
 	default:
 		return 100
@@ -621,3 +623,32 @@ func (d *Cua) TwoFingerPan(context.Context, drivers.Target, drivers.TwoFingerPan
 func (d *Cua) W3CActions(context.Context, drivers.Target, []byte) error {
 	return errors.New("cua: W3C action chains are an iOS driver feature; use ui tap/type/swipe")
 }
+
+// Erase vacia un campo.
+//
+// Va por set_value y no por teclear borrados: escribir la cadena vacia deja el
+// campo vacio de una vez, mientras que mandar N pulsaciones de Delete depende
+// de acertar cuantas -- y de que el campo tenga el foco, que es justo lo que
+// este driver evita necesitar.
+func (d *Cua) Erase(ctx context.Context, target drivers.Target, spec drivers.TextSpec) error {
+	state, err := d.windowState(ctx, target)
+	if err != nil {
+		return err
+	}
+	args := map[string]any{"pid": state.PID, "value": ""}
+	if spec.Selector.ID != "" || spec.Selector.Text != "" {
+		el, ok := findCuaElement(state, spec.Selector)
+		if !ok {
+			return errors.New("cua: no element matched the selector")
+		}
+		args["element_token"] = el.Token
+	}
+	_, err = d.cuaCall(ctx, "set_value", args)
+	return err
+}
+
+// HideKeyboard no existe en macOS: no hay teclado en pantalla que esconder. Se
+// declara porque TextDriver es una interfaz entera, y no hace nada en vez de
+// fallar, porque un flow compartido entre iOS y Mac lo llamara y aqui es
+// simplemente innecesario.
+func (d *Cua) HideKeyboard(context.Context, drivers.Target) error { return nil }

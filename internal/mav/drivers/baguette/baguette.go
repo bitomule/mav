@@ -69,7 +69,11 @@ func (d *Driver) ID() string { return ID }
 // Provides advertises the capabilities baguette covers on simulator targets.
 // On device, returns empty: baguette does not support physical devices.
 func (d *Driver) Provides(target drivers.Target) drivers.CapabilitySet {
-	if target.IsDevice() {
+	// Ni dispositivo ni Mac: baguette conduce el simulador por su HTTP local.
+	// En macOS no declaraba nada y se llevaba capacidades por empate de coste,
+	// asi que `ui erase` acababa reportando driver=baguette en un Mac -- un
+	// exito de una herramienta que ni siquiera puede tocar esa app.
+	if target.IsDevice() || target.IsMac() {
 		return drivers.NewSet()
 	}
 	return drivers.NewSet(

@@ -2,6 +2,18 @@
 
 ## v0.12.0
 
+- **`ui erase` funciona en macOS** vaciando el campo con el valor vacío, que no depende de
+  acertar cuántos borrados mandar ni de que el campo tenga el foco. Y `ui hideKeyboard` deja
+  de fallar: en macOS no hay teclado en pantalla que esconder, así que no hace nada — romper
+  ahí obligaría a bifurcar por plataforma un flow compartido, que es justo lo que los
+  perfiles evitan.
+- **baguette dejaba de declararse en iOS pero seguía compitiendo en macOS**, así que
+  `ui erase` reportaba `driver=baguette` en un Mac: un éxito de una herramienta que ni
+  siquiera puede tocar esa app.
+- El README deja de vender MAV como sólo-iOS, con la sección de macOS entera: drivers y por
+  qué hacen falta dos, puesta en marcha, captura de red, control de tiempo, y lo que no se
+  puede hacer allí.
+
 - **Captura de red en macOS, entera.** `mav network start` levanta mitmproxy y **apunta el
   sistema al proxy él solo** (`networksetup`, sin sudo) sobre el servicio por el que sale la
   ruta por defecto — no el primero de la lista, que suele ser un interfaz virtual de una VM

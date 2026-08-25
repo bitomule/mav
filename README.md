@@ -8,13 +8,15 @@
 [![Release](https://img.shields.io/github/v/release/bitomule/mav?display_name=tag)](https://github.com/bitomule/mav/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-The iOS control plane for AI coding agents: one command surface, native drivers underneath, and evidence your agent can hand back to a human.
+The iOS and macOS control plane for AI coding agents: one command surface, native
+drivers underneath, and evidence your agent can hand back to a human.
 
 <p align="center">
   <img src="assets/hero.png" alt="A split screen showing an iOS simulator on the left and a terminal on the right running mav ui tap, mav ui tree, and mav capture, with compact agent-readable output" width="820">
 </p>
 
-Mobile Agent Verifier (`mav`) is the interface between an agent and iOS. The
+Mobile Agent Verifier (`mav`) is the interface between an agent and Apple platforms:
+iOS simulators, physical devices, and macOS apps. The
 agent asks for intent-level operations like `ui tree`, `tap`, `pinch`,
 `network start`, or `evidence report`; MAV routes each operation to the best
 native backend available on that target, records what happened, and returns a
@@ -24,7 +26,7 @@ MAV is intentionally not an autonomous testing agent. It runs the command. The a
 
 ## Why MAV?
 
-MAV gives agents one stable API over the messy iOS toolchain. Agents ask for a
+MAV gives agents one stable API over the messy Apple toolchain. Agents ask for a
 capability; MAV picks the driver for the selected simulator or device and
 returns compact output the next turn can parse:
 
@@ -36,7 +38,11 @@ returns compact output the next turn can parse:
   crashes go through idb.
 - Simulator crash checks read local DiagnosticReports directly.
 - Simulator lifecycle, video, and logs go through simctl.
-- Simulator network evidence goes through mitmproxy HAR capture.
+- Simulator and macOS network evidence goes through mitmproxy HAR capture.
+- macOS accessibility tree, window capture, taps, and typing go through cua-driver;
+  axcli delivers input to accessory windows cua-driver cannot resolve.
+- macOS lifecycle, video, logs, and crashes go through the system: `screencapture`,
+  `log stream`, and the same `.ips` crash format iOS uses.
 
 Runs can record accepted video, named screenshots, accessibility tree snapshots,
 log tails, crash reports, command trails, and optional HAR network traffic.
@@ -88,6 +94,12 @@ MAV is early and evolving. The current stable pieces are:
 - Verified evidence manifests in `.mav/runs/<run-id>/report.json`; the MAV
   skill authors the visual HTML report from that data.
 - Filtered unified log capture for explicit MAV probes.
+- macOS targets: launch, quit, openURL, clipboard, clear-state, accessibility tree,
+  window capture, taps, and typing through cua-driver, with axcli as the
+  accessory-window input hatch.
+- macOS network capture through mitmproxy, with automatic system-proxy setup and
+  restore, and VM-gated system-clock time travel.
+- Platform profiles and named fixtures in `.mav/config.yaml`.
 
 ![MAV driver router](assets/router.svg)
 
@@ -96,37 +108,183 @@ MAV is early and evolving. The current stable pieces are:
 `mav` drives iOS simulators, physical iOS devices, and macOS apps. `target_kind` in
 `.mav/config.yaml` picks one: `simulator`, `device` or `macos`.
 
-On macOS the drivers are [Peekaboo](https://github.com/openclaw/Peekaboo) for the
-accessibility tree, menus and window-scoped captures, and
-[axcli](https://github.com/andelf/axcli) for input. Two of them, not one, for a concrete
-reason: Peekaboo cannot deliver events to a specific PID — it either activates the target
-app (hopping Spaces if needed) or fires at whatever is frontmost. axcli delivers via
-`CGEventPostToPid` without stealing focus, which is what makes it usable while you work.
-The split between them is expressed through the router's per-capability cost table, not
-through a special case.
+## macOS
 
-Multitouch gestures, hardware buttons and `hideKeyboard` do not exist on macOS and return
-structured errors. Everything else in the core loop — `ui tree`, `ui tap`, `ui type`,
-`capture`, `logs`, `crashes`, `evidence` — works.
+`target_kind: macos` is a first-class target. A macOS app has no UDID: its identity is
+its bundle id plus the `.app` path the launch recipe resolves at runtime. Everything in
+the core loop — `ui tree`, `ui tap`, `ui type`, `capture`, `logs`, `crashes`,
+`evidence` — works. `ui swipe` translates to a scroll with the direction inverted, so a
+flow written once means the same motion on both platforms. Multitouch gestures,
+hardware buttons and `hideKeyboard` do not exist on macOS and return structured errors.
 
-Permissions are the real constraint, not the API. macOS asks for Accessibility and Screen
-Recording, and **the grant belongs to the process that runs `mav`** — your terminal or
-agent harness — not to `mav` itself. `mav doctor` reports what is missing and who needs
-it.
+### Drivers
 
-## Profiles and fixtures
+The canonical driver is [cua-driver](https://github.com/trycua/cua) (MIT). The reason
+is structural, not preference: macOS grants Accessibility and Screen Recording **only
+to interactive GUI processes**, so a CLI cannot hold them no matter how many times you
+grant them to your terminal. The only architecture that works is a broker — an app that
+owns the permissions, plus a socket — and cua-driver ships one: the binary mav invokes
+lives inside `/Applications/CuaDriver.app`. It provides the accessibility tree with
+geometry, window capture, and background input in one tool, and tree and capture come
+out of the same call, so both describe the same instant.
 
-An app that ships on more than one platform from one repo uses **profiles**: a per-platform
-overlay on the flat config, selected with `--profile`, `MAV_PROFILE` or `default_profile`.
-An absent key inherits from the base; an explicit empty string annuls it.
+mav starts the CuaDriver daemon itself when it is not running, with `open -g` so it
+does not steal focus. Nobody has to know the launch command.
 
-**Fixtures** are named lists of commands that leave the app in a known state. They run
-after install and before launch — the only window where the container exists and nothing
-holds the app's database open — compose with `--clear-state`, and are recorded in the run
-evidence.
+[axcli](https://github.com/andelf/axcli) stays installed as an escape hatch, input
+only, for one case: cua-driver resolves the window through `list_windows`, and an app
+whose entire UI lives in an accessory window — a floating panel, a HUD, a popover, a
+SwiftUI onboarding — needs to be addressed by pid. axcli targets by `--app` and needs
+no window id. When cua-driver hits this it fails with `no on-screen window for pid`,
+which is not "the app is not open"; retry the interaction with `--prefer-driver axcli`.
 
-See the [macOS scope evaluation](docs/macos-scope-evaluation.md) for how this was decided
-and what was deliberately left out.
+Video and full-screen capture fall back to the system `screencapture`. A full-screen
+shot is worse evidence than a window-scoped one, so it only wins when nothing better
+can resolve the window.
+
+### Putting a macOS app under control
+
+```bash
+mav setup --install cua-driver axcli
+cua-driver permissions grant
+mav doctor
+mav --profile mac open
+mav --profile mac ui tree
+```
+
+`mav setup --install cua-driver` runs the upstream install script
+(`curl -fsSL https://cua.ai/driver/install.sh | bash`). `cua-driver permissions grant`
+is the only tested flow that registers the app in the System Settings panes by itself;
+every other tool has to be added by hand through the panel's "+". `mav doctor` reports
+Accessibility and Screen Recording by asking the daemon — the process that actually
+holds the permissions — not the process running `mav`, and answers `unknown` instead of
+lying with your terminal's permissions when the daemon is down.
+
+### Network capture
+
+`mav network start` works end to end on macOS: it starts mitmproxy, sets the system
+proxy itself with `networksetup` — no sudo — on the network service the default route
+leaves through, and `mav network stop`, and `mav stop`, restore it. The previous proxy
+state is saved in the run directory, because start and stop are separate invocations
+and a run that dies must not leave the machine pointing at a dead proxy. Verified:
+`GET https://example.com/ -> 200` decrypted in the HAR.
+
+If the mitmproxy CA is not trusted, the command says so with the exact
+`security add-trusted-cert` command in a `ca_next` field. Without that trust, HTTPS
+comes out as CONNECT tunnels with no content: a capture that looks like it works and
+proves nothing.
+
+### Time and location
+
+`mav time travel --to <RFC3339>` and `mav time reset` work on macOS. `freeze` and
+`scale` do not: on macOS the clock is the **system's**, not the app's, and a system
+clock runs — it cannot be stopped or accelerated. On iOS, simtime interposes the
+clock the app sees; on macOS the only per-process route is libfaketime through
+`DYLD_INSERT_LIBRARIES`, which the hardened runtime blocks in any app signed for
+distribution. Because travel moves the whole machine's clock, it is closed by default
+outside a VM (detected through `kern.hv_vmm_present`); pass `--system-clock` to force
+it on a host on purpose.
+
+Location cannot be faked on macOS, and knowing why saves an afternoon: Xcode's
+"Simulate Location" is not a debugger feature — it travels over the DVT channel, which
+serves iOS devices, and does nothing against a macOS app. lldb has no equivalent
+command. The tools that exist fake a connected iPhone, not the Mac. CoreLocationCLI
+only reads. What remains is private locationd API or disabling SIP, and mav takes
+neither road.
+
+### Profiles
+
+An app that ships iOS and macOS variants from one repo usually shares the debug bundle
+id between them, so the bundle id cannot tell them apart. **Profiles** are a
+per-platform overlay on the flat config: a block that overrides `target_kind`,
+`app_target`, `process_name`, `target_command`, the log fields, and the launch recipe.
+Selection order is `--profile`, then `MAV_PROFILE`, then `default_profile`; a requested
+profile that does not exist fails naming the valid ones instead of silently falling
+back to the base. A repo with one platform writes no profiles and nothing changes.
+
+```yaml
+bundle_id: com.example.app
+target_kind: simulator
+
+launch:
+  mode: custom
+  commands:
+    build: bazelisk build //App:ExampleiOS
+    app_path: ./scripts/mav-app-path.sh
+    install: xcrun simctl install "$MAV_UDID" "$MAV_APP_PATH"
+    launch: xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"
+
+profiles:
+  mac:
+    target_kind: macos
+    app_target: "//App:ExampleMac"
+    process_name: Example
+    launch:
+      commands:
+        build: bazelisk build //App:ExampleMac
+        app_path: ./scripts/mav-app-path-mac.sh
+        install: ""
+        launch: ""
+
+fixtures:
+  empty:
+    - ./scripts/wipe-demo-data.sh
+  seeded:
+    - ./scripts/seed-demo-data.sh
+```
+
+An absent profile key inherits from the base; an explicit empty string annuls it, and
+the distinction matters: `install: ""` and `launch: ""` are how the mac profile cancels
+the inherited simctl commands. On macOS there is nothing to install — the app runs from
+wherever it was built — and an empty launch routes to the driver, which executes
+`Contents/MacOS/<binary>` directly because `open` does not propagate environment
+variables, and the environment is how mav injects its configuration.
+
+Profiles also accept `runner: local|crabbox`, which declares **where** the profile
+runs. mav does not orchestrate machines; the full recipe for a disposable macOS VM,
+with verified findings about TCC bootstrap, lives in
+[`examples/macos-vm/`](examples/macos-vm/), and
+`scripts/build-mav-vm-image.sh` builds a base VM image with mav, cua-driver, axcli,
+and mitmproxy preinstalled.
+
+### Fixtures
+
+**Fixtures** are named states: lists of commands that leave the app in a known
+situation before launch. mav does not know what a fixture does internally — it only
+runs the commands — because how to seed is specific to each app. Pick one per run with
+`--fixture <name>` on `mav open`, or `fixture:` on a flow's `open` step.
+
+They run between the `install` and `launch` steps, and that placement is the point: it
+is the only window where the app container already exists and nothing holds the app's
+database open. mav quits a live instance from an earlier run before seeding, for the
+same reason. Fixtures complement `launch.commands`, they do not replace them.
+`--clear-state` composes: the container is wiped first, then the fixture seeds on top.
+The applied fixture is recorded in the run's `report.json` — a run whose evidence does
+not say which state it started from is not reproducible.
+
+Fixtures work the same on iOS (the simulator's app container) and on macOS
+(`~/Library/Containers/<bundle-id>/Data/`). `--fixture` is rejected together with
+`--no-relaunch`, like `--clear-state` and for the same reason: `--no-relaunch` skips
+the whole recipe, so the fixture would never run and the agent would validate against
+data nobody seeded.
+
+On macOS, `--clear-state` is the honest equivalent of an uninstall: it deletes the
+app's container and preferences, not the app.
+
+### What does not carry over from iOS
+
+- cua-driver elements do **not** expose `AXIdentifier`. The `id` mav reports is the
+  element's `element_token`, valid within the current snapshot — so `mav ui tap --id`
+  on macOS does not have the across-runs stability that axe accessibility ids give on
+  iOS. Read the tree first and target what it reports, or use `--text`.
+- There is no menu-bar interaction and no window management: `mav` reads and drives an app's
+  own UI, not the desktop around it.
+- Running `mav` over SSH leaves it outside the Aqua session, where `screencapture`
+  fails with `could not create image from display`. This is why the VM recipe needs
+  the broker — see [`examples/macos-vm/`](examples/macos-vm/).
+
+See the [macOS scope evaluation](docs/macos-scope-evaluation.md) for how this was
+decided and what was deliberately left out.
 
 ## Requirements
 
@@ -138,8 +296,12 @@ and what was deliberately left out.
 - Baguette, for simulator multitouch (pinch, two-finger pan), the
   SpringBoard / system UI tree, hardware buttons, keyboard erase, and
   hideKeyboard. Sim-only — device multitouch is intentionally unsupported.
+- cua-driver, for macOS targets: accessibility tree, window capture, taps, and
+  typing. Install with `mav setup --install cua-driver`.
+- axcli, for macOS input into accessory windows that cua-driver's `list_windows`
+  cannot see. Installed from `bitomule/tap/axcli`.
 - mitmproxy, optional, for `mav network start|stop` HAR capture on the
-  simulator. Install with `mav setup --install mitmproxy`.
+  simulator and on macOS. Install with `mav setup --install mitmproxy`.
 
 Check the local environment:
 
@@ -155,6 +317,9 @@ crashes. Simulator crash checks use local DiagnosticReports directly, avoiding
 idb_companion crash-list parser failures from unrelated malformed reports.
 Multitouch gestures, system-UI trees, and hideKeyboard return structured errors
 on device — use a simulator for those flows.
+On macOS targets, `mav doctor` reports Accessibility and Screen Recording by asking
+the cua-driver daemon — the process that holds them — and the fix it prints is
+`cua-driver permissions grant`.
 
 Configure the project or install supported helper tools:
 
@@ -175,6 +340,9 @@ mav setup --install axe idb baguette
 `mav setup --install idb` prefers pipx with Python 3.12/3.13 for `fb-idb` and
 uses Homebrew for `idb-companion`. AXe and Baguette are installed via Homebrew
 (`cameroncooke/axe/axe` and `tddworks/baguette/baguette`).
+`mav setup --install cua-driver` runs the upstream install script
+(`curl -fsSL https://cua.ai/driver/install.sh | bash`); the binary it installs lives
+inside `/Applications/CuaDriver.app`. axcli comes from `bitomule/tap/axcli`.
 
 ## Install
 
@@ -300,6 +468,11 @@ ok cmd=logs file=/tmp/mav/7fd/logs.txt matches=1 run=7fd target_kind=simulator u
 fail code=ui_tree_empty driver=axe reason=simulator_accessibility_unavailable recovered=false
 ```
 
+A `fail` line comes with exit status 1, and output is written even when the
+command fails. Every command used to exit 0 regardless, so
+`mav ui tap ... && next-step` chained past a failure; scripts and agents can
+now branch on the exit code instead of parsing stdout.
+
 Commands that acted on a simulator or device add `udid`/`target_kind` to
 their success fields -- see [Knowing which target you just
 used](#knowing-which-target-you-just-used).
@@ -337,6 +510,9 @@ Prefer target selectors in this order:
 1. Accessibility id: `mav ui tap --id home_settings_button`
 2. Coordinates: `mav ui tap --x 398 --y 84`
 3. Text: `mav ui tap --text Settings`
+
+On macOS, `--id` values are cua-driver `element_token`s: valid within the current
+snapshot, not stable across runs the way axe accessibility ids are on iOS.
 
 Coordinates should be used only when the accessibility tree is insufficient and
 a screenshot makes the target unambiguous. Text is the last fallback because
@@ -957,6 +1133,13 @@ text.
 
 The simulator accessibility service did not recover after MAV retried. Re-run
 `mav open` or select another simulator with `mav sim select`.
+
+`cua: no on-screen window for pid <n>`
+
+The app's UI lives in an accessory window — a floating panel, a HUD, a popover, a
+SwiftUI onboarding — which cua-driver's `list_windows` cannot see. It does not mean
+the app is not open. Retry the interaction with `--prefer-driver axcli`, which
+targets by `--app` and needs no window id.
 
 `CoreSimulator` or `idb` permission failures
 
