@@ -8,6 +8,10 @@ description: Use MAV, the Mobile Agent Verifier CLI, to validate iOS and macOS a
 Use `mav` when validating an iOS app locally. MAV is deterministic: it
 does not explore or repair routes by itself. The agent decides the next action.
 
+`mav --version` reports the binary's version, and `mav doctor` carries it as
+`mav_version`. Include it when you report a problem: behaviour differs between releases
+and a report without it starts with a guess.
+
 ## Platforms
 
 `mav` drives iOS simulators, physical iOS devices, and **macOS apps**. The platform comes

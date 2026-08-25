@@ -50,6 +50,7 @@ type GlobalOptions struct {
 	Verbose      bool
 	Raw          bool
 	Help         bool
+	Version      bool
 	PreferDriver string
 	Profile      string
 }
@@ -75,6 +76,12 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 		if err := os.Setenv("MAV_PROFILE", opts.Profile); err != nil {
 			return err
 		}
+	}
+	// Before the empty-args check: `mav --version` carries no command, and
+	// falling through to help would answer a different question than the
+	// one asked.
+	if opts.Version {
+		return c.version()
 	}
 	if len(rest) == 0 {
 		return c.help(opts, "")
@@ -109,6 +116,8 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 		return c.doctor(ctx, opts)
 	case "setup":
 		return c.setup(ctx, opts, rest[1:])
+	case "version":
+		return c.version()
 	case "install-skills":
 		return c.installSkills(ctx)
 	case "sim":
@@ -164,6 +173,8 @@ func parseGlobal(args []string) (GlobalOptions, []string) {
 			opts.Raw = true
 		case "--help", "-h":
 			opts.Help = true
+		case "--version":
+			opts.Version = true
 		case "--prefer-driver":
 			if i+1 < len(args) {
 				opts.PreferDriver = args[i+1]
@@ -250,6 +261,7 @@ Usage:
 Commands:
   doctor      Check required tools.
   setup       Configure the project or install helper tools.
+  version     Print the version of this mav.
   install-skills
               Install the MAV agent skill globally for all supported agents.
   sim         List, select, or boot simulators.
@@ -278,6 +290,7 @@ Global flags:
               Prefer a registered driver. Use mav doctor to list them.
   --profile NAME
               Select a platform profile from .mav/config.yaml.
+  --version   Print the version of this mav.
   --help,-h   Show help.
 `
 	case "setup":
@@ -291,6 +304,8 @@ With --install it installs tools and configures nothing.
   vm    the tooling a project with vm: true needs to lease a disposable macOS
         machine. Build the image once with scripts/build-mav-vm-image.sh.
 `
+	case "version":
+		return "Usage: mav version\n\nPrints the version of this mav. Same as mav --version.\n"
 	case "install-skills":
 		return "Usage: mav install-skills\n"
 
@@ -513,6 +528,7 @@ func (c CLI) doctor(ctx context.Context, opts GlobalOptions) error {
 	if len(missing) > 0 {
 		fields["next"] = "mav setup --install " + strings.Join(missing, " ")
 	}
+	fields["mav_version"] = Version
 	addDoctorMatrixFields(fields, caps)
 	c.vmDoctorFields(ctx, cfg, fields)
 	if targetKind(cfg) == drivers.KindSim && cfg.SimulatorUDID != "" {
@@ -728,6 +744,14 @@ func (c CLI) setupIDB(ctx context.Context, opts GlobalOptions) (bool, error) {
 		return false, Fail("setup_failed", map[string]string{"tool": "idb", "stderr": firstLine(result.Stderr), "next": "install pipx and Python 3.12, then rerun mav setup --install idb"}).Write(c.Stdout)
 	}
 	return true, nil
+}
+
+// version answers in the same shape as every other command rather than
+// printing a bare string: mav's output contract is `ok cmd=... k=v`, and an
+// agent that parses every other response should not need a special case for
+// this one.
+func (c CLI) version() error {
+	return OK("version", map[string]string{"version": Version}).Write(c.Stdout)
 }
 
 func (c CLI) installSkills(ctx context.Context) error {
@@ -5520,7 +5544,7 @@ func (c CLI) stop(ctx context.Context, opts GlobalOptions, args []string) error 
 		if record.Kind == "video" && fileExists(filepath.Join(run.Dir, "video.pid")) {
 			continue
 		}
-		if err := stopRunProcess(c.Runner, record.PID); err != nil {
+		if err := c.stopRecordedProcess(record); err != nil {
 			failed++
 			appendCommand(run, "mav stop "+strconv.Itoa(record.PID), CommandResult{Stderr: err.Error(), Code: 1, Err: err})
 			continue
@@ -5569,13 +5593,33 @@ type processRecord struct {
 	Kind    string `json:"kind"`
 	PID     int    `json:"pid"`
 	Command string `json:"command"`
+
+	// Host marks a process that runs on THIS machine even when the run's
+	// target is elsewhere. In VM mode the two are different machines and a
+	// pid only means something on one of them: signalling a host pid inside
+	// the guest does not fail loudly, it hits whatever process happens to
+	// hold that number over there while the real one keeps running here.
+	Host bool `json:"host,omitempty"`
 }
 
+// appendProcess records a process living wherever the run's target does:
+// the guest in VM mode, this machine otherwise.
 func appendProcess(run RunState, kind string, pid int, command string) {
-	if pid <= 0 {
+	appendProcessRecord(run, processRecord{Kind: kind, PID: pid, Command: command})
+}
+
+// appendHostProcess records a process that runs on this machine regardless
+// of where the target is. The run worker is the one that does: it watches
+// the run's lease from here and reaps it when nobody renews.
+func appendHostProcess(run RunState, kind string, pid int, command string) {
+	appendProcessRecord(run, processRecord{Kind: kind, PID: pid, Command: command, Host: true})
+}
+
+func appendProcessRecord(run RunState, record processRecord) {
+	if record.PID <= 0 {
 		return
 	}
-	data, err := json.Marshal(processRecord{Kind: kind, PID: pid, Command: command})
+	data, err := json.Marshal(record)
 	if err != nil {
 		return
 	}
@@ -5626,7 +5670,7 @@ func stopProbeLogs(runner Runner, run RunState) {
 		if record.Kind != "probe-logs" || record.PID <= 0 {
 			continue
 		}
-		_ = stopRunProcess(runner, record.PID)
+		_ = stopRecorded(runner, record)
 		removeProcess(run, record.PID)
 	}
 }

@@ -7,6 +7,7 @@ Usage:
 Commands:
   doctor      Check required tools.
   setup       Configure the project or install helper tools.
+  version     Print the version of this mav.
   install-skills
               Install the MAV agent skill globally for all supported agents.
   sim         List, select, or boot simulators.
@@ -35,4 +36,5 @@ Global flags:
               Prefer a registered driver. Use mav doctor to list them.
   --profile NAME
               Select a platform profile from .mav/config.yaml.
+  --version   Print the version of this mav.
   --help,-h   Show help.

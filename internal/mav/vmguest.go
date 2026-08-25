@@ -11,7 +11,13 @@ import (
 // inside it. The list is short on purpose: it is not "everything mav might
 // use", it is the set whose absence turns into a failure that names
 // something else entirely three commands later.
-var vmGuestTools = []string{"mav", "cua-driver", "axcli", "mitmdump"}
+//
+// mav itself is deliberately NOT here, and the reason is worth stating
+// because the image installs it and an earlier draft of this check demanded
+// it. mav runs on THIS machine and reaches into the guest for the drivers;
+// it never invokes a mav over there. Requiring it would have refused a
+// perfectly usable image over a binary nothing calls.
+var vmGuestTools = []string{"cua-driver", "axcli", "mitmdump"}
 
 // vmGuestDaemonWait bounds how long the driver daemon gets to come up. Cold
 // it takes a few seconds; polling instead of sleeping a fixed amount means a

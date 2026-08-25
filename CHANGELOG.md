@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### mav can say which mav it is
+
+- **`mav --version` and `mav version`.** Until now they answered
+  `unknown_command`, which turned every bug report, and every run whose evidence is read
+  weeks later, into a guess about which binary produced it. `mav doctor` reports
+  `mav_version` for the same reason: a diagnostic that cannot say what produced it is
+  half a diagnostic.
+- Stamped at link time from the release tag. An unstamped build reports `dev` and never
+  claims a release number it is not, so nobody goes chasing a bug in code that was never
+  shipped. The Homebrew formula's own test now asserts the released binary reports the
+  version the formula claims.
+
 ### The VM environment is checked, not assumed
 
 - **The machine is verified when it is taken, once.** An image built before a driver
@@ -24,6 +36,17 @@
 - `mav doctor` reports `vm_guest` when a lease is held. Only then: checking the guest
   means talking to it, and a diagnostic that leases a machine to report that leasing
   works would take one of the two slots the run needs.
+- **A run in a VM has processes on both machines, and `mav stop` now knows which is
+  which.** The log stream and the recorder are the guest's; the run worker is this
+  machine's, because what it watches -- the run's lease -- is here. Every stop was being
+  sent to the guest, so the worker's pid went over there: it did not fail loudly, it
+  looked for that number on the wrong machine while the real worker kept running here
+  until its lease expired. Caught by a real run reporting `stop_failed failed=1`; the
+  same code would have signalled a stranger's process in the guest had that number been
+  in use. Process records now carry which machine they belong to.
+- The check does **not** ask the guest for a mav. The image installs one, but mav runs on
+  the host and reaches in for the drivers; it never invokes a mav over there. An earlier
+  draft demanded it and would have refused a usable image over a binary nothing calls.
 
 ## v0.13.0
 

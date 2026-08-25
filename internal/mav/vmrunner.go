@@ -237,12 +237,27 @@ type processStopper interface {
 	Stop(pid int) error
 }
 
-// stopRunProcess kills a process the run started, wherever it started.
+// stopRunProcess kills a process the run started on the runner's machine.
 func stopRunProcess(runner Runner, pid int) error {
 	if stopper, ok := runner.(processStopper); ok {
 		return stopper.Stop(pid)
 	}
 	return stopProcess(pid)
+}
+
+// stopRecorded sends a process the signal on the machine it actually runs
+// on. A run in VM mode has processes on BOTH: the log stream and the
+// recorder are the guest's, the worker is this machine's, and a pid only
+// means something on one of them.
+func stopRecorded(runner Runner, record processRecord) error {
+	if record.Host {
+		return stopProcess(record.PID)
+	}
+	return stopRunProcess(runner, record.PID)
+}
+
+func (c CLI) stopRecordedProcess(record processRecord) error {
+	return stopRecorded(c.Runner, record)
 }
 
 // --- file transfer -------------------------------------------------------
