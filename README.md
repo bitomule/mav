@@ -282,8 +282,14 @@ mav setup --install vm            # installs the VM tooling
 ./scripts/build-mav-vm-image.sh   # builds the image, once
 ```
 
-`mav doctor` reports `vm_tooling`, `vm_image` and the current lease, and any VM failure
-names `mav setup --install vm` rather than dying deep inside a run. The image build ends with
+`mav doctor` reports `vm_tooling`, `vm_image`, the current lease and, once one is held,
+`vm_guest`. Failures name the command that fixes them rather than dying deep inside a
+run: tooling problems point at `mav setup --install vm`, image problems at
+`scripts/build-mav-vm-image.sh`.
+
+The machine itself is verified when mav takes it, once. An image missing a driver, or one
+whose permission switches were never flipped, is caught before the run starts and handed
+straight back instead of holding one of your two slots. The image build ends with
 two switches you flip by hand — macOS 26 has no scriptable way to grant Accessibility
 or Screen Recording — and after that they live on the disk that becomes the image.
 

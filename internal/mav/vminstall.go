@@ -109,11 +109,22 @@ func (c CLI) vmDoctorFields(ctx context.Context, cfg Config, fields map[string]s
 		fields["vm_image"] = vmImage
 	} else {
 		fields["vm_image"] = "missing"
-		fields["vm_next"] = vmInstallHint
+		// Not vmInstallHint: the install command does not build the image,
+		// so sending the reader there sends them to run something that
+		// reports this same line back at them.
+		fields["vm_next"] = vmImageHint
 	}
 	if lease, held := readVMLease(c.Root); held {
 		fields["vm_lease"] = lease.ID
 		fields["vm_lease_idle"] = time.Since(lease.LastUsed).Truncate(time.Second).String()
+		// Only reported when a lease is already held. Checking the guest
+		// means talking to it, and doctor leasing a machine to report that
+		// leasing works would take one of the two slots the run needs.
+		if lease.Verified {
+			fields["vm_guest"] = "ok"
+		} else {
+			fields["vm_guest"] = "unchecked"
+		}
 	} else {
 		fields["vm_lease"] = "none"
 	}

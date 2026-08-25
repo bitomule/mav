@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### The VM environment is checked, not assumed
+
+- **The machine is verified when it is taken, once.** An image built before a driver
+  existed, or one whose permission switches were never flipped, used to fail deep inside
+  a run with an error about a window or an element. Measured on a real image with the
+  driver hidden from the guest's PATH: the first symptom was `ui tree` reporting that the
+  app was not running. `mav` now answers `vm_image_incomplete missing=cua-driver
+  next=scripts/build-mav-vm-image.sh` before the run starts, and hands the unusable
+  machine straight back rather than letting it hold one of the two available slots.
+- **The driver's own permissions are part of that check**, and a daemon that has not
+  answered yet is not read as granted. Asked with no daemon running, the driver says it
+  does not know rather than guessing; treating that as "granted" would let through
+  exactly the image this is meant to catch. The daemon is started here too, which is
+  where it belongs: it is per-machine setup, so the first `ui tree` of every run stops
+  paying for it.
+- **A missing image no longer points at the installer.** `mav setup --install vm` does
+  not build the image, so `vm_image=missing next=mav setup --install vm` sent the reader
+  to run a command that reported the same line back at them. Image problems now name
+  `scripts/build-mav-vm-image.sh`; tooling problems still name the install command.
+- `mav doctor` reports `vm_guest` when a lease is held. Only then: checking the guest
+  means talking to it, and a diagnostic that leases a machine to report that leasing
+  works would take one of the two slots the run needs.
+
 ## v0.13.0
 
 ### macOS video
