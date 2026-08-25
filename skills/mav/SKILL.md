@@ -35,11 +35,27 @@ Select one with `mav open --profile mac`, or set `default_profile`. An empty str
 profile *annuls* the inherited value; an absent key inherits it. A profile that does not
 exist fails with `profile_not_found` rather than silently using the base.
 
-On macOS: `ui tree`, `ui tap`, `ui type`, `capture`, `logs`, `crashes`, `evidence` and
-flows all work. What does **not** exist there, and returns a structured error: multitouch
-gestures (`pinch`, `rotate`, `twoFingerPan`), hardware buttons, `hideKeyboard`, and the
-simulator/device commands. Prefer `--id` selectors: on macOS a tap resolves to a real
-accessibility action, not a coordinate.
+On macOS these work: `ui tree`, `ui tap`, `ui type`, `ui erase`, `ui swipe`, `ui wait`,
+`capture`, `open`, `app list`, `openURL`, `clipboard`, `logs`, `crashes`, `evidence`,
+`run`, `network` and `time travel|reset`. `ui hideKeyboard` succeeds without doing
+anything: there is no on-screen keyboard to hide, and failing would force a shared flow
+to branch by platform.
+
+What does **not** exist there, with a structured error saying why: multitouch gestures
+(`pinch`, `rotate`, `twoFingerPan`), hardware buttons, the simulator/device commands,
+`time freeze|scale` (a system clock runs, it cannot be stopped or accelerated) and
+`location` (macOS has no supported way to feed CoreLocation a fake fix; Xcode's "Simulate
+Location" is an iOS-device feature and does nothing against a Mac app).
+
+`ui swipe` becomes a scroll with the direction inverted, so one flow means the same thing
+on both platforms. `time travel --to` moves the **machine's** clock, so it is refused
+outside a VM unless you pass `--system-clock`. `network start` also points the system at
+the proxy and restores it on stop.
+
+Selectors behave differently from iOS: the driver does not expose AXIdentifier, so
+`--id` takes an `element_token` that is only valid inside the snapshot that produced it.
+Re-read the tree before acting on it; a stale token is refused rather than applied to the
+wrong element. `--text` is the selector that survives across snapshots.
 
 ## Fixtures
 
@@ -111,8 +127,10 @@ entirely.
    a stable, readable proof point such as `largest-videos-after-pinch`.
 7. Use `mav ui tap/type/erase/hideKeyboard/swipe/longPress/wait/scrollUntil`
    for manual exploration. Prefer accessibility identifiers first (`--id`).
-   `mav ui erase --focused` clears a focused field via baguette on simulator;
-   `mav ui hideKeyboard` dismisses the keyboard via baguette on simulator. Both
+   `mav ui erase --focused` clears a focused field: baguette on simulator, and on
+   macOS the driver sets the field to the empty value, which does not depend on
+   the field holding focus. `mav ui hideKeyboard` dismisses the keyboard via
+   baguette on simulator and is a successful no-op on macOS. Both
    return structured errors on a physical device (`erase_unsupported_on_device`,
    `hide_keyboard_unsupported_on_device`). Use `scrollUntil` before tapping
    targets that are present in the tree but may be off-screen. Use coordinates
@@ -482,6 +500,11 @@ node index=1 id=settings_button label=Settings role=button enabled=true frame="{
 ok cmd=capture file=/tmp/mav/7fd/captures/largest-videos-after-pinch.png run=7fd
 fail code=ui_tap_failed stderr="…"
 ```
+
+**A failure exits 1 and success exits 0**, so `mav ... && next-step` stops where it
+should. Read the `code=` when you need to branch on why; the exit status is enough to
+know whether to continue. The `fail` line is always written, including when the command
+errors, so there is never a failure with nothing to read.
 
 If `mav ui tree` reports `screen=unknown` with
 `screen_source=identity_missing`, mav could not infer a natural screen name
