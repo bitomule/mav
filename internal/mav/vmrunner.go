@@ -35,6 +35,11 @@ type vmRunner struct {
 	// from instead of hanging on a dead address.
 	released bool
 
+	// resigned records that the guest's copy of the bundle had to be
+	// re-signed ad-hoc to launch there, so open can say so instead of
+	// letting a run silently test a different binary.
+	resigned bool
+
 	mu    sync.Mutex
 	paths map[string]string
 }
@@ -68,8 +73,13 @@ func vmControlSocket(lease vmLease) string {
 	return filepath.Join(os.TempDir(), "mav-vm-"+hex.EncodeToString(sum[:6])+".sock")
 }
 
+// sshArgs are the options every remote call shares. StrictHostKeyChecking
+// is off and known_hosts goes to /dev/null because a lease gets a fresh
+// host key every time: the alternative is a host-key warning on the first
+// command of every run, which is noise that trains people to ignore the
+// real one.
 func (v *vmRunner) sshArgs() []string {
-	return []string{
+	args := []string{
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
 		"-o", "LogLevel=ERROR",
@@ -78,6 +88,28 @@ func (v *vmRunner) sshArgs() []string {
 		"-o", "ControlPath=" + v.socket,
 		"-o", "ControlPersist=600",
 	}
+	if v.lease.Key != "" {
+		// IdentitiesOnly stops ssh offering every key in the agent first,
+		// which on a machine with several loaded keys hits the server's
+		// MaxAuthTries before it ever reaches the lease's own.
+		args = append(args, "-i", v.lease.Key, "-o", "IdentitiesOnly=yes")
+	}
+	if v.lease.Port != "" {
+		args = append(args, "-p", v.lease.Port)
+	}
+	return args
+}
+
+// rsyncSSHArgs is sshArgs for rsync's -e, which takes a command line rather
+// than an argv and therefore needs its own quoting. The port flag differs
+// too: rsync's transport wants -p like ssh, but the arguments travel
+// through a shell word split, so a key path with a space has to survive it.
+func (v *vmRunner) rsyncSSHArgs() string {
+	parts := []string{"ssh"}
+	for _, arg := range v.sshArgs() {
+		parts = append(parts, shellQuote(arg))
+	}
+	return strings.Join(parts, " ")
 }
 
 // sshCommand returns the argv for running one remote shell snippet.
@@ -173,7 +205,12 @@ func (v *vmRunner) Stop(pid int) error {
 		return nil
 	}
 	id := strconv.Itoa(pid)
-	command := "kill -INT -" + id + " 2>/dev/null || kill -INT " + id
+	// The last clause is not belt and braces, it is the common case: a
+	// process that already exited is the state Stop wants, and without it
+	// every `mav stop` after a log stream ended on its own would report a
+	// failure. It matches what the local path does, which never treats a
+	// missing process as an error either.
+	command := "kill -INT -" + id + " 2>/dev/null || kill -INT " + id + " 2>/dev/null || ! kill -0 " + id + " 2>/dev/null"
 	result := v.host.Run(context.Background(), "ssh", v.sshCommand(v.remoteShell(command))...)
 	if result.Err != nil {
 		return fmt.Errorf("vm_stop_failed pid=%d: %s", pid, firstLine(strings.TrimSpace(result.Stderr)))
@@ -232,16 +269,12 @@ func (v *vmRunner) vmMirrorDir(ctx context.Context, dir string) error {
 	return nil
 }
 
-func (v *vmRunner) rsyncShell() string {
-	return "ssh " + strings.Join(v.sshArgs(), " ")
-}
-
 // push copies a local directory to the same absolute path on the guest.
 func (v *vmRunner) push(ctx context.Context, dir string, excludes []string) error {
 	if err := v.vmMirrorDir(ctx, dir); err != nil {
 		return err
 	}
-	args := []string{"-a", "--delete", "-e", v.rsyncShell()}
+	args := []string{"-a", "--delete", "-e", v.rsyncSSHArgs()}
 	for _, pattern := range excludes {
 		args = append(args, "--exclude", pattern)
 	}
@@ -264,7 +297,7 @@ func (v *vmRunner) pull(ctx context.Context, dir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	args := []string{"-a", "-e", v.rsyncShell(), v.lease.Target + ":" + strings.TrimSuffix(dir, "/") + "/", dir + "/"}
+	args := []string{"-a", "-e", v.rsyncSSHArgs(), v.lease.Target + ":" + strings.TrimSuffix(dir, "/") + "/", dir + "/"}
 	result := v.host.Run(ctx, "rsync", args...)
 	if result.Err != nil {
 		return fmt.Errorf("vm_pull_failed dir=%s detail=%s", dir, firstLine(strings.TrimSpace(result.Stderr)))

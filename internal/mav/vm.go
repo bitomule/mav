@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -41,6 +42,8 @@ const vmLeaseFile = "vm-lease.json"
 type vmLease struct {
 	ID       string    `json:"id"`
 	Target   string    `json:"target"`
+	Port     string    `json:"port"`
+	Key      string    `json:"key"`
 	Image    string    `json:"image"`
 	Acquired time.Time `json:"acquired"`
 	LastUsed time.Time `json:"last_used"`
@@ -127,6 +130,39 @@ func vmImageReady(ctx context.Context, host Runner) bool {
 	return false
 }
 
+// vmMinHostVersion is not a preference, it is the line below which the
+// hypervisor cannot be driven from a script at all. Earlier versions
+// compute the terminal size unconditionally when running a command in the
+// guest, which blows up with no TTY, and injecting the SSH key is the very
+// first thing that needs it. The failure it produces says "failed to get
+// terminal size", which points nowhere near "your hypervisor is too old",
+// so it is checked up front instead.
+const vmMinHostVersion = 2.29
+
+// vmHostTooOld returns the version string when it is below the floor, or ""
+// when it is fine or unreadable. Unreadable counts as fine: refusing to run
+// because a version string could not be parsed would be worse than the
+// failure this guards against, which at least happens for a reason.
+func vmHostTooOld(ctx context.Context, host Runner) string {
+	result := host.Run(ctx, vmHostTool, "--version")
+	version := strings.TrimSpace(firstLine(result.Stdout))
+	if result.Err != nil || version == "" {
+		return ""
+	}
+	parts := strings.SplitN(version, ".", 3)
+	if len(parts) < 2 {
+		return ""
+	}
+	value, err := strconv.ParseFloat(parts[0]+"."+parts[1], 64)
+	if err != nil {
+		return ""
+	}
+	if value < vmMinHostVersion {
+		return version
+	}
+	return ""
+}
+
 // vmInstallHint is the single sentence every VM failure ends with. Users
 // are never told to install crabbox by name: they are told to run one mav
 // command that does it for them.
@@ -140,6 +176,9 @@ const vmInstallHint = "mav vm install"
 func (c CLI) acquireVMLease(ctx context.Context, host Runner) (vmLease, error) {
 	if missing := vmToolingMissing(host); len(missing) > 0 {
 		return vmLease{}, fmt.Errorf("vm_tooling_missing missing=%s next=%s", strings.Join(missing, ","), vmInstallHint)
+	}
+	if old := vmHostTooOld(ctx, host); old != "" {
+		return vmLease{}, fmt.Errorf("vm_tooling_outdated version=%s next=%s", old, vmInstallHint)
 	}
 	if lease, ok := readVMLease(c.Root); ok {
 		switch {
@@ -163,15 +202,17 @@ func (c CLI) acquireVMLease(ctx context.Context, host Runner) (vmLease, error) {
 	if err != nil {
 		return vmLease{}, err
 	}
-	target, err := vmLeaseTarget(ctx, host, id)
+	lease, err := vmLeaseDetails(ctx, host, id)
 	if err != nil {
-		// A lease whose target cannot be read is unusable AND still holds
+		// A lease whose address cannot be read is unusable AND still holds
 		// one of the two available slots, so it is handed back here instead
 		// of left for the idle timeout.
 		host.Run(ctx, vmLeaseTool, "stop", "--id", id)
 		return vmLease{}, err
 	}
-	lease := vmLease{ID: id, Target: target, Image: vmImage, Acquired: time.Now(), LastUsed: time.Now()}
+	lease.Image = vmImage
+	lease.Acquired = time.Now()
+	lease.LastUsed = time.Now()
 	if err := writeVMLease(c.Root, lease); err != nil {
 		host.Run(ctx, vmLeaseTool, "stop", "--id", id)
 		return vmLease{}, err
@@ -206,44 +247,84 @@ func vmParseLeaseID(output string) string {
 		if line == "" {
 			continue
 		}
-		for _, prefix := range []string{"--id=", "--id ", "lease=", "id="} {
+		// First matching prefix wins within a line, strongest first: the
+		// line that names the lease also carries several other key=value
+		// pairs, and a looser pattern would happily read one of those.
+		for _, prefix := range []string{"lease=", "--id=", "--id "} {
 			idx := strings.Index(line, prefix)
 			if idx < 0 {
 				continue
 			}
-			fields := strings.Fields(line[idx+len(prefix):])
-			if len(fields) > 0 {
+			if fields := strings.Fields(line[idx+len(prefix):]); len(fields) > 0 {
 				id = strings.Trim(fields[0], "\"'`,.")
 			}
+			break
 		}
 	}
 	return id
 }
 
-func vmLeaseTarget(ctx context.Context, host Runner, id string) (string, error) {
-	result := host.Run(ctx, vmLeaseTool, "ssh", "--id", id, "--print-target")
+// vmLeaseInspection is the subset of the provisioner's lease description
+// mav needs. It is read as JSON rather than scraped from the human-readable
+// output for the usual reason: that output is theirs to reword, and a
+// silent parse failure here means dialling the wrong machine while
+// reporting success.
+type vmLeaseInspection struct {
+	SSHUser string `json:"sshUser"`
+	SSHHost string `json:"sshHost"`
+	SSHPort string `json:"sshPort"`
+	SSHKey  string `json:"sshKey"`
+	Ready   bool   `json:"ready"`
+}
+
+func vmInspectLease(ctx context.Context, host Runner, id string) (vmLeaseInspection, error) {
+	result := host.Run(ctx, vmLeaseTool, "inspect", "--id", id, "--json")
 	if result.Err != nil {
-		return "", fmt.Errorf("vm_target_unreadable id=%s detail=%s", id, firstLine(strings.TrimSpace(result.Stderr)))
+		return vmLeaseInspection{}, fmt.Errorf("vm_lease_unreadable id=%s detail=%s", id, firstLine(strings.TrimSpace(result.Stderr)))
 	}
-	if target := vmParseTarget(result.Stdout); target != "" {
-		return target, nil
+	var inspection vmLeaseInspection
+	if err := json.Unmarshal([]byte(strings.TrimSpace(result.Stdout)), &inspection); err != nil {
+		return vmLeaseInspection{}, fmt.Errorf("vm_lease_unreadable id=%s detail=%s", id, err)
 	}
-	return "", fmt.Errorf("vm_target_unreadable id=%s detail=no user@host line in output", id)
+	return inspection, nil
 }
 
-func vmParseTarget(output string) string {
-	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.Contains(line, "@") && !strings.ContainsAny(line, " \t") {
-			return line
-		}
+// vmLeaseDetails resolves how to reach the machine. The key and port come
+// from the provisioner rather than from any convention of ours: it mints a
+// per-lease key, and hardcoding a location for it would break the first
+// time it decides to put it somewhere else.
+func vmLeaseDetails(ctx context.Context, host Runner, id string) (vmLease, error) {
+	inspection, err := vmInspectLease(ctx, host, id)
+	if err != nil {
+		return vmLease{}, err
 	}
-	return ""
+	if inspection.SSHHost == "" || inspection.SSHUser == "" {
+		return vmLease{}, fmt.Errorf("vm_lease_unreadable id=%s detail=no ssh address", id)
+	}
+	return vmLease{
+		ID:     id,
+		Target: inspection.SSHUser + "@" + inspection.SSHHost,
+		Port:   inspection.SSHPort,
+		Key:    inspection.SSHKey,
+	}, nil
 }
 
+// vmLeaseAlive distinguishes a lease record that still names a machine from
+// one that outlived it. The record survives a host reboot or a VM killed by
+// hand, and trusting it means every later command dialling an address that
+// no longer answers, forever, with no path back to a working run.
 func vmLeaseAlive(ctx context.Context, host Runner, lease vmLease) bool {
-	result := host.Run(ctx, vmLeaseTool, "ssh", "--id", lease.ID, "--print-target")
-	return result.Err == nil && vmParseTarget(result.Stdout) != ""
+	inspection, err := vmInspectLease(ctx, host, lease.ID)
+	return err == nil && inspection.Ready && inspection.SSHHost != ""
+}
+
+// vmHeartbeat pushes out the provisioner's OWN idle deadline, which is
+// separate from mav's and shorter. A single long step -- a fixture seeding
+// a large database, a flow waiting on the app -- can go minutes without mav
+// sending anything, and the machine would be reclaimed out from under a run
+// that is still very much alive.
+func vmHeartbeat(ctx context.Context, host Runner, lease vmLease) {
+	host.Run(ctx, vmLeaseTool, "heartbeat", "--id", lease.ID)
 }
 
 // releaseVMLease hands the machine back and forgets it. Idempotent by

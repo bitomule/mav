@@ -87,6 +87,13 @@ What you do need to know:
   Later commands reuse it.
 - `build` still runs on the user's machine; only the app runs in the VM. A build
   failure is a build failure, not a VM problem.
+- `open` may answer `resigned=adhoc`. That means the bundle would not have launched in
+  the VM and mav re-signed the guest's copy: iCloud, push and anything else tied to the
+  provisioning profile are gone from what you are driving. Say so if you report on
+  behaviour that could depend on them.
+- `mav evidence start` fails on macOS with `video_unsupported`, VM or not: video capture
+  is simulator-only. Use `mav evidence step` for screenshots plus tree, and
+  `mav evidence report`.
 
 ## Fixtures
 

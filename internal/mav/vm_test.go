@@ -152,7 +152,7 @@ func TestStopHandsTheMachineBack(t *testing.T) {
 	writeTestVMLease(t, root)
 	host := &vmHostRunner{
 		tools:  map[string]bool{"crabbox": true, "tart": true},
-		stdout: map[string]string{"crabbox ssh": "admin@10.0.0.9\n"},
+		stdout: map[string]string{"crabbox inspect": `{"sshUser":"admin","sshHost":"10.0.0.9","sshPort":"22","sshKey":"/tmp/lease.key","ready":true}`},
 	}
 	run, err := NewProjectRunState(root)
 	if err != nil {
@@ -184,7 +184,7 @@ func TestEvidenceComesHomeBeforeTheMachineGoesBack(t *testing.T) {
 	writeTestVMLease(t, root)
 	host := &vmHostRunner{
 		tools:  map[string]bool{"crabbox": true, "tart": true, "rsync": true},
-		stdout: map[string]string{"crabbox ssh": "admin@10.0.0.9\n"},
+		stdout: map[string]string{"crabbox inspect": `{"sshUser":"admin","sshHost":"10.0.0.9","sshPort":"22","sshKey":"/tmp/lease.key","ready":true}`},
 	}
 	run, err := NewProjectRunState(root)
 	if err != nil {
@@ -231,7 +231,7 @@ func TestOpenKeepsTheMachineWhileSupersedingTheOldRun(t *testing.T) {
 	}
 	host := &vmHostRunner{
 		tools:  map[string]bool{"crabbox": true, "tart": true, "rsync": true},
-		stdout: map[string]string{"crabbox ssh": "admin@10.0.0.9\n"},
+		stdout: map[string]string{"crabbox inspect": `{"sshUser":"admin","sshHost":"10.0.0.9","sshPort":"22","sshKey":"/tmp/lease.key","ready":true}`},
 	}
 	cli := CLI{Runner: host, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, Root: root}
 
@@ -316,8 +316,10 @@ func TestRunDirIsNeverPushedToTheGuest(t *testing.T) {
 // the wrong lease means every command lands on somebody else's machine
 // while reporting success.
 func TestLeaseIDIsTheOneJustCreated(t *testing.T) {
-	output := "reusing cached image\nfound stale lease --id old-lease\nready: crabbox ssh --id new-lease\n"
-	if got := vmParseLeaseID(output); got != "new-lease" {
+	output := "found stale lease --id cbx_old\n" +
+		"provisioning provider=tart lease=cbx_new slug=blue-lobster image=mav-macos cpus=4\n" +
+		"leased cbx_new slug=blue-lobster provider=tart ip=192.168.64.10\n"
+	if got := vmParseLeaseID(output); got != "cbx_new" {
 		t.Fatalf("lease=%q", got)
 	}
 	if got := vmParseLeaseID("nothing useful here\n"); got != "" {
@@ -334,7 +336,7 @@ func TestStaleLeaseIsNotReused(t *testing.T) {
 	writeTestVMLease(t, root)
 	host := &vmHostRunner{
 		tools:    map[string]bool{"crabbox": true, "tart": true},
-		failures: map[string]bool{"crabbox ssh": true},
+		failures: map[string]bool{"crabbox inspect": true},
 		stdout:   map[string]string{"tart list": vmImage + "\n"},
 	}
 	cli := CLI{Runner: host, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, Root: root}
@@ -413,12 +415,162 @@ func TestIdleLeaseIsHandedBack(t *testing.T) {
 	}
 	host := &vmHostRunner{
 		tools:  map[string]bool{"crabbox": true, "tart": true},
-		stdout: map[string]string{"crabbox ssh": "admin@10.0.0.9\n", "tart list": "nothing\n"},
+		stdout: map[string]string{"crabbox inspect": `{"sshUser":"admin","sshHost":"10.0.0.9","sshPort":"22","sshKey":"/tmp/lease.key","ready":true}`, "tart list": "nothing\n"},
 	}
 	cli := CLI{Runner: host, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, Root: root}
 
 	_, _ = cli.acquireVMLease(context.Background(), host)
 	if !host.sent("crabbox stop --id lease-idle") {
 		t.Fatalf("the idle machine was never handed back: %v", host.commands)
+	}
+}
+
+// TestOutdatedHypervisorIsCaughtUpFront: below the floor, the hypervisor
+// dies while injecting the SSH key with a message about terminal sizes.
+// Measured on a real machine, and nothing in that message points at the
+// cause, so the version is checked before anything is leased.
+func TestOutdatedHypervisorIsCaughtUpFront(t *testing.T) {
+	root := vmConfigRoot(t)
+	host := &vmHostRunner{
+		tools:  map[string]bool{"crabbox": true, "tart": true},
+		stdout: map[string]string{"tart --version": "2.28.1\n"},
+	}
+	cli := CLI{Runner: host, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, Root: root}
+
+	_, err := cli.acquireVMLease(context.Background(), host)
+	if err == nil || !strings.Contains(err.Error(), "vm_tooling_outdated") {
+		t.Fatalf("err=%v", err)
+	}
+	if !strings.Contains(err.Error(), vmInstallHint) {
+		t.Fatalf("the failure must name the command that fixes it: %v", err)
+	}
+	if host.sent("crabbox warmup") {
+		t.Fatal("a machine was leased with a hypervisor that cannot be driven from a script")
+	}
+}
+
+// TestAVersionAboveTheFloorIsNotRefused: a floor that also blocks working
+// versions is worse than no floor, because the workaround people reach for
+// is to stop trusting the check.
+func TestAVersionAboveTheFloorIsNotRefused(t *testing.T) {
+	host := &vmHostRunner{
+		tools:  map[string]bool{"crabbox": true, "tart": true},
+		stdout: map[string]string{"tart --version": "2.32.1\n"},
+	}
+	if old := vmHostTooOld(context.Background(), host); old != "" {
+		t.Fatalf("2.32.1 is above the floor and was refused: %q", old)
+	}
+	// An unreadable version must not block either: failing to parse a
+	// string is a worse reason to refuse than the failure being guarded.
+	quiet := &vmHostRunner{tools: map[string]bool{"tart": true}}
+	if old := vmHostTooOld(context.Background(), quiet); old != "" {
+		t.Fatalf("an unreadable version must not count as too old: %q", old)
+	}
+}
+
+// TestInstallNeverNamesTheUnderlyingTool: the whole point of a one-key
+// config surface is that nobody has to learn which project ships the
+// hypervisor. Leaking it in the success output undoes that on the very
+// first command a new user runs.
+func TestInstallNeverNamesTheUnderlyingTool(t *testing.T) {
+	root := vmConfigRoot(t)
+	host := &vmHostRunner{
+		tools:  map[string]bool{"brew": true, "crabbox": true, "tart": true},
+		stdout: map[string]string{"tart --version": "2.32.1\n", "tart list": vmImage + "\n"},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: host, Stdout: &out, Stderr: &bytes.Buffer{}, Root: root}
+
+	if err := cli.Run(context.Background(), []string{"vm", "install"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, leak := range []string{vmLeaseTool, vmHostTool, "openclaw", "cirruslabs"} {
+		if strings.Contains(out.String(), leak) {
+			t.Fatalf("the output names %q: %s", leak, out.String())
+		}
+	}
+	if !strings.Contains(out.String(), "tooling=ok") {
+		t.Fatalf("install must report that the tooling is ready: %s", out.String())
+	}
+}
+
+// TestGuestAppIsResignedSoItCanLaunch: a development-signed bundle carries
+// entitlements tied to a team and a device list, and in a clean VM the
+// kernel kills it on launch with no message. Measured against a real app:
+// the symptom is "the app is not running" three commands later, which
+// points at everything except the signature.
+func TestGuestAppIsResignedSoItCanLaunch(t *testing.T) {
+	root := vmConfigRoot(t)
+	lease := writeTestVMLease(t, root)
+	guest := &vmHostRunner{tools: map[string]bool{}}
+	runner := newVMRunner(guest, lease, root)
+	run, err := NewProjectRunState(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cli := CLI{Runner: runner, host: guest, vmRun: runner, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, Root: root}
+
+	if err := cli.vmAdoptApp(context.Background(), run, "/tmp/Example.app"); err != nil {
+		t.Fatal(err)
+	}
+	if !guest.sent("codesign") {
+		t.Fatalf("the guest's copy was never re-signed: %v", guest.commands)
+	}
+	if !guest.sent("embedded.provisionprofile") {
+		t.Fatalf("the provisioning profile was left in place: %v", guest.commands)
+	}
+	if !runner.resigned {
+		t.Fatal("the bundle was changed and the run has no way to say so")
+	}
+}
+
+// TestAnAlreadyLaunchableAppIsLeftAlone: re-signing is a real trade, iCloud
+// and push go with it, so it only happens when the bundle would otherwise
+// not launch at all.
+func TestAnAlreadyLaunchableAppIsLeftAlone(t *testing.T) {
+	root := vmConfigRoot(t)
+	lease := writeTestVMLease(t, root)
+	guest := &vmHostRunner{
+		tools:    map[string]bool{},
+		failures: map[string]bool{"embedded.provisionprofile": true},
+	}
+	runner := newVMRunner(guest, lease, root)
+	run, err := NewProjectRunState(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cli := CLI{Runner: runner, host: guest, vmRun: runner, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, Root: root}
+
+	if err := cli.vmAdoptApp(context.Background(), run, "/tmp/Example.app"); err != nil {
+		t.Fatal(err)
+	}
+	if guest.sent("codesign") {
+		t.Fatalf("a bundle that did not need it was re-signed anyway: %v", guest.commands)
+	}
+	if runner.resigned {
+		t.Fatal("nothing was changed and the run says otherwise")
+	}
+}
+
+// TestAnAlreadyDeadGuestProcessIsNotAFailure: a log stream that ended on
+// its own is the state stop wants. Reporting it as a failure makes every
+// tidy run look broken, which is how people learn to ignore stop's output.
+func TestAnAlreadyDeadGuestProcessIsNotAFailure(t *testing.T) {
+	root := vmConfigRoot(t)
+	lease := writeTestVMLease(t, root)
+	guest := &vmHostRunner{tools: map[string]bool{}}
+	runner := newVMRunner(guest, lease, root)
+
+	if err := stopRunProcess(runner, 999); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, command := range guest.commands {
+		if strings.Contains(command, "kill -0 999") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("nothing checked whether the process was already gone: %v", guest.commands)
 	}
 }

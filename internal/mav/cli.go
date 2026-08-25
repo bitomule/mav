@@ -1200,8 +1200,17 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	if fixture != "" {
 		fields["fixture"] = fixture
 	}
+	if c.vmRun != nil && c.vmRun.resigned {
+		fields["resigned"] = "adhoc"
+		fields["resigned_note"] = "the guest's copy lost its provisioning profile and the entitlements tied to it (iCloud, push) so it could launch there; this is no longer the exact binary you ship"
+	}
 	fields["session"] = "direct"
-	if _, ok := c.Runner.(ExecRunner); ok {
+	// The worker is a LOCAL process even in VM mode: it watches this run's
+	// lease and reaps it when nobody renews. That reaping is what hands a
+	// leased machine back after the agent driving it crashes, so keying the
+	// decision off c.Runner -- which is the guest's in VM mode -- would
+	// switch off exactly the safety net the VM needs most.
+	if _, ok := c.hostRunner().(ExecRunner); ok {
 		if session, workerErr := startRunWorker(c.Root, run); workerErr == nil {
 			fields["session"] = session
 		} else {

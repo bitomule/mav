@@ -287,6 +287,13 @@ names `mav vm install` rather than dying deep inside a run. The image build ends
 two switches you flip by hand — macOS 26 has no scriptable way to grant Accessibility
 or Screen Recording — and after that they live on the disk that becomes the image.
 
+Two things worth knowing before you rely on it. A development-signed bundle does not
+launch in a clean VM: the entitlements tied to your team and device list get it killed on
+sight, so mav re-signs the guest's copy ad-hoc and reports `resigned=adhoc` on `open`. You
+are no longer running the exact binary you ship, and iCloud and push go with it. And
+`mav evidence start` records no video on macOS, in a VM or out of it: video capture is
+simulator-only. Screenshots, trees, logs and HAR all work.
+
 The measured findings behind all of this, including four ways of seeding `TCC.db` that
 do not work on macOS 26, live in [`examples/macos-vm/`](examples/macos-vm/).
 

@@ -2,6 +2,8 @@ package mav
 
 import (
 	"context"
+	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -27,18 +29,17 @@ func commandNeedsVM(command string) bool {
 // withVM returns a CLI whose Runner executes on the leased machine, plus
 // the func that tears the attachment down. Called once per invocation,
 // before dispatch, so no individual command has to know it is remote.
-//
-// stop is deliberately not in commandNeedsVM but still attaches here, with
-// reuseOnly: it has to reach the guest to kill the guest's processes, but
-// leasing a machine in order to stop a run that has none would be exactly
-// backwards.
 func (c CLI) withVM(ctx context.Context, command string) (CLI, func(), error) {
 	noop := func() {}
 	cfg, err := LoadConfig(c.Root)
 	if err != nil || !cfg.VM {
 		return c, noop, nil
 	}
-	reuseOnly := command == "stop"
+	// stop and the run worker both reach the guest but must never lease a
+	// machine: stop kills the guest's processes, and the worker exists to
+	// reap a run whose owner is gone. Leasing a machine in order to tidy up
+	// after one is exactly backwards.
+	reuseOnly := command == "stop" || command == "__worker"
 	if !commandNeedsVM(command) && !reuseOnly {
 		return c, noop, nil
 	}
@@ -52,6 +53,11 @@ func (c CLI) withVM(ctx context.Context, command string) (CLI, func(), error) {
 	if err != nil {
 		return c, noop, err
 	}
+	// The provisioner runs its own idle clock, shorter than mav's, and
+	// reclaims a machine that has gone quiet. Touching it at the start of
+	// every command is what keeps a run that is genuinely working from
+	// being reclaimed mid-step.
+	vmHeartbeat(ctx, host, lease)
 	runner := newVMRunner(host, lease, c.Root)
 	attached := c
 	attached.Runner = runner
@@ -155,6 +161,42 @@ func (c CLI) vmPrepareGuest(ctx context.Context, run RunState, appPath string) e
 		if err := c.vmRun.push(ctx, appPath, nil); err != nil {
 			return err
 		}
+		if err := c.vmAdoptApp(ctx, run, appPath); err != nil {
+			return err
+		}
 	}
 	return c.vmRun.vmMirrorDir(ctx, run.Dir)
+}
+
+// vmAdoptApp makes the copy in the guest launchable, and says so when it
+// had to change it.
+//
+// A development-signed bundle carries an embedded provisioning profile and
+// restricted entitlements (iCloud, push) tied to a team and a device list.
+// In a clean VM AMFI kills it on launch with SIGKILL and no message, which
+// surfaces as "the app is not running" three commands later. Re-signing
+// ad-hoc lets it launch, and validating UI does not need those
+// entitlements.
+//
+// It is a real trade and it is reported rather than done quietly: you are
+// no longer running the exact binary you ship. Only the guest's copy is
+// touched; the bundle on this machine is left alone.
+func (c CLI) vmAdoptApp(ctx context.Context, run RunState, appPath string) error {
+	profile := filepath.Join(appPath, "Contents", "embedded.provisionprofile")
+	if probe := c.vmRun.Run(ctx, "test", "-e", profile); probe.Err != nil {
+		return nil
+	}
+	if result := c.vmRun.Run(ctx, "rm", "-f", profile); result.Err != nil {
+		return fmt.Errorf("vm_resign_failed detail=%s", firstLine(strings.TrimSpace(result.Stderr)))
+	}
+	if result := c.vmRun.Run(ctx, "codesign", "-f", "-s", "-", "--deep", appPath); result.Err != nil {
+		return fmt.Errorf("vm_resign_failed detail=%s", firstLine(strings.TrimSpace(result.Stderr)))
+	}
+	// The flag lives on the runner, not on the CLI: CLI travels by value,
+	// and the copy that re-signs is several frames below the one that
+	// reports.
+	c.vmRun.resigned = true
+	appendFile(run.LogsPath, "mav vm: re-signed the guest's copy of "+filepath.Base(appPath)+
+		" ad-hoc so it can launch there; its provisioning profile and the entitlements tied to it (iCloud, push) are gone from that copy\n")
+	return nil
 }

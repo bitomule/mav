@@ -2,6 +2,7 @@ package mav
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -38,23 +39,32 @@ func (c CLI) vmInstall(ctx context.Context) error {
 	fields := map[string]string{}
 	installed := []string{}
 	for _, tool := range []string{vmLeaseTool, vmHostTool} {
+		action := "install"
 		if _, err := host.LookPath(tool); err == nil {
-			continue
+			// An outdated hypervisor is worse than a missing one: it fails
+			// while injecting the SSH key, with a message about terminal
+			// sizes that points nowhere near the cause.
+			if tool != vmHostTool || vmHostTooOld(ctx, host) == "" {
+				continue
+			}
+			action = "upgrade"
 		}
-		result := host.Run(ctx, "brew", "install", vmFormulas[tool])
+		result := host.Run(ctx, "brew", action, vmFormulas[tool])
 		if result.Err != nil {
+			// The formula is named in the error and only there: it is what
+			// the user would have to type by hand if this command cannot
+			// do it for them.
 			return Fail("vm_install_failed", map[string]string{
-				"formula": vmFormulas[tool],
-				"error":   firstLine(strings.TrimSpace(result.Stderr)),
+				"error": firstLine(strings.TrimSpace(result.Stderr)),
+				"next":  "brew " + action + " " + vmFormulas[tool],
 			}).Write(c.Stdout)
 		}
-		installed = append(installed, vmFormulas[tool])
+		installed = append(installed, tool)
 	}
-	if len(installed) > 0 {
-		fields["installed"] = strings.Join(installed, ",")
-	} else {
-		fields["installed"] = "none"
-	}
+	// Deliberately a count and not the formula names. Nobody writing
+	// `vm: true` should end up learning which project ships the hypervisor;
+	// that is exactly the detail the config surface exists to hide.
+	fields["installed"] = strconv.Itoa(len(installed))
 	if missing := vmToolingMissing(host); len(missing) > 0 {
 		return Fail("vm_tooling_missing", map[string]string{
 			"missing": strings.Join(missing, ","),
@@ -91,6 +101,11 @@ func (c CLI) vmDoctorFields(ctx context.Context, cfg Config, fields map[string]s
 		fields["vm_next"] = vmInstallHint
 		// Deliberately not the tool names: doctor is read by agents, and
 		// the actionable datum is the command that fixes it.
+		return
+	}
+	if old := vmHostTooOld(ctx, host); old != "" {
+		fields["vm_tooling"] = "outdated"
+		fields["vm_next"] = vmInstallHint
 		return
 	}
 	fields["vm_tooling"] = "ok"

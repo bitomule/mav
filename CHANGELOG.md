@@ -43,7 +43,19 @@
   Nobody writing `vm: true` is told which hypervisor to go and install, because that is
   exactly the detail the config surface exists to hide. `mav doctor` reports
   `vm_tooling`, `vm_image` and the current lease without ever leasing a machine to do
-  it -- with a budget of two, a diagnostic that takes a slot is not a diagnostic.
+  it -- with a budget of two, a diagnostic that takes a slot is not a diagnostic. Nothing
+  in either command's output names the underlying tool, including on success.
+- **The guest's copy of the bundle is re-signed ad-hoc when it would otherwise not
+  launch**, and `open` says so with `resigned=adhoc`. A development-signed app carries
+  entitlements tied to a team and a device list, and in a clean VM the kernel kills it on
+  launch with no message; the symptom three commands later is "the app is not running",
+  which points at everything except the signature. It is a real trade, iCloud and push go
+  with it, so it is reported rather than done quietly, and only the guest's copy is
+  touched.
+- **An outdated hypervisor is caught before anything is leased.** Below 2.29 it dies while
+  injecting the SSH key with a message about terminal sizes, and nothing in that message
+  points at the version. `mav doctor` reports `vm_tooling=outdated` and `mav vm install`
+  upgrades it.
 - `vm: true` is rejected on a simulator or device target instead of ignored. A simulator
   is reached from this machine and a phone is plugged into it; accepting the flag there
   would leave somebody believing they were isolated when nothing had changed.
