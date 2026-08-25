@@ -43,6 +43,7 @@ func (d *Driver) Provides(target drivers.Target) drivers.CapabilitySet {
 		return drivers.NewSet()
 	}
 	return drivers.NewSet(
+		drivers.CapTreeAX,
 		drivers.CapCoordTap,
 		drivers.CapSwipe,
 		drivers.CapScreenshot,
@@ -111,6 +112,11 @@ func (d *Driver) Cost(c drivers.Capability, target drivers.Target) int {
 		return 0
 	}
 	switch c {
+	case drivers.CapTreeAX:
+		// Behind AXe, which is the canonical tree on a simulator. idb is what
+		// is left when AXe is not healthy, and on a physical device it is the
+		// only one: AXe cannot reach one at all.
+		return 60
 	case drivers.CapCoordTap, drivers.CapSwipe:
 		return 50
 	default:
@@ -261,4 +267,17 @@ func parseCrashNames(stdout string) []string {
 		}
 	}
 	return out
+}
+
+// Tree returns the accessibility tree as idb reports it.
+//
+// The shape is not AXe's, and that is on purpose: the element extractor already
+// reads both, and translating one into the other here would add a lossy step to
+// the only path a physical device has.
+func (d *Driver) Tree(ctx context.Context, target drivers.Target, _ drivers.TreeSpec) (drivers.TreeResult, error) {
+	res := d.exec.Run(ctx, "idb", targetArgs(target, "ui", "describe-all", "--json", "--nested")...)
+	if res.Err != nil {
+		return drivers.TreeResult{}, errors.New(firstLine(res.Stderr))
+	}
+	return drivers.TreeResult{JSON: []byte(res.Stdout)}, nil
 }

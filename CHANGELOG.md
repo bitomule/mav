@@ -2,6 +2,12 @@
 
 ## v0.12.0
 
+- **`ui tree` on a physical device had stopped falling back to idb.** Replacing the
+  per-tool gate with the router left the idb path behind an unconditional block that
+  always returns, so it became dead code and `go vet` was the only one saying so. idb now
+  declares `CapTreeAX` and serves the tree itself, behind AXe on a simulator and alone on
+  a device, which is what the router was meant to decide in the first place.
+
 - **`ui erase` works on macOS**, clearing the field by setting an empty value, which
   doesn't depend on guessing how many deletes to send or on the field holding focus. And
   `ui hideKeyboard` stops failing: there is no on-screen keyboard to hide on macOS, so it

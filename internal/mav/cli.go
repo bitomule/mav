@@ -1661,29 +1661,19 @@ func (c CLI) describeUITree(ctx context.Context, cfg Config, prefer string, incl
 	// died asking for a --udid that does not exist. If there is no driver
 	// for this capability on this target, ErrNoDriver itself explains it
 	// better than a boolean can.
-	{
-		driver, _, err := c.router().Route(ctx, drivers.CapTreeAX, target, routerPrefer(prefer))
-		if err != nil {
-			return describedUITree{}, err
-		}
-		treeDriver, ok := driver.(drivers.TreeDriver)
-		if !ok {
-			return describedUITree{}, fmt.Errorf("tree_tool_missing")
-		}
-		tree, err := treeDriver.Tree(ctx, target, drivers.TreeSpec{})
-		if err != nil {
-			return describedUITree{Driver: driver.ID(), Result: CommandResult{Stderr: err.Error(), Err: err}}, nil
-		}
-		return describedUITree{Driver: driver.ID(), Result: CommandResult{Stdout: string(tree.JSON)}}, nil
+	driver, _, err := c.router().Route(ctx, drivers.CapTreeAX, target, routerPrefer(prefer))
+	if err != nil {
+		return describedUITree{}, err
 	}
-	if prefer == "axe" {
+	treeDriver, ok := driver.(drivers.TreeDriver)
+	if !ok {
 		return describedUITree{}, fmt.Errorf("tree_tool_missing")
 	}
-	if hasTool(cfg, "idb") {
-		result := c.runIDBCommand(ctx, idbTargetArgs(cfg, "ui", "describe-all", "--json", "--nested")...)
-		return describedUITree{Driver: "idb", Result: result}, nil
+	tree, err := treeDriver.Tree(ctx, target, drivers.TreeSpec{})
+	if err != nil {
+		return describedUITree{Driver: driver.ID(), Result: CommandResult{Stderr: err.Error(), Err: err}}, nil
 	}
-	return describedUITree{}, fmt.Errorf("tree_tool_missing")
+	return describedUITree{Driver: driver.ID(), Result: CommandResult{Stdout: string(tree.JSON)}}, nil
 }
 
 func (c CLI) recoverEmptyAXTree(ctx context.Context, cfg Config) error {
