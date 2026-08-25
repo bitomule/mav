@@ -2,6 +2,28 @@
 
 ## v0.12.0
 
+- **Captura de red en macOS, entera.** `mav network start` levanta mitmproxy y **apunta el
+  sistema al proxy él solo** (`networksetup`, sin sudo) sobre el servicio por el que sale la
+  ruta por defecto — no el primero de la lista, que suele ser un interfaz virtual de una VM
+  y no da error, simplemente no captura nada. `network stop` y `mav stop` lo restauran, y el
+  estado previo va al directorio del run porque start y stop son invocaciones distintas: un
+  run que muere no puede dejar la máquina apuntando a un proxy muerto. Si el CA de mitmproxy
+  no está confiado, el comando lo dice con el `security add-trusted-cert` exacto, porque sin
+  eso el HTTPS sale como túneles CONNECT sin contenido: una captura que parece funcionar y
+  no sirve.
+- **Control de tiempo en macOS**, con lo que se puede y sin fingir lo que no. `mav time
+  travel --to` y `mav time reset` mueven el reloj de la máquina; `freeze` y `scale` fallan
+  diciendo que un reloj de sistema corre y no se puede parar ni acelerar. Cerrado por
+  defecto fuera de una VM (`kern.hv_vmm_present`), forzable con `--system-clock`: en iOS
+  simtime interpone el reloj que ve la app, y en macOS la única vía por proceso es
+  libfaketime con `DYLD_INSERT_LIBRARIES`, que el hardened runtime bloquea en cualquier app
+  firmada para distribuir.
+- **`mav location` en macOS explica por qué no puede**, en vez de un "unsupported" pelado
+  que invita a buscar durante una tarde: el "Simulate Location" de Xcode no es del
+  depurador, viaja por el canal DVT —que es de dispositivos iOS— y contra una app de macOS
+  no hace nada; lldb no tiene comando equivalente; las herramientas que existen falsean un
+  iPhone conectado, no el Mac.
+
 - **Un fallo ya sale con código 1.** Todos salían con 0: la línea `fail code=...` se escribía
   y el proceso decía que todo había ido bien, así que `mav ui tap ... && siguiente-paso`
   encadenaba después de un fallo y cada agente tenía que leer stdout para saber si su

@@ -70,7 +70,7 @@ if ! command -v brew >/dev/null 2>&1; then
 fi
 eval "$(/opt/homebrew/bin/brew shellenv)"
 
-brew install bitomule/tap/mav bitomule/tap/axcli
+brew install bitomule/tap/mav bitomule/tap/axcli mitmproxy
 curl -fsSL https://cua.ai/driver/install.sh | bash
 
 # En una sesion SSH no interactiva el PATH es /usr/bin:/bin:/usr/sbin:/sbin, sin
@@ -85,7 +85,7 @@ grep -qs "/opt/homebrew/bin" "$HOME/.bashrc" 2>/dev/null || echo "$LINE" >> "$HO
 # medio construir. Una imagen incompleta anunciada como lista es peor que un
 # fallo: el error reaparece en el primer run, sin relacion aparente con la causa.
 missing=""
-for t in mav cua-driver axcli; do
+for t in mav cua-driver axcli mitmdump; do
   if command -v "$t" >/dev/null 2>&1; then
     printf "      %-10s %s\n" "$t" "$(command -v "$t")"
   else

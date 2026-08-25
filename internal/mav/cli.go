@@ -1194,6 +1194,9 @@ func (c CLI) timeControl(ctx context.Context, opts GlobalOptions, args []string)
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
 	c.resolveConfigTarget(&cfg)
+	if targetKind(cfg) == drivers.KindMac {
+		return c.macTime(ctx, cfg, args)
+	}
 	if targetKind(cfg) != drivers.KindSim {
 		return Fail("time_control_unsupported_on_device", nil).Write(c.Stdout)
 	}
@@ -1832,6 +1835,85 @@ func typeToolMissingFields(cfg Config) map[string]string {
 		return map[string]string{"tool": "cua-driver", "next": "mav setup --install cua-driver"}
 	}
 	return map[string]string{"tool": "axe", "next": "mav setup --install axe"}
+}
+
+// macTime controla el reloj en macOS, que es el de la maquina entera.
+//
+// Se separa del camino de simtime a proposito en vez de fingir que son lo
+// mismo: `freeze` y `scale` no existen aqui -- un reloj de sistema corre y no
+// se puede parar ni acelerar -- y viajar en el tiempo tiene un alcance
+// distinto. Mezclarlos habria dado una API que dice si a cosas que luego no
+// pasan.
+func (c CLI) macTime(ctx context.Context, _ Config, args []string) error {
+	switch args[0] {
+	case "status":
+		return c.OK("time.status", c.macTimeStatus(ctx)).Write(c.Stdout)
+	case "freeze", "scale":
+		return Fail("time_control_unsupported_on_macos", map[string]string{
+			"command": args[0],
+			"why":     "the macOS clock is the machine's; it cannot be frozen or scaled, only moved",
+			"next":    "use mav time travel --to TIMESTAMP",
+		}).Write(c.Stdout)
+	case "reset":
+		if !c.macClockAllowed(ctx, args) {
+			return c.macClockRefusal().Write(c.Stdout)
+		}
+		if err := c.macTimeReset(ctx); err != nil {
+			return Fail("time_reset_failed", map[string]string{"error": firstLine(err.Error())}).Write(c.Stdout)
+		}
+		return c.OK("time.reset", c.macTimeStatus(ctx)).Write(c.Stdout)
+	case "travel":
+		to := flagValue(args[1:], "--to")
+		if to == "" {
+			return Fail("time_travel_target_missing", map[string]string{"usage": "mav time travel --to 2030-01-01T00:00:00Z"}).Write(c.Stdout)
+		}
+		at, err := time.Parse(time.RFC3339, to)
+		if err != nil {
+			return Fail("time_travel_target_invalid", map[string]string{"to": to, "usage": "RFC3339, e.g. 2030-01-01T00:00:00Z"}).Write(c.Stdout)
+		}
+		if !c.macClockAllowed(ctx, args) {
+			return c.macClockRefusal().Write(c.Stdout)
+		}
+		if err := c.macTimeTravel(ctx, at); err != nil {
+			return Fail("time_travel_failed", map[string]string{"error": firstLine(err.Error())}).Write(c.Stdout)
+		}
+		fields := c.macTimeStatus(ctx)
+		fields["to"] = to
+		return c.OK("time.travel", fields).Write(c.Stdout)
+	default:
+		return Fail("time_unknown_command", map[string]string{"command": args[0]}).Write(c.Stdout)
+	}
+}
+
+// macClockAllowed cierra la puerta por defecto fuera de una VM.
+func (c CLI) macClockAllowed(ctx context.Context, args []string) bool {
+	return c.macClockInVM(ctx) || hasFlag(args, "--system-clock")
+}
+
+func (c CLI) macClockRefusal() Output {
+	return Fail("time_control_needs_system_clock", map[string]string{
+		"why":  "on macOS this moves the whole machine's clock, not just the app's",
+		"next": "run it inside a macOS VM, or pass --system-clock if you mean the host",
+	})
+}
+
+// locationUnsupportedFields explica por que en macOS no hay ubicacion falsa, en
+// vez de dejar un "unsupported" pelado que invita a buscar durante una tarde.
+//
+// El "Simulate Location" de Xcode NO es del depurador: viaja por el canal DVT,
+// que es de dispositivos iOS, y contra una app de macOS no hace nada. lldb no
+// tiene comando equivalente, y las herramientas que existen -- LocationSimulator
+// y companía -- falsean un iPhone conectado, no el Mac. CoreLocationCLI solo
+// lee. Lo unico que queda es API privada de locationd o SIP desactivado, y
+// ninguna de las dos es una via que mav vaya a tomar.
+func locationUnsupportedFields(cfg Config) map[string]string {
+	if targetKind(cfg) != drivers.KindMac {
+		return nil
+	}
+	return map[string]string{
+		"why":  "macOS has no supported way to feed CoreLocation a fake fix; Xcode's Simulate Location is an iOS-device feature and does nothing for a Mac app",
+		"next": "run the location-dependent path on a simulator target",
+	}
 }
 
 func tapToolMissingFields(cfg Config) map[string]string {
@@ -3175,11 +3257,11 @@ func (c CLI) location(ctx context.Context, opts GlobalOptions, args []string) er
 	}
 	driver, _, err := c.router().Route(ctx, drivers.CapLocation, target, "")
 	if err != nil {
-		return Fail("location_unsupported", nil).Write(c.Stdout)
+		return Fail("location_unsupported", locationUnsupportedFields(cfg)).Write(c.Stdout)
 	}
 	utility, ok := driver.(drivers.DeviceUtilityDriver)
 	if !ok {
-		return Fail("location_unsupported", nil).Write(c.Stdout)
+		return Fail("location_unsupported", locationUnsupportedFields(cfg)).Write(c.Stdout)
 	}
 	switch args[0] {
 	case "set":
@@ -5371,6 +5453,11 @@ func (c CLI) stop(ctx context.Context, opts GlobalOptions, args []string) error 
 	fields := map[string]string{"run": run.ID, "stopped": strconv.Itoa(stopped), "failed": strconv.Itoa(failed)}
 	if cfg, err := LoadConfig(c.Root); err == nil && cfg.SimulatorUDID != "" {
 		removeSimulatorLock(cfg.SimulatorUDID, c.Root)
+	}
+	// Tambien aqui, y no solo en `network stop`: si el run muere por el camino,
+	// dejar la maquina apuntando a un proxy que ya no existe la deja sin red.
+	if c.restoreMacProxy(ctx, run) {
+		fields["system_proxy"] = "restored"
 	}
 	if failed > 0 {
 		return Fail("stop_failed", fields).Write(c.Stdout)
