@@ -47,6 +47,12 @@ type vmLease struct {
 	Image    string    `json:"image"`
 	Acquired time.Time `json:"acquired"`
 	LastUsed time.Time `json:"last_used"`
+
+	// Verified records that the guest has already been checked for this
+	// lease. The check costs a daemon start, and the machine cannot change
+	// underneath a lease, so paying it on every command would be spending
+	// seconds per tap to re-answer a question that cannot have a new answer.
+	Verified bool `json:"verified"`
 }
 
 func vmLeasePath(root string) string { return filepath.Join(root, MavDir, vmLeaseFile) }
@@ -163,10 +169,19 @@ func vmHostTooOld(ctx context.Context, host Runner) string {
 	return ""
 }
 
-// vmInstallHint is the single sentence every VM failure ends with. Users
-// are never told to install the hypervisor by name: they are told to run
-// the same command that installs everything else mav needs.
+// vmInstallHint is what a TOOLING failure ends with. Users are never told
+// to install the hypervisor by name: they are told to run the same command
+// that installs everything else mav needs.
 const vmInstallHint = "mav setup --install vm"
+
+// vmImageHint is what an IMAGE failure ends with, and it is deliberately
+// not vmInstallHint. Building the image is a separate step that cannot be
+// folded into the install: it takes tens of minutes and ends with two
+// switches a human has to flip by hand, because macOS 26 has no scriptable
+// way to grant Accessibility or Screen Recording. Pointing a missing image
+// at the install command sends the reader to run something that reports the
+// same problem back at them.
+const vmImageHint = "scripts/build-mav-vm-image.sh"
 
 // acquireVMLease returns the machine this project drives, leasing a new one
 // only when there is not already a live one to reuse. Reuse is the common
@@ -196,7 +211,7 @@ func (c CLI) acquireVMLease(ctx context.Context, host Runner) (vmLease, error) {
 		}
 	}
 	if !vmImageReady(ctx, host) {
-		return vmLease{}, fmt.Errorf("vm_image_missing image=%s next=%s", vmImage, vmInstallHint)
+		return vmLease{}, fmt.Errorf("vm_image_missing image=%s next=%s", vmImage, vmImageHint)
 	}
 	id, err := vmStartLease(ctx, host)
 	if err != nil {

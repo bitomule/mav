@@ -145,7 +145,9 @@ func startRunWorker(root string, run RunState) (string, error) {
 		_ = log.Close()
 	}()
 	if cmd.Process != nil {
-		appendProcess(run, "worker", cmd.Process.Pid, executable+" __worker")
+		// Host: the worker is started here even when the app under test is
+		// in a VM, because what it watches -- the run's lease -- is here.
+		appendHostProcess(run, "worker", cmd.Process.Pid, executable+" __worker")
 		_ = os.WriteFile(filepath.Join(run.Dir, "worker.pid"), []byte(fmt.Sprint(cmd.Process.Pid)), 0o644)
 	}
 	deadline := time.Now().Add(2 * time.Second)

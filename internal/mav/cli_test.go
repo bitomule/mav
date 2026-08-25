@@ -2832,3 +2832,30 @@ func TestTapToolGateIsNotIOSShaped(t *testing.T) {
 		t.Fatal("en simulador sigue siendo axe")
 	}
 }
+
+// TestVersionIsAnswerableAtAll: until this existed `mav --version` answered
+// unknown_command, which turns every bug report and every run whose evidence
+// is read weeks later into a guess about which mav produced it.
+func TestVersionIsAnswerableAtAll(t *testing.T) {
+	for _, args := range [][]string{{"--version"}, {"version"}} {
+		var out bytes.Buffer
+		cli := CLI{Runner: &recordingRunner{}, Stdout: &out, Stderr: &bytes.Buffer{}, Root: t.TempDir()}
+		if err := cli.Run(context.Background(), args); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		// The same shape as every other command, so an agent that parses
+		// the rest needs no special case for this one.
+		if !strings.Contains(out.String(), "ok cmd=version version="+Version) {
+			t.Fatalf("%v answered %q", args, out.String())
+		}
+	}
+}
+
+// TestAnUnstampedBuildDoesNotClaimAReleaseNumber: the version is stamped at
+// link time by the release build. A locally built binary reporting a release
+// number would send someone chasing a bug in code that was never shipped.
+func TestAnUnstampedBuildDoesNotClaimAReleaseNumber(t *testing.T) {
+	if Version != "dev" {
+		t.Fatalf("an unstamped build reports %q", Version)
+	}
+}

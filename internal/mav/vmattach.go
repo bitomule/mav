@@ -63,6 +63,17 @@ func (c CLI) withVM(ctx context.Context, command string) (CLI, func(), error) {
 	attached.Runner = runner
 	attached.host = host
 	attached.vmRun = runner
+	if !lease.Verified {
+		if err := c.verifyGuest(ctx, runner); err != nil {
+			// The machine goes back rather than being left holding a slot:
+			// it is unusable, and there are only two.
+			c.releaseVMLease(ctx, host)
+			runner.closeControlMaster()
+			return c, noop, err
+		}
+		lease.Verified = true
+		_ = writeVMLease(c.Root, lease)
+	}
 	return attached, func() { c.detachVM(ctx, runner) }, nil
 }
 
@@ -140,7 +151,11 @@ func vmFailureFields(err error) map[string]string {
 	if idx := strings.IndexByte(message, ' '); idx > 0 {
 		reason = message[:idx]
 	}
-	return map[string]string{"reason": reason, "error": message, "next": vmInstallHint}
+	next := vmInstallHint
+	if strings.HasPrefix(reason, "vm_image") {
+		next = vmImageHint
+	}
+	return map[string]string{"reason": reason, "error": message, "next": next}
 }
 
 // hostCLI is this CLI with the local Runner back. The launch recipe needs

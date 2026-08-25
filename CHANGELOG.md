@@ -1,5 +1,53 @@
 # Changelog
 
+## Unreleased
+
+### mav can say which mav it is
+
+- **`mav --version` and `mav version`.** Until now they answered
+  `unknown_command`, which turned every bug report, and every run whose evidence is read
+  weeks later, into a guess about which binary produced it. `mav doctor` reports
+  `mav_version` for the same reason: a diagnostic that cannot say what produced it is
+  half a diagnostic.
+- Stamped at link time from the release tag. An unstamped build reports `dev` and never
+  claims a release number it is not, so nobody goes chasing a bug in code that was never
+  shipped. The Homebrew formula's own test now asserts the released binary reports the
+  version the formula claims.
+
+### The VM environment is checked, not assumed
+
+- **The machine is verified when it is taken, once.** An image built before a driver
+  existed, or one whose permission switches were never flipped, used to fail deep inside
+  a run with an error about a window or an element. Measured on a real image with the
+  driver hidden from the guest's PATH: the first symptom was `ui tree` reporting that the
+  app was not running. `mav` now answers `vm_image_incomplete missing=cua-driver
+  next=scripts/build-mav-vm-image.sh` before the run starts, and hands the unusable
+  machine straight back rather than letting it hold one of the two available slots.
+- **The driver's own permissions are part of that check**, and a daemon that has not
+  answered yet is not read as granted. Asked with no daemon running, the driver says it
+  does not know rather than guessing; treating that as "granted" would let through
+  exactly the image this is meant to catch. The daemon is started here too, which is
+  where it belongs: it is per-machine setup, so the first `ui tree` of every run stops
+  paying for it.
+- **A missing image no longer points at the installer.** `mav setup --install vm` does
+  not build the image, so `vm_image=missing next=mav setup --install vm` sent the reader
+  to run a command that reported the same line back at them. Image problems now name
+  `scripts/build-mav-vm-image.sh`; tooling problems still name the install command.
+- `mav doctor` reports `vm_guest` when a lease is held. Only then: checking the guest
+  means talking to it, and a diagnostic that leases a machine to report that leasing
+  works would take one of the two slots the run needs.
+- **A run in a VM has processes on both machines, and `mav stop` now knows which is
+  which.** The log stream and the recorder are the guest's; the run worker is this
+  machine's, because what it watches -- the run's lease -- is here. Every stop was being
+  sent to the guest, so the worker's pid went over there: it did not fail loudly, it
+  looked for that number on the wrong machine while the real worker kept running here
+  until its lease expired. Caught by a real run reporting `stop_failed failed=1`; the
+  same code would have signalled a stranger's process in the guest had that number been
+  in use. Process records now carry which machine they belong to.
+- The check does **not** ask the guest for a mav. The image installs one, but mav runs on
+  the host and reaches in for the drivers; it never invokes a mav over there. An earlier
+  draft demanded it and would have refused a usable image over a binary nothing calls.
+
 ## v0.13.0
 
 ### macOS video

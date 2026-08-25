@@ -70,7 +70,10 @@ func vmConfigRoot(t *testing.T) string {
 
 func writeTestVMLease(t *testing.T, root string) vmLease {
 	t.Helper()
-	lease := vmLease{ID: "lease-1", Target: "admin@10.0.0.9", Image: vmImage, Acquired: time.Now(), LastUsed: time.Now()}
+	// Verified on purpose: these tests drive leases that already exist, and
+	// re-checking the guest is neither what they are about nor something a
+	// live lease would do again.
+	lease := vmLease{ID: "lease-1", Target: "admin@10.0.0.9", Image: vmImage, Acquired: time.Now(), LastUsed: time.Now(), Verified: true}
 	if err := writeVMLease(root, lease); err != nil {
 		t.Fatal(err)
 	}
@@ -574,5 +577,188 @@ func TestAnAlreadyDeadGuestProcessIsNotAFailure(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("nothing checked whether the process was already gone: %v", guest.commands)
+	}
+}
+
+// TestABrokenImageIsCaughtWhenTheMachineIsTaken: an image built before a
+// driver existed, or one whose permission switches were never flipped,
+// otherwise fails deep inside a run with an error about a window or an
+// element. Measured on a real image: with the driver missing from the
+// guest's PATH, the first symptom was `ui tree` saying the app was not
+// running.
+func TestABrokenImageIsCaughtWhenTheMachineIsTaken(t *testing.T) {
+	root := vmConfigRoot(t)
+	host := &vmHostRunner{
+		tools: map[string]bool{"crabbox": true, "tart": true},
+		stdout: map[string]string{
+			"tart --version":  "2.32.1\n",
+			"tart list":       vmImage + "\n",
+			"crabbox warmup":  "leased lease=cbx_new slug=x\n",
+			"crabbox inspect": `{"sshUser":"admin","sshHost":"10.0.0.9","sshPort":"22","ready":true}`,
+			// The guest answers nothing for `command -v`, so every tool
+			// mav needs looks absent.
+		},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: host, Stdout: &out, Stderr: &bytes.Buffer{}, Root: root}
+
+	_ = cli.Run(context.Background(), []string{"open"})
+	if !strings.Contains(out.String(), "vm_image_incomplete") {
+		t.Fatalf("a machine with no drivers was accepted: %s", out.String())
+	}
+	if !strings.Contains(out.String(), vmImageHint) {
+		t.Fatalf("the failure must name the command that rebuilds the image: %s", out.String())
+	}
+	if !host.sent("crabbox stop --id") {
+		t.Fatalf("an unusable machine was left holding one of the two slots: %v", host.commands)
+	}
+}
+
+// TestAMissingImageDoesNotPointAtTheInstaller: `mav setup --install vm` does
+// not build the image, so sending the reader there sends them to run
+// something that reports this same problem back at them.
+func TestAMissingImageDoesNotPointAtTheInstaller(t *testing.T) {
+	root := vmConfigRoot(t)
+	host := &vmHostRunner{
+		tools:  map[string]bool{"crabbox": true, "tart": true},
+		stdout: map[string]string{"tart --version": "2.32.1\n", "tart list": "something-else\n"},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: host, Stdout: &out, Stderr: &bytes.Buffer{}, Root: root}
+
+	_ = cli.Run(context.Background(), []string{"doctor"})
+	if !strings.Contains(out.String(), "vm_image=missing") {
+		t.Fatalf("doctor did not report the missing image: %s", out.String())
+	}
+	if !strings.Contains(out.String(), vmImageHint) {
+		t.Fatalf("doctor must point at the image build: %s", out.String())
+	}
+	if strings.Contains(out.String(), "vm_next="+vmInstallHint) {
+		t.Fatalf("doctor sent the reader to a command that cannot fix this: %s", out.String())
+	}
+}
+
+// TestTheGuestIsCheckedOncePerMachine: the check costs a daemon start, and a
+// machine cannot change underneath its own lease. Paying it per command
+// would spend seconds on every tap re-answering a question with no new
+// answer.
+func TestTheGuestIsCheckedOncePerMachine(t *testing.T) {
+	root := vmConfigRoot(t)
+	writeTestVMLease(t, root)
+	host := &vmHostRunner{
+		tools:  map[string]bool{"crabbox": true, "tart": true},
+		stdout: map[string]string{"crabbox inspect": `{"sshUser":"admin","sshHost":"10.0.0.9","sshPort":"22","ready":true}`},
+	}
+	cli := CLI{Runner: host, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, Root: root}
+
+	_, detach, err := cli.withVM(context.Background(), "ui")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer detach()
+	if host.sent("CuaDriver") {
+		t.Fatalf("a lease that was already checked was checked again: %v", host.commands)
+	}
+}
+
+// TestAnUnansweringDaemonIsNotReadAsGranted: asked with no daemon running,
+// the driver says it does not know rather than guessing. Reading that as
+// "granted" would let an image with the switches off through, which is the
+// exact failure this check exists to catch.
+func TestAnUnansweringDaemonIsNotReadAsGranted(t *testing.T) {
+	previous := vmGuestDaemonWait
+	vmGuestDaemonWait = 10 * time.Millisecond
+	defer func() { vmGuestDaemonWait = previous }()
+
+	root := vmConfigRoot(t)
+	lease := writeTestVMLease(t, root)
+	guest := &vmHostRunner{
+		tools:  map[string]bool{},
+		stdout: map[string]string{"permissions status": `{"daemon_running":false,"status":"unknown"}`},
+	}
+	runner := newVMRunner(guest, lease, root)
+	cli := CLI{Runner: runner, host: guest, vmRun: runner, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, Root: root}
+
+	grants := cli.guestDriverGrants(context.Background(), runner)
+	if len(grants) == 0 {
+		t.Fatal("a daemon that never answered was read as fully granted")
+	}
+}
+
+// TestTheGuestIsNotAskedForAMavItNeverRuns: mav runs on THIS machine and
+// reaches into the guest for the drivers; it never invokes a mav over
+// there. An earlier draft of the image check demanded one, which would have
+// refused a perfectly usable image over a binary nothing calls.
+func TestTheGuestIsNotAskedForAMavItNeverRuns(t *testing.T) {
+	for _, tool := range vmGuestTools {
+		if tool == "mav" {
+			t.Fatal("the image check requires a mav in the guest that nothing ever runs")
+		}
+	}
+}
+
+// TestTheWorkerIsStoppedHereNotInTheGuest: a run in VM mode has processes on
+// BOTH machines -- the log stream is the guest's, the run worker is this
+// one's -- and a pid only means something on one of them. Sending the
+// worker's pid into the guest does not fail loudly: it hits whatever
+// process holds that number over there while the worker keeps running here,
+// which is how a "stopped" run kept a live worker for its whole lease.
+func TestTheWorkerIsStoppedHereNotInTheGuest(t *testing.T) {
+	root := vmConfigRoot(t)
+	writeTestVMLease(t, root)
+	host := &vmHostRunner{
+		tools:  map[string]bool{"crabbox": true, "tart": true},
+		stdout: map[string]string{"crabbox inspect": `{"sshUser":"admin","sshHost":"10.0.0.9","sshPort":"22","ready":true}`},
+	}
+	run, err := NewProjectRunState(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	// A guest process and a host process, recorded the way the run records
+	// them.
+	appendProcess(run, "probe-logs", 4242, "log stream")
+	appendHostProcess(run, "worker", 4243, "mav __worker")
+
+	cli := CLI{Runner: host, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, Root: root}
+	_ = cli.Run(context.Background(), []string{"stop"})
+
+	guestKills := 0
+	for _, command := range host.commands {
+		if !strings.Contains(command, "kill -INT") {
+			continue
+		}
+		guestKills++
+		if strings.Contains(command, "4243") {
+			t.Fatalf("the worker's pid was signalled inside the guest: %s", command)
+		}
+	}
+	if guestKills == 0 {
+		t.Fatalf("the guest's own process was never stopped: %v", host.commands)
+	}
+}
+
+// TestAHostProcessSurvivesAReadOfItsRecord: the marker has to come back off
+// disk, or the distinction is lost the moment stop reloads the run.
+func TestAHostProcessSurvivesAReadOfItsRecord(t *testing.T) {
+	root := vmConfigRoot(t)
+	run, err := NewProjectRunState(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendProcess(run, "probe-logs", 11, "log stream")
+	appendHostProcess(run, "worker", 12, "mav __worker")
+
+	records := loadProcessRecords(run)
+	if len(records) != 2 {
+		t.Fatalf("records=%v", records)
+	}
+	if records[0].Host {
+		t.Fatal("a target-side process came back marked as this machine's")
+	}
+	if !records[1].Host {
+		t.Fatal("the worker came back unmarked, so stop would signal it in the guest")
 	}
 }

@@ -8,6 +8,10 @@ description: Use MAV, the Mobile Agent Verifier CLI, to validate iOS and macOS a
 Use `mav` when validating an iOS app locally. MAV is deterministic: it
 does not explore or repair routes by itself. The agent decides the next action.
 
+`mav --version` reports the binary's version, and `mav doctor` carries it as
+`mav_version`. Include it when you report a problem: behaviour differs between releases
+and a report without it starts with a guess.
+
 ## Platforms
 
 `mav` drives iOS simulators, physical iOS devices, and **macOS apps**. The platform comes
@@ -77,9 +81,13 @@ What you do need to know:
 
 - `mav doctor` reports `vm_tooling`, `vm_image` and `vm_lease`. Run it first when a VM
   project misbehaves.
-- Any VM failure (`vm_tooling_missing`, `vm_tooling_outdated`, `vm_image_missing`,
-  `vm_lease_failed`) carries `next=mav setup --install vm`. Tell the user to run that; do
-  not go looking for the underlying hypervisor.
+- Every VM failure carries the command that fixes it in `next`. Tell the user to run
+  that; do not go looking for the underlying hypervisor.
+  - `vm_tooling_missing`, `vm_tooling_outdated` → `mav setup --install vm`
+  - `vm_image_missing`, `vm_image_incomplete`, `vm_image_ungranted` →
+    `scripts/build-mav-vm-image.sh`. The last one names which permission switch is off,
+    and flipping it needs a human at the VM's screen: macOS has no scriptable way to
+    grant those.
 - **Call `mav stop` when you are done.** Only two macOS VMs can exist at once, so a
   machine you leave leased blocks the next run. An idle timeout catches the case where
   you crash, but it costs the user twenty minutes of a slot they could be using.
