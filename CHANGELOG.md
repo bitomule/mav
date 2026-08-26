@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.15.0
+
+### The macOS target answers about itself, not about a simulator
+
+Validating a real Mac app from a VM showed that every dead end still spoke iOS. Now:
+
+- **`ui tree` names the mac driver when it is missing.** The `tool_missing` answer on a
+  macos target used to prescribe `mav setup --install axe idb`, two iOS tools that provide
+  nothing there; it now names `cua-driver` and carries the router's own rejection detail,
+  so "not installed" and "daemon down" stop looking identical.
+- **A failed `capture` says it is a permission, not a display bug.** CGDisplay's
+  `could not create image from display` means the capturing process has no Screen
+  Recording grant; `capture_failed` (and the evidence-step captures) now report
+  `cause=screen_recording_permission_missing` with the fix. The capture `tool_missing`
+  also names the mac path instead of `axe|idb|xcrun`.
+- **`doctor` diagnoses the selected target.** It reports `target_kind` and the active
+  profile, prescribes `cua-driver` instead of axe/idb/baguette on macos, counts axcli for
+  semantic taps (and only for them: it has no tree), reports `multitouch=unsupported` and
+  `wall_clock=system` instead of prescribing simulator tools, and emits `mac_*` capability
+  rows instead of `sim_*/device_*` ones. The correct macOS launch recipe — empty `launch`
+  plus a bundle id, because `open` does not propagate environment — is no longer flagged
+  incomplete.
+- **`ui doubleTap` works on macOS.** Selector (`--id`/`--text`, or any rich selector,
+  resolved against the tree) or `--x`/`--y`, routed to cua-driver's dedicated
+  `double_click` tool — two single clicks can never form a double click, the event's
+  clickCount never reaches 2. Coordinate intake validates both axes and rejects typos
+  instead of clicking the menu bar at `(X, 0)`.
+- **Coordinate taps route on macOS.** `ui tap --x --y` hard-preferred idb, so it died
+  `tool_missing tool=idb` on a mac even with the mac driver healthy.
+
 ## v0.14.0
 
 ### mav can say which mav it is
