@@ -2150,9 +2150,14 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 	}
 	if x != "" && y != "" {
 		if !caps.CoordinateTap {
-			fields := map[string]string{"tool": "idb"}
-			if caps.IDBNext != "" {
-				fields["next"] = caps.IDBNext
+			// tapToolMissingFields keeps the guidance per platform: on a mac
+			// the coordinate tap comes from cua-driver, not idb.
+			fields := tapToolMissingFields(cfg)
+			if targetKind(cfg) != drivers.KindMac {
+				fields = map[string]string{"tool": "idb"}
+				if caps.IDBNext != "" {
+					fields["next"] = caps.IDBNext
+				}
 			}
 			return Fail("tool_missing", fields).Write(c.Stdout)
 		}
