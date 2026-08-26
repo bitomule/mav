@@ -51,12 +51,13 @@ type Cua struct {
 }
 
 var (
-	_ drivers.TreeDriver       = (*Cua)(nil)
-	_ drivers.ScreenshotDriver = (*Cua)(nil)
-	_ drivers.TapDriver        = (*Cua)(nil)
-	_ drivers.TypeDriver       = (*Cua)(nil)
-	_ drivers.GestureDriver    = (*Cua)(nil)
-	_ drivers.TextDriver       = (*Cua)(nil)
+	_ drivers.TreeDriver            = (*Cua)(nil)
+	_ drivers.ScreenshotDriver      = (*Cua)(nil)
+	_ drivers.TapDriver             = (*Cua)(nil)
+	_ drivers.TypeDriver            = (*Cua)(nil)
+	_ drivers.GestureDriver         = (*Cua)(nil)
+	_ drivers.TextDriver            = (*Cua)(nil)
+	_ drivers.AdvancedGestureDriver = (*Cua)(nil)
 )
 
 // NewCua builds the driver.
@@ -73,6 +74,7 @@ func (d *Cua) Provides(target drivers.Target) drivers.CapabilitySet {
 		drivers.CapScreenshot,
 		drivers.CapCoordTap,
 		drivers.CapSemanticTap,
+		drivers.CapDoubleTap,
 		drivers.CapType,
 		drivers.CapSwipe,
 		drivers.CapErase,
@@ -84,7 +86,7 @@ func (d *Cua) Provides(target drivers.Target) drivers.CapabilitySet {
 // covering all four capabilities with verified background delivery.
 func (d *Cua) Cost(c drivers.Capability, _ drivers.Target) int {
 	switch c {
-	case drivers.CapTreeAX, drivers.CapScreenshot, drivers.CapCoordTap, drivers.CapSemanticTap, drivers.CapType, drivers.CapSwipe, drivers.CapErase:
+	case drivers.CapTreeAX, drivers.CapScreenshot, drivers.CapCoordTap, drivers.CapSemanticTap, drivers.CapDoubleTap, drivers.CapType, drivers.CapSwipe, drivers.CapErase:
 		return 0
 	case drivers.CapVideo:
 		// Ahead of screencapture, which only records when mav already runs
@@ -563,6 +565,47 @@ func (d *Cua) Tap(ctx context.Context, target drivers.Target, spec drivers.TapSp
 		return drivers.TapResult{}, err
 	}
 	return drivers.TapResult{MatchedID: spec.Selector.ID, MatchedText: spec.Selector.Text}, nil
+}
+
+// DoubleTap double-clicks. cua-driver ships a dedicated `double_click`
+// tool, and that is why this is not two Taps in a row: two separate `click`
+// calls arrive as two single clicks — the event's clickCount never reaches
+// 2 — and nothing that opens on a double click would react. The selector
+// path goes by element token for the same reason Tap does: it lands on
+// background windows without moving the cursor or stealing focus.
+func (d *Cua) DoubleTap(ctx context.Context, target drivers.Target, spec drivers.TapSpec) error {
+	if spec.Selector.ID == "" && spec.Selector.Text == "" && spec.X == 0 && spec.Y == 0 {
+		return errors.New("cua: double tap requires a selector or coordinates")
+	}
+	state, err := d.windowState(ctx, target)
+	if err != nil {
+		return err
+	}
+	args := map[string]any{"pid": state.PID}
+	if spec.Selector.ID != "" || spec.Selector.Text != "" {
+		el, ok := findCuaElement(state, spec.Selector)
+		if !ok {
+			return errors.New("cua: no element matched the selector")
+		}
+		args["element_token"] = el.Token
+	} else {
+		args["x"], args["y"] = spec.X, spec.Y
+	}
+	_, err = d.cuaCall(ctx, "double_click", args)
+	return err
+}
+
+// Drag and DragPath are here because AdvancedGestureDriver is a whole
+// interface, and they fail saying why. cua-driver does ship a `drag` tool;
+// leaving it unwired is deliberate, not an oversight — no current flow needs
+// a desktop drag, and shipping an unexercised gesture would claim a
+// capability nothing has verified.
+func (d *Cua) Drag(context.Context, drivers.Target, drivers.DragSpec) error {
+	return errors.New("cua: drag is not wired on macOS yet; use ui tap/doubleTap/swipe")
+}
+
+func (d *Cua) DragPath(context.Context, drivers.Target, drivers.DragPathSpec) error {
+	return errors.New("cua: drag paths are an iOS driver feature")
 }
 
 // Type writes into the selector's element.
