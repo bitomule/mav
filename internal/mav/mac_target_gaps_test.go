@@ -215,3 +215,88 @@ func TestUIDoubleTapOnMacWithoutTheDriverPointsAtIt(t *testing.T) {
 		t.Fatalf("a mac double tap must be sent to the mac driver: %q", got)
 	}
 }
+
+// TestUITapByCoordinatesOnMacRoutesToTheMacDriver: doctor now reports
+// coordinate_tap_driver=cua, and the coordinate branch hard-preferred idb —
+// which provides nothing on a Mac — so every `ui tap --x --y` died
+// tool_missing tool=idb while the healthy mac driver sat there.
+func TestUITapByCoordinatesOnMacRoutesToTheMacDriver(t *testing.T) {
+	var out bytes.Buffer
+	runner := fakeRunner{
+		tools: map[string]bool{"cua-driver": true},
+		out: map[string]string{
+			`cua-driver call list_apps {}`:                                 `{"apps":[{"bundle_id":"com.example.app","name":"App","pid":4242,"running":true}]}`,
+			`cua-driver call list_windows {"pid":4242}`:                    `{"windows":[{"window_id":11,"pid":4242,"app_name":"App","title":"Main","is_on_screen":true,"bounds":{"width":800,"height":600}}]}`,
+			`cua-driver call get_window_state {"pid":4242,"window_id":11}`: `{"snapshot_id":"s1","elements":[{"element_index":1,"element_token":"s1:1","role":"AXStaticText","label":"Team sync","frame":{"x":10,"y":20,"w":100,"h":30}}]}`,
+			`cua-driver call click {"pid":4242,"x":60,"y":35}`:             `{"effect":"unverifiable"}`,
+		},
+	}
+	cli := CLI{Runner: runner, Root: macGapsConfig(t), Stdout: &out, Stderr: &bytes.Buffer{}}
+	_ = cli.Run(context.Background(), []string{"ui", "tap", "--x", "60", "--y", "35"})
+	got := out.String()
+	if !strings.Contains(got, "ok cmd=ui.tap") || !strings.Contains(got, "driver=cua") {
+		t.Fatalf("a mac coordinate tap must route to cua: %q", got)
+	}
+	if strings.Contains(got, "tool=idb") {
+		t.Fatalf("idb has no business on a mac target: %q", got)
+	}
+}
+
+// TestUIDoubleTapOnMacResolvesRichSelectors: forwarding only --id/--text to
+// the driver silently dropped every other predicate — a --text-contains
+// selector reached the driver empty and was rejected as if none was given.
+func TestUIDoubleTapOnMacResolvesRichSelectors(t *testing.T) {
+	var out bytes.Buffer
+	runner := fakeRunner{
+		tools: map[string]bool{"cua-driver": true},
+		out: map[string]string{
+			`cua-driver call list_apps {}`:                                 `{"apps":[{"bundle_id":"com.example.app","name":"App","pid":4242,"running":true}]}`,
+			`cua-driver call list_windows {"pid":4242}`:                    `{"windows":[{"window_id":11,"pid":4242,"app_name":"App","title":"Main","is_on_screen":true,"bounds":{"width":800,"height":600}}]}`,
+			`cua-driver call get_window_state {"pid":4242,"window_id":11}`: `{"snapshot_id":"s1","elements":[{"element_index":1,"element_token":"s1:1","role":"AXStaticText","label":"Team sync","frame":{"x":10,"y":20,"w":100,"h":30}}]}`,
+			`cua-driver call double_click {"pid":4242,"x":60,"y":35}`:      `{"effect":"unverifiable"}`,
+		},
+	}
+	cli := CLI{Runner: runner, Root: macGapsConfig(t), Stdout: &out, Stderr: &bytes.Buffer{}}
+	_ = cli.Run(context.Background(), []string{"ui", "doubleTap", "--text-contains", "Team"})
+	got := out.String()
+	if !strings.Contains(got, "ok cmd=ui.doubleTap") {
+		t.Fatalf("a rich selector must resolve and double-click: %q", got)
+	}
+	if !strings.Contains(got, "x=60") || !strings.Contains(got, "y=35") {
+		t.Fatalf("the matched element's center must be the click point: %q", got)
+	}
+}
+
+// TestUIDoubleTapOnMacRejectsHalfCoordinates: --x without --y used to click
+// at (X, 0) — the menu bar — and report ok; a typo in one axis did the same.
+func TestUIDoubleTapOnMacRejectsHalfCoordinates(t *testing.T) {
+	for _, args := range [][]string{
+		{"ui", "doubleTap", "--x", "100"},
+		{"ui", "doubleTap", "--x", "100", "--y", "3O"},
+	} {
+		var out bytes.Buffer
+		cli := CLI{Runner: fakeRunner{tools: map[string]bool{"cua-driver": true}}, Root: macGapsConfig(t), Stdout: &out, Stderr: &bytes.Buffer{}}
+		_ = cli.Run(context.Background(), args)
+		if got := out.String(); !strings.Contains(got, "fail code=gesture_invalid") {
+			t.Fatalf("%v must be rejected, not clicked at a guessed point: %q", args, got)
+		}
+	}
+}
+
+// TestDoctorCountsAxcliForSemanticTaps: tapToolPresent accepts axcli, so a
+// Mac with only axcli CAN tap by id/text — doctor calling that setup broken
+// contradicted the commands that then worked.
+func TestDoctorCountsAxcliForSemanticTaps(t *testing.T) {
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{tools: map[string]bool{"axcli": true}}, Root: macGapsConfig(t), Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"doctor"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "semantic_actions=ok") || !strings.Contains(got, "semantic_actions_driver=axcli") {
+		t.Fatalf("axcli semantic taps must be reported: %q", got)
+	}
+	if !strings.Contains(got, "accessibility=missing") || strings.Contains(got, "mac_tree_driver=axcli") {
+		t.Fatalf("axcli has no tree and must not be reported as having one: %q", got)
+	}
+}

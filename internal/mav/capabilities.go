@@ -47,25 +47,36 @@ func (c CLI) resolveCapabilities(ctx context.Context, cfg Config) Capabilities {
 	}
 	caps := Capabilities{Tools: tools, Kind: targetKind(cfg)}
 	caps.LaunchRecipe = hasLaunchCommands(cfg.Launch.Commands) || cfg.BundleID != ""
+	// Platform-neutral capabilities resolve BEFORE the kind split so the two
+	// branches cannot drift apart: a check added to one and forgotten in the
+	// other fails on exactly the platform nobody re-tested.
+	if tools["mitmdump"] {
+		caps.NetworkCapture = true
+		caps.NetworkCaptureDriver = "mitmproxy"
+	}
+	if tools["xcrun"] {
+		caps.Debug = c.Runner.Run(ctx, "xcrun", "--find", "lldb-dap").Err == nil
+	}
 	if caps.Kind == drivers.KindMac {
 		// A mac target's tree, taps and typing all come from cua-driver;
 		// reading axe/idb presence here would report iOS state about a
-		// platform those tools cannot touch.
-		if tools["cua-driver"] {
+		// platform those tools cannot touch. axcli is the semantic-tap
+		// escape hatch (tapToolPresent accepts it too): a Mac with only
+		// axcli can tap by id/text, and doctor saying otherwise would call
+		// a working setup broken. It exposes no tree, so accessibility
+		// stays honest.
+		switch {
+		case tools["cua-driver"]:
 			caps.Accessibility = true
 			caps.AccessibilityDriver = "cua"
 			caps.SemanticActions = true
 			caps.CoordinateTap = true
 			caps.CoordinateTapDriver = "cua"
-		}
-		if tools["mitmdump"] {
-			caps.NetworkCapture = true
-			caps.NetworkCaptureDriver = "mitmproxy"
+		case tools["axcli"]:
+			caps.AccessibilityDriver = "axcli"
+			caps.SemanticActions = true
 		}
 		c.resolveMacPermissions(ctx, &caps)
-		if tools["xcrun"] {
-			caps.Debug = c.Runner.Run(ctx, "xcrun", "--find", "lldb-dap").Err == nil
-		}
 		return caps
 	}
 	if tools["axe"] {
@@ -91,14 +102,7 @@ func (c CLI) resolveCapabilities(ctx context.Context, cfg Config) Capabilities {
 		caps.Multitouch = true
 		caps.MultitouchDriver = "baguette"
 	}
-	if tools["mitmdump"] {
-		caps.NetworkCapture = true
-		caps.NetworkCaptureDriver = "mitmproxy"
-	}
 	caps.WallClock = tools["simtime"]
-	if tools["xcrun"] {
-		caps.Debug = c.Runner.Run(ctx, "xcrun", "--find", "lldb-dap").Err == nil
-	}
 	return caps
 }
 

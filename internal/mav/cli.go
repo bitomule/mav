@@ -582,8 +582,12 @@ func addDoctorMatrixFields(fields map[string]string, caps Capabilities) {
 	if caps.Kind == drivers.KindMac {
 		// The sim_*/device_* rows describe iOS targets; printing them about
 		// a mac would claim simulator coverage the mac driver never gives.
-		if caps.AccessibilityDriver != "" {
+		// Tree and semantic tap are gated separately: axcli taps but has no
+		// tree, and naming it as tree driver would be the same class of lie.
+		if caps.Accessibility {
 			fields["mac_tree_driver"] = caps.AccessibilityDriver
+		}
+		if caps.SemanticActions {
 			fields["mac_semantic_tap_driver"] = caps.AccessibilityDriver
 		}
 		if caps.CoordinateTapDriver != "" {
@@ -2166,14 +2170,26 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		target := targetFromConfig(cfg)
 		// CapCoordTap: on sim axe/baguette/idb tie at cost 50 and the ID
 		// tiebreak would give axe, not idb; without this prefer the output's
-		// driver= would change.
-		driver, _, err := c.router().Route(ctx, drivers.CapCoordTap, target, "idb")
+		// driver= would change. The prefer is iOS-only: idb provides nothing
+		// on a mac, and hard-preferring it there made the router reject the
+		// healthy mac driver and every coordinate tap die tool_missing.
+		coordPrefer := "idb"
+		if targetKind(cfg) == drivers.KindMac {
+			coordPrefer = ""
+		}
+		coordMissing := func() map[string]string {
+			if targetKind(cfg) == drivers.KindMac {
+				return tapToolMissingFields(cfg)
+			}
+			return map[string]string{"tool": "idb"}
+		}
+		driver, _, err := c.router().Route(ctx, drivers.CapCoordTap, target, coordPrefer)
 		if err != nil {
-			return Fail("tool_missing", map[string]string{"tool": "idb"}).Write(c.Stdout)
+			return Fail("tool_missing", coordMissing()).Write(c.Stdout)
 		}
 		td, ok := driver.(drivers.TapDriver)
 		if !ok {
-			return Fail("tool_missing", map[string]string{"tool": "idb"}).Write(c.Stdout)
+			return Fail("tool_missing", coordMissing()).Write(c.Stdout)
 		}
 		tapErr := error(nil)
 		_, tapErr = td.Tap(ctx, target, drivers.TapSpec{X: xi, Y: yi})
@@ -2738,10 +2754,26 @@ func (c CLI) macDoubleTap(ctx context.Context, opts GlobalOptions, cfg Config, a
 	if selectorErr != nil {
 		return Fail("selector_invalid", map[string]string{"error": selectorErr.Error()}).Write(c.Stdout)
 	}
-	x, _ := strconv.Atoi(flagValue(args, "--x"))
-	y, _ := strconv.Atoi(flagValue(args, "--y"))
-	if selector.IsZero() && x == 0 && y == 0 {
+	// Coordinates are validated on flag PRESENCE, not on the parsed value:
+	// treating (0,0) as "no target" would make a legal corner click
+	// unrepresentable, and a typo in one axis would silently click at 0.
+	xRaw, yRaw := flagValue(args, "--x"), flagValue(args, "--y")
+	hasCoords := xRaw != "" || yRaw != ""
+	x, y := 0, 0
+	if hasCoords {
+		var xErr, yErr error
+		x, xErr = strconv.Atoi(xRaw)
+		y, yErr = strconv.Atoi(yRaw)
+		if xRaw == "" || yRaw == "" || xErr != nil || yErr != nil {
+			return Fail("gesture_invalid", map[string]string{"usage": "mav ui doubleTap --x X --y Y (both, integers)"}).Write(c.Stdout)
+		}
+	}
+	if !hasCoords && selector.IsZero() {
 		return Fail("tap_target_missing", map[string]string{"usage": "mav ui doubleTap --id ID | --text TEXT | --x X --y Y"}).Write(c.Stdout)
+	}
+	// Same rule as ui tap: a bare --value describes content, not a target.
+	if !hasCoords && isSimpleSemanticSelector(selector) && selector.Value != "" {
+		return Fail("tap_target_missing", map[string]string{"usage": "mav ui doubleTap --value VALUE requires another predicate or a stable --id"}).Write(c.Stdout)
 	}
 	target := targetFromConfig(cfg)
 	driver, _, err := c.router().Route(ctx, drivers.CapDoubleTap, target, routerPrefer(prefer))
@@ -2752,19 +2784,39 @@ func (c CLI) macDoubleTap(ctx context.Context, opts GlobalOptions, cfg Config, a
 	if !ok {
 		return Fail("double_tap_unsupported", nil).Write(c.Stdout)
 	}
-	spec := drivers.TapSpec{Selector: drivers.ElementSelector{ID: selector.ID, Text: selector.Text}, X: x, Y: y}
+	fields := map[string]string{"driver": driver.ID()}
+	var spec drivers.TapSpec
+	switch {
+	case hasCoords:
+		spec = drivers.TapSpec{X: x, Y: y}
+		fields["x"], fields["y"] = strconv.Itoa(x), strconv.Itoa(y)
+	case isSimpleSemanticSelector(selector):
+		spec = drivers.TapSpec{Selector: drivers.ElementSelector{ID: selector.ID, Text: selector.Text}}
+		if selector.ID != "" {
+			fields["id"] = selector.ID
+		}
+		if selector.Text != "" {
+			fields["text"] = selector.Text
+		}
+	default:
+		// A rich selector (--text-contains, --role, --near-*, ...) is
+		// resolved against the tree here, like ui tap does; forwarding only
+		// ID/Text to the driver would silently drop every other predicate.
+		matched, matchErr := c.resolveSelector(ctx, cfg, selector, prefer)
+		if matchErr != nil {
+			return Fail(matchErr.Error(), selectorDiagnosticFields(selector, matched)).Write(c.Stdout)
+		}
+		mx, my, mw, mh, frameOK := parseElementFrame(matched.Frame)
+		if !frameOK {
+			return Fail("selector_frame_missing", selectorDiagnosticFields(selector, matched)).Write(c.Stdout)
+		}
+		spec = drivers.TapSpec{X: int(mx + mw/2), Y: int(my + mh/2)}
+		fields["matched_id"] = matched.ID
+		fields["matched_text"] = elementText(matched)
+		fields["x"], fields["y"] = strconv.Itoa(spec.X), strconv.Itoa(spec.Y)
+	}
 	if err := advanced.DoubleTap(ctx, target, spec); err != nil {
 		return Fail("ui_double_tap_failed", map[string]string{"stderr": firstLine(err.Error())}).Write(c.Stdout)
-	}
-	fields := map[string]string{"driver": driver.ID()}
-	if selector.ID != "" {
-		fields["id"] = selector.ID
-	}
-	if selector.Text != "" {
-		fields["text"] = selector.Text
-	}
-	if selector.IsZero() {
-		fields["x"], fields["y"] = strconv.Itoa(x), strconv.Itoa(y)
 	}
 	return c.writeFastPathResult(ctx, cfg, args, "ui.doubleTap", fields)
 }
@@ -5227,7 +5279,9 @@ func (c CLI) captureEvidenceStep(ctx context.Context, run RunState, name, note s
 		return nil, fmt.Errorf("capture_tool_missing")
 	}
 	if result.Err != nil {
-		return map[string]string{"stderr": firstLine(result.Stderr)}, fmt.Errorf("capture_failed")
+		fields := map[string]string{"stderr": firstLine(result.Stderr)}
+		addMacScreenRecordingNext(fields, cfg, result.Stderr)
+		return fields, fmt.Errorf("capture_failed")
 	}
 
 	step := EvidenceStep{Name: name, Note: note, File: file, Kind: "screenshot"}
@@ -6078,10 +6132,12 @@ func (c CLI) evidenceStep(ctx context.Context, opts GlobalOptions, args []string
 	file := filepath.Join(run.Dir, "steps", fmt.Sprintf("%02d_%s.png", idx, name))
 	result, err := c.captureScreenshot(ctx, cfg, file)
 	if err != nil {
-		return Fail("tool_missing", map[string]string{"tool": "axe|idb|xcrun"}).Write(c.Stdout)
+		return Fail("tool_missing", captureToolMissingFields(cfg)).Write(c.Stdout)
 	}
 	if result.Err != nil {
-		return Fail("evidence_step_failed", map[string]string{"stderr": firstLine(result.Stderr)}).Write(c.Stdout)
+		fields := map[string]string{"stderr": firstLine(result.Stderr)}
+		addMacScreenRecordingNext(fields, cfg, result.Stderr)
+		return Fail("evidence_step_failed", fields).Write(c.Stdout)
 	}
 	step := EvidenceStep{Name: name, Note: flagValue(args, "--note"), File: file, Kind: "screenshot"}
 	attachStepTimings(run, &step)

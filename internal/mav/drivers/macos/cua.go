@@ -574,24 +574,27 @@ func (d *Cua) Tap(ctx context.Context, target drivers.Target, spec drivers.TapSp
 // path goes by element token for the same reason Tap does: it lands on
 // background windows without moving the cursor or stealing focus.
 func (d *Cua) DoubleTap(ctx context.Context, target drivers.Target, spec drivers.TapSpec) error {
-	if spec.Selector.ID == "" && spec.Selector.Text == "" && spec.X == 0 && spec.Y == 0 {
-		return errors.New("cua: double tap requires a selector or coordinates")
-	}
-	state, err := d.windowState(ctx, target)
-	if err != nil {
-		return err
-	}
-	args := map[string]any{"pid": state.PID}
 	if spec.Selector.ID != "" || spec.Selector.Text != "" {
+		state, err := d.windowState(ctx, target)
+		if err != nil {
+			return err
+		}
 		el, ok := findCuaElement(state, spec.Selector)
 		if !ok {
 			return errors.New("cua: no element matched the selector")
 		}
-		args["element_token"] = el.Token
-	} else {
-		args["x"], args["y"] = spec.X, spec.Y
+		_, err = d.cuaCall(ctx, "double_click", map[string]any{"pid": state.PID, "element_token": el.Token})
+		return err
 	}
-	_, err = d.cuaCall(ctx, "double_click", args)
+	// Coordinates need only the pid: taking a full window snapshot here —
+	// tree plus screenshot — would be paid on every click and thrown away.
+	// (0, 0) is a legal corner coordinate, not a sentinel; the CLI is the
+	// layer that knows whether the caller provided a target at all.
+	pid, err := d.resolvePID(ctx, target)
+	if err != nil {
+		return err
+	}
+	_, err = d.cuaCall(ctx, "double_click", map[string]any{"pid": pid, "x": spec.X, "y": spec.Y})
 	return err
 }
 

@@ -52,7 +52,9 @@ func TestCuaDoubleTapBySelectorUsesTheElementToken(t *testing.T) {
 }
 
 // TestCuaDoubleTapByCoordinates: a canvas or custom-drawn surface has no AX
-// element to point at, so the pixel path must stay reachable.
+// element to point at, so the pixel path must stay reachable — and it must
+// not pay for a window snapshot (tree + screenshot) it never reads: the pid
+// is all the pixel path needs.
 func TestCuaDoubleTapByCoordinates(t *testing.T) {
 	f := cuaExecWithDoubleClick()
 	d := NewCua(f)
@@ -61,6 +63,9 @@ func TestCuaDoubleTapByCoordinates(t *testing.T) {
 	}
 	var call string
 	for _, c := range f.commands {
+		if strings.Contains(c, "get_window_state") {
+			t.Fatalf("the pixel path must not snapshot the window: %v", f.commands)
+		}
 		if strings.Contains(c, "double_click") {
 			call = c
 		}
@@ -70,12 +75,23 @@ func TestCuaDoubleTapByCoordinates(t *testing.T) {
 	}
 }
 
-// TestCuaDoubleTapWithoutATargetFails: silently double-clicking at (0,0)
-// would land on the menu bar apple.
-func TestCuaDoubleTapWithoutATargetFails(t *testing.T) {
-	d := NewCua(cuaExecWithDoubleClick())
-	if err := d.DoubleTap(context.Background(), macTarget(), drivers.TapSpec{}); err == nil {
-		t.Fatal("a double tap with no selector and no coordinates must fail")
+// TestCuaDoubleTapAtTheOrigin: (0,0) is a legal corner coordinate, not a
+// "no target" sentinel — deciding whether the caller provided a target is
+// the CLI's job, and a sentinel here would make the origin unclickable.
+func TestCuaDoubleTapAtTheOrigin(t *testing.T) {
+	f := cuaExecWithDoubleClick()
+	d := NewCua(f)
+	if err := d.DoubleTap(context.Background(), macTarget(), drivers.TapSpec{}); err != nil {
+		t.Fatal(err)
+	}
+	var call string
+	for _, c := range f.commands {
+		if strings.Contains(c, "double_click") {
+			call = c
+		}
+	}
+	if !strings.Contains(call, `"x":0`) || !strings.Contains(call, `"y":0`) {
+		t.Fatalf("an origin double click must be representable: %q", call)
 	}
 }
 
