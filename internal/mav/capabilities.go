@@ -9,6 +9,11 @@ import (
 )
 
 type Capabilities struct {
+	// Kind is the target these capabilities were resolved FOR. fields()
+	// needs it because the right guidance differs by platform: prescribing
+	// baguette or simtime to a macos target sends the reader to install
+	// tools that provide nothing there.
+	Kind                 drivers.TargetKind
 	Tools                map[string]bool
 	LaunchRecipe         bool
 	Accessibility        bool
@@ -40,8 +45,40 @@ func (c CLI) resolveCapabilities(ctx context.Context, cfg Config) Capabilities {
 		_, err := c.Runner.LookPath(tool)
 		tools[tool] = err == nil
 	}
-	caps := Capabilities{Tools: tools}
+	caps := Capabilities{Tools: tools, Kind: targetKind(cfg)}
 	caps.LaunchRecipe = hasLaunchCommands(cfg.Launch.Commands) || cfg.BundleID != ""
+	// Platform-neutral capabilities resolve BEFORE the kind split so the two
+	// branches cannot drift apart: a check added to one and forgotten in the
+	// other fails on exactly the platform nobody re-tested.
+	if tools["mitmdump"] {
+		caps.NetworkCapture = true
+		caps.NetworkCaptureDriver = "mitmproxy"
+	}
+	if tools["xcrun"] {
+		caps.Debug = c.Runner.Run(ctx, "xcrun", "--find", "lldb-dap").Err == nil
+	}
+	if caps.Kind == drivers.KindMac {
+		// A mac target's tree, taps and typing all come from cua-driver;
+		// reading axe/idb presence here would report iOS state about a
+		// platform those tools cannot touch. axcli is the semantic-tap
+		// escape hatch (tapToolPresent accepts it too): a Mac with only
+		// axcli can tap by id/text, and doctor saying otherwise would call
+		// a working setup broken. It exposes no tree, so accessibility
+		// stays honest.
+		switch {
+		case tools["cua-driver"]:
+			caps.Accessibility = true
+			caps.AccessibilityDriver = "cua"
+			caps.SemanticActions = true
+			caps.CoordinateTap = true
+			caps.CoordinateTapDriver = "cua"
+		case tools["axcli"]:
+			caps.AccessibilityDriver = "axcli"
+			caps.SemanticActions = true
+		}
+		c.resolveMacPermissions(ctx, &caps)
+		return caps
+	}
 	if tools["axe"] {
 		caps.Accessibility = true
 		caps.AccessibilityDriver = "axe"
@@ -65,17 +102,7 @@ func (c CLI) resolveCapabilities(ctx context.Context, cfg Config) Capabilities {
 		caps.Multitouch = true
 		caps.MultitouchDriver = "baguette"
 	}
-	if tools["mitmdump"] {
-		caps.NetworkCapture = true
-		caps.NetworkCaptureDriver = "mitmproxy"
-	}
-	if targetKind(cfg) == drivers.KindMac {
-		c.resolveMacPermissions(ctx, &caps)
-	}
 	caps.WallClock = tools["simtime"]
-	if tools["xcrun"] {
-		caps.Debug = c.Runner.Run(ctx, "xcrun", "--find", "lldb-dap").Err == nil
-	}
 	return caps
 }
 
@@ -176,15 +203,23 @@ func (caps Capabilities) fields() map[string]string {
 	} else {
 		fields["coordinate_tap"] = "missing"
 	}
-	if caps.DeviceFallback {
-		fields["device_fallback"] = "ok"
-		fields["device_fallback_driver"] = caps.DeviceFallbackDriver
-	} else {
-		fields["device_fallback"] = "missing"
+	if caps.Kind != drivers.KindMac {
+		if caps.DeviceFallback {
+			fields["device_fallback"] = "ok"
+			fields["device_fallback_driver"] = caps.DeviceFallbackDriver
+		} else {
+			fields["device_fallback"] = "missing"
+		}
 	}
 	if caps.Multitouch {
 		fields["multitouch"] = "ok"
 		fields["multitouch_driver"] = caps.MultitouchDriver
+	} else if caps.Kind == drivers.KindMac {
+		// Not "missing": a trackpad delivers gestures to the system and the
+		// focused app, not to a pid, so no driver can provide this in the
+		// background. Prescribing baguette here would send the reader to
+		// install a simulator tool for a capability that cannot exist.
+		fields["multitouch"] = "unsupported"
 	} else {
 		fields["multitouch"] = "missing"
 		fields["multitouch_next"] = "mav setup --install baguette"
@@ -199,6 +234,10 @@ func (caps Capabilities) fields() map[string]string {
 	if caps.WallClock {
 		fields["wall_clock"] = "ok"
 		fields["wall_clock_driver"] = "simtime"
+	} else if caps.Kind == drivers.KindMac {
+		// The mac clock is the machine's, handled by `mav time` with its own
+		// gates; simtime is a simulator tool and would be dead weight here.
+		fields["wall_clock"] = "system"
 	} else {
 		fields["wall_clock"] = "missing"
 		fields["wall_clock_next"] = "mav setup --install simtime"

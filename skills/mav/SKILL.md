@@ -39,7 +39,8 @@ Select one with `mav open --profile mac`, or set `default_profile`. An empty str
 profile *annuls* the inherited value; an absent key inherits it. A profile that does not
 exist fails with `profile_not_found` rather than silently using the base.
 
-On macOS these work: `ui tree`, `ui tap`, `ui type`, `ui erase`, `ui swipe`, `ui wait`,
+On macOS these work: `ui tree`, `ui tap`, `ui doubleTap` (by `--id`/`--text` selector or
+`--x`/`--y`; inline-rename UIs that open on double click need this), `ui type`, `ui erase`, `ui swipe`, `ui wait`,
 `capture`, `open`, `app list`, `openURL`, `clipboard`, `logs`, `crashes`, `evidence`
 (including video), `run`, `network` and `time travel|reset`. `ui hideKeyboard` succeeds without doing
 anything: there is no on-screen keyboard to hide, and failing would force a shared flow
