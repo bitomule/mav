@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.16.0
 
 ### App Store screenshots stop showing the real clock
 
