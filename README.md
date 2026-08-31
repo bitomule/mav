@@ -713,6 +713,9 @@ sleep
 logs
 exec
 crashes
+sim.appearance
+sim.statusBar.set
+sim.statusBar.clear
 network.start
 network.stop
 network.status
@@ -726,6 +729,10 @@ report
 
 `hideKeyboard` dispatches through baguette on simulator. On device it returns
 `hide_keyboard_unsupported_on_device`.
+
+`sim.appearance` and `sim.statusBar.set|clear` control the simulator's light/dark
+style and its status bar for App Store screenshots. Both are simulator-only; see
+[App Store screenshots](#app-store-screenshots).
 
 `type`, `delay`, and `sleep` accept both scalar and object forms. These are
 equivalent:
@@ -913,6 +920,9 @@ mav sim list
 mav sim select --device "iPhone 17 Pro Max" --ios 26 --locale es_ES --language es
 mav sim select --udid <simulator-udid>
 mav sim boot
+mav sim appearance light|dark
+mav sim statusbar set --preset appstore
+mav sim statusbar clear
 ```
 
 You can also pass simulator selection flags to `mav open`:
@@ -920,6 +930,57 @@ You can also pass simulator selection flags to `mav open`:
 ```bash
 mav open --device "iPhone 17 Pro Max" --ios 26 --locale es_ES --language es
 ```
+
+### App Store screenshots
+
+App Store listings are expected to show a clean status bar — 9:41, full battery,
+full signal — and, increasingly, the same screen in both appearances. Both are
+simulator-wide state, so they are set once per matrix cell and survive relaunches:
+
+```bash
+mav sim appearance dark
+mav sim statusbar set --preset appstore
+mav capture --name home-dark
+mav sim statusbar clear
+```
+
+`--preset appstore` is the status bar Apple uses in its own marketing shots:
+`--time 9:41 --data-network wifi --wifi-mode active --wifi-bars 3
+--cellular-mode active --cellular-bars 4 --battery-state charged
+--battery-level 100`. It is a starting point, not a lock: every field stays
+individually settable and an explicit flag overrides the preset.
+
+```bash
+mav sim statusbar set --time 11:30 --battery-level 42 --battery-state discharging
+mav sim statusbar set --operator-name Telefonica --cellular-mode notSupported
+```
+
+The override is additive, matching `simctl` itself: `--time` alone changes the
+clock and leaves the rest as it was. Values are validated before the call, so an
+out-of-range `--wifi-bars 9` comes back as `status_bar_value_invalid` naming the
+allowed range instead of `simctl`'s usage dump.
+
+Both are simulator-only. On a physical device they fail with
+`appearance_unsupported_on_device` / `status_bar_unsupported_on_device`, and on a
+macOS target with the `_unsupported_on_macos` variants.
+
+In a flow, the same two knobs make a localized screenshot matrix one file:
+
+```yaml
+name: app_store_shots
+steps:
+  - sim.statusBar.set: { preset: appstore }
+  - sim.appearance: { appearance: light }
+  - open: { clearState: true }
+  - capture: { name: home-light }
+  - sim.appearance: { appearance: dark }
+  - capture: { name: home-dark }
+  - sim.statusBar.clear: {}
+```
+
+`sim.statusBar.set` accepts `preset`, `time`, `dataNetwork`, `wifiMode`,
+`wifiBars`, `cellularMode`, `cellularBars`, `operatorName`, `batteryState` and
+`batteryLevel`. Quote `time` in YAML.
 
 ### Knowing which target you just used
 

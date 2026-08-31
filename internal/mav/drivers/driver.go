@@ -135,6 +135,21 @@ type DeviceUtilityDriver interface {
 	ClipboardRead(ctx context.Context, target Target) (string, error)
 }
 
+// AppearanceDriver switches the simulator-wide light/dark user interface
+// style. Simulator-only: there is no equivalent on a physical device.
+type AppearanceDriver interface {
+	Driver
+	SetAppearance(ctx context.Context, target Target, appearance string) error
+}
+
+// StatusBarDriver overrides the simulator status bar (time, battery, signal)
+// so App Store screenshots do not show the real clock. Simulator-only.
+type StatusBarDriver interface {
+	Driver
+	SetStatusBar(ctx context.Context, target Target, spec StatusBarSpec) error
+	ClearStatusBar(ctx context.Context, target Target) error
+}
+
 type WallClockDriver interface {
 	Driver
 	InjectTimeControl(ctx context.Context, target Target) error

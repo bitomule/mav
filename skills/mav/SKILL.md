@@ -47,7 +47,8 @@ anything: there is no on-screen keyboard to hide, and failing would force a shar
 to branch by platform.
 
 What does **not** exist there, with a structured error saying why: multitouch gestures
-(`pinch`, `rotate`, `twoFingerPan`), hardware buttons, the simulator/device commands,
+(`pinch`, `rotate`, `twoFingerPan`), hardware buttons, the simulator/device commands
+(including `sim appearance` and `sim statusbar`),
 `time freeze|scale` (a system clock runs, it cannot be stopped or accelerated) and
 `location` (macOS has no supported way to feed CoreLocation a fake fix; Xcode's "Simulate
 Location" is an iOS-device feature and does nothing against a Mac app).
@@ -140,6 +141,9 @@ entirely.
    `scripts/mav-app-path`, and standard Bazel/Xcode/Tuist shapes.
 3. If the validation needs a specific simulator, runtime, or locale, use
    `mav sim list`, then `mav sim select --device ... --ios ... --locale ... --language ...`.
+   For App Store screenshots, `mav sim appearance light|dark` and
+   `mav sim statusbar set --preset appstore` control the simulator's appearance
+   and status bar; see **App Store Screenshots** below.
    You can also pass the same target flags to `mav open`.
    For a physical iOS device, use `mav device list`, then `mav device select
    --udid ...` or `mav device select --name ...`. Physical devices require idb
@@ -495,6 +499,49 @@ In YAML flows, gesture steps accept the same `hold` key:
 - pinch: { x: 200, y: 450, scale: 0.5, panX: 80, panY: -40, duration: 800ms, hold: 2s }
 - capture: { name: zoom-held }
 ```
+
+## App Store Screenshots
+
+Two simulator-wide knobs make the shots reproducible. Both are simulator-only and
+return a structured error on a physical device (`appearance_unsupported_on_device`,
+`status_bar_unsupported_on_device`).
+
+```bash
+mav sim appearance dark
+mav sim appearance light
+mav sim statusbar set --preset appstore          # 9:41, full battery, full signal
+mav sim statusbar set --time 9:41 --battery-level 100 --cellular-bars 4 --wifi-bars 3
+mav sim statusbar clear
+```
+
+`--preset appstore` is the status bar Apple uses in its own marketing shots. Every
+field stays individually settable and an explicit flag overrides the preset, so a
+screenshot that needs a different clock or a low battery is still one command.
+The override is additive: `--time` alone changes the clock and leaves the rest of
+the status bar as it is. Clear it when the run is done, or the next capture in the
+same simulator inherits it.
+
+Both are also flow actions, which is how a localized screenshot matrix is written
+once and run per language with `mav run shots.yaml --param lang=de`:
+
+```yaml
+name: app_store_shots
+steps:
+  - sim.statusBar.set: { preset: appstore }
+  - sim.appearance: { appearance: light }
+  - open: { clearState: true }
+  - capture: { name: home-light }
+  - sim.appearance: { appearance: dark }
+  - capture: { name: home-dark }
+  - sim.statusBar.clear: {}
+```
+
+`sim.statusBar.set` accepts `preset`, `time`, `dataNetwork`, `wifiMode`, `wifiBars`,
+`cellularMode`, `cellularBars`, `operatorName`, `batteryState`, `batteryLevel`.
+Quote `time` in YAML.
+
+Appearance and the status bar are simulator state, not app state: they survive a
+relaunch, so set them once per matrix cell rather than per capture.
 
 ## Launch Recipes
 
