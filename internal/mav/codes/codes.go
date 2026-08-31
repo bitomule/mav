@@ -115,25 +115,25 @@ var PreferDriverInvalid = Code{
 // selected.
 var TargetCommandFailed = Code{
 	ID:          "target_command_failed",
-	Title:       "target_command exited non-zero and no fallback was taken",
+	Title:       "Configured target_command exited non-zero; no fallback",
 	Remediation: "Fix target_command in .mav/config.yaml, or set target_command_required: false to allow the booted-simulator fallback",
 }
 
 var TargetCommandTimeout = Code{
 	ID:          "target_command_timeout",
-	Title:       "target_command exceeded its timeout and no fallback was taken",
+	Title:       "Configured target_command timed out; no fallback",
 	Remediation: "Raise target_command_timeout in .mav/config.yaml, or set target_command_required: false to allow the booted-simulator fallback",
 }
 
 var TargetCommandEmpty = Code{
 	ID:          "target_command_empty",
-	Title:       "target_command printed no simulator UDID and no fallback was taken",
+	Title:       "Configured target_command printed no UDID; no fallback",
 	Remediation: "target_command must print a simulator UDID on stdout; fix it in .mav/config.yaml",
 }
 
 var TargetCommandTimeoutInvalid = Code{
 	ID:          "target_command_timeout_invalid",
-	Title:       "target_command_timeout is not a valid duration",
+	Title:       "The target_command_timeout value is not a duration",
 	Remediation: "Set target_command_timeout in .mav/config.yaml to a Go duration such as 90s or 3m",
 }
 

@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-	"time"
 )
 
 type Runner interface {
@@ -33,22 +32,8 @@ func (ExecRunner) LookPath(file string) (string, error) {
 	return exec.LookPath(file)
 }
 
-// runWaitDelay is how long Run keeps waiting after the context is cancelled
-// (or after the process itself exits) before it gives up on the output
-// pipes and returns. Without it a ctx deadline does not actually bound Run:
-// exec.CommandContext kills the direct child only, so a command that spawns
-// its own children -- `/bin/bash -lc "simpool lease ..."`, whose grandchild
-// inherits the pipe -- leaves cmd.Wait blocked on a pipe nobody will close,
-// and mav waits out the grandchild instead of its own timeout. That is
-// exactly the hang target_command's timeout exists to prevent, so the
-// deadline has to reach the pipes too. Surviving grandchildren are left to
-// whatever spawned them: killing a process group is not an option here,
-// since Run's children share mav's own group.
-const runWaitDelay = 2 * time.Second
-
 func (ExecRunner) Run(ctx context.Context, name string, args ...string) CommandResult {
 	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.WaitDelay = runWaitDelay
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout

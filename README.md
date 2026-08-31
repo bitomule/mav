@@ -1102,9 +1102,9 @@ Precedence, most to least specific:
    `target_command_required: false` and it failed -- never as a silent
    substitute for a `target_command` that was supposed to answer.
 
-`target_command` only fires for case 5 -- the case that used to mean "guess
-the booted simulator" -- so it never overrides an explicit flag, env var, or
-pinned selection.
+`target_command` only fires where case 5 used to apply -- the case that used
+to mean "guess the booted simulator" -- so it never overrides an explicit
+flag, env var, or pinned selection.
 
 It is cached per run the same way the booted-simulator fallback already is
 (`.mav/runs/<run-id>/target-command.json`, same couple-of-minutes TTL): a hot
@@ -1154,7 +1154,7 @@ and no fallback is taken:
 
 ```bash
 $ mav ui tap --id save
-fail code=target_command_timeout detail="no UDID after 3m0s" fallback=none remediation="Raise target_command_timeout in .mav/config.yaml, or set target_command_required: false to allow the booted-simulator fallback" target_command="simpool lease --device \"iPhone 17 Pro\" --os 26.3" timeout=3m0s title="target_command exceeded its timeout and no fallback was taken"
+fail code=target_command_timeout detail="no UDID after 3m0s" fallback=none remediation="Raise target_command_timeout in .mav/config.yaml, or set target_command_required: false to allow the booted-simulator fallback" target_command="simpool lease --device \"iPhone 17 Pro\" --os 26.3" target_command_timeout=3m0s title="Configured target_command timed out; no fallback"
 ```
 
 Three codes, because the next step differs: `target_command_failed` (the
@@ -1166,7 +1166,18 @@ resolved at all.
 
 This matters most where nobody is reading stdout. A screenshot script that
 pipes `mav run` to `/dev/null` used to get exit 0 and images captured from
-whichever simulator happened to be booted; now it gets a non-zero exit.
+whichever simulator happened to be booted; now it gets a non-zero exit, and
+the run directory keeps a `commands.jsonl` entry, a failed `run.json` and a
+report to look at afterwards.
+
+Two commands are deliberately exempt. `mav doctor` reports the failure as a
+`target_command_warn` field and still produces its diagnosis -- it is the
+command you run *because* the target is broken. `mav sim select` does not
+resolve `target_command` at all, because pinning `simulator_udid` (case 3
+above, which beats `target_command`) is the documented escape from a broken
+pool manager, and failing it would close the only exit. See also
+[If `simulator_udid` is also pinned](#if-simulator_udid-is-also-pinned)
+below: a pin is a warning, never a failure.
 
 Two knobs control this:
 
@@ -1177,11 +1188,15 @@ target_command_required: true   # default when target_command is set
 ```
 
 - `target_command_timeout` bounds a single invocation. The default is three
-  minutes, past the roughly two a cold `simpool lease` costs and still under
-  simpool's own lease TTL. A malformed value is an error
+  minutes: past the roughly two a cold `simpool lease` costs, and equal to
+  (not under) simpool's own default lease TTL of 3m0s -- a lease that burns
+  the whole timeout can therefore come back with its TTL already spent,
+  since the keepalive that renews it only starts after resolution returns.
+  Lower it if your pool manager's TTL is shorter. A malformed value is an
+  error
   (`target_command_timeout_invalid`), not a silent fall back to the default.
 - `target_command_required: false` is the explicit opt-out, and restores the
-  old behaviour: a failure falls back to the booted simulator (case 5 above)
+  previous behaviour: a failure falls back to the booted simulator (case 5 above)
   and reports `target_command_warn=<reason and next step>` on the command's
   success output.
 

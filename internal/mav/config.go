@@ -657,6 +657,18 @@ func mergeSetupConfig(existing, detected Config) Config {
 	if existing.TargetCommand != "" {
 		merged.TargetCommand = existing.TargetCommand
 	}
+	// Carried forward beside TargetCommand, not with it: these two are the
+	// policy attached to it, and `mav setup` dropping them would silently
+	// re-arm the hard failure on a project that had explicitly opted out,
+	// and silently reset a slower pool manager's timeout to the default.
+	// Silently substituting a different value for one the config states is
+	// exactly the bug target_command_required exists to close.
+	if existing.TargetCommandRequired != nil {
+		merged.TargetCommandRequired = existing.TargetCommandRequired
+	}
+	if existing.TargetCommandTimeout != "" {
+		merged.TargetCommandTimeout = existing.TargetCommandTimeout
+	}
 	if existing.AppTarget != "" {
 		merged.AppTarget = existing.AppTarget
 	}

@@ -322,18 +322,26 @@ commands runs it once.
 
 Precedence, most to least specific: --target / MAV_TARGET_* env, then
 simulator_udid pinned in .mav/config.yaml, then target_command, then
-whatever simulator is booted.
+whatever simulator is booted -- that last step only when no target_command
+is configured, or target_command_required is false.
 
-When target_command fails, the command FAILS -- mav does not quietly drive
-whatever simulator happens to be booted:
+A pinned simulator_udid still wins outright and is reported as
+target_command_ignored on the ok line, not as a failure.
 
-  target_command_failed   exited non-zero (the pool said no)
-  target_command_timeout  no UDID within target_command_timeout
-  target_command_empty    exited 0 without printing a UDID
+When target_command is what should answer and cannot, the command FAILS --
+mav does not quietly drive whatever simulator happens to be booted:
 
-All three carry fallback=none and exit non-zero. Set
-target_command_required: false to opt out and get the old
-warn-and-fall-back behaviour instead.
+  target_command_failed           exited non-zero (the pool said no)
+  target_command_timeout          no UDID within target_command_timeout
+  target_command_empty            exited 0 without printing a UDID
+  target_command_timeout_invalid  target_command_timeout is not a duration
+
+All carry fallback=none and exit non-zero. Set target_command_required:
+false to opt out and get the old warn-and-fall-back behaviour instead.
+
+mav doctor is the exception: it reports the failure as
+target_command_warn and still produces its diagnosis, because it is the
+command you run when the target is broken.
 `
 	case "setup":
 		return `Usage:
@@ -541,7 +549,6 @@ func normalizeHelpTopic(topic string) string {
 		"scrollUntil":  "ui scrollUntil",
 		"actions":      "ui actions",
 		"screenshot":   "capture",
-		"config":       "target_command",
 		"target":       "target_command",
 	}
 	if alias, ok := aliases[topic]; ok {
@@ -557,8 +564,15 @@ func (c CLI) doctor(ctx context.Context, opts GlobalOptions) error {
 		cfg = DefaultConfig(c.Root)
 	}
 	c.resolveConfigTools(&cfg)
+	// doctor reports a broken target_command instead of refusing to run on
+	// one. It is the command you reach for BECAUSE the target is broken, so
+	// failing here would withhold the driver matrix, the tool list and the
+	// profile state at exactly the moment they are wanted -- and would take
+	// the full target_command timeout to say less than nothing. Every
+	// command that actually dispatches against the simulator still fails.
+	targetWarn := ""
 	if _, err := c.resolveConfigTarget(&cfg); err != nil {
-		return c.failTargetCommand(err)
+		targetWarn = targetCommandWarnText(err)
 	}
 	caps := c.resolveCapabilities(ctx, cfg)
 	tools := caps.Tools
@@ -567,6 +581,9 @@ func (c CLI) doctor(ctx context.Context, opts GlobalOptions) error {
 	// profile overlay every other command sees. Without it, a doctor run
 	// with --profile mac reads exactly like one about the simulator.
 	fields["target_kind"] = targetKindLabel(targetKind(cfg))
+	if targetWarn != "" {
+		fields["target_command_warn"] = targetWarn
+	}
 	if cfg.ActiveProfile != "" {
 		fields["profile"] = cfg.ActiveProfile
 	}
@@ -1097,9 +1114,13 @@ func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 			return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 		}
 		c.resolveConfigTools(&cfg)
-		if _, err := c.resolveConfigTarget(&cfg); err != nil {
-			return c.failTargetCommand(err)
-		}
+		// Deliberately no target resolution here. Pinning simulator_udid is
+		// the documented escape from a broken target_command (a pin beats
+		// it in the precedence order), so failing this command on the very
+		// failure it exists to escape would close the only exit. It would
+		// also be dead work: every field resolution could fill is
+		// overwritten below, and persistTargetSelection rewrites from a
+		// freshly loaded raw config anyway.
 		sims, err := ListSimulators(c.Runner)
 		if err != nil {
 			return Fail("sim_list_failed", map[string]string{"error": err.Error()}).Write(c.Stdout)
@@ -4035,6 +4056,31 @@ func (c CLI) captureScreenshotWith(ctx context.Context, cfg Config, path, prefer
 	return CommandResult{}, nil
 }
 
+// recordTargetCommandFailure writes the on-disk evidence for a run that
+// never started because target_command did not name a simulator: a
+// commands.jsonl entry with a non-zero Code (the trail records Code, not
+// Err, so a zero one reads as a success), a run.json marking the run
+// failed, and the report. Without it the only trace of the failure is the
+// stdout line, which the consumer this failure was written for redirects to
+// /dev/null.
+func (c CLI) recordTargetCommandFailure(ctx context.Context, run RunState, flowName string, cause error, start time.Time) {
+	appendCommand(run, "mav target_command", CommandResult{Code: 1, Err: cause})
+	fields := map[string]string{"code": cause.Error(), "run": run.ID}
+	var tcErr *targetCommandError
+	if errors.As(cause, &tcErr) {
+		for key, value := range tcErr.fields() {
+			fields[key] = value
+		}
+	}
+	runData, _ := json.MarshalIndent(map[string]any{
+		"id": run.ID, "name": flowName, "status": "failed", "step": 0,
+		"action": "target_command", "code": cause.Error(),
+		"elapsed": time.Since(start).String(),
+	}, "", "  ")
+	_ = os.WriteFile(filepath.Join(run.Dir, "run.json"), runData, 0o644)
+	c.cleanupFailedFlow(ctx, run, fields)
+}
+
 func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) error {
 	if len(args) == 0 {
 		return Fail("flow_missing", map[string]string{"usage": "mav run flow.yaml"}).Write(c.Stdout)
@@ -4090,14 +4136,21 @@ func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) err
 	if err := bindFlowParameters(flow, args[1:], bindings); err != nil {
 		return Fail("flow_params_invalid", map[string]string{"error": err.Error()}).Write(c.Stdout)
 	}
+	start := time.Now()
 	cfg, cfgErr := c.mustLoadConfig()
 	if cfgErr != nil {
+		// A failure MAV raises itself has to leave the same evidence a
+		// failed recipe command does. The commands trail records Code, not
+		// Err, so without an explicit entry (and a run.json) a run killed
+		// here leaves nothing on disk at all -- and the case this failure
+		// exists for is a script that pipes mav to /dev/null, which then
+		// has a non-zero exit and nothing to look at afterwards.
+		c.recordTargetCommandFailure(ctx, run, flow.Name, cfgErr, start)
 		return c.failTargetCommand(cfgErr)
 	}
 	bindFlowTarget(cfg, bindings)
 	stopTargetCommandKeepAlive := c.startTargetCommandKeepAlive(run, cfg, c.targetCommandInEffectForRun())
 	defer stopTargetCommandKeepAlive()
-	start := time.Now()
 	for index, step := range flow.Steps {
 		stepStart := time.Now()
 		fields, err := c.executeFlowStepBoundWithOptions(ctx, opts, run, index+1, step, bindings)
@@ -5747,12 +5800,16 @@ func (c CLI) cleanupFailedFlow(ctx context.Context, run RunState, fields map[str
 	c.reapAbandonedRun(ctx, run)
 	if cfg, err := LoadConfig(c.Root); err == nil {
 		c.resolveConfigTools(&cfg)
-		if _, err := c.resolveConfigTarget(&cfg); err != nil {
-			return
-		}
-		path := filepath.Join(run.Dir, "failure.png")
-		if result, err := c.captureScreenshot(ctx, cfg, path); err == nil && result.Err == nil {
-			fields["screenshot"] = path
+		// Scoped to the screenshot on purpose. A failure here is most
+		// likely the very target_command failure that failed the flow, and
+		// returning would skip GenerateReport and publishCurrentRunIfSafe
+		// below -- leaving the failure this branch exists to surface as the
+		// one that produces no evidence at all.
+		if _, err := c.resolveConfigTarget(&cfg); err == nil {
+			path := filepath.Join(run.Dir, "failure.png")
+			if result, err := c.captureScreenshot(ctx, cfg, path); err == nil && result.Err == nil {
+				fields["screenshot"] = path
+			}
 		}
 	}
 	_, _ = GenerateReport(run)
@@ -6686,10 +6743,19 @@ func (c CLI) evidenceStop(ctx context.Context, opts GlobalOptions, args []string
 		return Fail("video_not_running", map[string]string{"run": run.ID}).Write(c.Stdout)
 	}
 	cfg, cfgErr := LoadConfig(c.Root)
+	targetWarn := ""
 	if cfgErr == nil {
 		c.resolveConfigTools(&cfg)
+		// Reported, never fatal. Everything below this point is teardown --
+		// stopping the recorder so the mp4 index gets written, signalling
+		// the process, clearing video.pid, the commands trail -- and none
+		// of it can be retried later, because a required target_command
+		// failure is deliberately not cached, so every retry of `mav
+		// evidence stop` would fail the same way and the recording would
+		// never be finalised. This function already tolerates a missing
+		// config for the same reason.
 		if _, err := c.resolveConfigTarget(&cfg); err != nil {
-			return c.failTargetCommand(err)
+			targetWarn = targetCommandWarnText(err)
 		}
 	}
 	// The recorder is asked to stop BEFORE the process holding it is
@@ -6750,15 +6816,21 @@ func (c CLI) evidenceStop(ctx context.Context, opts GlobalOptions, args []string
 		cfg, cfgErr := LoadConfig(c.Root)
 		if cfgErr == nil {
 			c.resolveConfigTools(&cfg)
-			if _, err := c.resolveConfigTarget(&cfg); err != nil {
-				return c.failTargetCommand(err)
-			}
-			file := filepath.Join(run.Dir, "steps", fmt.Sprintf("%02d_final.png", len(LoadEvidenceSteps(run))+1))
-			if result, err := c.captureScreenshot(ctx, cfg, file); err == nil && result.Err == nil {
-				_ = AppendEvidenceStep(run, EvidenceStep{Name: "final", Note: flagValue(args, "--note"), File: file, Kind: "screenshot"})
-				fields["screenshot"] = file
+			// Same reasoning as above: the final screenshot is best-effort
+			// and must not cost the run its teardown or its trail entry.
+			if _, err := c.resolveConfigTarget(&cfg); err == nil {
+				file := filepath.Join(run.Dir, "steps", fmt.Sprintf("%02d_final.png", len(LoadEvidenceSteps(run))+1))
+				if result, err := c.captureScreenshot(ctx, cfg, file); err == nil && result.Err == nil {
+					_ = AppendEvidenceStep(run, EvidenceStep{Name: "final", Note: flagValue(args, "--note"), File: file, Kind: "screenshot"})
+					fields["screenshot"] = file
+				}
+			} else if targetWarn == "" {
+				targetWarn = targetCommandWarnText(err)
 			}
 		}
+	}
+	if targetWarn != "" {
+		fields["target_command_warn"] = targetWarn
 	}
 	appendCommand(run, "mav evidence stop", CommandResult{})
 	return c.OK("evidence.stop", fields).Write(c.Stdout)

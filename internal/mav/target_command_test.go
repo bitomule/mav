@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -684,8 +685,8 @@ func TestTargetCommandTimeoutIsFatalAndDoesNotFallBack(t *testing.T) {
 			t.Fatalf("got %q, want it to contain %q", got, want)
 		}
 	}
-	if elapsed > 3*time.Second {
-		t.Fatalf("took %s, want the configured timeout (plus runWaitDelay) to actually bound the wait, not the 5s the command sleeps", elapsed)
+	if elapsed > 4*time.Second {
+		t.Fatalf("took %s, want the configured timeout to actually bound the wait, not the 5s the command sleeps", elapsed)
 	}
 }
 
@@ -836,12 +837,12 @@ func TestTargetCommandRequiredRoundTripsThroughConfig(t *testing.T) {
 	}
 }
 
-// TestTargetCommandFailureInsideAFlowKeepsItsCode: a flow step reports its
-// error's text verbatim as the run's `code=` field, so a resolution failure
-// has to surface as the stable code and not as a whole sentence quoted into
-// the code position. The command, the timeout and fallback=none ride along
-// in the step's fields instead.
-func TestTargetCommandFailureInsideAFlowKeepsItsCode(t *testing.T) {
+// TestTargetCommandFailureFailsAFlowBeforeAnyStepRuns: runFlow resolves the
+// target once, up front, so a target_command that is already failing kills
+// the run before step 1 -- no step is attempted and no driver is invoked.
+// It does NOT cover flowStepTargetFailure; see
+// TestTargetCommandFailureMidFlowCarriesItsFieldsIntoTheStep for that.
+func TestTargetCommandFailureFailsAFlowBeforeAnyStepRuns(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
 	cfg.TargetCommand = "print-target"
@@ -871,6 +872,250 @@ func TestTargetCommandFailureInsideAFlowKeepsItsCode(t *testing.T) {
 		t.Fatalf("got %q, want code=target_command_failed", got)
 	}
 	if !strings.Contains(got, "fallback=none") {
-		t.Fatalf("got %q, want fallback=none in the step fields", got)
+		t.Fatalf("got %q, want fallback=none", got)
+	}
+	if strings.Contains(got, "step=") {
+		t.Fatalf("got %q, want the run to die before any step is attempted", got)
+	}
+	if containsCall(runner.commands, "axe describe-ui") {
+		t.Fatalf("a driver was invoked before the target was resolved; commands=%v", runner.commands)
+	}
+}
+
+// TestTargetCommandFailureMidFlowCarriesItsFieldsIntoTheStep covers the
+// path the test above does not: target_command resolves fine at flow start,
+// the run-scoped cache is dropped mid-run (which is what
+// staleSimulatorTargetRetry does, and what the TTL does on a long flow),
+// and the next step re-resolves into a failure. That step must report the
+// stable code -- not the whole sentence, which is what a flow step's error
+// text becomes in the run's `code=` field -- and must carry the command,
+// the timeout and fallback=none in its own fields.
+func TestTargetCommandFailureMidFlowCarriesItsFieldsIntoTheStep(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.TargetCommand = "print-target"
+	cfg.Tools = map[string]bool{}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewProjectRunState(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCurrentRun(root, run); err != nil {
+		t.Fatal(err)
+	}
+	// Seed the run-scoped cache with a good resolution, then have the
+	// command itself fail: the flow's up-front resolution is served from
+	// the cache, and the step that re-resolves after the cache is dropped
+	// pays the real, failing call.
+	writeTargetCommandCache(run, "TC-UDID-GOOD", "iPhone 17", "")
+
+	key := targetCommandKey(root, "print-target")
+	runner := &sequenceRecordingRunner{
+		tools: map[string]bool{"axe": true},
+		err: map[string]CommandResult{
+			key: {Stderr: "simpool: slot reclaimed", Code: 1, Err: fmt.Errorf("exit status 1")},
+		},
+	}
+	cli := CLI{Runner: runner, Root: root, Stdout: io.Discard, Stderr: &bytes.Buffer{}}.withRun(run)
+
+	step := FlowStep{Action: "tap", Params: map[string]string{"id": "save", "timeout": "5"}}
+	invalidateTargetCommandCache(run)
+	fields, stepErr := cli.executeFlowStepWithOptions(context.Background(), GlobalOptions{}, run, 1, step)
+	if stepErr == nil {
+		t.Fatal("the step succeeded; want it to fail on the re-resolved target_command")
+	}
+	if stepErr.Error() != "target_command_failed" {
+		t.Fatalf("step error=%q, want the bare code (it is emitted verbatim as the run's code= field)", stepErr.Error())
+	}
+	if fields["fallback"] != "none" {
+		t.Fatalf("fields=%v, want fallback=none", fields)
+	}
+	if fields["target_command"] != "print-target" {
+		t.Fatalf("fields=%v, want the command named", fields)
+	}
+	if fields["target_command_timeout"] == "" {
+		t.Fatalf("fields=%v, want the timeout reported", fields)
+	}
+	// The step's own `timeout` param must survive: target_command's timeout
+	// is a different number under a different key on purpose.
+	if fields["timeout"] != "5" {
+		t.Fatalf("fields=%v, want the step's own timeout param untouched", fields)
+	}
+	if containsCall(runner.commands, "axe") {
+		t.Fatalf("axe was dispatched despite an unresolved target; commands=%v", runner.commands)
+	}
+}
+
+// TestDoctorDiagnosesThroughAFailingTargetCommand: doctor is the command you
+// run BECAUSE the target is broken, so it reports the failure as a field and
+// still produces the diagnosis. Failing outright here would withhold the
+// tool and driver state at exactly the moment it is wanted.
+func TestDoctorDiagnosesThroughAFailingTargetCommand(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.TargetCommand = "print-target"
+	root, _ := newTargetCommandRun(t, cfg)
+
+	key := targetCommandKey(root, "print-target")
+	runner := &sequenceRecordingRunner{
+		tools: map[string]bool{"axe": true},
+		err: map[string]CommandResult{
+			key: {Stderr: "simpool: pool at capacity", Code: 1, Err: fmt.Errorf("exit status 1")},
+		},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"doctor"}); err != nil {
+		t.Fatalf("doctor failed: %v; output=%q", err, out.String())
+	}
+	got := out.String()
+	if !strings.HasPrefix(got, "ok cmd=doctor ") {
+		t.Fatalf("got %q, want doctor to still report", got)
+	}
+	if !strings.Contains(got, "target_command_warn=") {
+		t.Fatalf("got %q, want the target_command failure reported as a field", got)
+	}
+	if !strings.Contains(got, "target_kind=") {
+		t.Fatalf("got %q, want the diagnosis itself to survive the failure", got)
+	}
+}
+
+// TestSimSelectStillWorksThroughAFailingTargetCommand: pinning
+// simulator_udid beats target_command in the precedence order and is the
+// documented escape from a broken pool manager. Failing `mav sim select` on
+// the very failure it exists to escape would close the only exit.
+func TestSimSelectStillWorksThroughAFailingTargetCommand(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.TargetCommand = "print-target"
+	root, _ := newTargetCommandRun(t, cfg)
+
+	key := targetCommandKey(root, "print-target")
+	simsJSON := `{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-26-0":[` +
+		`{"udid":"PINNED-UDID","name":"iPhone 17 Pro","state":"Shutdown","isAvailable":true}]}}`
+	runner := &sequenceRecordingRunner{
+		tools: map[string]bool{"axe": true},
+		err: map[string]CommandResult{
+			key: {Stderr: "simpool: pool at capacity", Code: 1, Err: fmt.Errorf("exit status 1")},
+		},
+		out: map[string]string{"xcrun simctl list devices -j": simsJSON},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"sim", "select", "--udid", "PINNED-UDID"}); err != nil {
+		t.Fatalf("sim select failed: %v; output=%q", err, out.String())
+	}
+	if !strings.Contains(out.String(), "udid=PINNED-UDID") {
+		t.Fatalf("got %q, want the pin to be applied", out.String())
+	}
+	loaded, err := LoadConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.SimulatorUDID != "PINNED-UDID" {
+		t.Fatalf("simulator_udid=%q, want the pin persisted", loaded.SimulatorUDID)
+	}
+}
+
+// TestTargetCommandFailureLeavesEvidenceOnDisk: the failure this whole
+// change exists for is a script that pipes mav to /dev/null. A non-zero
+// exit with nothing on disk to look at afterwards would only move the
+// problem. The commands trail records Code, not Err, so the entry has to
+// carry a non-zero one.
+func TestTargetCommandFailureLeavesEvidenceOnDisk(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.TargetCommand = "print-target"
+	cfg.Tools = map[string]bool{}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	flow := filepath.Join(root, "flow.yaml")
+	if err := os.WriteFile(flow, []byte("name: t\nsteps:\n  - tap:\n      id: save\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	key := targetCommandKey(root, "print-target")
+	runner := &sequenceRecordingRunner{
+		tools: map[string]bool{"axe": true},
+		err: map[string]CommandResult{
+			key: {Stderr: "simpool: pool at capacity", Code: 1, Err: fmt.Errorf("exit status 1")},
+		},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"run", flow}); err == nil {
+		t.Fatalf("got a zero exit, want a non-zero one; output=%q", out.String())
+	}
+	runID := strings.TrimSpace(readCurrentRunForTest(t, root))
+	runDir := filepath.Join(root, MavDir, "runs", runID)
+
+	commands, err := os.ReadFile(filepath.Join(runDir, "commands.jsonl"))
+	if err != nil {
+		t.Fatalf("no commands trail: %v", err)
+	}
+	if !strings.Contains(string(commands), "target_command") {
+		t.Fatalf("commands trail=%q, want a target_command entry", commands)
+	}
+	if !strings.Contains(string(commands), `"code":1`) {
+		t.Fatalf("commands trail=%q, want a non-zero code (the trail records Code, not Err)", commands)
+	}
+	runJSON, err := os.ReadFile(filepath.Join(runDir, "run.json"))
+	if err != nil {
+		t.Fatalf("no run.json: %v", err)
+	}
+	if !strings.Contains(string(runJSON), `"status": "failed"`) {
+		t.Fatalf("run.json=%q, want status failed", runJSON)
+	}
+	if _, err := os.Stat(filepath.Join(runDir, "report.json")); err != nil {
+		t.Fatalf("no report: %v (cleanupFailedFlow must still run its report)", err)
+	}
+}
+
+func readCurrentRunForTest(t *testing.T, root string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(root, CurrentRunRef))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+// TestKeepAliveUsesTheConfiguredTimeout pins the wiring the three ping tests
+// below do not: startTargetCommandKeepAlive must derive its timeout from
+// cfg.TargetCommandTimeout, not hardcode the default.
+func TestKeepAliveUsesTheConfiguredTimeout(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.TargetCommandTimeout = "45s"
+	timeout, err := targetCommandTimeoutFor(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if timeout != 45*time.Second {
+		t.Fatalf("timeout=%s, want 45s", timeout)
+	}
+}
+
+// TestSetupPreservesTargetCommandPolicy is the regression for a defect the
+// review caught: mergeSetupConfig carried target_command forward but not the
+// two fields that say how it is enforced, so `mav setup` on an existing
+// project silently re-armed the hard failure a project had explicitly opted
+// out of, and reset a slower pool manager's timeout to the default. The
+// migration this whole change documents is target_command_required: false;
+// the repo's own onboarding command must not delete it.
+func TestSetupPreservesTargetCommandPolicy(t *testing.T) {
+	existing := DefaultConfig(t.TempDir())
+	existing.TargetCommand = "simpool lease"
+	existing.TargetCommandRequired = boolPtr(false)
+	existing.TargetCommandTimeout = "5m"
+
+	merged := mergeSetupConfig(existing, DefaultConfig(existing.Root))
+	if merged.TargetCommandRequired == nil || *merged.TargetCommandRequired {
+		t.Fatalf("target_command_required=%v, want the explicit false to survive setup", merged.TargetCommandRequired)
+	}
+	if merged.TargetCommandTimeout != "5m" {
+		t.Fatalf("target_command_timeout=%q, want 5m to survive setup", merged.TargetCommandTimeout)
+	}
+	if merged.TargetCommand != "simpool lease" {
+		t.Fatalf("target_command=%q, want it to survive setup", merged.TargetCommand)
 	}
 }

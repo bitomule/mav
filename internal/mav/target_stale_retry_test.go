@@ -281,3 +281,47 @@ func TestUITreeRetriesExactlyOnceEvenIfRetryAlsoFails(t *testing.T) {
 			countCommandCalls(runner.commands, "axe describe-ui --udid NEW-UDID"), runner.commands)
 	}
 }
+
+// TestUITreeRetryReportsTheOriginalFailureWhenReresolutionItselfFails pins
+// the one carve-out from "a required target_command failure always surfaces
+// as target_command_*": here the dispatch has ALREADY failed, and
+// re-resolving is a best-effort attempt to rescue it. When that re-resolve
+// fails too, the user is shown the failure they were already looking at,
+// annotated with the real cause -- not a target_command code that would
+// replace the dispatch error with the failure of the rescue attempt. And
+// still exactly one retry, no loop.
+func TestUITreeRetryReportsTheOriginalFailureWhenReresolutionItselfFails(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.TargetCommand = "print-target"
+	root, _ := newStaleTargetCommandRun(t, cfg, "OLD-UDID")
+
+	targetKey := targetCommandKey(root, "print-target")
+	runner := &sequenceRecordingRunner{
+		tools: map[string]bool{"axe": true},
+		err: map[string]CommandResult{
+			"axe describe-ui --udid OLD-UDID": {
+				Stderr: "Error: Cannot run accessibility commands against OLD-UDID as it is not booted",
+				Code:   1, Err: fmt.Errorf("exit status 1"),
+			},
+			targetKey: {Stderr: "simpool: pool at capacity", Code: 1, Err: fmt.Errorf("exit status 1")},
+		},
+		out: map[string]string{"xcrun simctl list devices booted -j": `{"devices":{}}`},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	allowFail(t, cli.Run(context.Background(), []string{"ui", "tree"}))
+	got := out.String()
+	if !strings.HasPrefix(got, "fail ") {
+		t.Fatalf("got %q, want a failure", got)
+	}
+	if !strings.Contains(got, "reason=simulator_not_booted") {
+		t.Fatalf("got %q, want the original dispatch failure with its real cause", got)
+	}
+	if strings.Contains(got, "code=target_command_failed") {
+		t.Fatalf("got %q, want the dispatch failure, not the failure of the rescue attempt", got)
+	}
+	if countCommandCalls(runner.commands, targetKey) != 1 {
+		t.Fatalf("target_command invoked %d times, want exactly 1 (no retry loop); commands=%v",
+			countCommandCalls(runner.commands, targetKey), runner.commands)
+	}
+}

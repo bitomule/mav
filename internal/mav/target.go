@@ -406,9 +406,14 @@ func targetCommandTimeoutFor(cfg Config) (time.Duration, error) {
 // simpool's `lease` blocks on `xcrun simctl bootstatus` before printing a
 // UDID, and a cold lease takes about two minutes. A default the one known
 // consumer cannot meet is a bug in the default, so it is now three minutes
-// -- past the documented cold-lease cost, still bounded, and still under
-// simpool's own 3-minute lease TTL. A slower pool manager says so with
-// target_command_timeout.
+// -- past the documented cold-lease cost, and still bounded. It matches
+// rather than undercuts simpool's own default lease TTL (`simpool lease
+// -ttl`, 3m0s), so a lease that burns the whole timeout can return with its
+// own TTL already spent; the keepalive that renews it only starts once
+// resolution has returned. Cutting the default below the TTL instead would
+// leave under a minute of headroom over the documented cold-lease cost,
+// which is the original bug again. A pool manager that is slower, or whose
+// TTL is shorter, says so with target_command_timeout.
 const defaultTargetCommandTimeout = 3 * time.Minute
 
 // targetCommandError is a target_command that did not name a simulator. It
@@ -455,9 +460,24 @@ func (e *targetCommandError) fields() map[string]string {
 		"fallback":       "none",
 	}
 	if e.timeout > 0 {
-		f["timeout"] = e.timeout.String()
+		// Not `timeout`: a flow step merges these fields over its own
+		// params, and `timeout` is a first-class param on waitFor and
+		// scrollUntil. Two different timeouts under one key is worse than
+		// a longer name.
+		f["target_command_timeout"] = e.timeout.String()
 	}
 	return f
+}
+
+// targetCommandWarnText renders a resolution error for the places that
+// report it rather than fail on it -- `mav doctor`, whose whole job is to
+// diagnose, and teardown paths whose work cannot be retried later.
+func targetCommandWarnText(err error) string {
+	var tcErr *targetCommandError
+	if errors.As(err, &tcErr) {
+		return tcErr.message()
+	}
+	return err.Error()
 }
 
 // failTargetCommand writes the structured failure for a target_command that
@@ -565,7 +585,33 @@ func (c CLI) execTargetCommand(root, command string, timeout time.Duration) (str
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	prefixed := shellEnvPrefix(map[string]string{"MAV_ROOT": root}) + " " + command
-	result := c.Runner.Run(ctx, "/bin/bash", "-lc", prefixed)
+	timedOut := &targetCommandError{
+		code:    codes.TargetCommandTimeout,
+		command: command,
+		timeout: timeout,
+		detail:  fmt.Sprintf("no UDID after %s", timeout),
+		next:    "raise target_command_timeout in .mav/config.yaml, or make target_command return faster",
+	}
+	// The deadline is enforced here rather than left to the runner, because
+	// exec.CommandContext kills the direct child only. target_command runs
+	// through `/bin/bash -lc`, and a grandchild that inherits the output
+	// pipe keeps cmd.Wait blocked long after the shell is dead -- so
+	// waiting on Run would mean waiting out the grandchild instead of the
+	// timeout, which is exactly the hang the timeout exists to prevent.
+	// Returning on ctx.Done() leaves that Run goroutine to finish into a
+	// buffered channel nobody reads; it is bounded (one per target_command
+	// invocation, and mav is about to exit or, in a run, ping again only
+	// once a minute) and it is the price of not making every other command
+	// mav runs -- launch recipes that legitimately background a helper
+	// holding stdout -- subject to the same cutoff.
+	done := make(chan CommandResult, 1)
+	go func() { done <- c.Runner.Run(ctx, "/bin/bash", "-lc", prefixed) }()
+	var result CommandResult
+	select {
+	case result = <-done:
+	case <-ctx.Done():
+		return "", "", timedOut
+	}
 	if result.Err != nil {
 		// A timeout gets its own code: the command may well still be
 		// working, and "raise the timeout" is a different next step from
@@ -573,13 +619,7 @@ func (c CLI) execTargetCommand(root, command string, timeout time.Duration) (str
 		// error text, which is only whatever the shell chose to say about
 		// being killed.
 		if ctx.Err() == context.DeadlineExceeded {
-			return "", "", &targetCommandError{
-				code:    codes.TargetCommandTimeout,
-				command: command,
-				timeout: timeout,
-				detail:  fmt.Sprintf("no UDID after %s", timeout),
-				next:    "raise target_command_timeout in .mav/config.yaml, or make target_command return faster",
-			}
+			return "", "", timedOut
 		}
 		detail := strings.TrimSpace(result.Stderr)
 		if detail == "" {
