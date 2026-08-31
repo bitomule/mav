@@ -304,6 +304,36 @@ Global flags:
               Select a platform profile from .mav/config.yaml.
   --version   Print the version of this mav.
   --help,-h   Show help.
+
+Config topics:
+  target_command
+              How mav picks the simulator, and what happens when it can't.
+`
+	case "target_command":
+		return `Routing to a specific simulator, in .mav/config.yaml:
+
+  target_command: simpool lease --device "iPhone 17 Pro" --os 26.3
+  target_command_timeout: 3m      # Go duration; default 3m
+  target_command_required: true   # default when target_command is set
+
+mav runs target_command from the project root (MAV_ROOT exported) and reads
+one UDID off stdout. It is cached per run, so a hot navigation of dozens of
+commands runs it once.
+
+Precedence, most to least specific: --target / MAV_TARGET_* env, then
+simulator_udid pinned in .mav/config.yaml, then target_command, then
+whatever simulator is booted.
+
+When target_command fails, the command FAILS -- mav does not quietly drive
+whatever simulator happens to be booted:
+
+  target_command_failed   exited non-zero (the pool said no)
+  target_command_timeout  no UDID within target_command_timeout
+  target_command_empty    exited 0 without printing a UDID
+
+All three carry fallback=none and exit non-zero. Set
+target_command_required: false to opt out and get the old
+warn-and-fall-back behaviour instead.
 `
 	case "setup":
 		return `Usage:
@@ -511,6 +541,8 @@ func normalizeHelpTopic(topic string) string {
 		"scrollUntil":  "ui scrollUntil",
 		"actions":      "ui actions",
 		"screenshot":   "capture",
+		"config":       "target_command",
+		"target":       "target_command",
 	}
 	if alias, ok := aliases[topic]; ok {
 		return alias
@@ -525,7 +557,9 @@ func (c CLI) doctor(ctx context.Context, opts GlobalOptions) error {
 		cfg = DefaultConfig(c.Root)
 	}
 	c.resolveConfigTools(&cfg)
-	c.resolveConfigTarget(&cfg)
+	if _, err := c.resolveConfigTarget(&cfg); err != nil {
+		return c.failTargetCommand(err)
+	}
 	caps := c.resolveCapabilities(ctx, cfg)
 	tools := caps.Tools
 	fields := caps.fields()
@@ -1063,7 +1097,9 @@ func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 			return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 		}
 		c.resolveConfigTools(&cfg)
-		c.resolveConfigTarget(&cfg)
+		if _, err := c.resolveConfigTarget(&cfg); err != nil {
+			return c.failTargetCommand(err)
+		}
 		sims, err := ListSimulators(c.Runner)
 		if err != nil {
 			return Fail("sim_list_failed", map[string]string{"error": err.Error()}).Write(c.Stdout)
@@ -1095,7 +1131,9 @@ func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 			return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 		}
 		c.resolveConfigTools(&cfg)
-		c.resolveConfigTarget(&cfg)
+		if _, err := c.resolveConfigTarget(&cfg); err != nil {
+			return c.failTargetCommand(err)
+		}
 		if targetKind(cfg) != drivers.KindSim {
 			return Fail("sim_not_applicable", map[string]string{"target": "device", "next": "select a simulator with mav sim select"}).Write(c.Stdout)
 		}
@@ -1133,7 +1171,9 @@ func (c CLI) simTarget(feature string, next string) (drivers.Target, error) {
 		return drivers.Target{}, Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
 	c.resolveConfigTools(&cfg)
-	c.resolveConfigTarget(&cfg)
+	if _, err := c.resolveConfigTarget(&cfg); err != nil {
+		return drivers.Target{}, c.failTargetCommand(err)
+	}
 	// A Mac gets its own code rather than being lumped in with iPhones:
 	// both are refusals, but the reasons differ and an agent branching on
 	// the code should not have to guess which platform it is standing on.
@@ -1428,7 +1468,9 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	}
 	c = c.withSkipBuild(hasFlag(args, "--skip-build"))
 	c.resolveConfigTools(&cfg)
-	c.resolveConfigTarget(&cfg)
+	if _, err := c.resolveConfigTarget(&cfg); err != nil {
+		return c.failTargetCommand(err)
+	}
 	if err := c.applyOpenTargetOverrides(ctx, &cfg, args); err != nil {
 		return Fail("sim_select_failed", map[string]string{"error": err.Error()}).Write(c.Stdout)
 	}
@@ -1590,7 +1632,9 @@ func (c CLI) timeControl(ctx context.Context, opts GlobalOptions, args []string)
 	if err != nil {
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
-	c.resolveConfigTarget(&cfg)
+	if _, err := c.resolveConfigTarget(&cfg); err != nil {
+		return c.failTargetCommand(err)
+	}
 	if targetKind(cfg) == drivers.KindMac {
 		return c.macTime(ctx, cfg, args)
 	}
@@ -1829,7 +1873,9 @@ func (c CLI) ui(ctx context.Context, opts GlobalOptions, args []string) error {
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
 	c.resolveConfigTools(&cfg)
-	c.resolveConfigTarget(&cfg)
+	if _, err := c.resolveConfigTarget(&cfg); err != nil {
+		return c.failTargetCommand(err)
+	}
 	var dispatchErr error
 	out := c.dispatchWithStaleTargetRetry(cfg, func(callee CLI, cfg Config) {
 		dispatchErr = callee.dispatchUICommand(ctx, opts, cfg, args)
@@ -3701,7 +3747,10 @@ func (c CLI) app(ctx context.Context, opts GlobalOptions, args []string) error {
 	if len(args) == 0 {
 		return Fail("app_command_missing", map[string]string{"usage": "mav app list|kill"}).Write(c.Stdout)
 	}
-	cfg := c.mustLoadConfig()
+	cfg, cfgErr := c.mustLoadConfig()
+	if cfgErr != nil {
+		return c.failTargetCommand(cfgErr)
+	}
 	target := targetFromConfig(cfg)
 	switch args[0] {
 	case "list":
@@ -3749,7 +3798,10 @@ func (c CLI) openURL(ctx context.Context, opts GlobalOptions, args []string) err
 	if len(args) == 0 || strings.HasPrefix(args[0], "--") {
 		return Fail("url_missing", map[string]string{"usage": "mav openURL URL"}).Write(c.Stdout)
 	}
-	cfg := c.mustLoadConfig()
+	cfg, cfgErr := c.mustLoadConfig()
+	if cfgErr != nil {
+		return c.failTargetCommand(cfgErr)
+	}
 	target := targetFromConfig(cfg)
 	driver, _, err := c.router().Route(ctx, drivers.CapOpenURL, target, "")
 	if err != nil {
@@ -3770,7 +3822,10 @@ func (c CLI) location(ctx context.Context, opts GlobalOptions, args []string) er
 	if len(args) == 0 {
 		return Fail("location_command_missing", map[string]string{"usage": "mav location set LAT LON | reset"}).Write(c.Stdout)
 	}
-	cfg := c.mustLoadConfig()
+	cfg, cfgErr := c.mustLoadConfig()
+	if cfgErr != nil {
+		return c.failTargetCommand(cfgErr)
+	}
 	target := targetFromConfig(cfg)
 	if targetKind(cfg) == drivers.KindDevice && len(args) > 0 && args[0] == "reset" {
 		return Fail("location_reset_unsupported_on_device", nil).Write(c.Stdout)
@@ -3817,13 +3872,20 @@ func (c CLI) clipboard(ctx context.Context, opts GlobalOptions, args []string) e
 	// served it: what failed was this gate, which treated everything that
 	// was not a simulator as a physical device. On a real iPhone there is
 	// still no way to read it.
-	if kind := targetKind(c.mustLoadConfig()); kind != drivers.KindSim && kind != drivers.KindMac {
+	kindCfg, kindErr := c.mustLoadConfig()
+	if kindErr != nil {
+		return c.failTargetCommand(kindErr)
+	}
+	if kind := targetKind(kindCfg); kind != drivers.KindSim && kind != drivers.KindMac {
 		return Fail("clipboard_unsupported_on_device", nil).Write(c.Stdout)
 	}
 	if len(args) == 0 {
 		return Fail("clipboard_command_missing", map[string]string{"usage": "mav clipboard copy TEXT | read"}).Write(c.Stdout)
 	}
-	cfg := c.mustLoadConfig()
+	cfg, cfgErr := c.mustLoadConfig()
+	if cfgErr != nil {
+		return c.failTargetCommand(cfgErr)
+	}
 	target := targetFromConfig(cfg)
 	driver, _, err := c.router().Route(ctx, drivers.CapClipboard, target, "")
 	if err != nil {
@@ -3864,7 +3926,9 @@ func (c CLI) capture(ctx context.Context, opts GlobalOptions, args []string) err
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
 	c.resolveConfigTools(&cfg)
-	c.resolveConfigTarget(&cfg)
+	if _, err := c.resolveConfigTarget(&cfg); err != nil {
+		return c.failTargetCommand(err)
+	}
 	run, err := c.resolveRun(flagValue(args, "--run"))
 	if err != nil {
 		run, err = NewProjectRunState(c.Root)
@@ -4026,7 +4090,10 @@ func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) err
 	if err := bindFlowParameters(flow, args[1:], bindings); err != nil {
 		return Fail("flow_params_invalid", map[string]string{"error": err.Error()}).Write(c.Stdout)
 	}
-	cfg := c.mustLoadConfig()
+	cfg, cfgErr := c.mustLoadConfig()
+	if cfgErr != nil {
+		return c.failTargetCommand(cfgErr)
+	}
 	bindFlowTarget(cfg, bindings)
 	stopTargetCommandKeepAlive := c.startTargetCommandKeepAlive(run, cfg, c.targetCommandInEffectForRun())
 	defer stopTargetCommandKeepAlive()
@@ -4629,7 +4696,10 @@ func (c CLI) executeFlowStepBoundOnceWithOptions(ctx context.Context, opts Globa
 }
 
 func (c CLI) extractFlowValue(ctx context.Context, step FlowStep) (map[string]string, string, error) {
-	cfg := c.mustLoadConfig()
+	cfg, cfgErr := c.mustLoadConfig()
+	if cfgErr != nil {
+		return nil, "", cfgErr
+	}
 	described, err := c.describeUITree(ctx, cfg, "auto", false)
 	if err != nil || described.Result.Err != nil {
 		return nil, "", fmt.Errorf("tree_failed")
@@ -4711,7 +4781,10 @@ func (c CLI) executeFlowAfter(ctx context.Context, run RunState, after *FlowAfte
 	switch after.Observe {
 	case "", "none":
 	case "agent", "tree", "delta":
-		cfg := c.mustLoadConfig()
+		cfg, cfgErr := c.mustLoadConfig()
+		if cfgErr != nil {
+			return fields, cfgErr
+		}
 		described, err := c.describeUITree(ctx, cfg, "auto", false)
 		if err != nil || described.Result.Err != nil {
 			return fields, fmt.Errorf("tree_failed")
@@ -4736,6 +4809,22 @@ func (c CLI) executeFlowAfter(ctx context.Context, run RunState, after *FlowAfte
 
 func (c CLI) executeFlowStep(ctx context.Context, run RunState, index int, step FlowStep) (map[string]string, error) {
 	return c.executeFlowStepWithOptions(ctx, GlobalOptions{}, run, index, step)
+}
+
+// flowStepTargetFailure turns a target_command resolution error into the
+// (fields, err) pair a flow step reports. err.Error() becomes the run's
+// `code=`, and the fields carry the command, the timeout and fallback=none,
+// so a required target_command that did not deliver is as legible inside a
+// flow as it is on a standalone command.
+func flowStepTargetFailure(step FlowStep, err error) (map[string]string, error) {
+	fields := copyParams(step.Params)
+	var tcErr *targetCommandError
+	if errors.As(err, &tcErr) {
+		for key, value := range tcErr.fields() {
+			fields[key] = value
+		}
+	}
+	return fields, err
 }
 
 func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions, run RunState, index int, step FlowStep) (map[string]string, error) {
@@ -4778,7 +4867,10 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 	case "whileNotVisible":
 		return c.executeWhileNotVisibleFlowStepBoundWithOptions(ctx, opts, run, index, step, nil)
 	case "tree":
-		cfg := c.mustLoadConfig()
+		cfg, cfgErr := c.mustLoadConfig()
+		if cfgErr != nil {
+			return flowStepTargetFailure(step, cfgErr)
+		}
 		described, err := c.describeUITree(ctx, cfg, prefer, false)
 		if err != nil || described.Result.Err != nil {
 			return map[string]string{"driver": prefer}, fmt.Errorf("tree_failed")
@@ -4815,7 +4907,11 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 	case "tap":
 		args := append(selectorCLIArgs(flowStepSelector(step)), flowArgs(step.Params, "--x", "x", "--y", "y")...)
 		var out bytes.Buffer
-		err := c.withStdout(&out).uiTap(ctx, GlobalOptions{PreferDriver: prefer}, c.mustLoadConfig(), args)
+		cfg, cfgErr := c.mustLoadConfig()
+		if cfgErr != nil {
+			return flowStepTargetFailure(step, cfgErr)
+		}
+		err := c.withStdout(&out).uiTap(ctx, GlobalOptions{PreferDriver: prefer}, cfg, args)
 		cmdErr := commandOutputErr(err, out.String(), "tap_failed")
 		if cmdErr != nil && step.Params["optional"] == "true" {
 			fields := copyParams(step.Params)
@@ -4826,7 +4922,11 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 	case "doubleTap":
 		args := append(selectorCLIArgs(flowStepSelector(step)), flowArgs(step.Params, "--x", "x", "--y", "y", "--duration", "duration")...)
 		var out bytes.Buffer
-		err := c.withStdout(&out).uiDoubleTap(ctx, GlobalOptions{PreferDriver: prefer}, c.mustLoadConfig(), args)
+		cfg, cfgErr := c.mustLoadConfig()
+		if cfgErr != nil {
+			return flowStepTargetFailure(step, cfgErr)
+		}
+		err := c.withStdout(&out).uiDoubleTap(ctx, GlobalOptions{PreferDriver: prefer}, cfg, args)
 		return copyParams(step.Params), commandOutputErr(err, out.String(), "double_tap_failed")
 	case "type":
 		text := step.Params["text"]
@@ -4835,7 +4935,11 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 		// params fallback would resurrect "text" (the content to type) as a
 		// tap target here.
 		args := append([]string{text}, selectorCLIArgs(step.Where)...)
-		err := c.withStdout(&out).uiType(ctx, GlobalOptions{PreferDriver: prefer}, c.mustLoadConfig(), args)
+		cfg, cfgErr := c.mustLoadConfig()
+		if cfgErr != nil {
+			return flowStepTargetFailure(step, cfgErr)
+		}
+		err := c.withStdout(&out).uiType(ctx, GlobalOptions{PreferDriver: prefer}, cfg, args)
 		fields := map[string]string{"chars": strconv.Itoa(len(text))}
 		if prefer != "" {
 			fields["driver"] = prefer
@@ -4844,19 +4948,35 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 	case "erase":
 		args := flowArgs(step.Params, "--id", "id", "--text", "text", "--value", "value", "--focused", "focused")
 		var out bytes.Buffer
-		err := c.withStdout(&out).uiErase(ctx, GlobalOptions{PreferDriver: prefer}, c.mustLoadConfig(), args)
+		cfg, cfgErr := c.mustLoadConfig()
+		if cfgErr != nil {
+			return flowStepTargetFailure(step, cfgErr)
+		}
+		err := c.withStdout(&out).uiErase(ctx, GlobalOptions{PreferDriver: prefer}, cfg, args)
 		return copyParams(step.Params), commandOutputErr(err, out.String(), "erase_failed")
 	case "hideKeyboard":
 		var out bytes.Buffer
-		err := c.withStdout(&out).uiHideKeyboard(ctx, GlobalOptions{}, c.mustLoadConfig(), nil)
+		cfg, cfgErr := c.mustLoadConfig()
+		if cfgErr != nil {
+			return flowStepTargetFailure(step, cfgErr)
+		}
+		err := c.withStdout(&out).uiHideKeyboard(ctx, GlobalOptions{}, cfg, nil)
 		return map[string]string{"driver": "baguette"}, commandOutputErr(err, out.String(), "hide_keyboard_failed")
 	case "swipe":
 		args := flowArgs(step.Params, "--direction", "direction", "--start-x", "startX", "--start-y", "startY", "--end-x", "endX", "--end-y", "endY")
-		err := c.withStdout(io.Discard).uiSwipe(ctx, GlobalOptions{PreferDriver: prefer}, c.mustLoadConfig(), args)
+		cfg, cfgErr := c.mustLoadConfig()
+		if cfgErr != nil {
+			return flowStepTargetFailure(step, cfgErr)
+		}
+		err := c.withStdout(io.Discard).uiSwipe(ctx, GlobalOptions{PreferDriver: prefer}, cfg, args)
 		return copyParams(step.Params), outputErr(err, "swipe_failed")
 	case "drag":
 		args := flowArgs(step.Params, "--start-x", "startX", "--start-y", "startY", "--end-x", "endX", "--end-y", "endY", "--duration", "duration")
-		err := c.withStdout(io.Discard).uiDrag(ctx, GlobalOptions{}, c.mustLoadConfig(), args)
+		cfg, cfgErr := c.mustLoadConfig()
+		if cfgErr != nil {
+			return flowStepTargetFailure(step, cfgErr)
+		}
+		err := c.withStdout(io.Discard).uiDrag(ctx, GlobalOptions{}, cfg, args)
 		return copyParams(step.Params), outputErr(err, "drag_failed")
 	case "dragPath":
 		args := []string{}
@@ -4871,35 +4991,67 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 			}
 			args = append(args, "--point", raw)
 		}
-		err := c.withStdout(io.Discard).uiDragPath(ctx, GlobalOptions{}, c.mustLoadConfig(), args)
+		cfg, cfgErr := c.mustLoadConfig()
+		if cfgErr != nil {
+			return flowStepTargetFailure(step, cfgErr)
+		}
+		err := c.withStdout(io.Discard).uiDragPath(ctx, GlobalOptions{}, cfg, args)
 		return map[string]string{"points": strconv.Itoa(len(step.Points))}, outputErr(err, "drag_path_failed")
 	case "toggle":
 		args := append(selectorCLIArgs(flowStepSelector(step)), flowArgs(step.Params, "--state", "state")...)
-		err := c.withStdout(io.Discard).uiToggle(ctx, GlobalOptions{PreferDriver: prefer}, c.mustLoadConfig(), args)
+		cfg, cfgErr := c.mustLoadConfig()
+		if cfgErr != nil {
+			return flowStepTargetFailure(step, cfgErr)
+		}
+		err := c.withStdout(io.Discard).uiToggle(ctx, GlobalOptions{PreferDriver: prefer}, cfg, args)
 		return copyParams(step.Params), outputErr(err, "toggle_failed")
 	case "press":
 		args := flowArgs(step.Params, "--button", "button")
-		err := c.withStdout(io.Discard).uiPress(ctx, GlobalOptions{}, c.mustLoadConfig(), args)
+		cfg, cfgErr := c.mustLoadConfig()
+		if cfgErr != nil {
+			return flowStepTargetFailure(step, cfgErr)
+		}
+		err := c.withStdout(io.Discard).uiPress(ctx, GlobalOptions{}, cfg, args)
 		return copyParams(step.Params), outputErr(err, "press_failed")
 	case "longPress":
 		args := flowArgs(step.Params, "--x", "x", "--y", "y", "--duration", "duration")
-		err := c.withStdout(io.Discard).uiLongPress(ctx, GlobalOptions{}, c.mustLoadConfig(), args)
+		cfg, cfgErr := c.mustLoadConfig()
+		if cfgErr != nil {
+			return flowStepTargetFailure(step, cfgErr)
+		}
+		err := c.withStdout(io.Discard).uiLongPress(ctx, GlobalOptions{}, cfg, args)
 		return copyParams(step.Params), outputErr(err, "long_press_failed")
 	case "pinch":
 		args := gestureFlowArgs(step.Params)
-		err := c.withStdout(io.Discard).uiPinch(ctx, GlobalOptions{}, c.mustLoadConfig(), args)
+		cfg, cfgErr := c.mustLoadConfig()
+		if cfgErr != nil {
+			return flowStepTargetFailure(step, cfgErr)
+		}
+		err := c.withStdout(io.Discard).uiPinch(ctx, GlobalOptions{}, cfg, args)
 		return copyParams(step.Params), outputErr(err, "pinch_failed")
 	case "rotate":
 		args := gestureFlowArgs(step.Params)
-		err := c.withStdout(io.Discard).uiRotate(ctx, GlobalOptions{}, c.mustLoadConfig(), args)
+		cfg, cfgErr := c.mustLoadConfig()
+		if cfgErr != nil {
+			return flowStepTargetFailure(step, cfgErr)
+		}
+		err := c.withStdout(io.Discard).uiRotate(ctx, GlobalOptions{}, cfg, args)
 		return copyParams(step.Params), outputErr(err, "rotate_failed")
 	case "twoFingerPan":
 		args := gestureFlowArgs(step.Params)
-		err := c.withStdout(io.Discard).uiTwoFingerPan(ctx, GlobalOptions{}, c.mustLoadConfig(), args)
+		cfg, cfgErr := c.mustLoadConfig()
+		if cfgErr != nil {
+			return flowStepTargetFailure(step, cfgErr)
+		}
+		err := c.withStdout(io.Discard).uiTwoFingerPan(ctx, GlobalOptions{}, cfg, args)
 		return copyParams(step.Params), outputErr(err, "two_finger_pan_failed")
 	case "actions":
 		args := flowArgs(step.Params, "--file", "file")
-		err := c.withStdout(io.Discard).uiActions(ctx, GlobalOptions{}, c.mustLoadConfig(), args)
+		cfg, cfgErr := c.mustLoadConfig()
+		if cfgErr != nil {
+			return flowStepTargetFailure(step, cfgErr)
+		}
+		err := c.withStdout(io.Discard).uiActions(ctx, GlobalOptions{}, cfg, args)
 		return copyParams(step.Params), outputErr(err, "actions_failed")
 	case "delay", "sleep":
 		duration := parseFlowDuration(step.Params["duration"], 1*time.Second)
@@ -5453,11 +5605,18 @@ func sandboxAccessHint(text string) string {
 	return ""
 }
 
-func (c CLI) mustLoadConfig() Config {
+// mustLoadConfig returns the fully resolved config, or the error from a
+// required target_command that did not name a simulator. That error is not
+// swallowed the way LoadConfig's is: without a target there is nothing to
+// dispatch against, and the whole point of target_command_required is that
+// mav says so instead of quietly picking a simulator of its own.
+func (c CLI) mustLoadConfig() (Config, error) {
 	cfg, _ := LoadConfig(c.Root)
 	c.resolveConfigTools(&cfg)
-	c.resolveConfigTarget(&cfg)
-	return cfg
+	if _, err := c.resolveConfigTarget(&cfg); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
 }
 
 func flowArgs(params map[string]string, pairs ...string) []string {
@@ -5588,7 +5747,9 @@ func (c CLI) cleanupFailedFlow(ctx context.Context, run RunState, fields map[str
 	c.reapAbandonedRun(ctx, run)
 	if cfg, err := LoadConfig(c.Root); err == nil {
 		c.resolveConfigTools(&cfg)
-		c.resolveConfigTarget(&cfg)
+		if _, err := c.resolveConfigTarget(&cfg); err != nil {
+			return
+		}
 		path := filepath.Join(run.Dir, "failure.png")
 		if result, err := c.captureScreenshot(ctx, cfg, path); err == nil && result.Err == nil {
 			fields["screenshot"] = path
@@ -5608,7 +5769,9 @@ func (c CLI) captureEvidenceStep(ctx context.Context, run RunState, name, note s
 		return nil, fmt.Errorf("config_not_found")
 	}
 	c.resolveConfigTools(&cfg)
-	c.resolveConfigTarget(&cfg)
+	if _, err := c.resolveConfigTarget(&cfg); err != nil {
+		return nil, err
+	}
 	name = safeFileName(name)
 	idx := len(LoadEvidenceSteps(run)) + 1
 	file := filepath.Join(run.Dir, "steps", fmt.Sprintf("%02d_%s.png", idx, name))
@@ -5759,7 +5922,11 @@ func (c CLI) scrollUntilFlowConditionWithSelector(ctx context.Context, params ma
 		if i == maxSwipes {
 			break
 		}
-		if err := c.withStdout(io.Discard).uiSwipe(ctx, GlobalOptions{PreferDriver: prefer}, c.mustLoadConfig(), []string{"--direction", direction}); err != nil {
+		cfg, cfgErr := c.mustLoadConfig()
+		if cfgErr != nil {
+			return nil, cfgErr
+		}
+		if err := c.withStdout(io.Discard).uiSwipe(ctx, GlobalOptions{PreferDriver: prefer}, cfg, []string{"--direction", direction}); err != nil {
 			return nil, fmt.Errorf("swipe_failed")
 		}
 		time.Sleep(500 * time.Millisecond)
@@ -5908,7 +6075,9 @@ func (c CLI) evaluateSingleConditionWithPrefer(ctx context.Context, condition Fl
 		return false, fmt.Errorf("config_not_found")
 	}
 	c.resolveConfigTools(&cfg)
-	c.resolveConfigTarget(&cfg)
+	if _, err := c.resolveConfigTarget(&cfg); err != nil {
+		return false, err
+	}
 	described, err := c.describeUITree(ctx, cfg, prefer, false)
 	if err != nil {
 		return false, fmt.Errorf("tree_failed")
@@ -5944,7 +6113,10 @@ func (c CLI) assertFlowCount(ctx context.Context, step FlowStep, prefer string) 
 	if err != nil || expected < 0 {
 		return nil, fmt.Errorf("assert_count_invalid")
 	}
-	cfg := c.mustLoadConfig()
+	cfg, cfgErr := c.mustLoadConfig()
+	if cfgErr != nil {
+		return copyParams(step.Params), cfgErr
+	}
 	described, err := c.describeUITree(ctx, cfg, prefer, false)
 	if err != nil || described.Result.Err != nil {
 		return nil, fmt.Errorf("tree_failed")
@@ -5991,7 +6163,9 @@ func (c CLI) screenshotChangedFrom(ctx context.Context, name string) (bool, erro
 		return false, fmt.Errorf("config_not_found")
 	}
 	c.resolveConfigTools(&cfg)
-	c.resolveConfigTarget(&cfg)
+	if _, err := c.resolveConfigTarget(&cfg); err != nil {
+		return false, err
+	}
 	current := filepath.Join(run.Dir, "wait-current.png")
 	result, err := c.captureScreenshot(ctx, cfg, current)
 	if err != nil || result.Err != nil {
@@ -6199,7 +6373,9 @@ func (c CLI) crashes(ctx context.Context, opts GlobalOptions, args []string) err
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
 	c.resolveConfigTools(&cfg)
-	c.resolveConfigTarget(&cfg)
+	if _, err := c.resolveConfigTarget(&cfg); err != nil {
+		return c.failTargetCommand(err)
+	}
 	if targetKind(cfg) == drivers.KindSim && !opts.Raw {
 		return c.crashesFromDiagnosticReports("")
 	}
@@ -6283,7 +6459,9 @@ func (c CLI) crashesFromDiagnosticReports(idbError string) error {
 	// diagnosticCrashRoots below silently narrows its search whenever
 	// target_command is configured (cfg.SimulatorUDID would read empty
 	// instead of falling back like every other caller now does).
-	c.resolveConfigTarget(&cfg)
+	if _, err := c.resolveConfigTarget(&cfg); err != nil {
+		return c.failTargetCommand(err)
+	}
 	since := time.Now().Add(-15 * time.Minute)
 	var crashDir string
 	if run, err := c.resolveRun(""); err == nil {
@@ -6398,7 +6576,9 @@ func (c CLI) evidenceStart(ctx context.Context, opts GlobalOptions, args []strin
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
 	c.resolveConfigTools(&cfg)
-	c.resolveConfigTarget(&cfg)
+	if _, err := c.resolveConfigTarget(&cfg); err != nil {
+		return c.failTargetCommand(err)
+	}
 	run, err := c.resolveRun(flagValue(args, "--run"))
 	if err != nil {
 		return Fail("run_not_found", nil).Write(c.Stdout)
@@ -6455,7 +6635,9 @@ func (c CLI) evidenceStep(ctx context.Context, opts GlobalOptions, args []string
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
 	c.resolveConfigTools(&cfg)
-	c.resolveConfigTarget(&cfg)
+	if _, err := c.resolveConfigTarget(&cfg); err != nil {
+		return c.failTargetCommand(err)
+	}
 	run, err := c.resolveRun(flagValue(args, "--run"))
 	if err != nil {
 		return Fail("run_not_found", nil).Write(c.Stdout)
@@ -6506,7 +6688,9 @@ func (c CLI) evidenceStop(ctx context.Context, opts GlobalOptions, args []string
 	cfg, cfgErr := LoadConfig(c.Root)
 	if cfgErr == nil {
 		c.resolveConfigTools(&cfg)
-		c.resolveConfigTarget(&cfg)
+		if _, err := c.resolveConfigTarget(&cfg); err != nil {
+			return c.failTargetCommand(err)
+		}
 	}
 	// The recorder is asked to stop BEFORE the process holding it is
 	// signalled. On macOS only the daemon can write the mp4's index, and a
@@ -6566,7 +6750,9 @@ func (c CLI) evidenceStop(ctx context.Context, opts GlobalOptions, args []string
 		cfg, cfgErr := LoadConfig(c.Root)
 		if cfgErr == nil {
 			c.resolveConfigTools(&cfg)
-			c.resolveConfigTarget(&cfg)
+			if _, err := c.resolveConfigTarget(&cfg); err != nil {
+				return c.failTargetCommand(err)
+			}
 			file := filepath.Join(run.Dir, "steps", fmt.Sprintf("%02d_final.png", len(LoadEvidenceSteps(run))+1))
 			if result, err := c.captureScreenshot(ctx, cfg, file); err == nil && result.Err == nil {
 				_ = AppendEvidenceStep(run, EvidenceStep{Name: "final", Note: flagValue(args, "--note"), File: file, Kind: "screenshot"})

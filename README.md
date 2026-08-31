@@ -1081,11 +1081,13 @@ repo-relative script works.
 The contract is deliberately small, so anything can satisfy it:
 
 - stdout is a UDID, and nothing else
-- exit 0 means the UDID is good; anything else means fall back
-- it must be quick and must not block -- mav runs it while a person or an
-  agent waits on a `tap`, so a command that holds a lock or waits for a free
-  slot is the wrong shape here (`simpool lease` returns and leaves a TTL
-  behind for exactly this reason, where `simpool with` would hold)
+- exit 0 means the UDID is good; anything else fails the command
+- it must return within `target_command_timeout` (3 minutes by default),
+  which is sized for a cold `simpool lease` -- one that has to create and
+  boot a simulator and wait out `simctl bootstatus`. A command that holds a
+  lock for the whole session is still the wrong shape here (`simpool lease`
+  returns and leaves a TTL behind for exactly this reason, where `simpool
+  with` would hold)
 
 Precedence, most to least specific:
 
@@ -1095,7 +1097,10 @@ Precedence, most to least specific:
 2. `MAV_TARGET_KIND` / `MAV_TARGET_UDID` set directly in the environment.
 3. `simulator_udid` pinned in `.mav/config.yaml` (`mav sim select`).
 4. `target_command`.
-5. The pre-existing fallback: whatever simulator is booted.
+5. The pre-existing fallback: whatever simulator is booted. Reached only
+   when no `target_command` is configured, or when one is configured with
+   `target_command_required: false` and it failed -- never as a silent
+   substitute for a `target_command` that was supposed to answer.
 
 `target_command` only fires for case 5 -- the case that used to mean "guess
 the booted simulator" -- so it never overrides an explicit flag, env var, or
@@ -1135,18 +1140,62 @@ not switch simulators mid-run to chase it -- that would relocate the
 collision, not prevent it -- it keeps dispatching against the original UDID
 and appends an actionable warning to the run's own `logs.txt` instead. The
 same is true if a ping starts failing partway through: logged, never fatal,
-the same "warn and keep going" shape as `target_command`'s own single-command
-fallback.
+the same "warn and keep going" shape the single-command path uses under
+`target_command_required: false`. The keepalive is a liveness ping, not a
+resolution, so it stays non-fatal even when `target_command` is required --
+the run's target was already resolved and fixed before the first step.
 
-If `target_command` fails or prints nothing, mav falls back to the booted
-simulator (case 5 above) and reports an actionable
-`target_command_warn=<reason and next step>` field on the command's success
-output instead of failing the command or hanging:
+### When `target_command` fails
+
+Setting `target_command` is a declaration of how the target is chosen, so
+mav does not choose differently behind your back. If the command exits
+non-zero, prints nothing, or exceeds its timeout, the mav command **fails**
+and no fallback is taken:
 
 ```bash
 $ mav ui tap --id save
+fail code=target_command_timeout detail="no UDID after 3m0s" fallback=none remediation="Raise target_command_timeout in .mav/config.yaml, or set target_command_required: false to allow the booted-simulator fallback" target_command="simpool lease --device \"iPhone 17 Pro\" --os 26.3" timeout=3m0s title="target_command exceeded its timeout and no fallback was taken"
+```
+
+Three codes, because the next step differs: `target_command_failed` (the
+command exited non-zero -- the pool said no), `target_command_timeout` (it
+may still be working; raise the timeout) and `target_command_empty` (it
+exited 0 without printing a UDID -- the command breaks the contract). All
+three carry `fallback=none`, the process exits non-zero, and no simulator is
+resolved at all.
+
+This matters most where nobody is reading stdout. A screenshot script that
+pipes `mav run` to `/dev/null` used to get exit 0 and images captured from
+whichever simulator happened to be booted; now it gets a non-zero exit.
+
+Two knobs control this:
+
+```yaml
+target_command: simpool lease --device "iPhone 17 Pro" --os 26.3
+target_command_timeout: 3m      # Go duration; default 3m
+target_command_required: true   # default when target_command is set
+```
+
+- `target_command_timeout` bounds a single invocation. The default is three
+  minutes, past the roughly two a cold `simpool lease` costs and still under
+  simpool's own lease TTL. A malformed value is an error
+  (`target_command_timeout_invalid`), not a silent fall back to the default.
+- `target_command_required: false` is the explicit opt-out, and restores the
+  old behaviour: a failure falls back to the booted simulator (case 5 above)
+  and reports `target_command_warn=<reason and next step>` on the command's
+  success output.
+
+```bash
+# with target_command_required: false
+$ mav ui tap --id save
 ok cmd=ui.tap driver=axe target_kind=simulator udid=... target_command_warn="target_command_failed: simpool: no free slot (next: fix or remove target_command in .mav/config.yaml; falling back to the booted simulator)"
 ```
+
+Failures are cached for the run's TTL only in that opt-out mode, where the
+run keeps going and would otherwise pay the timeout again on every command
+that follows. A required failure is never cached: the command already
+exited, so there is no sequence left to protect, and caching it would make
+the next run inside the TTL fail on evidence it never re-tested.
 
 ### If `simulator_udid` is also pinned
 
