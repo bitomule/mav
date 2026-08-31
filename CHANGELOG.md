@@ -19,17 +19,31 @@ invocation.
 - `open: { skipBuild: true }` marks a single flow step, for a flow that builds in
   its first `open` and reuses it in the later ones.
 - It is applied to the recipe's `build` step rather than to any one build system,
-  so it works for every `launch.mode`.
+  so it works for every `launch.mode` -- with the caveat that
+  `mode: already_installed` has neither a `build` nor an `app_path`, so there it
+  is a no-op rather than a saving.
 - `--skip-build` is rejected together with `--no-relaunch`, like `--clear-state`
   and `--fixture` and for the same reason: `--no-relaunch` skips the whole
   recipe, so there is no build to skip.
 
-When nothing was ever built, `app_path` has nothing to resolve. That comes back
-as `build_skipped_app_missing` -- naming the skipped build and pointing at
+When nothing was ever built, `app_path` has nothing to resolve. `mav open`
+returns `build_skipped_app_missing` -- naming the skipped build and pointing at
 `rerun without --skip-build` -- instead of whatever the project's Makefile
 printed on its way out. The same code covers an `app_path` that prints a path
 which is not on disk, which is what a stale recipe looks like when the build
-never ran.
+never ran, and the run's `commands.jsonl` records a `launch.skip_build_check`
+entry naming the path MAV looked for.
+
+Inside a flow, an `open` step that fails now carries the CLI's own fail line in
+a `detail` field. The step code stays `open_failed`, as for every command
+wrapped into a flow step, but the code, the stderr and the remedy behind it used
+to be discarded, leaving a bare `open_failed` with nothing to read -- for
+`--skip-build` and for every other way `open` can fail.
+
+The `--no-relaunch` conflict checks (`--clear-state`, `--fixture`, and now
+`--skip-build`) moved above the target-override step. They used to run after it,
+so a command that was about to be rejected first booted a simulator and
+persisted a new target into `.mav/config.yaml`.
 
 `mav run --target ... --target ...` already built once and told its children not
 to rebuild, through a private `MAV_SKIP_BUILD` environment variable. It now uses

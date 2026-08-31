@@ -118,7 +118,16 @@ func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clea
 			// steps later.
 			if c.skipBuild {
 				if _, statErr := os.Stat(resolved); statErr != nil {
-					return appPath, &step, buildSkippedAppMissing("app_path printed "+resolved+", which does not exist", statErr), warn
+					missing := buildSkippedAppMissing("app_path printed "+resolved+", which does not exist", statErr)
+					// Every other launch failure reaches the commands trail
+					// because the command that failed put it there. This one
+					// fires after the command succeeded, so without this line
+					// it would be the only launch failure in MAV that leaves
+					// no evidence anywhere -- and inside a flow, where open's
+					// own fail line is wrapped into open_failed, there would
+					// be nothing at all to read.
+					appendCommand(run, "launch.skip_build_check "+resolved, missing)
+					return appPath, &step, missing, warn
 				}
 			}
 			appPath = resolved
@@ -211,8 +220,15 @@ func buildSkippedAppMissing(detail string, cause error) CommandResult {
 	if detail == "" && cause != nil {
 		detail = cause.Error()
 	}
+	// No remedy in the text: the structured `next` field carries it, and
+	// saying it twice in one line in two different wordings is worse than
+	// saying it once. Code is set because this result is synthesized rather
+	// than returned by a process, and the commands trail records Code and
+	// not Err -- left at zero the trail would show the aborting step as a
+	// success.
 	return CommandResult{
-		Stderr: "build was skipped (--skip-build) and no built app was found: " + detail + "; next: rerun the same command without --skip-build to build it once",
+		Stderr: "build was skipped (--skip-build) and no built app was found: " + detail,
+		Code:   1,
 		Err:    errBuildSkippedAppMissing,
 	}
 }

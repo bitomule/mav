@@ -1404,6 +1404,29 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	if err != nil {
 		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
 	}
+	// Before applyOpenTargetOverrides, which boots a simulator and persists
+	// the target selection to .mav/config.yaml: a command that is going to be
+	// rejected must not rewrite the project's configured target on its way to
+	// being rejected. --no-relaunch skips the whole launch recipe, so none of
+	// these three would get to run, and accepting one without executing it
+	// would leave the caller validating against a state nobody set up.
+	noRelaunch := hasFlag(args, "--no-relaunch")
+	fixture := flagValue(args, "--fixture")
+	if noRelaunch {
+		for _, conflict := range []struct {
+			flag    string
+			present bool
+		}{
+			{"--clear-state", hasFlag(args, "--clear-state")},
+			{"--fixture", fixture != ""},
+			{"--skip-build", hasFlag(args, "--skip-build")},
+		} {
+			if conflict.present {
+				return Fail("open_flags_invalid", map[string]string{"usage": "--no-relaunch cannot be combined with " + conflict.flag}).Write(c.Stdout)
+			}
+		}
+	}
+	c = c.withSkipBuild(hasFlag(args, "--skip-build"))
 	c.resolveConfigTools(&cfg)
 	c.resolveConfigTarget(&cfg)
 	if err := c.applyOpenTargetOverrides(ctx, &cfg, args); err != nil {
@@ -1413,27 +1436,6 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 		if lock, locked := simulatorLockedByOther(cfg.SimulatorUDID, c.Root); locked {
 			return Fail("sim_locked", map[string]string{"udid": cfg.SimulatorUDID, "run": lock.RunID, "project": lock.Project, "next": "select another simulator or rerun with --force"}).Write(c.Stdout)
 		}
-	}
-	noRelaunch := hasFlag(args, "--no-relaunch")
-	if noRelaunch && hasFlag(args, "--clear-state") {
-		return Fail("open_flags_invalid", map[string]string{"usage": "--no-relaunch cannot be combined with --clear-state"}).Write(c.Stdout)
-	}
-	// Same treatment as --clear-state and --fixture: --no-relaunch skips the
-	// whole recipe, so there is no build for --skip-build to skip, and
-	// accepting both would let a caller believe it asked for something it
-	// did not get.
-	if noRelaunch && hasFlag(args, "--skip-build") {
-		return Fail("open_flags_invalid", map[string]string{"usage": "--no-relaunch cannot be combined with --skip-build"}).Write(c.Stdout)
-	}
-	c = c.withSkipBuild(hasFlag(args, "--skip-build"))
-	fixture := flagValue(args, "--fixture")
-	// Same treatment as --clear-state, and for the same reason: --no-relaunch
-	// skips the whole recipe, so the fixture would never get to run.
-	// Accepting the flag and not executing it would leave the agent
-	// validating against data nobody seeded, with the assertions passing or
-	// failing for the wrong reason.
-	if noRelaunch && fixture != "" {
-		return Fail("open_flags_invalid", map[string]string{"usage": "--no-relaunch cannot be combined with --fixture"}).Write(c.Stdout)
 	}
 	// A run bound via withRun (i.e. this open is a step inside a flow that
 	// already allocated its own run) is authoritative: open neither reads
@@ -4758,7 +4760,19 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 		}
 		var out bytes.Buffer
 		err := c.withStdout(&out).open(ctx, GlobalOptions{}, args)
-		return map[string]string{"run": run.ID}, commandOutputErr(err, out.String(), "open_failed")
+		fields := map[string]string{"run": run.ID}
+		stepErr := commandOutputErr(err, out.String(), "open_failed")
+		// The step's code stays open_failed, like every other command wrapped
+		// into a flow step. But open's own fail line carries the code and the
+		// remedy (build_skipped_app_missing, "rerun without --skip-build"),
+		// and it used to die inside this buffer, leaving an open_failed with
+		// nothing behind it.
+		if stepErr != nil {
+			if detail := firstLine(strings.TrimSpace(out.String())); detail != "" {
+				fields["detail"] = detail
+			}
+		}
+		return fields, stepErr
 	case "when":
 		return c.executeWhenFlowStepWithOptions(ctx, opts, run, index, step)
 	case "whileNotVisible":

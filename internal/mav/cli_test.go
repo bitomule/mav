@@ -2165,6 +2165,85 @@ func TestOpenSkipBuildRejectsAnAppPathThatIsNotOnDisk(t *testing.T) {
 	}
 }
 
+// The app_path command succeeded, so nothing else writes this failure into
+// the commands trail. Without the explicit record it is the only launch
+// failure in MAV that leaves no evidence at all -- and inside a flow, where
+// open's fail line is wrapped into open_failed, nothing at all to read.
+func TestOpenSkipBuildRecordsTheMissingArtifactInTheCommandsTrail(t *testing.T) {
+	root, _ := skipBuildProject(t)
+	missing := filepath.Join(root, "never-built.app")
+	runner := &launchRecipeRunner{
+		tools:   map[string]bool{"xcrun": true},
+		results: map[string]CommandResult{"make mav-app-path": {Stdout: missing + "\n"}},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	allowFail(t, cli.Run(context.Background(), []string{"open", "--skip-build"}))
+	run, err := LoadRun(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	trail, err := os.ReadFile(run.Commands)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(trail), `"command":"launch.skip_build_check `+missing+`"`) {
+		t.Fatalf("commands trail=%s", trail)
+	}
+	// A zero code in the trail reads as a step that succeeded, which is
+	// exactly the wrong thing to record for the step that aborted the launch.
+	if !strings.Contains(string(trail), `"code":1,"command":"launch.skip_build_check`) {
+		t.Fatalf("aborting step recorded as a success: %s", trail)
+	}
+}
+
+func TestRunFlowOpenFailureCarriesTheCodeOpenSwallowed(t *testing.T) {
+	root, _ := skipBuildProject(t)
+	flowPath := filepath.Join(root, "flow.yaml")
+	if err := os.WriteFile(flowPath, []byte("steps:\n  - open: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := &launchRecipeRunner{
+		tools:   map[string]bool{"xcrun": true},
+		results: map[string]CommandResult{"make mav-app-path": {Stdout: filepath.Join(root, "never-built.app") + "\n"}},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	allowFail(t, cli.Run(context.Background(), []string{"run", flowPath, "--skip-build"}))
+	got := out.String()
+	if !strings.Contains(got, "fail code=open_failed") {
+		t.Fatalf("got %q", got)
+	}
+	if !strings.Contains(got, "build_skipped_app_missing") || !strings.Contains(got, "rerun without --skip-build") {
+		t.Fatalf("step did not carry open's own failure: %q", got)
+	}
+}
+
+// The rejection has to precede applyOpenTargetOverrides: that boots a
+// simulator and persists the target selection to .mav/config.yaml, so a
+// command about to be refused would rewrite the project's target on the way
+// out.
+func TestOpenFlagConflictIsRejectedBeforeTheTargetIsTouched(t *testing.T) {
+	root, _ := skipBuildProject(t)
+	runner := &launchRecipeRunner{tools: map[string]bool{"xcrun": true}}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	allowFail(t, cli.Run(context.Background(), []string{"open", "--device", "iPhone 17", "--no-relaunch", "--skip-build"}))
+	if got := out.String(); !strings.Contains(got, "fail code=open_flags_invalid") {
+		t.Fatalf("got %q", got)
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("ran commands before refusing: %v", runner.commands)
+	}
+	cfg, err := LoadConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SimulatorUDID != "SIM" {
+		t.Fatalf("target was rewritten by a refused command: %q", cfg.SimulatorUDID)
+	}
+}
+
 func TestOpenSkipBuildRejectsNoRelaunch(t *testing.T) {
 	root, _ := skipBuildProject(t)
 	var out bytes.Buffer
