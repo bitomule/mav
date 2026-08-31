@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.16.1
 
 ### `mav flow lint` checks the screenshot steps it was passing through
 
