@@ -3990,16 +3990,18 @@ func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) err
 		fields, err := c.executeFlowStepBoundWithOptions(ctx, opts, run, index+1, step, bindings)
 		elapsed := time.Since(stepStart)
 		if err != nil {
-			failFields := map[string]string{
-				"step":    strconv.Itoa(index + 1),
-				"action":  step.Action,
-				"code":    err.Error(),
-				"elapsed": elapsed.String(),
-				"run":     run.ID,
-			}
+			// Same ordering as appendFlowStep, and for the same reason: a
+			// step field named after one of these keys must not replace the
+			// reason the step failed.
+			failFields := map[string]string{}
 			for key, value := range fields {
 				failFields[key] = value
 			}
+			failFields["step"] = strconv.Itoa(index + 1)
+			failFields["action"] = step.Action
+			failFields["code"] = err.Error()
+			failFields["elapsed"] = elapsed.String()
+			failFields["run"] = run.ID
 			runData, _ := json.MarshalIndent(map[string]any{
 				"id": run.ID, "name": flow.Name, "status": "failed", "step": index + 1,
 				"action": step.Action, "code": err.Error(), "elapsed": time.Since(start).String(),

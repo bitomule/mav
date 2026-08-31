@@ -290,12 +290,21 @@ func TestStatusBarStepDoesNotOverwriteTheEvidenceTimestamp(t *testing.T) {
 	}
 }
 
-// TestFlowStepFieldsNeverUseAReservedRecordKey covers the class rather than the
-// two instances of it. commands.jsonl owns time/step/action/status/elapsed; a
-// step that returns a field by one of those names either loses its own value or
-// corrupts the record's, and both have now happened once each.
-func TestFlowStepFieldsNeverUseAReservedRecordKey(t *testing.T) {
-	reserved := map[string]bool{"time": true, "step": true, "action": true, "status": true, "elapsed": true}
+// TestFlowStepMapLiteralsNeverUseAReservedRecordKey generalises past the two
+// instances of the bug: commands.jsonl owns time/step/action/status/elapsed and
+// the failure record adds code, and a step field named after one of those
+// either loses its own value or replaces the record's.
+//
+// It sees only hardcoded map literals in the executor's switch, which is why the
+// name says so. It does NOT see `fields["x"] = ...` assignments, the ~30
+// `copyParams(step.Params)` returns, or maps built in helpers like
+// captureEvidenceStep and execFlowShell. Those shapes stay a reading job; this
+// catches the shape both real instances took, and it t.Fatals rather than
+// quietly passing if the function it scans is renamed or moved.
+func TestFlowStepMapLiteralsNeverUseAReservedRecordKey(t *testing.T) {
+	// "run" is deliberately absent: many steps return it, always as the same
+	// run.ID the record itself writes, so the two agree by construction.
+	reserved := map[string]bool{"time": true, "step": true, "action": true, "status": true, "elapsed": true, "code": true}
 	source, err := os.ReadFile("cli.go")
 	if err != nil {
 		t.Fatal(err)
