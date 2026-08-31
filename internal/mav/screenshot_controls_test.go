@@ -373,7 +373,9 @@ func TestSimAppearanceWaitsForTheRepaint(t *testing.T) {
 	if err := cli.Run(context.Background(), []string{"sim", "appearance", "dark"}); err != nil {
 		t.Fatal(err)
 	}
-	if elapsed := time.Since(start); elapsed < appearanceSettle {
+	// Against a literal, not against appearanceSettle: comparing the wait to
+	// its own constant passes just as happily when the constant is zeroed.
+	if elapsed := time.Since(start); elapsed < time.Second {
 		t.Fatalf("returned after %s, before the screen can have repainted", elapsed)
 	}
 }
@@ -395,6 +397,30 @@ func TestScreenshotControlStepsPassLintWhenValid(t *testing.T) {
 		t.Fatalf("lint output=%q err=%v", out.String(), err)
 	}
 	if !strings.Contains(out.String(), "ok cmd=flow.lint") || !strings.Contains(out.String(), "errors=0") || !strings.Contains(out.String(), "warnings=0") {
+		t.Fatalf("lint output=%q", out.String())
+	}
+}
+
+// TestScreenshotControlStepsLintBindingsAsUnknown covers the flow the lint
+// exists for: a matrix parameterised on light/dark. The value is resolved at
+// run time, so its literal spelling is not something lint may judge -- and a
+// step whose only field is a binding is not a step with no fields.
+func TestScreenshotControlStepsLintBindingsAsUnknown(t *testing.T) {
+	root, _ := screenshotControlsSimRoot(t)
+	flowPath := filepath.Join(root, "flow.yaml")
+	flow := "name: shots\nparams:\n  theme: { required: true }\n  bars: { required: true }\nsteps:\n" +
+		"  - sim.appearance: { appearance: \"${params.theme}\" }\n" +
+		"  - sim.statusbar.set: { wifiBars: \"${params.bars}\" }\n" +
+		"  - sim.statusbar.set: { preset: appstore, time: \"${params.clock}\" }\n"
+	if err := os.WriteFile(flowPath, []byte(flow), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"flow", "lint", "--raw", flowPath}); err != nil {
+		t.Fatalf("lint output=%q err=%v", out.String(), err)
+	}
+	if !strings.Contains(out.String(), "ok cmd=flow.lint") || !strings.Contains(out.String(), "errors=0") {
 		t.Fatalf("lint output=%q", out.String())
 	}
 }

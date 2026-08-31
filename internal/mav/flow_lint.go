@@ -105,14 +105,20 @@ func lintFlowStep(index int, step FlowStep, cfg Config) []flowLintIssue {
 		// The step reaches simctl through `mav sim appearance`, which only
 		// answers to light|dark. Linting it here means a screenshot flow
 		// fails at lint time instead of halfway through a capture matrix.
-		if appearance := step.Params["appearance"]; appearance != "light" && appearance != "dark" {
+		appearance := step.Params["appearance"]
+		if !isFlowBinding(appearance) && appearance != "light" && appearance != "dark" {
 			add("error", "appearance_invalid", fmt.Sprintf("sim.appearance requires appearance: light|dark, got %q", appearance))
 		}
 	case "sim.statusbar.set":
 		// Validated by the parser the executor itself uses, so the linter
 		// cannot drift from what a run would accept.
-		if _, _, failure := statusBarSpecFromArgs(statusBarFlowArgs(step.Params)); failure != nil {
-			add("error", failure.Code, statusBarLintMessage(*failure))
+		literal, bound := unboundParams(step.Params)
+		if _, _, failure := statusBarSpecFromArgs(statusBarFlowArgs(literal)); failure != nil {
+			// A step whose only field is a binding is not a step with no
+			// fields; everything else is judged exactly as a run judges it.
+			if !bound || failure.Code != "status_bar_fields_missing" {
+				add("error", failure.Code, statusBarLintMessage(*failure))
+			}
 		}
 	case "sim.statusbar.clear":
 		if keys := statusBarParamsIn(step.Params); len(keys) > 0 {
@@ -167,6 +173,31 @@ func statusBarLintMessage(failure Output) string {
 	default:
 		return failure.Code
 	}
+}
+
+// isFlowBinding reports a value the run resolves for itself -- ${params.x},
+// ${vars.x}, ${exec.x}. Its literal spelling says nothing about what the step
+// will actually be handed, so lint has to let it through: a matrix
+// parameterised on light/dark is the first thing anyone writes here, and
+// rejecting it would make the lint unusable for the flows it exists for.
+func isFlowBinding(value string) bool {
+	return strings.Contains(value, "${")
+}
+
+// unboundParams keeps only the params the linter can judge. The bool reports
+// whether any were dropped, because a step whose single field is a binding is
+// not a step with no fields.
+func unboundParams(params map[string]string) (map[string]string, bool) {
+	kept := map[string]string{}
+	bound := false
+	for key, value := range params {
+		if isFlowBinding(value) {
+			bound = true
+			continue
+		}
+		kept[key] = value
+	}
+	return kept, bound
 }
 
 func statusBarParamForFlag(flag string) string {

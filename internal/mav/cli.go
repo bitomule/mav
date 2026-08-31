@@ -1211,9 +1211,13 @@ func (c CLI) simStatusBar(ctx context.Context, args []string) error {
 // pre-switch frame, so `sim.appearance: dark` followed by `capture` produced
 // the light screenshot -- silently, which is the one failure an App Store
 // matrix cannot afford. Measured on iPad Pro 11-inch (M5) / iOS 26.3: stale at
-// 0s in every trial, correct from 0.5s, correct in 8/8 trials at 3s. 1.5s sits
-// clear of the noise and costs two seconds per matrix cell.
-const appearanceSettle = 1500 * time.Millisecond
+// 0s in every trial, one failure at 0.25s, correct at 0.5s and above, correct
+// in 8/8 trials at 3s. Two seconds is the shortest wait no trial disagreed
+// with, and it is paid once per matrix cell rather than per capture.
+//
+// The status bar needs no equivalent: its override was already correct in the
+// capture taken right after it, in the same live run.
+const appearanceSettle = 2 * time.Second
 
 const statusBarUsage = "mav sim statusbar set [--preset appstore] [--time 9:41] [--battery-state charging|charged|discharging] [--battery-level 0-100] [--cellular-mode notSupported|searching|failed|active] [--cellular-bars 0-4] [--wifi-mode searching|failed|active] [--wifi-bars 0-3] [--data-network hide|wifi|3g|4g|lte|lte-a|lte+|5g|5g+|5g-uwb|5g-uc] [--operator-name NAME] | mav sim statusbar clear"
 

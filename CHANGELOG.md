@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.16.1
+## Unreleased
 
 ### `mav flow lint` checks the screenshot steps it was passing through
 
@@ -27,8 +27,8 @@ produced the *light* screenshot, and said `ok`. simctl accepts the new style
 immediately and its own screenshot is current, but the axe path MAV prefers on a
 simulator serves the pre-switch frame. `mav sim appearance` now returns only
 after the repaint window (measured stale at 0s in every trial, correct from
-0.5s; the wait is 1.5s), so the capture after it is the appearance that was
-asked for.
+0.5s; the wait is two seconds), so the capture after it is the appearance that
+was asked for.
 
 ## v0.16.0
 
