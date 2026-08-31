@@ -1230,7 +1230,12 @@ func appStoreStatusBar() drivers.StatusBarSpec {
 // the clock alone does not reset the rest of the status bar.
 func statusBarSpecFromArgs(args []string) (drivers.StatusBarSpec, map[string]string, *Output) {
 	spec := drivers.StatusBarSpec{}
-	switch preset := flagValue(args, "--preset"); preset {
+	preset := flagValue(args, "--preset")
+	if strings.HasPrefix(preset, "--") {
+		result := Fail("status_bar_value_missing", map[string]string{"flag": "--preset", "usage": statusBarUsage})
+		return spec, nil, &result
+	}
+	switch preset {
 	case "":
 	case "appstore":
 		spec = appStoreStatusBar()
@@ -4936,7 +4941,14 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 	case "sim.statusbar.set":
 		args := append([]string{"statusbar", "set"}, statusBarFlowArgs(step.Params)...)
 		err := c.withStdout(io.Discard).sim(ctx, GlobalOptions{}, args)
-		return copyParams(step.Params), outputErr(err, "status_bar_set_failed")
+		// Same reason as time.status: the overridden clock is echoed under
+		// statusBarTime, because "time" is the record's own wall clock.
+		fields := copyParams(step.Params)
+		if value, ok := fields["time"]; ok {
+			delete(fields, "time")
+			fields["statusBarTime"] = value
+		}
+		return fields, outputErr(err, "status_bar_set_failed")
 	case "sim.statusbar.clear":
 		err := c.withStdout(io.Discard).sim(ctx, GlobalOptions{}, []string{"statusbar", "clear"})
 		return map[string]string{}, outputErr(err, "status_bar_clear_failed")
@@ -4959,7 +4971,10 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 	case "time.status":
 		var out bytes.Buffer
 		err := c.withStdout(&out).timeControl(ctx, GlobalOptions{}, []string{"status"})
-		return map[string]string{"status": out.String()}, outputErr(err, "time_status_failed")
+		// Not "status": that is a reserved commands.jsonl key, so the clock
+		// state this step exists to observe would be dropped from the
+		// evidence bundle in favour of the step's own ok/fail.
+		return map[string]string{"timeStatus": out.String()}, outputErr(err, "time_status_failed")
 	case "time.reset":
 		err := c.withStdout(io.Discard).timeControl(ctx, GlobalOptions{}, []string{"reset"})
 		return map[string]string{"reset": "true"}, outputErr(err, "time_reset_failed")

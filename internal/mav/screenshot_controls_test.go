@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -281,6 +282,41 @@ func TestStatusBarStepDoesNotOverwriteTheEvidenceTimestamp(t *testing.T) {
 	}
 	if record["action"] != "sim.statusbar.set" {
 		t.Fatalf("the record lost its own action key: %v", record)
+	}
+	// Reserving the key must not cost the value: the clock that was actually
+	// set is still in the record, under a name the record does not own.
+	if record["statusBarTime"] != "9:41" {
+		t.Fatalf("the overridden clock is missing from the record: %v", record)
+	}
+}
+
+// TestFlowStepFieldsNeverUseAReservedRecordKey covers the class rather than the
+// two instances of it. commands.jsonl owns time/step/action/status/elapsed; a
+// step that returns a field by one of those names either loses its own value or
+// corrupts the record's, and both have now happened once each.
+func TestFlowStepFieldsNeverUseAReservedRecordKey(t *testing.T) {
+	reserved := map[string]bool{"time": true, "step": true, "action": true, "status": true, "elapsed": true}
+	source, err := os.ReadFile("cli.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := string(source)
+	start := strings.Index(executor, "func (c CLI) executeFlowStepWithOptions(")
+	if start < 0 {
+		t.Fatal("executeFlowStepWithOptions not found")
+	}
+	end := strings.Index(executor[start:], "\nfunc (c CLI) executeWhenFlowStep(")
+	if end < 0 {
+		t.Fatal("end of executeFlowStepWithOptions not found")
+	}
+	literal := regexp.MustCompile(`map\[string\]string\{([^}]*)\}`)
+	key := regexp.MustCompile(`"([^"]+)":`)
+	for _, match := range literal.FindAllStringSubmatch(executor[start:start+end], -1) {
+		for _, found := range key.FindAllStringSubmatch(match[1], -1) {
+			if reserved[found[1]] {
+				t.Errorf("flow step field %q collides with a reserved commands.jsonl key: %s", found[1], match[0])
+			}
+		}
 	}
 }
 

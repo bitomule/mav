@@ -33,7 +33,10 @@ own `8:36` with half the signal dots.
 then let the step's fields overwrite them. Nothing had a param named after one until
 now: `sim.statusbar.set: { time: "9:41" }` stamped the fake status bar clock as the
 step's wall-clock time, in the log the evidence bundle ships verbatim. The record's own
-keys are now written last.
+keys are now written last, and the two steps that named one report it under a key
+of their own instead: `time.status` as `timeStatus`, `sim.statusbar.set`'s clock as
+`statusBarTime`. A test walks the flow executor and fails on any step field named
+after a reserved key, so the next one fails in CI rather than in an evidence bundle.
 
 ## v0.15.0
 
