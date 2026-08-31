@@ -985,6 +985,16 @@ steps:
 `wifiBars`, `cellularMode`, `cellularBars`, `operatorName`, `batteryState` and
 `batteryLevel`. Quote `time` in YAML.
 
+`sim.appearance` returns only once the screen has repainted (~1.5s): the capture
+path otherwise serves the pre-switch frame, and the dark cell of the matrix comes
+out light. No `delay` step is needed before the capture.
+
+`mav flow lint` checks those values with the same parser the run uses, so a
+matrix with `appearance: sepia`, `preset: marketing` or `wifiBars: 9` fails
+before the first capture instead of halfway through it. `sim.statusbar.clear`
+takes no fields; carrying any is a warning, because the step resets the whole
+status bar rather than overriding what it was given.
+
 ### Knowing which target you just used
 
 Every command that acts on a simulator or device reports `udid` (and

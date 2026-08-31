@@ -1157,6 +1157,7 @@ func (c CLI) simAppearance(ctx context.Context, args []string) error {
 	if setErr := ui.SetAppearance(ctx, target, appearance); setErr != nil {
 		return Fail("appearance_set_failed", map[string]string{"appearance": appearance, "stderr": firstLine(setErr.Error())}).Write(c.Stdout)
 	}
+	time.Sleep(appearanceSettle)
 	return c.OK("sim.appearance", map[string]string{"appearance": appearance, "driver": driver.ID()}).Write(c.Stdout)
 }
 
@@ -1203,6 +1204,16 @@ func (c CLI) simStatusBar(ctx context.Context, args []string) error {
 	fields["driver"] = driver.ID()
 	return c.OK("sim.statusbar.set", fields).Write(c.Stdout)
 }
+
+// appearanceSettle is how long the screen needs after simctl accepts the new
+// user interface style before a capture shows it. simctl's own screenshot is
+// current immediately; the axe path MAV prefers on a simulator serves the
+// pre-switch frame, so `sim.appearance: dark` followed by `capture` produced
+// the light screenshot -- silently, which is the one failure an App Store
+// matrix cannot afford. Measured on iPad Pro 11-inch (M5) / iOS 26.3: stale at
+// 0s in every trial, correct from 0.5s, correct in 8/8 trials at 3s. 1.5s sits
+// clear of the noise and costs two seconds per matrix cell.
+const appearanceSettle = 1500 * time.Millisecond
 
 const statusBarUsage = "mav sim statusbar set [--preset appstore] [--time 9:41] [--battery-state charging|charged|discharging] [--battery-level 0-100] [--cellular-mode notSupported|searching|failed|active] [--cellular-bars 0-4] [--wifi-mode searching|failed|active] [--wifi-bars 0-3] [--data-network hide|wifi|3g|4g|lte|lte-a|lte+|5g|5g+|5g-uwb|5g-uc] [--operator-name NAME] | mav sim statusbar clear"
 
@@ -5412,7 +5423,14 @@ func flowArgs(params map[string]string, pairs ...string) []string {
 }
 
 func statusBarFlowArgs(params map[string]string) []string {
-	return flowArgs(params,
+	return flowArgs(params, statusBarFlowFlags()...)
+}
+
+// statusBarFlowFlags is the flag/param vocabulary of the status bar step, in
+// one place so the linter can validate the same keys the executor forwards
+// and name the offending key the way the YAML spells it.
+func statusBarFlowFlags() []string {
+	return []string{
 		"--preset", "preset",
 		"--time", "time",
 		"--data-network", "dataNetwork",
@@ -5423,7 +5441,7 @@ func statusBarFlowArgs(params map[string]string) []string {
 		"--operator-name", "operatorName",
 		"--battery-state", "batteryState",
 		"--battery-level", "batteryLevel",
-	)
+	}
 }
 
 func gestureFlowArgs(params map[string]string) []string {
