@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.16.2
 
 ### `--skip-build` reuses an app that is already built
 
