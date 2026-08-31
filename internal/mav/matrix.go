@@ -60,6 +60,18 @@ func stripMatrixFlags(args []string) []string {
 	return out
 }
 
+// matrixChildArgs is the `mav run` invocation each target re-execs. The
+// matrix already ran the build once, above, for every target, so the children
+// carry --skip-build: the same reuse a caller gets, expressed the same way
+// rather than through a private channel only the matrix knows about.
+func matrixChildArgs(args []string) []string {
+	child := append([]string{"run"}, stripMatrixFlags(args)...)
+	if !hasFlag(child, "--skip-build") {
+		child = append(child, "--skip-build")
+	}
+	return child
+}
+
 func (c CLI) resolveMatrixTargets(ctx context.Context, selectors []string) ([]matrixTarget, error) {
 	sims, simErr := ListSimulators(c.Runner)
 	devices, deviceErr := ListPhysicalDevices(ctx, c.Runner)
@@ -119,6 +131,7 @@ func (c CLI) resolveMatrixTargets(ctx context.Context, selectors []string) ([]ma
 }
 
 func (c CLI) runFlowMatrix(ctx context.Context, opts GlobalOptions, args []string) error {
+	c = c.withSkipBuild(hasFlag(args[1:], "--skip-build"))
 	targets, err := c.resolveMatrixTargets(ctx, repeatedFlagValues(args[1:], "--target"))
 	if err != nil {
 		return Fail("matrix_targets_invalid", map[string]string{"error": err.Error()}).Write(c.Stdout)
@@ -168,6 +181,9 @@ func (c CLI) runFlowMatrix(ctx context.Context, opts GlobalOptions, args []strin
 		applyMatrixTarget(&cfg, targets[0])
 		commands := effectiveLaunchCommands(cfg)
 		for _, step := range []launchStep{{Name: "healthcheck", Command: commands.Healthcheck}, {Name: "build", Command: commands.Build}} {
+			if step.Name == "build" && c.skipBuild {
+				continue
+			}
 			if strings.TrimSpace(step.Command) == "" {
 				continue
 			}
@@ -181,7 +197,7 @@ func (c CLI) runFlowMatrix(ctx context.Context, opts GlobalOptions, args []strin
 	if err != nil {
 		return err
 	}
-	childArgs := append([]string{"run"}, stripMatrixFlags(args)...)
+	childArgs := matrixChildArgs(args)
 	sem := make(chan struct{}, jobs)
 	results := make([]matrixResult, len(targets))
 	var wg sync.WaitGroup
@@ -208,7 +224,6 @@ func (c CLI) runFlowMatrix(ctx context.Context, opts GlobalOptions, args []strin
 				"MAV_TARGET_UDID="+target.UDID,
 				"MAV_TARGET_NAME="+target.Name,
 				"MAV_TARGET_RUNTIME="+target.Runtime,
-				"MAV_SKIP_BUILD=1",
 			)
 			var output bytes.Buffer
 			cmd.Stdout, cmd.Stderr = &output, &output

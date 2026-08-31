@@ -139,6 +139,7 @@ type flowStepPayload struct {
 	ClearStateDash bool   `yaml:"clear-state"`
 	// A single spelling on purpose: the clearState/clear-state doublet
 	// above is debt there is no reason to repeat.
+	SkipBuild      bool            `yaml:"skipBuild"`
 	Fixture        string          `yaml:"fixture"`
 	Network        bool            `yaml:"network"`
 	Focused        string          `yaml:"focused"`
@@ -369,6 +370,9 @@ func parseFlowStepNode(node yaml.Node) (FlowStep, error) {
 	}
 	if payload.ClearState || payload.ClearStateDash {
 		params["clearState"] = "true"
+	}
+	if payload.SkipBuild {
+		params["skipBuild"] = "true"
 	}
 	if payload.Fixture != "" {
 		params["fixture"] = payload.Fixture

@@ -151,9 +151,11 @@ entirely.
    and `hideKeyboard` are simulator-only and return structured errors on
    device. Simulator crash checks use local DiagnosticReports directly.
 4. Start the app with `mav open`. Use `mav open --clear-state` for a fresh
-   install. Use `mav open --no-relaunch` when the app was launched manually with
-   custom `SIMCTL_CHILD_*` environment and MAV should only attach to the app
-   already in front. This creates `.mav/runs/<run-id>/` and starts `logs.txt`.
+   install. Use `mav open --skip-build` when the app is already built and the
+   launch recipe's `build` step would only rebuild the same artifact --
+   `app_path`, `install` and `launch` still run. Use `mav open --no-relaunch`
+   when the app was launched manually with custom `SIMCTL_CHILD_*` environment
+   and MAV should only attach to the app already in front. This creates `.mav/runs/<run-id>/` and starts `logs.txt`.
    MAV captures a filtered unified log stream for MAV probes and app-process
    logs when `process_name` is configured. On physical devices, generated
    simulator install/launch recipes are mapped to idb when possible. MAV writes
@@ -433,7 +435,9 @@ driver:
 ```
 
 `open: { clearState: true }` and `open: { clear-state: true }` are both valid
-flow spellings. `mav ui hideKeyboard` dispatches through baguette on simulator
+flow spellings. `open: { skipBuild: true }` skips the launch recipe's `build`
+step for that one step; `mav run flow.yaml --skip-build` skips it for every
+`open` step in the flow. See **Reusing a build across runs** below. `mav ui hideKeyboard` dispatches through baguette on simulator
 and returns `hide_keyboard_unsupported_on_device` on a physical device.
 
 Use `include` to compose reusable flow fragments. Resolve paths relative to the
@@ -526,7 +530,17 @@ same simulator inherits it.
 
 Both are also flow actions, so the screenshot matrix is one flow, re-run per
 language after `mav sim select --language de --locale de_DE` (the language is a
-launch argument, not a flow param):
+launch argument, not a flow param). Build once and pass `--skip-build` on every
+run, or the same unchanged app is rebuilt once per language:
+
+```bash
+mav open
+for locale in en_US de_DE es_ES; do
+  mav sim select --language "${locale%%_*}" --locale "$locale"
+  mav run app_store_shots.yaml --skip-build
+done
+```
+
 
 ```yaml
 name: app_store_shots
@@ -596,6 +610,33 @@ Each command runs from `MAV_ROOT` with `MAV_RUN_DIR`, `MAV_TARGET_KIND`,
 `MAV_DEVICE_NAME`, `MAV_RUNTIME`, and `MAV_PLATFORM`. `app_path` must print
 exactly one `.app` path. If the app is already installed, configure only
 `launch`.
+
+### Reusing a build across runs
+
+The `build` step is the expensive one and the one that produces nothing new when
+the checkout has not changed. `--skip-build` drops it and keeps `app_path`,
+`install` and `launch`, for every launch mode -- it is applied to the recipe's
+`build` step, not to one build system.
+
+- `mav open --skip-build` covers that one launch.
+- `mav run flow.yaml --skip-build` covers every `open` step in the flow,
+  including the ones that do not mention it. Use this for a matrix that runs the
+  same flow once per language: build once, then reuse.
+- `open: { skipBuild: true }` marks a single flow step, for a flow that builds in
+  its first `open` and reuses it in later ones.
+- `mav run --target ... --target ...` already builds once and each target's child
+  run carries `--skip-build`.
+- `--skip-build` is rejected with `--no-relaunch`, which skips the whole recipe.
+
+If nothing was built, `app_path` cannot resolve an artifact and MAV says so
+itself instead of passing the build system's error through:
+
+```text
+fail code=build_skipped_app_missing step=app_path stderr="build was skipped (--skip-build) and no built app was found: ..." next="rerun without --skip-build"
+```
+
+The same code comes back when `app_path` prints a path that is not on disk. On
+that code, rerun the same command without `--skip-build` once, then resume.
 
 `video.start` / `evidence.start` video recording is simulator-only in this
 release. On physical devices, use `capture` / `evidence.step` screenshots,

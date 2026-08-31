@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -44,6 +45,17 @@ type CLI struct {
 	// which is about that run's processes and not about the machine the new
 	// run is one line away from using.
 	keepVM bool
+
+	// skipBuild reuses the artifact the launch recipe's build step would
+	// have produced. It lives on the CLI, not on open's args, because `mav
+	// run --skip-build` has to reach every `open` step the flow dispatches,
+	// and those go through this same value.
+	skipBuild bool
+}
+
+func (c CLI) withSkipBuild(skip bool) CLI {
+	c.skipBuild = c.skipBuild || skip
+	return c
 }
 
 type GlobalOptions struct {
@@ -359,8 +371,9 @@ Selects a physical iOS device and switches target_kind to device.
 `
 	case "open":
 		return `Usage:
-  mav open [--device NAME] [--ios VERSION] [--udid UDID] [--locale LOCALE] [--language LANG] [--clear-state] [--fixture NAME] [--time-control] [--no-relaunch] [--force]
+  mav open [--device NAME] [--ios VERSION] [--udid UDID] [--locale LOCALE] [--language LANG] [--clear-state] [--fixture NAME] [--time-control] [--skip-build] [--no-relaunch] [--force]
 
+--skip-build reuses the app the launch recipe's build step already produced. app_path, install and launch still run; only the build is skipped. If no built app is there, it fails with build_skipped_app_missing instead of your build system's own error.
 --no-relaunch reuses the app already running on the selected target. It starts or reuses a MAV run without executing the launch recipe.
 --force ignores a fresh MAV simulator lock when you know the run is yours.
 `
@@ -425,7 +438,7 @@ Prefer accessibility ids. Use coordinates only when the tree is insufficient and
 	case "ui scrollUntil":
 		return "Usage: mav ui scrollUntil --id ID [--direction up] [--max-swipes 5]\n"
 	case "run":
-		return "Usage:\n  mav run flow.yaml [--param name=value]\n  mav run flow.yaml --run RUN_ID\n  mav run flow.yaml --target UDID --target \"Exact Name\" [--jobs N]\n"
+		return "Usage:\n  mav run flow.yaml [--param name=value]\n  mav run flow.yaml --run RUN_ID\n  mav run flow.yaml --skip-build\n  mav run flow.yaml --target UDID --target \"Exact Name\" [--jobs N]\n\n--skip-build applies to every open step in the flow: the launch recipe's build is skipped, app_path/install/launch still run. Build once, then run the whole matrix (one invocation per language) without rebuilding.\n"
 	case "time":
 		return "Usage:\n  mav time freeze --at 2032-01-15T10:00:00Z\n  mav time travel --by +8d\n  mav time scale --factor 60\n  mav time status\n  mav time reset\n"
 	case "debug":
@@ -1405,6 +1418,14 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	if noRelaunch && hasFlag(args, "--clear-state") {
 		return Fail("open_flags_invalid", map[string]string{"usage": "--no-relaunch cannot be combined with --clear-state"}).Write(c.Stdout)
 	}
+	// Same treatment as --clear-state and --fixture: --no-relaunch skips the
+	// whole recipe, so there is no build for --skip-build to skip, and
+	// accepting both would let a caller believe it asked for something it
+	// did not get.
+	if noRelaunch && hasFlag(args, "--skip-build") {
+		return Fail("open_flags_invalid", map[string]string{"usage": "--no-relaunch cannot be combined with --skip-build"}).Write(c.Stdout)
+	}
+	c = c.withSkipBuild(hasFlag(args, "--skip-build"))
 	fixture := flagValue(args, "--fixture")
 	// Same treatment as --clear-state, and for the same reason: --no-relaunch
 	// skips the whole recipe, so the fixture would never get to run.
@@ -1478,6 +1499,10 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 			fields := map[string]string{"run": run.ID, "logs": run.LogsPath, "step": failedStep.Name, "stderr": firstLine(failedResult.Stderr)}
 			if fields["stderr"] == "" && failedResult.Err != nil {
 				fields["stderr"] = failedResult.Err.Error()
+			}
+			if errors.Is(failedResult.Err, errBuildSkippedAppMissing) {
+				fields["next"] = "rerun without --skip-build"
+				return Fail("build_skipped_app_missing", fields).Write(c.Stdout)
 			}
 			return Fail("launch_step_failed", fields).Write(c.Stdout)
 		}
@@ -3955,6 +3980,10 @@ func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) err
 	if err != nil {
 		return Fail("flow_invalid", map[string]string{"error": err.Error()}).Write(c.Stdout)
 	}
+	// Set on the CLI rather than forwarded per step: --skip-build is about
+	// the artifact this whole invocation runs against, so every `open` the
+	// flow dispatches has to see it, including the ones that never asked.
+	c = c.withSkipBuild(hasFlag(args[1:], "--skip-build"))
 	// runFlow never reads .mav/current-run: an explicit --run reuses that run
 	// (e.g. a second flow continuing evidence collection on a run a caller
 	// already opened); otherwise it always creates a fresh run, so two
@@ -4717,6 +4746,9 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 		args := flowArgs(step.Params, "--device", "device", "--ios", "ios", "--udid", "udid", "--locale", "locale", "--language", "language", "--fixture", "fixture")
 		if step.Params["clearState"] == "true" {
 			args = append(args, "--clear-state")
+		}
+		if step.Params["skipBuild"] == "true" {
+			args = append(args, "--skip-build")
 		}
 		if step.Params["timeControl"] == "true" {
 			args = append(args, "--time-control")

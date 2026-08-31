@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased
+
+### `--skip-build` reuses an app that is already built
+
+The launch recipe ran its `build` step on every `open`. For a project whose
+build is a cold Bazel or Xcode build -- ten to twenty minutes is normal -- a
+localized App Store matrix paid for that build once per language, rebuilding an
+artifact that had not changed between runs. There was no flow restructuring that
+avoided it: the language is a launch argument, so each language is its own
+invocation.
+
+- `mav open --skip-build` skips the recipe's `build` step. `app_path`, `install`
+  and `launch` still run, so the app is still resolved, installed and launched.
+- `mav run flow.yaml --skip-build` applies it to every `open` step the flow
+  dispatches, including the ones that do not mention it. Build once, then run the
+  matrix per language without editing the flow per invocation.
+- `open: { skipBuild: true }` marks a single flow step, for a flow that builds in
+  its first `open` and reuses it in the later ones.
+- It is applied to the recipe's `build` step rather than to any one build system,
+  so it works for every `launch.mode`.
+- `--skip-build` is rejected together with `--no-relaunch`, like `--clear-state`
+  and `--fixture` and for the same reason: `--no-relaunch` skips the whole
+  recipe, so there is no build to skip.
+
+When nothing was ever built, `app_path` has nothing to resolve. That comes back
+as `build_skipped_app_missing` -- naming the skipped build and pointing at
+`rerun without --skip-build` -- instead of whatever the project's Makefile
+printed on its way out. The same code covers an `app_path` that prints a path
+which is not on disk, which is what a stale recipe looks like when the build
+never ran.
+
+`mav run --target ... --target ...` already built once and told its children not
+to rebuild, through a private `MAV_SKIP_BUILD` environment variable. It now uses
+the same `--skip-build` flag everyone else does.
+
 ## v0.16.1
 
 ### `mav flow lint` checks the screenshot steps it was passing through
