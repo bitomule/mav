@@ -160,6 +160,17 @@ type flowStepPayload struct {
 	URL            string          `yaml:"url"`
 	Latitude       string          `yaml:"latitude"`
 	Longitude      string          `yaml:"longitude"`
+	Appearance     string          `yaml:"appearance"`
+	Preset         string          `yaml:"preset"`
+	Time           string          `yaml:"time"`
+	DataNetwork    string          `yaml:"dataNetwork"`
+	WifiMode       string          `yaml:"wifiMode"`
+	WifiBars       string          `yaml:"wifiBars"`
+	CellularMode   string          `yaml:"cellularMode"`
+	CellularBars   string          `yaml:"cellularBars"`
+	OperatorName   string          `yaml:"operatorName"`
+	BatteryState   string          `yaml:"batteryState"`
+	BatteryLevel   string          `yaml:"batteryLevel"`
 	Button         string          `yaml:"button"`
 	State          string          `yaml:"state"`
 	StartX         string          `yaml:"startX"`
@@ -320,6 +331,17 @@ func parseFlowStepNode(node yaml.Node) (FlowStep, error) {
 	put("url", payload.URL)
 	put("latitude", payload.Latitude)
 	put("longitude", payload.Longitude)
+	put("appearance", payload.Appearance)
+	put("preset", payload.Preset)
+	put("time", payload.Time)
+	put("dataNetwork", payload.DataNetwork)
+	put("wifiMode", payload.WifiMode)
+	put("wifiBars", payload.WifiBars)
+	put("cellularMode", payload.CellularMode)
+	put("cellularBars", payload.CellularBars)
+	put("operatorName", payload.OperatorName)
+	put("batteryState", payload.BatteryState)
+	put("batteryLevel", payload.BatteryLevel)
 	put("button", payload.Button)
 	put("state", payload.State)
 	put("startX", payload.StartX)
@@ -699,6 +721,7 @@ func isSupportedFlowAction(action string) bool {
 	case "open", "when", "whileNotVisible", "go", "tree", "tap", "type", "erase", "hideKeyboard", "swipe", "longPress", "pinch", "rotate", "twoFingerPan", "actions",
 		"doubleTap", "drag", "dragPath", "toggle", "press",
 		"app.list", "app.kill", "openURL", "location.set", "location.reset", "clipboard.copy", "clipboard.read",
+		"sim.appearance", "sim.statusbar.set", "sim.statusbar.clear",
 		"time.freeze", "time.travel", "time.scale", "time.status", "time.reset",
 		"debug.attach", "debug.wait", "debug.break", "debug.eval", "debug.step", "debug.detach",
 		"delay", "sleep", "wait", "assert", "assertCount", "waitUntil", "scrollUntil", "capture", "extract",

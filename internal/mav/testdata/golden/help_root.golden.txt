@@ -10,7 +10,7 @@ Commands:
   version     Print the version of this mav.
   install-skills
               Install the MAV agent skill globally for all supported agents.
-  sim         List, select, or boot simulators.
+  sim         List, select, boot, or restyle simulators.
   device      List or select physical iOS devices.
   open        Build, install, launch, and start run logs.
   ui          Inspect and control the current UI.

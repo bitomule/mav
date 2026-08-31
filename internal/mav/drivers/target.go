@@ -162,6 +162,20 @@ type InstallSpec struct {
 	Path string
 }
 
+// StatusBarSpec is the set of status bar fields to override. Empty fields are
+// left untouched, so a caller can override the clock alone.
+type StatusBarSpec struct {
+	Time         string
+	DataNetwork  string
+	WifiMode     string
+	WifiBars     string
+	CellularMode string
+	CellularBars string
+	OperatorName string
+	BatteryState string
+	BatteryLevel string
+}
+
 // NetworkCaptureSpec configures a HAR-style traffic capture.
 type NetworkCaptureSpec struct {
 	OutPath    string // .har destination

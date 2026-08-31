@@ -23,7 +23,11 @@ type Driver struct {
 	path string
 }
 
-var _ drivers.DeviceUtilityDriver = (*Driver)(nil)
+var (
+	_ drivers.DeviceUtilityDriver = (*Driver)(nil)
+	_ drivers.AppearanceDriver    = (*Driver)(nil)
+	_ drivers.StatusBarDriver     = (*Driver)(nil)
+)
 
 // New constructs a Driver.
 func New(exec drivers.Executor) *Driver { return &Driver{exec: exec} }
@@ -49,6 +53,8 @@ func (d *Driver) Provides(target drivers.Target) drivers.CapabilitySet {
 		drivers.CapOpenURL,
 		drivers.CapLocation,
 		drivers.CapClipboard,
+		drivers.CapAppearance,
+		drivers.CapStatusBar,
 	)
 }
 
@@ -113,11 +119,63 @@ func (d *Driver) ClipboardRead(ctx context.Context, target drivers.Target) (stri
 	return res.Stdout, nil
 }
 
+func (d *Driver) SetAppearance(ctx context.Context, target drivers.Target, appearance string) error {
+	res := d.exec.Run(ctx, "xcrun", "simctl", "ui", simUDID(target), "appearance", appearance)
+	if res.Err != nil {
+		return errors.New(firstLine(res.Stderr))
+	}
+	return nil
+}
+
+func (d *Driver) SetStatusBar(ctx context.Context, target drivers.Target, spec drivers.StatusBarSpec) error {
+	args := append([]string{"simctl", "status_bar", simUDID(target), "override"}, statusBarOverrideArgs(spec)...)
+	res := d.exec.Run(ctx, "xcrun", args...)
+	if res.Err != nil {
+		return errors.New(firstLine(res.Stderr))
+	}
+	return nil
+}
+
+func (d *Driver) ClearStatusBar(ctx context.Context, target drivers.Target) error {
+	res := d.exec.Run(ctx, "xcrun", "simctl", "status_bar", simUDID(target), "clear")
+	if res.Err != nil {
+		return errors.New(firstLine(res.Stderr))
+	}
+	return nil
+}
+
+// statusBarOverrideArgs emits one flag pair per populated field, in a fixed
+// order so the command line is reproducible in tests and evidence.
+func statusBarOverrideArgs(spec drivers.StatusBarSpec) []string {
+	pairs := []struct {
+		flag  string
+		value string
+	}{
+		{"--time", spec.Time},
+		{"--dataNetwork", spec.DataNetwork},
+		{"--wifiMode", spec.WifiMode},
+		{"--wifiBars", spec.WifiBars},
+		{"--cellularMode", spec.CellularMode},
+		{"--cellularBars", spec.CellularBars},
+		{"--operatorName", spec.OperatorName},
+		{"--batteryState", spec.BatteryState},
+		{"--batteryLevel", spec.BatteryLevel},
+	}
+	args := []string{}
+	for _, pair := range pairs {
+		if pair.value == "" {
+			continue
+		}
+		args = append(args, pair.flag, pair.value)
+	}
+	return args
+}
+
 // Cost ranks simctl as authoritative for lifecycle/video/logs on sim, and as a
 // fallback for screenshots (axe is preferred).
 func (d *Driver) Cost(c drivers.Capability, _ drivers.Target) int {
 	switch c {
-	case drivers.CapBoot, drivers.CapLocale, drivers.CapInstall, drivers.CapLaunch, drivers.CapUninstall, drivers.CapVideo, drivers.CapLogStream:
+	case drivers.CapBoot, drivers.CapLocale, drivers.CapInstall, drivers.CapLaunch, drivers.CapUninstall, drivers.CapVideo, drivers.CapLogStream, drivers.CapAppearance, drivers.CapStatusBar:
 		return 0
 	case drivers.CapScreenshot:
 		return 80

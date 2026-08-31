@@ -34,18 +34,20 @@ const (
 	CapScreenshot Capability = "screenshot"
 
 	// Lifecycle
-	CapInstall   Capability = "lifecycle.install"
-	CapLaunch    Capability = "lifecycle.launch"
-	CapUninstall Capability = "lifecycle.uninstall"
-	CapBoot      Capability = "lifecycle.boot"
-	CapLocale    Capability = "lifecycle.locale"
-	CapAppList   Capability = "lifecycle.list"
-	CapTerminate Capability = "lifecycle.terminate"
-	CapOpenURL   Capability = "lifecycle.open_url"
-	CapLocation  Capability = "device.location"
-	CapClipboard Capability = "device.clipboard"
-	CapWallClock Capability = "device.wall_clock"
-	CapDebug     Capability = "debug.dap"
+	CapInstall    Capability = "lifecycle.install"
+	CapLaunch     Capability = "lifecycle.launch"
+	CapUninstall  Capability = "lifecycle.uninstall"
+	CapBoot       Capability = "lifecycle.boot"
+	CapLocale     Capability = "lifecycle.locale"
+	CapAppList    Capability = "lifecycle.list"
+	CapTerminate  Capability = "lifecycle.terminate"
+	CapOpenURL    Capability = "lifecycle.open_url"
+	CapLocation   Capability = "device.location"
+	CapClipboard  Capability = "device.clipboard"
+	CapWallClock  Capability = "device.wall_clock"
+	CapAppearance Capability = "device.appearance" // light/dark user interface style
+	CapStatusBar  Capability = "device.status_bar" // status bar override for screenshots
+	CapDebug      Capability = "debug.dap"
 
 	// Evidence / observation
 	CapVideo          Capability = "video"

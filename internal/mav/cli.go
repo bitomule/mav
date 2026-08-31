@@ -264,7 +264,7 @@ Commands:
   version     Print the version of this mav.
   install-skills
               Install the MAV agent skill globally for all supported agents.
-  sim         List, select, or boot simulators.
+  sim         List, select, boot, or restyle simulators.
   device      List or select physical iOS devices.
   open        Build, install, launch, and start run logs.
   ui          Inspect and control the current UI.
@@ -315,6 +315,9 @@ With --install it installs tools and configures nothing.
   mav sim select --device "iPhone 17 Pro Max" --ios 26 [--locale es_ES] [--language es] [--force]
   mav sim select --udid <simulator-udid> [--force]
   mav sim boot
+  mav sim appearance light|dark
+  mav sim statusbar set [--preset appstore] [--time 9:41] [--battery-state charged] [--battery-level 100] [--cellular-bars 4] [--wifi-bars 3]
+  mav sim statusbar clear
 `
 	case "sim list":
 		return "Usage: mav sim list\n\nLists available iOS simulators.\n"
@@ -327,6 +330,18 @@ Selects the active simulator in .mav/config.yaml. --force ignores a fresh MAV si
 `
 	case "sim boot":
 		return "Usage: mav sim boot\n\nBoots the selected simulator.\n"
+	case "sim appearance":
+		return "Usage: mav sim appearance light|dark\n\nSets the simulator-wide light/dark user interface style, for App Store screenshots in both appearances. Physical devices return appearance_unsupported_on_device.\n"
+	case "sim statusbar":
+		return `Usage:
+  mav sim statusbar set [--preset appstore] [--time 9:41] [--battery-state charging|charged|discharging] [--battery-level 0-100]
+                        [--cellular-mode notSupported|searching|failed|active] [--cellular-bars 0-4]
+                        [--wifi-mode searching|failed|active] [--wifi-bars 0-3]
+                        [--data-network hide|wifi|3g|4g|lte|lte-a|lte+|5g|5g+|5g-uwb|5g-uc] [--operator-name NAME]
+  mav sim statusbar clear
+
+Overrides the simulator status bar so App Store screenshots show a clean one instead of the real clock. --preset appstore is 9:41, full battery, full signal; any explicit flag overrides the preset. Physical devices return status_bar_unsupported_on_device.
+`
 	case "device":
 		return `Usage:
   mav device list
@@ -1003,9 +1018,13 @@ func displayPromptDefault(value string) string {
 
 func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 	if len(args) == 0 {
-		return Fail("sim_command_missing", map[string]string{"usage": "mav sim list|select|boot"}).Write(c.Stdout)
+		return Fail("sim_command_missing", map[string]string{"usage": "mav sim list|select|boot|appearance|statusbar"}).Write(c.Stdout)
 	}
 	switch args[0] {
+	case "appearance":
+		return c.simAppearance(ctx, args[1:])
+	case "statusbar":
+		return c.simStatusBar(ctx, args[1:])
 	case "list":
 		sims, err := ListSimulators(c.Runner)
 		if err != nil {
@@ -1090,6 +1109,216 @@ func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 	default:
 		return Fail("sim_unknown_command", map[string]string{"command": args[0]}).Write(c.Stdout)
 	}
+}
+
+// simTarget loads the config and refuses anything that is not a simulator.
+// Appearance and the status bar are CoreSimulator-only knobs: a physical
+// device has no equivalent, the same way erase and hideKeyboard do not.
+func (c CLI) simTarget(feature string, next string) (drivers.Target, error) {
+	cfg, err := LoadConfig(c.Root)
+	if err != nil {
+		return drivers.Target{}, Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
+	}
+	c.resolveConfigTools(&cfg)
+	c.resolveConfigTarget(&cfg)
+	// A Mac gets its own code rather than being lumped in with iPhones:
+	// both are refusals, but the reasons differ and an agent branching on
+	// the code should not have to guess which platform it is standing on.
+	switch targetKind(cfg) {
+	case drivers.KindSim:
+		return targetFromConfig(cfg), nil
+	case drivers.KindMac:
+		return drivers.Target{}, Fail(feature+"_unsupported_on_macos", map[string]string{"next": next}).Write(c.Stdout)
+	default:
+		return drivers.Target{}, Fail(feature+"_unsupported_on_device", map[string]string{"next": next}).Write(c.Stdout)
+	}
+}
+
+func (c CLI) simAppearance(ctx context.Context, args []string) error {
+	appearance := ""
+	if len(args) > 0 {
+		appearance = args[0]
+	}
+	if appearance != "light" && appearance != "dark" {
+		return Fail("appearance_invalid", map[string]string{"appearance": appearance, "usage": "mav sim appearance light|dark"}).Write(c.Stdout)
+	}
+	target, err := c.simTarget("appearance", "appearance override is simulator-only; select a simulator with mav sim select")
+	if err != nil {
+		return err
+	}
+	driver, _, routeErr := c.router().Route(ctx, drivers.CapAppearance, target, "")
+	if routeErr != nil {
+		return Fail("appearance_unsupported", map[string]string{"next": "install the Xcode command-line tools so xcrun simctl is available"}).Write(c.Stdout)
+	}
+	ui, ok := driver.(drivers.AppearanceDriver)
+	if !ok {
+		return Fail("appearance_unsupported", map[string]string{"driver": driver.ID()}).Write(c.Stdout)
+	}
+	if setErr := ui.SetAppearance(ctx, target, appearance); setErr != nil {
+		return Fail("appearance_set_failed", map[string]string{"appearance": appearance, "stderr": firstLine(setErr.Error())}).Write(c.Stdout)
+	}
+	return c.OK("sim.appearance", map[string]string{"appearance": appearance, "driver": driver.ID()}).Write(c.Stdout)
+}
+
+func (c CLI) simStatusBar(ctx context.Context, args []string) error {
+	if len(args) == 0 {
+		return Fail("status_bar_command_missing", map[string]string{"usage": statusBarUsage}).Write(c.Stdout)
+	}
+	if args[0] != "set" && args[0] != "clear" {
+		return Fail("status_bar_unknown_command", map[string]string{"command": args[0], "usage": statusBarUsage}).Write(c.Stdout)
+	}
+	// The override is parsed before anything is routed, so a bad value is
+	// reported as a bad value. Routing first meant a machine without a
+	// working xcrun answered status_bar_unsupported to --wifi-bars 9.
+	spec := drivers.StatusBarSpec{}
+	fields := map[string]string{}
+	if args[0] == "set" {
+		parsed, parsedFields, specErr := statusBarSpecFromArgs(args[1:])
+		if specErr != nil {
+			return specErr.Write(c.Stdout)
+		}
+		spec, fields = parsed, parsedFields
+	}
+	target, err := c.simTarget("status_bar", "status bar override is simulator-only; select a simulator with mav sim select")
+	if err != nil {
+		return err
+	}
+	driver, _, routeErr := c.router().Route(ctx, drivers.CapStatusBar, target, "")
+	if routeErr != nil {
+		return Fail("status_bar_unsupported", map[string]string{"next": "install the Xcode command-line tools so xcrun simctl is available"}).Write(c.Stdout)
+	}
+	bar, ok := driver.(drivers.StatusBarDriver)
+	if !ok {
+		return Fail("status_bar_unsupported", map[string]string{"driver": driver.ID()}).Write(c.Stdout)
+	}
+	if args[0] == "clear" {
+		if clearErr := bar.ClearStatusBar(ctx, target); clearErr != nil {
+			return Fail("status_bar_clear_failed", map[string]string{"stderr": firstLine(clearErr.Error())}).Write(c.Stdout)
+		}
+		return c.OK("sim.statusbar.clear", map[string]string{"driver": driver.ID()}).Write(c.Stdout)
+	}
+	if setErr := bar.SetStatusBar(ctx, target, spec); setErr != nil {
+		return Fail("status_bar_set_failed", map[string]string{"stderr": firstLine(setErr.Error())}).Write(c.Stdout)
+	}
+	fields["driver"] = driver.ID()
+	return c.OK("sim.statusbar.set", fields).Write(c.Stdout)
+}
+
+const statusBarUsage = "mav sim statusbar set [--preset appstore] [--time 9:41] [--battery-state charging|charged|discharging] [--battery-level 0-100] [--cellular-mode notSupported|searching|failed|active] [--cellular-bars 0-4] [--wifi-mode searching|failed|active] [--wifi-bars 0-3] [--data-network hide|wifi|3g|4g|lte|lte-a|lte+|5g|5g+|5g-uwb|5g-uc] [--operator-name NAME] | mav sim statusbar clear"
+
+// appStoreStatusBar is the status bar Apple shows in its own marketing shots:
+// 9:41, full battery, full signal. It is a starting point, not a lock — every
+// field stays individually settable and an explicit flag wins over the preset.
+func appStoreStatusBar() drivers.StatusBarSpec {
+	return drivers.StatusBarSpec{
+		Time:         "9:41",
+		DataNetwork:  "wifi",
+		WifiMode:     "active",
+		WifiBars:     "3",
+		CellularMode: "active",
+		CellularBars: "4",
+		BatteryState: "charged",
+		BatteryLevel: "100",
+	}
+}
+
+// statusBarSpecFromArgs builds the override from flags, applying --preset
+// first so a later explicit flag overrides it. It returns the spec plus the
+// fields to echo, or the failure Output to write when a value is rejected:
+// simctl answers those with a wall of usage text, and a structured code is
+// what a flow can branch on. An empty field is left untouched, so overriding
+// the clock alone does not reset the rest of the status bar.
+func statusBarSpecFromArgs(args []string) (drivers.StatusBarSpec, map[string]string, *Output) {
+	spec := drivers.StatusBarSpec{}
+	preset := flagValue(args, "--preset")
+	if strings.HasPrefix(preset, "--") {
+		result := Fail("status_bar_value_missing", map[string]string{"flag": "--preset", "usage": statusBarUsage})
+		return spec, nil, &result
+	}
+	switch preset {
+	case "":
+	case "appstore":
+		spec = appStoreStatusBar()
+	default:
+		result := Fail("status_bar_preset_invalid", map[string]string{"preset": preset, "allowed": "appstore"})
+		return spec, nil, &result
+	}
+	bindings := []struct {
+		flag    string
+		field   *string
+		allowed []string
+		max     int
+	}{
+		{flag: "--time", field: &spec.Time},
+		{flag: "--data-network", field: &spec.DataNetwork, allowed: []string{"hide", "wifi", "3g", "4g", "lte", "lte-a", "lte+", "5g", "5g+", "5g-uwb", "5g-uc"}},
+		{flag: "--wifi-mode", field: &spec.WifiMode, allowed: []string{"searching", "failed", "active"}},
+		{flag: "--wifi-bars", field: &spec.WifiBars, max: 3},
+		{flag: "--cellular-mode", field: &spec.CellularMode, allowed: []string{"notSupported", "searching", "failed", "active"}},
+		{flag: "--cellular-bars", field: &spec.CellularBars, max: 4},
+		{flag: "--operator-name", field: &spec.OperatorName},
+		{flag: "--battery-state", field: &spec.BatteryState, allowed: []string{"charging", "charged", "discharging"}},
+		{flag: "--battery-level", field: &spec.BatteryLevel, max: 100},
+	}
+	for _, binding := range bindings {
+		value := flagValue(args, binding.flag)
+		if value == "" {
+			continue
+		}
+		// flagValue takes whatever follows the flag, so a forgotten value
+		// turns the next flag into the value: `--time --preset appstore`
+		// used to reach simctl and come back as its opaque POSIX error.
+		if strings.HasPrefix(value, "--") {
+			result := Fail("status_bar_value_missing", map[string]string{"flag": binding.flag, "usage": statusBarUsage})
+			return spec, nil, &result
+		}
+		if len(binding.allowed) > 0 && !statusBarValueAllowed(binding.allowed, value) {
+			result := Fail("status_bar_value_invalid", map[string]string{"flag": binding.flag, "value": value, "allowed": strings.Join(binding.allowed, "|")})
+			return spec, nil, &result
+		}
+		if binding.max > 0 {
+			number, convErr := strconv.Atoi(value)
+			if convErr != nil || number < 0 || number > binding.max {
+				result := Fail("status_bar_value_invalid", map[string]string{"flag": binding.flag, "value": value, "allowed": "0-" + strconv.Itoa(binding.max)})
+				return spec, nil, &result
+			}
+		}
+		*binding.field = value
+	}
+	fields := statusBarFields(spec)
+	if len(fields) == 0 {
+		result := Fail("status_bar_fields_missing", map[string]string{"usage": statusBarUsage})
+		return spec, nil, &result
+	}
+	return spec, fields, nil
+}
+
+func statusBarValueAllowed(allowed []string, value string) bool {
+	for _, candidate := range allowed {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
+}
+
+func statusBarFields(spec drivers.StatusBarSpec) map[string]string {
+	fields := map[string]string{}
+	for key, value := range map[string]string{
+		"time":         spec.Time,
+		"dataNetwork":  spec.DataNetwork,
+		"wifiMode":     spec.WifiMode,
+		"wifiBars":     spec.WifiBars,
+		"cellularMode": spec.CellularMode,
+		"cellularBars": spec.CellularBars,
+		"operatorName": spec.OperatorName,
+		"batteryState": spec.BatteryState,
+		"batteryLevel": spec.BatteryLevel,
+	} {
+		if value != "" {
+			fields[key] = value
+		}
+	}
+	return fields
 }
 
 func (c CLI) device(ctx context.Context, opts GlobalOptions, args []string) error {
@@ -3761,16 +3990,18 @@ func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) err
 		fields, err := c.executeFlowStepBoundWithOptions(ctx, opts, run, index+1, step, bindings)
 		elapsed := time.Since(stepStart)
 		if err != nil {
-			failFields := map[string]string{
-				"step":    strconv.Itoa(index + 1),
-				"action":  step.Action,
-				"code":    err.Error(),
-				"elapsed": elapsed.String(),
-				"run":     run.ID,
-			}
+			// Same ordering as appendFlowStep, and for the same reason: a
+			// step field named after one of these keys must not replace the
+			// reason the step failed.
+			failFields := map[string]string{}
 			for key, value := range fields {
 				failFields[key] = value
 			}
+			failFields["step"] = strconv.Itoa(index + 1)
+			failFields["action"] = step.Action
+			failFields["code"] = err.Error()
+			failFields["elapsed"] = elapsed.String()
+			failFields["run"] = run.ID
 			runData, _ := json.MarshalIndent(map[string]any{
 				"id": run.ID, "name": flow.Name, "status": "failed", "step": index + 1,
 				"action": step.Action, "code": err.Error(), "elapsed": time.Since(start).String(),
@@ -4706,6 +4937,23 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 	case "location.reset":
 		err := c.withStdout(io.Discard).location(ctx, GlobalOptions{}, []string{"reset"})
 		return map[string]string{}, outputErr(err, "location_reset_failed")
+	case "sim.appearance":
+		err := c.withStdout(io.Discard).sim(ctx, GlobalOptions{}, []string{"appearance", step.Params["appearance"]})
+		return copyParams(step.Params), outputErr(err, "appearance_set_failed")
+	case "sim.statusbar.set":
+		args := append([]string{"statusbar", "set"}, statusBarFlowArgs(step.Params)...)
+		err := c.withStdout(io.Discard).sim(ctx, GlobalOptions{}, args)
+		// Same reason as time.status: the overridden clock is echoed under
+		// statusBarTime, because "time" is the record's own wall clock.
+		fields := copyParams(step.Params)
+		if value, ok := fields["time"]; ok {
+			delete(fields, "time")
+			fields["statusBarTime"] = value
+		}
+		return fields, outputErr(err, "status_bar_set_failed")
+	case "sim.statusbar.clear":
+		err := c.withStdout(io.Discard).sim(ctx, GlobalOptions{}, []string{"statusbar", "clear"})
+		return map[string]string{}, outputErr(err, "status_bar_clear_failed")
 	case "clipboard.copy":
 		err := c.withStdout(io.Discard).clipboard(ctx, GlobalOptions{}, []string{"copy", step.Params["text"]})
 		return map[string]string{"chars": strconv.Itoa(len(step.Params["text"]))}, outputErr(err, "clipboard_copy_failed")
@@ -4725,7 +4973,10 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 	case "time.status":
 		var out bytes.Buffer
 		err := c.withStdout(&out).timeControl(ctx, GlobalOptions{}, []string{"status"})
-		return map[string]string{"status": out.String()}, outputErr(err, "time_status_failed")
+		// Not "status": that is a reserved commands.jsonl key, so the clock
+		// state this step exists to observe would be dropped from the
+		// evidence bundle in favour of the step's own ok/fail.
+		return map[string]string{"timeStatus": out.String()}, outputErr(err, "time_status_failed")
 	case "time.reset":
 		err := c.withStdout(io.Discard).timeControl(ctx, GlobalOptions{}, []string{"reset"})
 		return map[string]string{"reset": "true"}, outputErr(err, "time_reset_failed")
@@ -5160,6 +5411,21 @@ func flowArgs(params map[string]string, pairs ...string) []string {
 	return args
 }
 
+func statusBarFlowArgs(params map[string]string) []string {
+	return flowArgs(params,
+		"--preset", "preset",
+		"--time", "time",
+		"--data-network", "dataNetwork",
+		"--wifi-mode", "wifiMode",
+		"--wifi-bars", "wifiBars",
+		"--cellular-mode", "cellularMode",
+		"--cellular-bars", "cellularBars",
+		"--operator-name", "operatorName",
+		"--battery-state", "batteryState",
+		"--battery-level", "batteryLevel",
+	)
+}
+
 func gestureFlowArgs(params map[string]string) []string {
 	return flowArgs(params,
 		"--x", "x",
@@ -5185,16 +5451,20 @@ func copyParams(params map[string]string) map[string]string {
 }
 
 func appendFlowStep(run RunState, index int, action string, elapsed time.Duration, status string, fields map[string]string) {
-	record := map[string]any{
-		"time":    time.Now().Format(time.RFC3339),
-		"step":    index,
-		"action":  action,
-		"status":  status,
-		"elapsed": elapsed.String(),
-	}
+	// Step fields go in first and the record's own keys overwrite them, not
+	// the other way round: a step param named after one of them used to
+	// silently replace it. `sim.statusBar.set: { time: "9:41" }` stamped the
+	// fake status bar clock as the step's wall-clock time, in the very log
+	// the evidence bundle ships.
+	record := map[string]any{}
 	for key, value := range fields {
 		record[key] = value
 	}
+	record["time"] = time.Now().Format(time.RFC3339)
+	record["step"] = index
+	record["action"] = action
+	record["status"] = status
+	record["elapsed"] = elapsed.String()
 	data, _ := json.Marshal(record)
 	appendFile(run.Commands, string(data)+"\n")
 }
