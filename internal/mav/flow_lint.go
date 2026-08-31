@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -100,6 +101,29 @@ func lintFlowStep(index int, step FlowStep, cfg Config) []flowLintIssue {
 		if strings.TrimSpace(step.Params["note"]) == "" {
 			add("warning", "evidence_note_missing", "evidence.step should explain the assertion")
 		}
+	case "sim.appearance":
+		// The step reaches simctl through `mav sim appearance`, which only
+		// answers to light|dark. Linting it here means a screenshot flow
+		// fails at lint time instead of halfway through a capture matrix.
+		appearance := step.Params["appearance"]
+		if !isFlowBinding(appearance) && appearance != "light" && appearance != "dark" {
+			add("error", "appearance_invalid", fmt.Sprintf("sim.appearance requires appearance: light|dark, got %q", appearance))
+		}
+	case "sim.statusbar.set":
+		// Validated by the parser the executor itself uses, so the linter
+		// cannot drift from what a run would accept.
+		literal, bound := unboundParams(step.Params)
+		if _, _, failure := statusBarSpecFromArgs(statusBarFlowArgs(literal)); failure != nil {
+			// A step whose only field is a binding is not a step with no
+			// fields; everything else is judged exactly as a run judges it.
+			if !bound || failure.Code != "status_bar_fields_missing" {
+				add("error", failure.Code, statusBarLintMessage(*failure))
+			}
+		}
+	case "sim.statusbar.clear":
+		if keys := statusBarParamsIn(step.Params); len(keys) > 0 {
+			add("warning", "status_bar_clear_params_ignored", fmt.Sprintf("sim.statusbar.clear resets the whole status bar and ignores %s", strings.Join(keys, ", ")))
+		}
 	case "exec":
 		if !cfg.AllowShell {
 			add("error", "exec_requires_allow_shell", "exec steps require allow_shell: true in .mav/config.yaml")
@@ -131,4 +155,71 @@ func firstNonFlagArg(args []string) string {
 		}
 	}
 	return ""
+}
+
+// statusBarLintMessage turns a status bar parse failure into lint prose that
+// names the YAML key, not the CLI flag the step was translated into.
+func statusBarLintMessage(failure Output) string {
+	key := statusBarParamForFlag(failure.Fields["flag"])
+	switch failure.Code {
+	case "status_bar_preset_invalid":
+		return fmt.Sprintf("preset %q is not a known preset (allowed: %s)", failure.Fields["preset"], failure.Fields["allowed"])
+	case "status_bar_value_invalid":
+		return fmt.Sprintf("%s: %q is not allowed (allowed: %s)", key, failure.Fields["value"], failure.Fields["allowed"])
+	case "status_bar_value_missing":
+		return fmt.Sprintf("%s needs a value", key)
+	case "status_bar_fields_missing":
+		return "sim.statusbar.set needs preset or at least one status bar field"
+	default:
+		return failure.Code
+	}
+}
+
+// isFlowBinding reports a value the run resolves for itself -- ${params.x},
+// ${vars.x}, ${exec.x}. Its literal spelling says nothing about what the step
+// will actually be handed, so lint has to let it through: a matrix
+// parameterised on light/dark is the first thing anyone writes here, and
+// rejecting it would make the lint unusable for the flows it exists for.
+func isFlowBinding(value string) bool {
+	return strings.Contains(value, "${")
+}
+
+// unboundParams keeps only the params the linter can judge. The bool reports
+// whether any were dropped, because a step whose single field is a binding is
+// not a step with no fields.
+func unboundParams(params map[string]string) (map[string]string, bool) {
+	kept := map[string]string{}
+	bound := false
+	for key, value := range params {
+		if isFlowBinding(value) {
+			bound = true
+			continue
+		}
+		kept[key] = value
+	}
+	return kept, bound
+}
+
+func statusBarParamForFlag(flag string) string {
+	pairs := statusBarFlowFlags()
+	for i := 0; i+1 < len(pairs); i += 2 {
+		if pairs[i] == flag {
+			return pairs[i+1]
+		}
+	}
+	return strings.TrimPrefix(flag, "--")
+}
+
+// statusBarParamsIn lists the status bar keys a step actually carries, sorted
+// so the lint message is stable across runs.
+func statusBarParamsIn(params map[string]string) []string {
+	pairs := statusBarFlowFlags()
+	var keys []string
+	for i := 1; i < len(pairs); i += 2 {
+		if params[pairs[i]] != "" {
+			keys = append(keys, pairs[i])
+		}
+	}
+	sort.Strings(keys)
+	return keys
 }

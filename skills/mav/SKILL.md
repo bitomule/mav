@@ -544,8 +544,21 @@ steps:
 `cellularMode`, `cellularBars`, `operatorName`, `batteryState`, `batteryLevel`.
 Quote `time` in YAML.
 
+`mav flow lint flow.yaml` validates those fields with the parser the run uses:
+`appearance` must be `light` or `dark`, `preset` must be `appstore`, the enum and
+0-N fields are range-checked, and a `sim.statusbar.set` with no fields at all is
+an error, while a `${params.x}` binding is left for the run to resolve. Lint the
+matrix before running it — a bad value found at step 12 costs
+the eleven captures before it. `sim.statusbar.clear` takes no fields; passing any
+is a warning, since it resets the whole bar.
+
 Appearance and the status bar are simulator state, not app state: they survive a
 relaunch, so set them once per matrix cell rather than per capture.
+
+`mav sim appearance` waits two seconds after the switch, long enough for the
+screen to repaint: the capture path otherwise serves the pre-switch frame and the
+dark cell of the matrix comes out light. No `delay` step is needed between it and
+the capture.
 
 ## Launch Recipes
 

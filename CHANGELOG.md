@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+### `mav flow lint` checks the screenshot steps it was passing through
+
+The `sim.appearance` and `sim.statusbar.set|clear` flow actions shipped in v0.16.0
+with their values checked only at run time. A localized App Store matrix is dozens
+of captures per language, so `appearance: sepia`, `preset: marketing` or
+`wifiBars: 9` failed after the captures before it had already been taken.
+
+- `sim.appearance` requires `light` or `dark`.
+- `sim.statusbar.set` is validated by the same parser the run uses — preset,
+  enum fields and the 0-N ranges — so lint cannot drift from what a run accepts.
+  A step with no fields at all is an error, as it is on the CLI.
+- `sim.statusbar.clear` carrying status bar fields is a warning: the step resets
+  the whole bar, so those fields were written expecting an override they will not
+  get.
+- Lint messages name the YAML key (`wifiBars`), not the CLI flag the step is
+  translated into (`--wifi-bars`).
+
+### `sim.appearance` waits for the screen to repaint
+
+Running the documented matrix against a booted simulator caught the one failure
+it cannot afford: `sim.appearance: { appearance: dark }` followed by `capture`
+produced the *light* screenshot, and said `ok`. simctl accepts the new style
+immediately and its own screenshot is current, but the axe path MAV prefers on a
+simulator serves the pre-switch frame. `mav sim appearance` now returns only
+after the repaint window (measured stale at 0s in every trial, correct from
+0.5s; the wait is two seconds), so the capture after it is the appearance that
+was asked for.
+
 ## v0.16.0
 
 ### App Store screenshots stop showing the real clock

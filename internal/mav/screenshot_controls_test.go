@@ -236,8 +236,8 @@ func TestScreenshotControlFlowActionsReachSimctl(t *testing.T) {
 
 // TestScreenshotControlFlowActionsAreAccepted guards the half-wired case: an
 // action the executor understands but the flow parser rejects is a flow that
-// dies before its first step. It says nothing about the params being linted --
-// no other flow action lints those either.
+// dies before its first step. The params themselves are covered by the lint
+// tests below.
 func TestScreenshotControlFlowActionsAreAccepted(t *testing.T) {
 	for _, action := range []string{"sim.appearance", "sim.statusbar.set", "sim.statusbar.clear"} {
 		if !isSupportedFlowAction(action) {
@@ -358,5 +358,128 @@ func TestSimStatusBarValidatesBeforeRouting(t *testing.T) {
 	allowFail(t, cli.Run(context.Background(), []string{"sim", "statusbar", "set", "--wifi-bars", "9"}))
 	if !strings.Contains(out.String(), "fail code=status_bar_value_invalid") {
 		t.Fatalf("output=%q", out.String())
+	}
+}
+
+// TestSimAppearanceWaitsForTheRepaint pins the settle the live run found: the
+// capture path MAV prefers on a simulator serves the pre-switch frame, so
+// returning as soon as simctl accepts the style produced a light screenshot
+// from a dark step -- with nothing in the output saying so.
+func TestSimAppearanceWaitsForTheRepaint(t *testing.T) {
+	root, runner := screenshotControlsSimRoot(t)
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	start := time.Now()
+	if err := cli.Run(context.Background(), []string{"sim", "appearance", "dark"}); err != nil {
+		t.Fatal(err)
+	}
+	// Against a literal, not against appearanceSettle: comparing the wait to
+	// its own constant passes just as happily when the constant is zeroed.
+	if elapsed := time.Since(start); elapsed < time.Second {
+		t.Fatalf("returned after %s, before the screen can have repainted", elapsed)
+	}
+}
+
+func TestScreenshotControlStepsPassLintWhenValid(t *testing.T) {
+	root, _ := screenshotControlsSimRoot(t)
+	flowPath := filepath.Join(root, "flow.yaml")
+	flow := "name: shots\nsteps:\n" +
+		"  - sim.appearance: { appearance: dark }\n" +
+		"  - sim.statusbar.set: { preset: appstore }\n" +
+		"  - sim.statusbar.set: { time: \"9:41\", batteryState: charged, batteryLevel: \"100\", cellularBars: \"4\", wifiBars: \"3\" }\n" +
+		"  - sim.statusbar.clear: {}\n"
+	if err := os.WriteFile(flowPath, []byte(flow), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"flow", "lint", flowPath}); err != nil {
+		t.Fatalf("lint output=%q err=%v", out.String(), err)
+	}
+	if !strings.Contains(out.String(), "ok cmd=flow.lint") || !strings.Contains(out.String(), "errors=0") || !strings.Contains(out.String(), "warnings=0") {
+		t.Fatalf("lint output=%q", out.String())
+	}
+}
+
+// TestScreenshotControlStepsLintBindingsAsUnknown covers the flow the lint
+// exists for: a matrix parameterised on light/dark. The value is resolved at
+// run time, so its literal spelling is not something lint may judge -- and a
+// step whose only field is a binding is not a step with no fields.
+func TestScreenshotControlStepsLintBindingsAsUnknown(t *testing.T) {
+	root, _ := screenshotControlsSimRoot(t)
+	flowPath := filepath.Join(root, "flow.yaml")
+	flow := "name: shots\nparams:\n  theme: { required: true }\n  bars: { required: true }\nsteps:\n" +
+		"  - sim.appearance: { appearance: \"${params.theme}\" }\n" +
+		"  - sim.statusbar.set: { wifiBars: \"${params.bars}\" }\n" +
+		"  - sim.statusbar.set: { preset: appstore, time: \"${params.clock}\" }\n"
+	if err := os.WriteFile(flowPath, []byte(flow), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"flow", "lint", "--raw", flowPath}); err != nil {
+		t.Fatalf("lint output=%q err=%v", out.String(), err)
+	}
+	if !strings.Contains(out.String(), "ok cmd=flow.lint") || !strings.Contains(out.String(), "errors=0") {
+		t.Fatalf("lint output=%q", out.String())
+	}
+}
+
+// TestScreenshotControlStepsFailLintOnBadArguments covers the values simctl
+// would otherwise reject mid-run, halfway through a capture matrix. The
+// message has to name the YAML key, not the CLI flag the step is translated
+// into.
+func TestScreenshotControlStepsFailLintOnBadArguments(t *testing.T) {
+	for _, testCase := range []struct {
+		name string
+		step string
+		code string
+		want string
+	}{
+		{name: "appearance value", step: "  - sim.appearance: { appearance: sepia }\n", code: "appearance_invalid", want: "light|dark"},
+		{name: "appearance missing", step: "  - sim.appearance: {}\n", code: "appearance_invalid", want: "light|dark"},
+		{name: "preset", step: "  - sim.statusbar.set: { preset: marketing }\n", code: "status_bar_preset_invalid", want: "appstore"},
+		{name: "enum field", step: "  - sim.statusbar.set: { batteryState: full }\n", code: "status_bar_value_invalid", want: "batteryState"},
+		{name: "range field", step: "  - sim.statusbar.set: { wifiBars: \"9\" }\n", code: "status_bar_value_invalid", want: "wifiBars"},
+		{name: "no fields", step: "  - sim.statusbar.set: {}\n", code: "status_bar_fields_missing", want: "at least one"},
+	} {
+		root, _ := screenshotControlsSimRoot(t)
+		flowPath := filepath.Join(root, "flow.yaml")
+		if err := os.WriteFile(flowPath, []byte("name: shots\nsteps:\n"+testCase.step), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var out bytes.Buffer
+		cli := CLI{Runner: fakeRunner{}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+		allowFail(t, cli.Run(context.Background(), []string{"flow", "lint", "--raw", flowPath}))
+		got := out.String()
+		if !strings.Contains(got, "fail code=flow_lint_failed") || !strings.Contains(got, "errors=1") {
+			t.Fatalf("%s: lint output=%q", testCase.name, got)
+		}
+		if !strings.Contains(got, "code="+testCase.code) || !strings.Contains(got, testCase.want) {
+			t.Fatalf("%s: lint output=%q", testCase.name, got)
+		}
+	}
+}
+
+// TestStatusBarClearWithFieldsIsAWarning pins the silent case: clear takes no
+// fields, so a step that carries them was written expecting an override and
+// gets a reset instead.
+func TestStatusBarClearWithFieldsIsAWarning(t *testing.T) {
+	root, _ := screenshotControlsSimRoot(t)
+	flowPath := filepath.Join(root, "flow.yaml")
+	if err := os.WriteFile(flowPath, []byte("name: shots\nsteps:\n  - sim.statusbar.clear: { preset: appstore, time: \"9:41\" }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"flow", "lint", "--raw", flowPath}); err != nil {
+		t.Fatalf("lint output=%q err=%v", out.String(), err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "warnings=1") || !strings.Contains(got, "errors=0") {
+		t.Fatalf("lint output=%q", got)
+	}
+	if !strings.Contains(got, "status_bar_clear_params_ignored") || !strings.Contains(got, "preset, time") {
+		t.Fatalf("lint output=%q", got)
 	}
 }
