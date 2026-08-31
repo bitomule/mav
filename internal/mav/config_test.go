@@ -620,22 +620,24 @@ func TestProfileOverridableFieldsAreExhaustive(t *testing.T) {
 		"vm":             true, // a macOS profile in a VM, a local one beside it
 	}
 	notOverridable := map[string]string{
-		"project_name":        "the project is the same on every platform",
-		"bundle_id":           "shared; if it diverged it would be another app",
-		"app":                 "mirror of bundle_id/process_name",
-		"device_target":       "physical iOS device axis, orthogonal to the platform",
-		"device_udid":         "device selection, persisted separately",
-		"device_name":         "same",
-		"simulator_udid":      "simulator selection, persisted separately",
-		"simulator_name":      "same",
-		"simulator_runtime":   "same",
-		"locale":              "set per invocation, not per platform",
-		"language":            "same",
-		"preferred_ui_driver": "the router decides it by capability and cost",
-		"allow_shell":         "repo policy, not platform policy",
-		"default_profile":     "it is the selector, it cannot live inside what is selected",
-		"profiles":            "same",
-		"fixtures":            "named states belong to the repo, not the platform; a fixture only valid for one names it",
+		"project_name":            "the project is the same on every platform",
+		"bundle_id":               "shared; if it diverged it would be another app",
+		"app":                     "mirror of bundle_id/process_name",
+		"device_target":           "physical iOS device axis, orthogonal to the platform",
+		"device_udid":             "device selection, persisted separately",
+		"device_name":             "same",
+		"simulator_udid":          "simulator selection, persisted separately",
+		"simulator_name":          "same",
+		"simulator_runtime":       "same",
+		"locale":                  "set per invocation, not per platform",
+		"language":                "same",
+		"preferred_ui_driver":     "the router decides it by capability and cost",
+		"allow_shell":             "repo policy, not platform policy",
+		"target_command_required": "policy attached to target_command itself; a profile that cancels target_command cancels the requirement with it",
+		"target_command_timeout":  "the pool manager behind target_command is the same one on every platform, so its cost is too",
+		"default_profile":         "it is the selector, it cannot live inside what is selected",
+		"profiles":                "same",
+		"fixtures":                "named states belong to the repo, not the platform; a fixture only valid for one names it",
 	}
 	typ := reflect.TypeOf(configYAML{})
 	for i := 0; i < typ.NumField(); i++ {
@@ -718,7 +720,11 @@ func TestMacTargetSkipsSimulatorResolution(t *testing.T) {
 		t.Fatal(err)
 	}
 	cli := CLI{Root: root}
-	if warn := cli.resolveConfigTarget(&cfg); warn != "" {
+	warn, err := cli.resolveConfigTarget(&cfg)
+	if err != nil {
+		t.Fatalf("a macOS target should not fail on target_command: %v", err)
+	}
+	if warn != "" {
 		t.Fatalf("a macOS target should not warn about target_command: %q", warn)
 	}
 	if cfg.SimulatorUDID != "" {

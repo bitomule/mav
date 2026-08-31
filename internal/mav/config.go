@@ -43,8 +43,23 @@ type Config struct {
 	PreferredUIDriver string
 	AllowShell        bool
 	TargetCommand     string
-	Launch            LaunchConfig
-	Tools             map[string]bool
+
+	// TargetCommandRequired says a configured target_command is the only
+	// acceptable source of the simulator: if it fails, times out or prints
+	// nothing, the command fails instead of quietly falling back to whatever
+	// simulator happens to be booted. nil means unset, which resolves to
+	// true (see targetCommandRequired) -- the config declared how the target
+	// is chosen, so choosing differently in silence contradicts it. Setting
+	// it to false is the explicit opt-out back to warn-and-fall-back.
+	TargetCommandRequired *bool
+
+	// TargetCommandTimeout bounds a single target_command invocation. Empty
+	// means the default (see defaultTargetCommandTimeout). A Go duration
+	// string: "90s", "3m".
+	TargetCommandTimeout string
+
+	Launch LaunchConfig
+	Tools  map[string]bool
 
 	// DefaultProfile and Profiles are kept raw so they can be rewritten
 	// without being lost, and so `mav doctor` can list them. ActiveProfile
@@ -194,6 +209,8 @@ func loadConfig(root, profileOverride string, skipProfile bool) (Config, error) 
 	cfg.PreferredUIDriver = raw.PreferredUIDriver
 	cfg.AllowShell = raw.AllowShell
 	cfg.TargetCommand = raw.TargetCommand
+	cfg.TargetCommandRequired = raw.TargetCommandRequired
+	cfg.TargetCommandTimeout = raw.TargetCommandTimeout
 	cfg.VM = raw.VM
 	cfg.Launch = raw.Launch
 	cfg.DefaultProfile = raw.DefaultProfile
@@ -310,27 +327,29 @@ func profileNames(cfg Config) []string {
 }
 
 type configYAML struct {
-	ProjectName       string        `yaml:"project_name"`
-	TargetKind        string        `yaml:"target_kind"`
-	AppTarget         string        `yaml:"app_target,omitempty"`
-	DeviceTarget      string        `yaml:"device_target,omitempty"`
-	DeviceUDID        string        `yaml:"device_udid,omitempty"`
-	DeviceName        string        `yaml:"device_name,omitempty"`
-	BundleID          string        `yaml:"bundle_id"`
-	ProcessName       string        `yaml:"process_name"`
-	App               configAppYAML `yaml:"app"`
-	SimulatorUDID     string        `yaml:"simulator_udid"`
-	SimulatorName     string        `yaml:"simulator_name"`
-	SimulatorRuntime  string        `yaml:"simulator_runtime"`
-	Locale            string        `yaml:"locale"`
-	Language          string        `yaml:"language"`
-	LogSubsystem      string        `yaml:"log_subsystem"`
-	LogCategory       string        `yaml:"log_category"`
-	PreferredUIDriver string        `yaml:"preferred_ui_driver"`
-	AllowShell        bool          `yaml:"allow_shell,omitempty"`
-	TargetCommand     string        `yaml:"target_command,omitempty"`
-	VM                bool          `yaml:"vm,omitempty"`
-	Launch            LaunchConfig  `yaml:"launch,omitempty"`
+	ProjectName           string        `yaml:"project_name"`
+	TargetKind            string        `yaml:"target_kind"`
+	AppTarget             string        `yaml:"app_target,omitempty"`
+	DeviceTarget          string        `yaml:"device_target,omitempty"`
+	DeviceUDID            string        `yaml:"device_udid,omitempty"`
+	DeviceName            string        `yaml:"device_name,omitempty"`
+	BundleID              string        `yaml:"bundle_id"`
+	ProcessName           string        `yaml:"process_name"`
+	App                   configAppYAML `yaml:"app"`
+	SimulatorUDID         string        `yaml:"simulator_udid"`
+	SimulatorName         string        `yaml:"simulator_name"`
+	SimulatorRuntime      string        `yaml:"simulator_runtime"`
+	Locale                string        `yaml:"locale"`
+	Language              string        `yaml:"language"`
+	LogSubsystem          string        `yaml:"log_subsystem"`
+	LogCategory           string        `yaml:"log_category"`
+	PreferredUIDriver     string        `yaml:"preferred_ui_driver"`
+	AllowShell            bool          `yaml:"allow_shell,omitempty"`
+	TargetCommand         string        `yaml:"target_command,omitempty"`
+	TargetCommandRequired *bool         `yaml:"target_command_required,omitempty"`
+	TargetCommandTimeout  string        `yaml:"target_command_timeout,omitempty"`
+	VM                    bool          `yaml:"vm,omitempty"`
+	Launch                LaunchConfig  `yaml:"launch,omitempty"`
 
 	DefaultProfile string                 `yaml:"default_profile,omitempty"`
 	Profiles       map[string]profileYAML `yaml:"profiles,omitempty"`
@@ -438,22 +457,24 @@ func SaveConfig(root string, cfg Config) error {
 			BundleID:    cfg.BundleID,
 			ProcessName: cfg.ProcessName,
 		},
-		BundleID:          cfg.BundleID,
-		ProcessName:       cfg.ProcessName,
-		SimulatorUDID:     cfg.SimulatorUDID,
-		SimulatorName:     cfg.SimulatorName,
-		SimulatorRuntime:  cfg.SimulatorRuntime,
-		Locale:            cfg.Locale,
-		Language:          cfg.Language,
-		LogSubsystem:      probeLogSubsystem(cfg),
-		LogCategory:       probeLogCategory(cfg),
-		PreferredUIDriver: cfg.PreferredUIDriver,
-		AllowShell:        cfg.AllowShell,
-		TargetCommand:     strings.TrimSpace(cfg.TargetCommand),
-		VM:                cfg.VM,
-		DefaultProfile:    cfg.DefaultProfile,
-		Profiles:          cfg.Profiles,
-		Fixtures:          cfg.Fixtures,
+		BundleID:              cfg.BundleID,
+		ProcessName:           cfg.ProcessName,
+		SimulatorUDID:         cfg.SimulatorUDID,
+		SimulatorName:         cfg.SimulatorName,
+		SimulatorRuntime:      cfg.SimulatorRuntime,
+		Locale:                cfg.Locale,
+		Language:              cfg.Language,
+		LogSubsystem:          probeLogSubsystem(cfg),
+		LogCategory:           probeLogCategory(cfg),
+		PreferredUIDriver:     cfg.PreferredUIDriver,
+		AllowShell:            cfg.AllowShell,
+		TargetCommand:         strings.TrimSpace(cfg.TargetCommand),
+		TargetCommandRequired: cfg.TargetCommandRequired,
+		TargetCommandTimeout:  strings.TrimSpace(cfg.TargetCommandTimeout),
+		VM:                    cfg.VM,
+		DefaultProfile:        cfg.DefaultProfile,
+		Profiles:              cfg.Profiles,
+		Fixtures:              cfg.Fixtures,
 	}
 	if cfg.Launch.Mode != "" || hasLaunchCommands(cfg.Launch.Commands) {
 		mode := cfg.Launch.Mode
@@ -635,6 +656,18 @@ func mergeSetupConfig(existing, detected Config) Config {
 	}
 	if existing.TargetCommand != "" {
 		merged.TargetCommand = existing.TargetCommand
+	}
+	// Carried forward beside TargetCommand, not with it: these two are the
+	// policy attached to it, and `mav setup` dropping them would silently
+	// re-arm the hard failure on a project that had explicitly opted out,
+	// and silently reset a slower pool manager's timeout to the default.
+	// Silently substituting a different value for one the config states is
+	// exactly the bug target_command_required exists to close.
+	if existing.TargetCommandRequired != nil {
+		merged.TargetCommandRequired = existing.TargetCommandRequired
+	}
+	if existing.TargetCommandTimeout != "" {
+		merged.TargetCommandTimeout = existing.TargetCommandTimeout
 	}
 	if existing.AppTarget != "" {
 		merged.AppTarget = existing.AppTarget

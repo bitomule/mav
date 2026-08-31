@@ -101,6 +101,42 @@ var PreferDriverInvalid = Code{
 	Remediation: "Run `mav doctor` to see registered drivers",
 }
 
+// TargetCommandFailed, TargetCommandTimeout and TargetCommandEmpty are the
+// three ways a configured target_command can fail to name a simulator.
+// They are separate IDs, not one code with a reason field, because an agent
+// reacts differently to each: a non-zero exit is the pool manager saying no
+// (wait or free a slot), a timeout is mav giving up on a command that may
+// still be working (raise target_command_timeout), and empty output is a
+// contract violation by the command itself (fix the command). All three are
+// hard failures when target_command is required, which is the default: mav
+// does not fall back to whatever simulator happens to be booted, because
+// the config declared how the target is chosen and quietly choosing
+// differently is how a screenshot ends up published from a device nobody
+// selected.
+var TargetCommandFailed = Code{
+	ID:          "target_command_failed",
+	Title:       "Configured target_command exited non-zero; no fallback",
+	Remediation: "Fix target_command in .mav/config.yaml, or set target_command_required: false to allow the booted-simulator fallback",
+}
+
+var TargetCommandTimeout = Code{
+	ID:          "target_command_timeout",
+	Title:       "Configured target_command timed out; no fallback",
+	Remediation: "Raise target_command_timeout in .mav/config.yaml, or set target_command_required: false to allow the booted-simulator fallback",
+}
+
+var TargetCommandEmpty = Code{
+	ID:          "target_command_empty",
+	Title:       "Configured target_command printed no UDID; no fallback",
+	Remediation: "target_command must print a simulator UDID on stdout; fix it in .mav/config.yaml",
+}
+
+var TargetCommandTimeoutInvalid = Code{
+	ID:          "target_command_timeout_invalid",
+	Title:       "The target_command_timeout value is not a duration",
+	Remediation: "Set target_command_timeout in .mav/config.yaml to a Go duration such as 90s or 3m",
+}
+
 var FlowLintFailed = Code{
 	ID:          "flow_lint_failed",
 	Title:       "Flow lint found errors",
@@ -118,4 +154,8 @@ var Registry = map[string]Code{
 	ToolMissing.ID:                   ToolMissing,
 	PreferDriverInvalid.ID:           PreferDriverInvalid,
 	FlowLintFailed.ID:                FlowLintFailed,
+	TargetCommandFailed.ID:           TargetCommandFailed,
+	TargetCommandTimeout.ID:          TargetCommandTimeout,
+	TargetCommandEmpty.ID:            TargetCommandEmpty,
+	TargetCommandTimeoutInvalid.ID:   TargetCommandTimeoutInvalid,
 }

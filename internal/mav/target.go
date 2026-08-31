@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/bitomule/mav/internal/mav/codes"
 	"github.com/bitomule/mav/internal/mav/drivers"
 )
 
@@ -109,7 +111,22 @@ func (c CLI) withResolvedTarget(fields map[string]string) map[string]string {
 	if err != nil {
 		return fields
 	}
-	if warn := c.resolveConfigTarget(&cfg); warn != "" {
+	// A resolution error here cannot fail the command: this only decorates
+	// the `ok` line of a command that has already run, and by definition it
+	// resolved its own target successfully to get this far (the real call
+	// sites return c.failTargetCommand instead). Reporting it in the same
+	// warn field is the honest thing left to do -- it means target_command
+	// stopped working between dispatch and reporting.
+	warn, resolveErr := c.resolveConfigTarget(&cfg)
+	if resolveErr != nil {
+		var tcErr *targetCommandError
+		if errors.As(resolveErr, &tcErr) {
+			warn = tcErr.message()
+		} else {
+			warn = resolveErr.Error()
+		}
+	}
+	if warn != "" {
 		fields["target_command_warn"] = warn
 	}
 	// resolveConfigTarget already applies the booted-simulator fallback to
@@ -277,14 +294,21 @@ func (c CLI) resolveBootedSimulator() (string, string) {
 //     added and never notice the field is dead configuration. Surfaced
 //     through the same target_command_warn field as the failure case, since
 //     both boil down to "target_command is configured but not in effect."
-func (c CLI) resolveConfigTarget(cfg *Config) string {
+func (c CLI) resolveConfigTarget(cfg *Config) (string, error) {
 	if targetKind(*cfg) != drivers.KindSim {
-		return ""
+		return "", nil
 	}
 	if os.Getenv("MAV_TARGET_KIND") != "" {
-		return ""
+		return "", nil
 	}
-	warn := c.resolveConfigTargetCommand(cfg)
+	warn, err := c.resolveConfigTargetCommand(cfg)
+	if err != nil {
+		// Deliberately before the booted-simulator fallback below: a
+		// required target_command that did not deliver must leave the
+		// caller with nothing to dispatch against, not with a simulator
+		// nobody chose. This early return is the whole fix.
+		return "", err
+	}
 	// Case 5 of the README precedence table -- the pre-existing booted-
 	// simulator fallback -- applies uniformly here, in cfg itself, whenever
 	// nothing above (a pin, a working target_command) already filled
@@ -300,7 +324,7 @@ func (c CLI) resolveConfigTarget(cfg *Config) string {
 	if cfg.SimulatorUDID == "" {
 		cfg.SimulatorUDID, cfg.SimulatorName = c.resolveBootedSimulator()
 	}
-	return warn
+	return warn, nil
 }
 
 // resolveConfigTargetCommand runs target_command (cases 3/4 of the
@@ -310,30 +334,163 @@ func (c CLI) resolveConfigTarget(cfg *Config) string {
 // returns -- a pin, an empty target_command, or a target_command that ran
 // and failed all leave cfg.SimulatorUDID exactly as unresolved as each
 // other from that fallback's point of view.
-func (c CLI) resolveConfigTargetCommand(cfg *Config) string {
+func (c CLI) resolveConfigTargetCommand(cfg *Config) (string, error) {
 	command := strings.TrimSpace(cfg.TargetCommand)
 	if cfg.SimulatorUDID != "" {
 		if command == "" {
-			return ""
+			return "", nil
 		}
-		return fmt.Sprintf("target_command_ignored: simulator_udid=%s is pinned in .mav/config.yaml and wins over target_command (next: remove simulator_udid to let target_command route automatically, or remove target_command if the pin is intentional)", cfg.SimulatorUDID)
+		return fmt.Sprintf("target_command_ignored: simulator_udid=%s is pinned in .mav/config.yaml and wins over target_command (next: remove simulator_udid to let target_command route automatically, or remove target_command if the pin is intentional)", cfg.SimulatorUDID), nil
 	}
 	if command == "" {
-		return ""
+		return "", nil
 	}
-	udid, name, warn := c.resolveTargetCommand(cfg.Root, command)
+	timeout, err := targetCommandTimeoutFor(*cfg)
+	if err != nil {
+		return "", err
+	}
+	udid, name, warn, err := c.resolveTargetCommand(cfg.Root, command, timeout, targetCommandRequired(*cfg))
+	if err != nil {
+		return "", err
+	}
 	if udid == "" {
-		return warn
+		return warn, nil
 	}
 	cfg.SimulatorUDID = udid
 	cfg.SimulatorName = name
-	return ""
+	return "", nil
 }
 
-// targetCommandTimeout bounds a single target_command invocation so a
-// hanging pool manager can never hang mav itself -- it degrades to the
-// booted fallback instead.
-const targetCommandTimeout = 10 * time.Second
+// targetCommandRequired answers whether a configured target_command is the
+// only acceptable source of the simulator. Unset means yes. The strict
+// behavior is the default on purpose: `target_command:` in config.yaml is
+// the user saying "this is how the target is chosen", and answering its
+// failure by driving whatever simulator happened to be booted contradicts
+// that -- silently, since almost every call site discarded the warning and
+// any caller redirecting stdout (a screenshot script piping `mav run` to
+// /dev/null) never saw it at all. Making strictness opt-out rather than
+// opt-in means nobody keeps the silent behavior by inaction; a project that
+// genuinely wants best-effort routing says so once, in writing.
+func targetCommandRequired(cfg Config) bool {
+	if cfg.TargetCommandRequired == nil {
+		return true
+	}
+	return *cfg.TargetCommandRequired
+}
+
+// targetCommandTimeoutFor resolves target_command_timeout, defaulting to
+// defaultTargetCommandTimeout. An unparseable value is a hard error rather
+// than a silent fall back to the default: quietly substituting a different
+// value for the one the config states is the same class of bug this change
+// exists to close.
+func targetCommandTimeoutFor(cfg Config) (time.Duration, error) {
+	raw := strings.TrimSpace(cfg.TargetCommandTimeout)
+	if raw == "" {
+		return defaultTargetCommandTimeout, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return 0, &targetCommandError{
+			code:    codes.TargetCommandTimeoutInvalid,
+			command: strings.TrimSpace(cfg.TargetCommand),
+			detail:  fmt.Sprintf("target_command_timeout=%q is not a positive Go duration", raw),
+			next:    "set target_command_timeout to a Go duration such as 90s or 3m",
+		}
+	}
+	return d, nil
+}
+
+// defaultTargetCommandTimeout bounds a single target_command invocation so
+// a hanging pool manager can never hang mav itself. It was 10s, which no
+// real consumer could meet: target_command is documented against simpool,
+// simpool's `lease` blocks on `xcrun simctl bootstatus` before printing a
+// UDID, and a cold lease takes about two minutes. A default the one known
+// consumer cannot meet is a bug in the default, so it is now three minutes
+// -- past the documented cold-lease cost, and still bounded. It matches
+// rather than undercuts simpool's own default lease TTL (`simpool lease
+// -ttl`, 3m0s), so a lease that burns the whole timeout can return with its
+// own TTL already spent; the keepalive that renews it only starts once
+// resolution has returned. Cutting the default below the TTL instead would
+// leave under a minute of headroom over the documented cold-lease cost,
+// which is the original bug again. A pool manager that is slower, or whose
+// TTL is shorter, says so with target_command_timeout.
+const defaultTargetCommandTimeout = 3 * time.Minute
+
+// targetCommandError is a target_command that did not name a simulator. It
+// carries the command, the timeout it was given and the underlying detail,
+// so the failure a caller prints names all three -- "target_command failed"
+// on its own sends the reader back to the config to guess which part.
+type targetCommandError struct {
+	code    codes.Code
+	command string
+	timeout time.Duration
+	detail  string
+	// next is the remediation used by the non-required (opt-out) wording,
+	// where the sentence has to end in "falling back to the booted
+	// simulator" rather than in the code's own remediation.
+	next string
+}
+
+// Error is the bare code id, matching this package's convention that a
+// command error's text IS its code (see outputErr/commandOutputErr): a flow
+// step's error surfaces verbatim as the run's `code=` field, so anything
+// longer would emit a quoted sentence where the vocabulary belongs. The
+// detail travels in fields(); message() is for logs, which have no code
+// field to put it in.
+func (e *targetCommandError) Error() string { return e.code.ID }
+
+func (e *targetCommandError) message() string {
+	return fmt.Sprintf("%s: %s (target_command: %s)", e.code.ID, e.detail, e.command)
+}
+
+// warn renders the pre-existing warn-and-fall-back wording, emitted only
+// when target_command_required is explicitly false.
+func (e *targetCommandError) warn() string {
+	return fmt.Sprintf("%s: %s (next: %s; falling back to the booted simulator)", e.code.ID, e.detail, e.next)
+}
+
+// fields spells out what failed for the structured `fail code=...` line,
+// including fallback=none: the single most important thing for a reader who
+// remembers the old behavior is that mav did not quietly pick a simulator
+// of its own.
+func (e *targetCommandError) fields() map[string]string {
+	f := map[string]string{
+		"target_command": e.command,
+		"detail":         e.detail,
+		"fallback":       "none",
+	}
+	if e.timeout > 0 {
+		// Not `timeout`: a flow step merges these fields over its own
+		// params, and `timeout` is a first-class param on waitFor and
+		// scrollUntil. Two different timeouts under one key is worse than
+		// a longer name.
+		f["target_command_timeout"] = e.timeout.String()
+	}
+	return f
+}
+
+// targetCommandWarnText renders a resolution error for the places that
+// report it rather than fail on it -- `mav doctor`, whose whole job is to
+// diagnose, and teardown paths whose work cannot be retried later.
+func targetCommandWarnText(err error) string {
+	var tcErr *targetCommandError
+	if errors.As(err, &tcErr) {
+		return tcErr.message()
+	}
+	return err.Error()
+}
+
+// failTargetCommand writes the structured failure for a target_command that
+// was required and did not deliver a simulator. Every command that resolves
+// a target routes its resolution error through here, so the failure has the
+// same shape wherever it surfaces.
+func (c CLI) failTargetCommand(err error) error {
+	var tcErr *targetCommandError
+	if errors.As(err, &tcErr) {
+		return FailCode(tcErr.code, tcErr.fields()).Write(c.Stdout)
+	}
+	return Fail("target_command_failed", map[string]string{"error": err.Error(), "fallback": "none"}).Write(c.Stdout)
+}
 
 type targetCommandCache struct {
 	UDID       string    `json:"udid"`
@@ -378,25 +535,44 @@ func writeTargetCommandCache(run RunState, udid, name, warn string) {
 // navigation issues dozens of commands, and target_command is expected to
 // shell out to an external pool manager whose own cost (and, if it fails,
 // whose own latency to fail) mav should not multiply by every command.
-// Failures are cached too, so a broken target_command degrades to the
-// booted fallback once per TTL window instead of paying its timeout on
-// every single command.
-func (c CLI) resolveTargetCommand(root, command string) (string, string, string) {
+// Failures are cached only when required is false. That asymmetry is
+// deliberate. Negative caching exists to stop a run that *keeps going*
+// after a failed resolution from paying the timeout again on every one of
+// the dozens of commands that follow -- which is precisely the non-required
+// case. When target_command is required the command fails and the process
+// exits, so there is no such sequence to protect, and caching the failure
+// would only mean the next invocation inside the TTL fails on evidence it
+// never re-tested: a run started right after a slow cold lease would fail
+// without ever retrying. That is the reported bug, not a mitigation of it.
+func (c CLI) resolveTargetCommand(root, command string, timeout time.Duration, required bool) (string, string, string, error) {
 	if c.Runner == nil {
-		return "", "", ""
+		return "", "", "", nil
+	}
+	resolve := func() (string, string, string, error) {
+		udid, name, cmdErr := c.execTargetCommand(root, command, timeout)
+		if cmdErr != nil {
+			if required {
+				return "", "", "", cmdErr
+			}
+			return "", "", cmdErr.warn(), nil
+		}
+		return udid, name, "", nil
 	}
 	run, err := c.resolveRun("")
 	if err != nil {
 		// No run to cache against yet (e.g. a standalone command before
 		// `mav open`); resolve fresh. Rare, never the hot loop.
-		return c.execTargetCommand(root, command)
+		return resolve()
 	}
 	if cache, ok := readTargetCommandCache(run); ok {
-		return cache.UDID, cache.Name, cache.Warn
+		return cache.UDID, cache.Name, cache.Warn, nil
 	}
-	udid, name, warn := c.execTargetCommand(root, command)
+	udid, name, warn, resolveErr := resolve()
+	if resolveErr != nil {
+		return "", "", "", resolveErr
+	}
 	writeTargetCommandCache(run, udid, name, warn)
-	return udid, name, warn
+	return udid, name, warn, nil
 }
 
 // execTargetCommand runs the configured command through /bin/bash -lc, the
@@ -405,24 +581,70 @@ func (c CLI) resolveTargetCommand(root, command string) (string, string, string)
 // mav is: print the UDID to use on stdout. It runs from the project root
 // (like launch and exec-step commands) with MAV_ROOT exported, so a project
 // can point target_command at a repo-relative script.
-func (c CLI) execTargetCommand(root, command string) (string, string, string) {
-	ctx, cancel := context.WithTimeout(context.Background(), targetCommandTimeout)
+func (c CLI) execTargetCommand(root, command string, timeout time.Duration) (string, string, *targetCommandError) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	prefixed := shellEnvPrefix(map[string]string{"MAV_ROOT": root}) + " " + command
-	result := c.Runner.Run(ctx, "/bin/bash", "-lc", prefixed)
+	timedOut := &targetCommandError{
+		code:    codes.TargetCommandTimeout,
+		command: command,
+		timeout: timeout,
+		detail:  fmt.Sprintf("no UDID after %s", timeout),
+		next:    "raise target_command_timeout in .mav/config.yaml, or make target_command return faster",
+	}
+	// The deadline is enforced here rather than left to the runner, because
+	// exec.CommandContext kills the direct child only. target_command runs
+	// through `/bin/bash -lc`, and a grandchild that inherits the output
+	// pipe keeps cmd.Wait blocked long after the shell is dead -- so
+	// waiting on Run would mean waiting out the grandchild instead of the
+	// timeout, which is exactly the hang the timeout exists to prevent.
+	// Returning on ctx.Done() leaves that Run goroutine to finish into a
+	// buffered channel nobody reads; it is bounded (one per target_command
+	// invocation, and mav is about to exit or, in a run, ping again only
+	// once a minute) and it is the price of not making every other command
+	// mav runs -- launch recipes that legitimately background a helper
+	// holding stdout -- subject to the same cutoff.
+	done := make(chan CommandResult, 1)
+	go func() { done <- c.Runner.Run(ctx, "/bin/bash", "-lc", prefixed) }()
+	var result CommandResult
+	select {
+	case result = <-done:
+	case <-ctx.Done():
+		return "", "", timedOut
+	}
 	if result.Err != nil {
+		// A timeout gets its own code: the command may well still be
+		// working, and "raise the timeout" is a different next step from
+		// "fix the command". ctx is the authority here, not the runner's
+		// error text, which is only whatever the shell chose to say about
+		// being killed.
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", "", timedOut
+		}
 		detail := strings.TrimSpace(result.Stderr)
 		if detail == "" {
 			detail = result.Err.Error()
 		}
-		return "", "", fmt.Sprintf("target_command_failed: %s (next: fix or remove target_command in .mav/config.yaml; falling back to the booted simulator)", firstLine(detail))
+		return "", "", &targetCommandError{
+			code:    codes.TargetCommandFailed,
+			command: command,
+			timeout: timeout,
+			detail:  firstLine(detail),
+			next:    "fix or remove target_command in .mav/config.yaml",
+		}
 	}
 	udid := strings.TrimSpace(firstLine(result.Stdout))
 	if udid == "" {
-		return "", "", "target_command_empty: command produced no output (next: target_command must print a simulator UDID on stdout; falling back to the booted simulator)"
+		return "", "", &targetCommandError{
+			code:    codes.TargetCommandEmpty,
+			command: command,
+			timeout: timeout,
+			detail:  "command produced no output",
+			next:    "target_command must print a simulator UDID on stdout",
+		}
 	}
 	name := strings.TrimSpace(secondLine(result.Stdout))
-	return udid, name, ""
+	return udid, name, nil
 }
 
 // invalidateTargetCommandCache drops the run-scoped target_command cache so
@@ -507,7 +729,12 @@ func (c CLI) staleSimulatorTargetRetry(cfg Config) (retried Config, previousUDID
 		return Config{}, "", false
 	}
 	c.resolveConfigTools(&fresh)
-	c.resolveConfigTarget(&fresh)
+	if _, err := c.resolveConfigTarget(&fresh); err != nil {
+		// Retrying did not produce a usable target either. ok=false leaves
+		// the caller reporting the original dispatch failure, which is the
+		// one the operator was already looking at.
+		return Config{}, "", false
+	}
 	if fresh.SimulatorUDID == "" || fresh.SimulatorUDID == previousUDID {
 		return Config{}, "", false
 	}
@@ -653,6 +880,14 @@ func (c CLI) startTargetCommandKeepAlive(run RunState, cfg Config, inEffect bool
 		return func() {}
 	}
 	root := cfg.Root
+	// A malformed target_command_timeout has already failed the command
+	// that started this run, so the fallback here is unreachable in
+	// practice; it exists so the keepalive never has to decide what to do
+	// with an error it cannot report to anyone.
+	timeout, err := targetCommandTimeoutFor(cfg)
+	if err != nil {
+		timeout = defaultTargetCommandTimeout
+	}
 	done := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(targetCommandKeepAliveInterval)
@@ -660,7 +895,7 @@ func (c CLI) startTargetCommandKeepAlive(run RunState, cfg Config, inEffect bool
 		for {
 			select {
 			case <-ticker.C:
-				c.pingTargetCommandKeepAlive(run, root, command, originalUDID)
+				c.pingTargetCommandKeepAlive(run, root, command, timeout, originalUDID)
 			case <-done:
 				return
 			}
@@ -681,11 +916,11 @@ func (c CLI) startTargetCommandKeepAlive(run RunState, cfg Config, inEffect bool
 // an actionable signal, never returned as an error -- symmetric with
 // execTargetCommand's own single-command fallback: this must never fail or
 // hang the run it's protecting.
-func (c CLI) pingTargetCommandKeepAlive(run RunState, root, command, originalUDID string) {
-	udid, _, warn := c.execTargetCommand(root, command)
+func (c CLI) pingTargetCommandKeepAlive(run RunState, root, command string, timeout time.Duration, originalUDID string) {
+	udid, _, cmdErr := c.execTargetCommand(root, command, timeout)
 	switch {
-	case warn != "":
-		appendFile(run.LogsPath, "mav target_command keepalive: "+warn+"\n")
+	case cmdErr != nil:
+		appendFile(run.LogsPath, "mav target_command keepalive: "+cmdErr.message()+"\n")
 	case udid != originalUDID:
 		appendFile(run.LogsPath, fmt.Sprintf(
 			"mav target_command keepalive: target_command now resolves to %s, but this run is pinned to %s and will keep using it -- next: something else may have taken this run's slot; check the pool manager behind target_command\n",

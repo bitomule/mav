@@ -1,5 +1,88 @@
 # Changelog
 
+## Unreleased
+
+### A failing `target_command` is an error, not a different simulator
+
+`target_command` had a 10 second timeout. The one consumer it was designed
+for -- `simpool lease`, which blocks on `xcrun simctl bootstatus` -- takes
+about two minutes on a cold lease. Every cold lease therefore timed out, and
+a timeout resolved to *whatever simulator happened to be booted*. The warning
+that said so was returned as a string that nearly every call site discarded,
+and any caller redirecting stdout (a screenshot script piping `mav run` to
+`/dev/null`) never saw it at all. The failure was then cached for two
+minutes, so the next run failed the same way without retrying.
+
+Net effect: MAV drove the wrong simulator, silently. For a capture that means
+publishing images from an unintended device; for a validation it means
+evidence describing a device nobody chose.
+
+- A configured `target_command` that exits non-zero, prints nothing, or
+  exceeds its timeout now **fails the command**. Three codes, because the
+  next step differs: `target_command_failed`, `target_command_timeout`,
+  `target_command_empty`. Each names the command, the timeout it was given,
+  the underlying detail, and carries `fallback=none`.
+- `target_command_required: false` in `.mav/config.yaml` is the explicit
+  opt-out, restoring the previous warn-and-fall-back behaviour. Unset means
+  required: nobody keeps the silent behaviour by inaction.
+- New `target_command_timeout`, a Go duration, default `3m` -- past the
+  documented cold-lease cost, and equal to simpool's own default lease TTL
+  rather than under it. A malformed value fails as
+  `target_command_timeout_invalid` rather than silently reverting to the
+  default.
+- Failures are cached for the run only under the opt-out, where the run
+  carries on and would otherwise pay the timeout on every command that
+  follows. A required failure is never cached: the command already exited,
+  and caching it made the next run fail on evidence it never re-tested.
+- Every `resolveConfigTarget` call site now handles the error instead of
+  discarding it. `mav open`, `mav ui *`, `mav capture`, `mav crashes`,
+  `mav evidence start|step`, `mav sim boot`, `mav time`, `mav app`,
+  `mav openURL`, `mav location`, `mav clipboard` and every flow step that
+  dispatches a UI action report the same failure shape.
+- Three exceptions, each deliberate. `mav doctor` reports the failure as
+  `target_command_warn` and still produces its diagnosis: it is the command
+  you run *because* the target is broken, and refusing to run would withhold
+  the tool and driver state at exactly the wrong moment. `mav sim select`
+  does not resolve `target_command` at all -- pinning `simulator_udid` beats
+  it in the precedence order and is the documented escape from a broken pool
+  manager, so failing there would close the only exit. `mav evidence stop`
+  reports it too rather than failing: everything after that point is
+  teardown that cannot be retried, and a recording whose index never gets
+  written is unrecoverable.
+- A failure that kills a `mav run` now leaves evidence: a `commands.jsonl`
+  entry with a non-zero code, a `run.json` marking the run failed, and the
+  report. A non-zero exit with nothing on disk would only move the problem
+  for the script that pipes mav to `/dev/null`.
+- `mav help target_command` documents the field, the two knobs and the three
+  codes.
+
+The keepalive ping `mav run` sends to a pool manager stays non-fatal: it is a
+liveness signal, not a resolution, and the run's target was already fixed
+before the first step.
+
+### The `target_command` timeout now actually bounds the wait
+
+`exec.CommandContext` kills the direct child only. `target_command` runs
+through `/bin/bash -lc`, whose grandchild inherits the output pipe, so
+`cmd.Wait` stayed blocked on a pipe nobody would close and MAV waited out the
+grandchild instead of its own timeout -- the exact hang the timeout exists to
+prevent. `execTargetCommand` now returns on its own deadline rather than
+waiting for the runner.
+
+Deliberately scoped to `target_command` and not applied to `Runner.Run` as a
+whole: a launch recipe that backgrounds a helper holding stdout (`./mock-api
+&` before `simctl launch`) is a perfectly ordinary recipe, and a global
+cutoff would have started failing it.
+
+### `MAV_EXACT_RUN_DIR` and `--skip-build` are documented
+
+Neither appeared in any markdown file in the repo, so agents kept
+rediscovering them from the source. `skills/mav/SKILL.md` now documents
+`MAV_EXACT_RUN_DIR` (supported, internal: pins a run's state directory, used
+by `mav run --target` for each matrix child) and records that
+`MAV_SKIP_BUILD` was removed in v0.16.2 -- `--skip-build` is the supported
+spelling.
+
 ## v0.16.2
 
 ### `--skip-build` reuses an app that is already built

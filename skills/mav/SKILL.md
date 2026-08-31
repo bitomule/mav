@@ -661,6 +661,56 @@ naming the path MAV looked for. On that code, rerun the same command without
 release. On physical devices, use `capture` / `evidence.step` screenshots,
 crash checks, logs, and reports for evidence.
 
+## Environment variables MAV reads
+
+These are read *from* your environment. The launch recipe's own variables
+(`MAV_ROOT`, `MAV_UDID`, `MAV_APP_PATH`, ...) are the other direction --
+MAV sets those for the commands it runs; see "Custom launch recipes" above.
+
+| Variable | Status | What it does |
+| --- | --- | --- |
+| `MAV_TARGET_KIND` / `MAV_TARGET_UDID` / `MAV_TARGET_NAME` / `MAV_TARGET_RUNTIME` | supported | Pin the target, beating both a config pin and `target_command`. `mav run --target ...` sets them on each matrix child. |
+| `MAV_PROFILE` | supported | Selects a platform profile, below `--profile` and above `default_profile`. |
+| `MAV_EXACT_RUN_DIR` | supported, internal | Pins run state to this exact directory instead of allocating one under `.mav/runs/`. `mav run --target ... --target ...` sets it per matrix child so each target gets an unambiguous run dir. Set it yourself only to place a run's state somewhere specific. |
+| `MAV_DRIVERS_DISABLE` | supported, internal | Comma-separated driver ids to suppress. Changes routing, so a stale export makes `mav doctor` disagree with reality. |
+| `MAV_MATRIX_CHILD` | internal, do not set | Marks a matrix child. Exporting it makes `mav run --target a --target b` stop fanning out, silently. |
+| `MAV_SKIP_BUILD` | **gone** | Was the private channel `mav run --target` used to tell its children not to rebuild. Removed in v0.16.2 and now silently ignored. The supported spelling is the `--skip-build` flag (`mav open --skip-build`, `mav run flow.yaml --skip-build`, `open: { skipBuild: true }`). |
+
+## When `target_command` cannot pick a simulator
+
+If `.mav/config.yaml` sets `target_command`, that is the source of the
+simulator -- unless `--target` / `MAV_TARGET_*` or a pinned `simulator_udid`
+overrides it. A pin wins outright and reports `target_command_ignored` on
+the `ok` line; it is a warning, not a failure.
+
+Where `target_command` is what should answer and cannot -- it exits
+non-zero, prints nothing, or exceeds `target_command_timeout` (3 minutes by
+default) -- the command **fails**. MAV does not fall back to whatever
+simulator is booted:
+
+```text
+fail code=target_command_timeout detail="no UDID after 3m0s" fallback=none remediation="Raise target_command_timeout in .mav/config.yaml, or set target_command_required: false to allow the booted-simulator fallback" target_command="simpool lease --device \"iPhone 17 Pro\" --os 26.3" target_command_timeout=3m0s title="Configured target_command timed out; no fallback"
+```
+
+Codes: `target_command_failed` (non-zero exit -- the pool said no),
+`target_command_timeout` (raise `target_command_timeout`, or make the
+command faster), `target_command_empty` (the command printed no UDID),
+`target_command_timeout_invalid` (`target_command_timeout` is not a Go
+duration). All carry `fallback=none` and exit non-zero.
+
+Two commands are exempt and still work through the failure, on purpose:
+`mav doctor` reports it as `target_command_warn` and still gives you the
+diagnosis, and `mav sim select` does not consult `target_command` at all, so
+pinning a simulator remains available as the escape from a broken pool
+manager.
+
+Do not work around a failure by unsetting `target_command` -- on a machine
+with several simulators booted that is exactly how a capture ends up taken
+on a device nobody chose. Fix the command, or raise the timeout. The one
+deliberate escape hatch is `target_command_required: false` in
+`.mav/config.yaml`, which restores the warn-and-fall-back behaviour and
+reports `target_command_warn=...` on the command's success output.
+
 ## Command Output
 
 Output is intentionally compact and agent-friendly by default:

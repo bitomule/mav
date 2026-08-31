@@ -38,3 +38,7 @@ Global flags:
               Select a platform profile from .mav/config.yaml.
   --version   Print the version of this mav.
   --help,-h   Show help.
+
+Config topics:
+  target_command
+              How mav picks the simulator, and what happens when it can't.
