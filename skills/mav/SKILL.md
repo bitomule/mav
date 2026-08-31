@@ -151,9 +151,12 @@ entirely.
    and `hideKeyboard` are simulator-only and return structured errors on
    device. Simulator crash checks use local DiagnosticReports directly.
 4. Start the app with `mav open`. Use `mav open --clear-state` for a fresh
-   install. Use `mav open --no-relaunch` when the app was launched manually with
-   custom `SIMCTL_CHILD_*` environment and MAV should only attach to the app
-   already in front. This creates `.mav/runs/<run-id>/` and starts `logs.txt`.
+   install. Use `mav open --skip-build` when the app is already built and the
+   launch recipe's `build` step would only rebuild the same artifact --
+   `app_path`, `install` and `launch` still run. Use `mav open --no-relaunch`
+   when the app was launched manually with custom `SIMCTL_CHILD_*` environment
+   and MAV should only attach to the app already in front. This creates
+   `.mav/runs/<run-id>/` and starts `logs.txt`.
    MAV captures a filtered unified log stream for MAV probes and app-process
    logs when `process_name` is configured. On physical devices, generated
    simulator install/launch recipes are mapped to idb when possible. MAV writes
@@ -433,8 +436,12 @@ driver:
 ```
 
 `open: { clearState: true }` and `open: { clear-state: true }` are both valid
-flow spellings. `mav ui hideKeyboard` dispatches through baguette on simulator
-and returns `hide_keyboard_unsupported_on_device` on a physical device.
+flow spellings. `open: { skipBuild: true }` skips the launch recipe's `build`
+step for that one step; `mav run flow.yaml --skip-build` skips it for every
+`open` step in the flow. See **Reusing a build across runs** below.
+
+`mav ui hideKeyboard` dispatches through baguette on simulator and returns
+`hide_keyboard_unsupported_on_device` on a physical device.
 
 Use `include` to compose reusable flow fragments. Resolve paths relative to the
 including YAML file and pass values through `env`; included steps can reference
@@ -526,7 +533,21 @@ same simulator inherits it.
 
 Both are also flow actions, so the screenshot matrix is one flow, re-run per
 language after `mav sim select --language de --locale de_DE` (the language is a
-launch argument, not a flow param):
+launch argument, not a flow param). Build once and pass `--skip-build` on every
+run, or the same unchanged app is rebuilt once per language:
+
+```bash
+mav open
+for locale in en_US de_DE es_ES; do
+  # Name the device: `mav sim select` with no target selector re-picks one,
+  # and a leftover booted simulator from another project can win it.
+  mav sim select --device "iPhone 17 Pro Max" --ios 26 \
+    --language "${locale%%_*}" --locale "$locale"
+  mav run app_store_shots.yaml --skip-build
+done
+```
+
+The same flow, unchanged:
 
 ```yaml
 name: app_store_shots
@@ -596,6 +617,45 @@ Each command runs from `MAV_ROOT` with `MAV_RUN_DIR`, `MAV_TARGET_KIND`,
 `MAV_DEVICE_NAME`, `MAV_RUNTIME`, and `MAV_PLATFORM`. `app_path` must print
 exactly one `.app` path. If the app is already installed, configure only
 `launch`.
+
+### Reusing a build across runs
+
+The `build` step is the expensive one and the one that produces nothing new when
+the checkout has not changed. `--skip-build` drops it and keeps `app_path`,
+`install` and `launch`. It is applied to the recipe's `build` step, not to one
+build system, so it works for every launch mode -- with the caveat that
+`mode: already_installed` has no `build` and no `app_path` to begin with, so
+there it is a no-op rather than a saving.
+
+- `mav open --skip-build` covers that one launch.
+- `mav run flow.yaml --skip-build` covers every `open` step in the flow,
+  including the ones that do not mention it. Use this for a matrix that runs the
+  same flow once per language: build once, then reuse.
+- `open: { skipBuild: true }` marks a single flow step, for a flow that builds in
+  its first `open` and reuses it in later ones.
+- `mav run --target ... --target ...` already builds once and each target's child
+  run carries `--skip-build`.
+- `--skip-build` is rejected with `--no-relaunch`, which skips the whole recipe.
+
+If nothing was built, `app_path` cannot resolve an artifact and `mav open` says
+so itself instead of passing the build system's error through:
+
+```text
+fail code=build_skipped_app_missing logs=.mav/runs/439a2e85/logs.txt next="rerun without --skip-build" run=439a2e85 stderr="build was skipped (--skip-build) and no built app was found: app_path printed /repo/build/App.app, which does not exist" step=app_path
+```
+
+The same code comes back when `app_path` prints a path that is not on disk.
+
+Inside a flow the step fails as `open_failed`, like every command wrapped into a
+flow step, and carries that whole line in `detail`:
+
+```text
+fail code=open_failed action=open detail="fail code=build_skipped_app_missing ... next=\"rerun without --skip-build\" ..." step=1
+```
+
+Either way the run's `commands.jsonl` gets a `launch.skip_build_check` entry
+naming the path MAV looked for. On that code, rerun the same command without
+`--skip-build` once, then resume.
 
 `video.start` / `evidence.start` video recording is simulator-only in this
 release. On physical devices, use `capture` / `evidence.step` screenshots,

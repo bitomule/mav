@@ -538,3 +538,18 @@ func TestParseFlowDuration(t *testing.T) {
 		t.Fatalf("got %s", got)
 	}
 }
+
+func TestOpenStepParsesSkipBuild(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "flow.yaml")
+	if err := os.WriteFile(path, []byte("steps:\n  - open: { skipBuild: true }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	flow, err := LoadFlow(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flow.Steps[0].Action != "open" || flow.Steps[0].Params["skipBuild"] != "true" {
+		t.Fatalf("open skipBuild=%+v", flow.Steps[0])
+	}
+}

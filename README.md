@@ -472,6 +472,13 @@ launch. If a Bazel app bundle from `bazel-out` fails simulator install with a
 permission error, MAV copies the `.app` into the run directory with writable
 permissions and retries the install.
 
+Use `mav open --skip-build` when the app is already built and the recipe's
+`build` step would only rebuild the same artifact. `app_path`, `install` and
+`launch` still run -- only the build is skipped. `mav run flow.yaml
+--skip-build` applies it to every `open` step in the flow, so a caller can build
+once and then run the flow repeatedly (per language, per appearance) without
+paying for the build again. See **Reusing a build across runs** below.
+
 Use `mav open --no-relaunch` when the app was launched manually with custom
 environment such as `SIMCTL_CHILD_*` and MAV should only attach run logging to
 the app already in front.
@@ -989,6 +996,21 @@ steps:
 to repaint: the capture path otherwise serves the pre-switch frame, and the dark
 cell of the matrix comes out light. No `delay` step is needed before the capture.
 
+The language is a launch argument, not a flow param, so a localized matrix is
+one `mav run` per language against the same build. Pass `--skip-build` on every
+run after the first and the artifact is built once instead of once per language:
+
+```bash
+mav open                             # builds
+for locale in en_US de_DE es_ES; do
+  # Name the device: `mav sim select` with no target selector re-picks one,
+  # and a leftover booted simulator from another project can win it.
+  mav sim select --device "iPhone 17 Pro Max" --ios 26 \
+    --language "${locale%%_*}" --locale "$locale"
+  mav run app_store_shots.yaml --skip-build
+done
+```
+
 `mav flow lint` checks those values with the same parser the run uses, so a
 matrix with `appearance: sepia`, `preset: marketing` or `wifiBars: 9` fails
 before the first capture instead of halfway through it. A value the run resolves
@@ -1204,6 +1226,59 @@ installed, configure only `launch`.
 "$MAV_BUNDLE_ID" || true` before the launch recipe. When the configured install
 step fails with a permission error for a `bazel-out` `.app`, MAV retries with a
 writable copy at `/tmp/mav/<run-id>/app.tmp/<App>.app`.
+
+### Reusing a build across runs
+
+The `build` step is the expensive one -- a cold Bazel or Xcode build is minutes,
+sometimes tens of minutes -- and it is also the one that produces nothing new
+when the checkout has not changed. `--skip-build` drops it and keeps the rest:
+
+```bash
+mav open                                # builds once
+for locale in en_US de_DE es_ES; do
+  # Name the device: `mav sim select` with no target selector re-picks one,
+  # and installing on a different simulator each cell defeats the reuse.
+  mav sim select --device "iPhone 17 Pro Max" --ios 26 \
+    --language "${locale%%_*}" --locale "$locale"
+  mav run shots.yaml --skip-build       # reuses the same artifact
+done
+```
+
+It is applied to the recipe's `build` step, not to one build system, so it works
+for every launch mode -- with the caveat that `mode: already_installed` has no
+`build` and no `app_path` to begin with, so there it is a no-op rather than a
+saving.
+
+- On `mav open`, it covers that one launch.
+- On `mav run`, it covers every `open` step the flow dispatches, including
+  `open` steps that do not mention it. There is nothing to edit per invocation.
+- In a flow, `open: { skipBuild: true }` marks a single step, for a flow that
+  builds in its first `open` and reuses in the later ones.
+- `mav run --target ... --target ...` already worked this way: the matrix builds
+  once up front and each target's child run carries `--skip-build`.
+
+`--skip-build` is rejected together with `--no-relaunch`, which skips the whole
+recipe and so has no build to skip.
+
+If nothing was ever built, `app_path` has nothing to resolve. `mav open` reports
+that as its own failure rather than passing your build system's error through:
+
+```text
+fail code=build_skipped_app_missing logs=.mav/runs/439a2e85/logs.txt next="rerun without --skip-build" run=439a2e85 stderr="build was skipped (--skip-build) and no built app was found: app_path printed /repo/build/App.app, which does not exist" step=app_path
+```
+
+The same code comes back when `app_path` prints a path that is not on disk,
+which is what a stale recipe looks like when the build never ran.
+
+Inside a flow the step fails as `open_failed`, the way every command wrapped
+into a flow step does, and carries that whole line in `detail`:
+
+```text
+fail code=open_failed action=open detail="fail code=build_skipped_app_missing ... next=\"rerun without --skip-build\" ..." step=1
+```
+
+Either way the run's `commands.jsonl` gets a `launch.skip_build_check` entry
+naming the path MAV looked for.
 
 ## Cleanup
 

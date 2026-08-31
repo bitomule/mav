@@ -2,6 +2,7 @@ package mav
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,12 @@ type launchStep struct {
 	Name    string
 	Command string
 }
+
+// errBuildSkippedAppMissing is what --skip-build turns "app_path failed" into.
+// Without it the operator sees whatever their Makefile printed on the way out,
+// which for a build that was never run is a path that does not exist and no
+// hint that MAV is the one who decided not to build it.
+var errBuildSkippedAppMissing = errors.New("build_skipped_app_missing")
 
 // runLaunchRecipe runs the project's launch recipe. It returns, in order:
 // the resolved .app path, the step that failed (nil if all went well), its
@@ -72,7 +79,10 @@ func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clea
 		builder = c.hostCLI()
 	}
 	for _, step := range steps {
-		if step.Name == "build" && os.Getenv("MAV_SKIP_BUILD") == "1" {
+		// Only the build is skipped. app_path, install and launch still run,
+		// because reusing an artifact still means finding it and putting it
+		// on the target.
+		if step.Name == "build" && c.skipBuild {
 			continue
 		}
 		if strings.TrimSpace(step.Command) == "" {
@@ -80,6 +90,9 @@ func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clea
 		}
 		result := builder.runLaunchCommand(ctx, cfg, run, step, env)
 		if result.Err != nil {
+			if step.Name == "app_path" && c.skipBuild {
+				return appPath, &step, buildSkippedAppMissing(firstLine(result.Stderr), result.Err), warn
+			}
 			if step.Name == "install" && shouldRetryInstallFromWritableCopy(result, appPath) {
 				if retryResult, retryPath := c.retryInstallFromWritableCopy(ctx, cfg, run, appPath); retryResult.Err == nil {
 					appPath = retryPath
@@ -97,6 +110,25 @@ func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clea
 				result.Err = err
 				result.Stderr = err.Error()
 				return appPath, &step, result, warn
+			}
+			// Only with --skip-build: the recipe was asked to name an
+			// artifact nothing in this invocation produced, so a path that
+			// is not on disk is the expected failure, and it has to read as
+			// "you skipped the build" rather than as a broken install two
+			// steps later.
+			if c.skipBuild {
+				if _, statErr := os.Stat(resolved); statErr != nil {
+					missing := buildSkippedAppMissing("app_path printed "+resolved+", which does not exist", statErr)
+					// Every other launch failure reaches the commands trail
+					// because the command that failed put it there. This one
+					// fires after the command succeeded, so without this line
+					// it would be the only launch failure in MAV that leaves
+					// no evidence anywhere -- and inside a flow, where open's
+					// own fail line is wrapped into open_failed, there would
+					// be nothing at all to read.
+					appendCommand(run, "launch.skip_build_check "+resolved, missing)
+					return appPath, &step, missing, warn
+				}
 			}
 			appPath = resolved
 			env = launchEnv(cfg, run, appPath)
@@ -182,6 +214,23 @@ func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clea
 		}
 	}
 	return appPath, nil, CommandResult{}, warn
+}
+
+func buildSkippedAppMissing(detail string, cause error) CommandResult {
+	if detail == "" && cause != nil {
+		detail = cause.Error()
+	}
+	// No remedy in the text: the structured `next` field carries it, and
+	// saying it twice in one line in two different wordings is worse than
+	// saying it once. Code is set because this result is synthesized rather
+	// than returned by a process, and the commands trail records Code and
+	// not Err -- left at zero the trail would show the aborting step as a
+	// success.
+	return CommandResult{
+		Stderr: "build was skipped (--skip-build) and no built app was found: " + detail,
+		Code:   1,
+		Err:    errBuildSkippedAppMissing,
+	}
 }
 
 func shouldUseDriverInstall(cfg Config, commands LaunchCommands) bool {

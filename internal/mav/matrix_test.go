@@ -25,6 +25,25 @@ func TestStripMatrixFlagsDropsRun(t *testing.T) {
 	}
 }
 
+// The matrix builds once for every target before fanning out, so a child
+// that rebuilt would pay for that build again per target -- the exact cost
+// --skip-build exists to remove.
+func TestMatrixChildArgsSkipTheBuildTheParentAlreadyRan(t *testing.T) {
+	got := matrixChildArgs([]string{"flow.yaml", "--target", "SIM-1", "--param", "category=Travel"})
+	want := []string{"run", "flow.yaml", "--param", "category=Travel", "--skip-build"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got=%v want=%v", got, want)
+	}
+}
+
+func TestMatrixChildArgsDoesNotRepeatSkipBuild(t *testing.T) {
+	got := matrixChildArgs([]string{"flow.yaml", "--skip-build", "--target", "SIM-1"})
+	want := []string{"run", "flow.yaml", "--skip-build"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got=%v want=%v", got, want)
+	}
+}
+
 func TestApplyMatrixTarget(t *testing.T) {
 	cfg := Config{}
 	applyMatrixTarget(&cfg, matrixTarget{Kind: "simulator", UDID: "SIM-1", Name: "iPhone", Runtime: "iOS-26-3"})
