@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.16.3
 
 ### A failing `target_command` is an error, not a different simulator
 
