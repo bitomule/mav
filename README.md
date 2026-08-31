@@ -714,8 +714,8 @@ logs
 exec
 crashes
 sim.appearance
-sim.statusBar.set
-sim.statusBar.clear
+sim.statusbar.set
+sim.statusbar.clear
 network.start
 network.stop
 network.status
@@ -730,7 +730,7 @@ report
 `hideKeyboard` dispatches through baguette on simulator. On device it returns
 `hide_keyboard_unsupported_on_device`.
 
-`sim.appearance` and `sim.statusBar.set|clear` control the simulator's light/dark
+`sim.appearance` and `sim.statusbar.set|clear` control the simulator's light/dark
 style and its status bar for App Store screenshots. Both are simulator-only; see
 [App Store screenshots](#app-store-screenshots).
 
@@ -920,7 +920,8 @@ mav sim list
 mav sim select --device "iPhone 17 Pro Max" --ios 26 --locale es_ES --language es
 mav sim select --udid <simulator-udid>
 mav sim boot
-mav sim appearance light|dark
+mav sim appearance light
+mav sim appearance dark
 mav sim statusbar set --preset appstore
 mav sim statusbar clear
 ```
@@ -962,23 +963,25 @@ allowed range instead of `simctl`'s usage dump.
 
 Both are simulator-only. On a physical device they fail with
 `appearance_unsupported_on_device` / `status_bar_unsupported_on_device`, and on a
-macOS target with the `_unsupported_on_macos` variants.
+macOS target with the `_unsupported_on_macos` variants. Those codes come out of
+the CLI; inside a flow the step fails as `appearance_set_failed` /
+`status_bar_set_failed`, the same way `location.set` does.
 
 In a flow, the same two knobs make a localized screenshot matrix one file:
 
 ```yaml
 name: app_store_shots
 steps:
-  - sim.statusBar.set: { preset: appstore }
+  - sim.statusbar.set: { preset: appstore }
   - sim.appearance: { appearance: light }
   - open: { clearState: true }
   - capture: { name: home-light }
   - sim.appearance: { appearance: dark }
   - capture: { name: home-dark }
-  - sim.statusBar.clear: {}
+  - sim.statusbar.clear: {}
 ```
 
-`sim.statusBar.set` accepts `preset`, `time`, `dataNetwork`, `wifiMode`,
+`sim.statusbar.set` accepts `preset`, `time`, `dataNetwork`, `wifiMode`,
 `wifiBars`, `cellularMode`, `cellularBars`, `operatorName`, `batteryState` and
 `batteryLevel`. Quote `time` in YAML.
 

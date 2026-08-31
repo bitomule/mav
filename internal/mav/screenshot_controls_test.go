@@ -3,10 +3,12 @@ package mav
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func screenshotControlsSimRoot(t *testing.T) (string, *sequenceRecordingRunner) {
@@ -80,7 +82,7 @@ func TestSimStatusBarPresetIsTheAppStoreLook(t *testing.T) {
 	if err := cli.Run(context.Background(), []string{"sim", "statusbar", "set", "--preset", "appstore"}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "ok cmd=sim.statusBar.set") {
+	if !strings.Contains(out.String(), "ok cmd=sim.statusbar.set") {
 		t.Fatalf("output=%q", out.String())
 	}
 	want := "xcrun simctl status_bar SIM override --time 9:41 --dataNetwork wifi --wifiMode active --wifiBars 3 --cellularMode active --cellularBars 4 --batteryState charged --batteryLevel 100"
@@ -155,7 +157,7 @@ func TestSimStatusBarClearRunsSimctlClear(t *testing.T) {
 	if err := cli.Run(context.Background(), []string{"sim", "statusbar", "clear"}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "ok cmd=sim.statusBar.clear") {
+	if !strings.Contains(out.String(), "ok cmd=sim.statusbar.clear") {
 		t.Fatalf("output=%q", out.String())
 	}
 	if !containsCall(runner.commands, "xcrun simctl status_bar SIM clear") {
@@ -206,8 +208,8 @@ func TestScreenshotControlFlowActionsReachSimctl(t *testing.T) {
 	root, runner := screenshotControlsSimRoot(t)
 	flow := "name: screenshots\nsteps:\n" +
 		"  - sim.appearance: { appearance: dark }\n" +
-		"  - sim.statusBar.set: { preset: appstore, time: \"9:41\" }\n" +
-		"  - sim.statusBar.clear: {}\n"
+		"  - sim.statusbar.set: { preset: appstore, time: \"9:41\" }\n" +
+		"  - sim.statusbar.clear: {}\n"
 	flowPath := filepath.Join(root, "flow.yaml")
 	if err := os.WriteFile(flowPath, []byte(flow), 0o644); err != nil {
 		t.Fatal(err)
@@ -231,13 +233,85 @@ func TestScreenshotControlFlowActionsReachSimctl(t *testing.T) {
 	}
 }
 
-// TestScreenshotControlFlowActionsAreLinted guards the half-wired case: a step
-// the executor understands but the linter does not is a flow that fails only
-// once it is already running.
-func TestScreenshotControlFlowActionsAreLinted(t *testing.T) {
-	for _, action := range []string{"sim.appearance", "sim.statusBar.set", "sim.statusBar.clear"} {
+// TestScreenshotControlFlowActionsAreAccepted guards the half-wired case: an
+// action the executor understands but the flow parser rejects is a flow that
+// dies before its first step. It says nothing about the params being linted --
+// no other flow action lints those either.
+func TestScreenshotControlFlowActionsAreAccepted(t *testing.T) {
+	for _, action := range []string{"sim.appearance", "sim.statusbar.set", "sim.statusbar.clear"} {
 		if !isSupportedFlowAction(action) {
-			t.Fatalf("%s is executable but not linted as a supported action", action)
+			t.Fatalf("%s is executable but not accepted as a supported action", action)
 		}
+	}
+}
+
+// TestStatusBarStepDoesNotOverwriteTheEvidenceTimestamp pins the collision the
+// review found: `time` is both a status bar field and the reserved key of a
+// commands.jsonl record, and the step fields used to win. The evidence bundle
+// ships that file verbatim, so a screenshot run stamped 9:41 as the wall clock.
+func TestStatusBarStepDoesNotOverwriteTheEvidenceTimestamp(t *testing.T) {
+	root, runner := screenshotControlsSimRoot(t)
+	flowPath := filepath.Join(root, "flow.yaml")
+	flow := "name: shots\nsteps:\n  - sim.statusbar.set: { time: \"9:41\" }\n"
+	if err := os.WriteFile(flowPath, []byte(flow), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"run", flowPath}); err != nil {
+		t.Fatal(err)
+	}
+	run, err := LoadRun(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(run.Commands)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(data))), &record); err != nil {
+		t.Fatalf("commands.jsonl=%q err=%v", data, err)
+	}
+	if record["time"] == "9:41" {
+		t.Fatalf("the step param overwrote the record timestamp: %v", record)
+	}
+	if _, parseErr := time.Parse(time.RFC3339, record["time"].(string)); parseErr != nil {
+		t.Fatalf("time=%v is not a timestamp: %v", record["time"], parseErr)
+	}
+	if record["action"] != "sim.statusbar.set" {
+		t.Fatalf("the record lost its own action key: %v", record)
+	}
+}
+
+func TestSimStatusBarRejectsAFlagUsedAsAValue(t *testing.T) {
+	root, runner := screenshotControlsSimRoot(t)
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	allowFail(t, cli.Run(context.Background(), []string{"sim", "statusbar", "set", "--time", "--preset", "appstore"}))
+	if !strings.Contains(out.String(), "fail code=status_bar_value_missing") {
+		t.Fatalf("output=%q", out.String())
+	}
+	if containsCall(runner.commands, "simctl status_bar") {
+		t.Fatalf("a flag swallowed as a value must not reach simctl: %v", runner.commands)
+	}
+}
+
+// TestSimStatusBarValidatesBeforeRouting keeps the answer about the value the
+// user got wrong, not about the toolchain: routing first made a machine with
+// no working xcrun report status_bar_unsupported for --wifi-bars 9.
+func TestSimStatusBarValidatesBeforeRouting(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.Tools = map[string]bool{}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: &sequenceRecordingRunner{tools: map[string]bool{}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	allowFail(t, cli.Run(context.Background(), []string{"sim", "statusbar", "set", "--wifi-bars", "9"}))
+	if !strings.Contains(out.String(), "fail code=status_bar_value_invalid") {
+		t.Fatalf("output=%q", out.String())
 	}
 }

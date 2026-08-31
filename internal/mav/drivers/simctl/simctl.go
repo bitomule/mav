@@ -175,9 +175,7 @@ func statusBarOverrideArgs(spec drivers.StatusBarSpec) []string {
 // fallback for screenshots (axe is preferred).
 func (d *Driver) Cost(c drivers.Capability, _ drivers.Target) int {
 	switch c {
-	case drivers.CapBoot, drivers.CapLocale, drivers.CapInstall, drivers.CapLaunch, drivers.CapUninstall, drivers.CapVideo, drivers.CapLogStream:
-		return 0
-	case drivers.CapAppearance, drivers.CapStatusBar:
+	case drivers.CapBoot, drivers.CapLocale, drivers.CapInstall, drivers.CapLaunch, drivers.CapUninstall, drivers.CapVideo, drivers.CapLogStream, drivers.CapAppearance, drivers.CapStatusBar:
 		return 0
 	case drivers.CapScreenshot:
 		return 80

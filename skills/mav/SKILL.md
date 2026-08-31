@@ -504,7 +504,10 @@ In YAML flows, gesture steps accept the same `hold` key:
 
 Two simulator-wide knobs make the shots reproducible. Both are simulator-only and
 return a structured error on a physical device (`appearance_unsupported_on_device`,
-`status_bar_unsupported_on_device`).
+`status_bar_unsupported_on_device`) and on a macOS target (the same codes ending
+in `_unsupported_on_macos`). The codes are emitted by the CLI; inside a flow the
+step fails as `appearance_set_failed` / `status_bar_set_failed`, as the other
+device actions already do.
 
 ```bash
 mav sim appearance dark
@@ -521,22 +524,23 @@ The override is additive: `--time` alone changes the clock and leaves the rest o
 the status bar as it is. Clear it when the run is done, or the next capture in the
 same simulator inherits it.
 
-Both are also flow actions, which is how a localized screenshot matrix is written
-once and run per language with `mav run shots.yaml --param lang=de`:
+Both are also flow actions, so the screenshot matrix is one flow, re-run per
+language after `mav sim select --language de --locale de_DE` (the language is a
+launch argument, not a flow param):
 
 ```yaml
 name: app_store_shots
 steps:
-  - sim.statusBar.set: { preset: appstore }
+  - sim.statusbar.set: { preset: appstore }
   - sim.appearance: { appearance: light }
   - open: { clearState: true }
   - capture: { name: home-light }
   - sim.appearance: { appearance: dark }
   - capture: { name: home-dark }
-  - sim.statusBar.clear: {}
+  - sim.statusbar.clear: {}
 ```
 
-`sim.statusBar.set` accepts `preset`, `time`, `dataNetwork`, `wifiMode`, `wifiBars`,
+`sim.statusbar.set` accepts `preset`, `time`, `dataNetwork`, `wifiMode`, `wifiBars`,
 `cellularMode`, `cellularBars`, `operatorName`, `batteryState`, `batteryLevel`.
 Quote `time` in YAML.
 

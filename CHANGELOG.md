@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased
+
+### App Store screenshots stop showing the real clock
+
+Two simulator knobs MAV did not expose blocked using it for App Store screenshots:
+the same screen in both appearances, and a status bar that is not the machine's
+own `8:36` with half the signal dots.
+
+- **`mav sim appearance light|dark`**, and the `sim.appearance` flow action. Both
+  live under `mav sim` rather than `mav ui`, because appearance and the status bar
+  are CoreSimulator-wide state that outlives the app, not an action on the screen
+  in front.
+- **`mav sim statusbar set|clear`**, and the `sim.statusbar.set` / `sim.statusbar.clear`
+  flow actions. `--preset appstore` is Apple's own marketing status bar — 9:41, full
+  battery, full signal — but it is a starting point, not a lock: every field stays
+  individually settable and an explicit flag overrides the preset. The override is
+  additive, matching `simctl`, so `--time` alone leaves the rest of the bar alone.
+- **Values are validated before the call**, and before routing, so `--wifi-bars 9`
+  answers `status_bar_value_invalid` naming the range, and a forgotten value that
+  swallowed the next flag (`--time --preset appstore`) answers
+  `status_bar_value_missing` — instead of `simctl`'s usage dump or an opaque POSIX
+  error.
+- Both are simulator-only, with the treatment `erase` and `hideKeyboard` already
+  get: `appearance_unsupported_on_device` / `status_bar_unsupported_on_device`, plus
+  `_unsupported_on_macos` variants so an agent branching on the code does not have to
+  guess which platform it is standing on.
+
+### A flow step param can no longer overwrite its own evidence record
+
+`commands.jsonl` built each record from `time`/`step`/`action`/`status`/`elapsed` and
+then let the step's fields overwrite them. Nothing had a param named after one until
+now: `sim.statusbar.set: { time: "9:41" }` stamped the fake status bar clock as the
+step's wall-clock time, in the log the evidence bundle ships verbatim. The record's own
+keys are now written last.
+
 ## v0.15.0
 
 ### The macOS target answers about itself, not about a simulator

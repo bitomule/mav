@@ -721,7 +721,7 @@ func isSupportedFlowAction(action string) bool {
 	case "open", "when", "whileNotVisible", "go", "tree", "tap", "type", "erase", "hideKeyboard", "swipe", "longPress", "pinch", "rotate", "twoFingerPan", "actions",
 		"doubleTap", "drag", "dragPath", "toggle", "press",
 		"app.list", "app.kill", "openURL", "location.set", "location.reset", "clipboard.copy", "clipboard.read",
-		"sim.appearance", "sim.statusBar.set", "sim.statusBar.clear",
+		"sim.appearance", "sim.statusbar.set", "sim.statusbar.clear",
 		"time.freeze", "time.travel", "time.scale", "time.status", "time.reset",
 		"debug.attach", "debug.wait", "debug.break", "debug.eval", "debug.step", "debug.detach",
 		"delay", "sleep", "wait", "assert", "assertCount", "waitUntil", "scrollUntil", "capture", "extract",
