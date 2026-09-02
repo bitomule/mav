@@ -3,6 +3,8 @@ package mav
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -57,7 +59,37 @@ const (
 	workerHeartbeatInterval = time.Minute
 )
 
-func workerSocket(run RunState) string { return filepath.Join(run.Dir, "worker.sock") }
+// maxUnixSocketPath is the longest path a Unix domain socket may be bound
+// to. sockaddr_un.sun_path is 104 bytes on Darwin and 108 on Linux, and the
+// path is NUL-terminated inside it, so the usable length is one less than
+// the smaller of the two — kept uniform across platforms so the fallback
+// below is exercised identically everywhere rather than only on the machine
+// that happens to have the tighter limit.
+//
+// Nothing about this is theoretical. A run directory inside a git worktree
+// (.../<repo>/.claude/worktrees/<branch>/.mav/runs/<id>/worker.sock)
+// measured 106 bytes in the wild, two over the limit, and every worker
+// startup in that tree failed with "bind: invalid argument" — silently,
+// because startRunWorker only degrades to "direct" mode and logs one line.
+// The worker is what watches a run's lease and reaps it when nobody renews,
+// so losing it means an interrupted run leaves its `log stream` and its
+// simulator behind with nothing left to collect them.
+const maxUnixSocketPath = 103
+
+// workerSocket is where a run's worker listens. Normally that is inside the
+// run directory, which keeps it beside the run's other state and disposed of
+// with it. When that path would not fit in sun_path, it falls back to a
+// short path under the system temp directory, derived from the run directory
+// so every mav process working on the same run independently computes the
+// same socket, and two runs never collapse onto one.
+func workerSocket(run RunState) string {
+	natural := filepath.Join(run.Dir, "worker.sock")
+	if len(natural) <= maxUnixSocketPath {
+		return natural
+	}
+	sum := sha256.Sum256([]byte(run.Dir))
+	return filepath.Join(os.TempDir(), "mav-worker-"+hex.EncodeToString(sum[:])[:16]+".sock")
+}
 
 func workerStartLock(run RunState) string { return filepath.Join(run.Dir, "worker.starting") }
 
