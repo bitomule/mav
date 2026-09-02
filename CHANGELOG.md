@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.16.4
 
 ### An interrupted run no longer strands its build, its logs and its simulator
 
