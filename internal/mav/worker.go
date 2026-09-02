@@ -87,8 +87,19 @@ func workerSocket(run RunState) string {
 	if len(natural) <= maxUnixSocketPath {
 		return natural
 	}
-	sum := sha256.Sum256([]byte(run.Dir))
-	return filepath.Join(os.TempDir(), "mav-worker-"+hex.EncodeToString(sum[:])[:16]+".sock")
+	// run.Dir and the system temp dir are both process-local (os.Getwd
+	// applies the $PWD kludge, and $TMPDIR varies by caller), so two
+	// processes working on the same physical run directory could otherwise
+	// compute two different fallback sockets. Canonicalize the directory and
+	// pin a fixed, uid-scoped base so every process working on the same run
+	// converges on the same path regardless of symlink spelling or TMPDIR.
+	dir := run.Dir
+	if resolved, err := filepath.EvalSymlinks(run.Dir); err == nil {
+		dir = resolved
+	}
+	sum := sha256.Sum256([]byte(dir))
+	name := fmt.Sprintf("mav-worker-%d-%s.sock", os.Getuid(), hex.EncodeToString(sum[:])[:16])
+	return filepath.Join("/tmp", name)
 }
 
 func workerStartLock(run RunState) string { return filepath.Join(run.Dir, "worker.starting") }

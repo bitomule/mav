@@ -36,14 +36,34 @@ func execStepCLI(t *testing.T) (CLI, RunState) {
 // client that had been orphaned to launchd and was going nowhere.
 func TestExecStepDoesNotBlockOnOrphanHoldingThePipe(t *testing.T) {
 	cli, run := execStepCLI(t)
-	done := make(chan error, 1)
+	type result struct {
+		fields map[string]string
+		err    error
+	}
+	done := make(chan result, 1)
 	go func() {
-		_, err := cli.execFlowShell(context.Background(), run, 1,
+		fields, err := cli.execFlowShell(context.Background(), run, 1,
 			map[string]string{"cmd": "sleep 120 & echo started", "timeout": "2s"})
-		done <- err
+		done <- result{fields, err}
 	}()
 	select {
-	case <-done:
+	case r := <-done:
+		// The shell itself exited successfully; only an orphan grandchild
+		// kept the pipes open. The step's verdict must reflect that success,
+		// not the outer context deadline that only the orphan overran.
+		if r.err != nil {
+			t.Fatalf("expected the shell's success to stand, got err=%v fields=%v", r.err, r.fields)
+		}
+		if r.fields["exit_code"] != "0" {
+			t.Fatalf("expected exit_code 0, got fields=%v", r.fields)
+		}
+		data, readErr := os.ReadFile(r.fields["stdout"])
+		if readErr != nil {
+			t.Fatalf("could not read captured stdout: %v", readErr)
+		}
+		if !strings.Contains(string(data), "started") {
+			t.Fatalf("expected captured stdout to contain %q, got %q", "started", string(data))
+		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("exec step is still waiting on a pipe its own child no longer holds")
 	}

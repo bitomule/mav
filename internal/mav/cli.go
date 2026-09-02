@@ -6063,7 +6063,7 @@ func (c CLI) execFlowShellOutput(ctx context.Context, run RunState, index int, p
 		"stdout":    stdoutPath,
 		"stderr":    stderrPath,
 	}
-	if stepCtx.Err() == context.DeadlineExceeded {
+	if stepCtx.Err() == context.DeadlineExceeded && err != nil {
 		fields["timeout"] = timeout.String()
 		return fields, stdout.String(), fmt.Errorf("exec_timeout")
 	}
