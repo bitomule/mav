@@ -124,23 +124,41 @@ func workerSocket(run RunState) string {
 // the derived path. This uid cannot then unlink it, net.Listen fails with
 // address-in-use, and mav silently degrades to worker-less "direct" mode --
 // exactly the orphaned-run mode the worker exists to prevent. So the base is
-// created 0700 and verified ssh-agent style before use, and anything
-// unexpected sends us back to the private per-user temp dir.
+// created 0700 and verified ssh-agent style before use. When /tmp/mav-<uid>
+// cannot be created or fails verification (squatted by another uid, wrong
+// perms), the revert must not reintroduce either disqualified property, so
+// the next candidate is <home>/.mav/sock -- per-uid, deterministic across
+// callers, not world-writable -- verified the same way. Only when both fail
+// does os.TempDir() remain as the last resort.
 func workerSocketBase() string {
 	uid := os.Getuid()
-	base := filepath.Join("/tmp", fmt.Sprintf("mav-%d", uid))
-	if err := os.MkdirAll(base, 0o700); err != nil {
-		return os.TempDir()
+	primary := filepath.Join("/tmp", fmt.Sprintf("mav-%d", uid))
+	secondary := ""
+	if home, err := os.UserHomeDir(); err == nil {
+		secondary = filepath.Join(home, ".mav", "sock")
 	}
-	info, err := os.Lstat(base)
+	return workerSocketBaseFrom(uid, primary, secondary)
+}
+
+func workerSocketBaseFrom(uid int, candidates ...string) string {
+	for _, dir := range candidates {
+		if dir != "" && verifySocketBase(dir, uid) {
+			return dir
+		}
+	}
+	return os.TempDir()
+}
+
+func verifySocketBase(dir string, uid int) bool {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return false
+	}
+	info, err := os.Lstat(dir)
 	if err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
-		return os.TempDir()
+		return false
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || int(stat.Uid) != uid {
-		return os.TempDir()
-	}
-	return base
+	return ok && int(stat.Uid) == uid
 }
 
 func workerStartLock(run RunState) string { return filepath.Join(run.Dir, "worker.starting") }
