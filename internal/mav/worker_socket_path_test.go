@@ -4,6 +4,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -32,7 +33,19 @@ func longRunDir(t *testing.T) RunState {
 // the limit is real and not a guess. Without workerSocket's fallback this is
 // exactly the error worker.log recorded three times ("bind: invalid
 // argument") in every run started from a worktree.
+//
+// Darwin only, and deliberately so. The fixture reproduces the 106-byte path
+// measured in the wild, which is over Darwin's 104-byte sun_path but under
+// Linux's 108, where it binds happily. Padding it past every platform's limit
+// would make the control pass everywhere at the cost of no longer pinning the
+// case that actually happened. maxUnixSocketPath stays uniform across
+// platforms regardless, so workerSocket's fallback is exercised identically
+// everywhere by the tests below; it is only this OS-behaviour control that is
+// platform-specific.
 func TestUnixListenRejectsOverlongPath(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sun_path is 104 bytes on darwin and 108 elsewhere; this fixture only exceeds the darwin limit")
+	}
 	run := longRunDir(t)
 	natural := filepath.Join(run.Dir, "worker.sock")
 	listener, err := net.Listen("unix", natural)

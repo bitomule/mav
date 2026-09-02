@@ -7234,8 +7234,22 @@ func killProcessGroup(process *os.Process) error {
 // it. SIGKILL, because the step is already finished — there is nothing left
 // to shut down gracefully, and a grandchild ignoring SIGTERM is precisely the
 // case this exists to end.
+//
+// Wait has already reaped the leader by the time this runs, so its pid is
+// free for the kernel to recycle — as a new group leader, in the worst case,
+// which this would then kill along with its group. The signal-0 probe first
+// is what keeps that out of the common path: a step whose group exited
+// cleanly (nearly all of them) sends no signal at all. It narrows the window
+// rather than closing it, since the probe and the kill are not atomic; that
+// residue is accepted deliberately, because the alternative is leaving the
+// orphans this whole change exists to collect. It can never reach MAV itself:
+// Setpgid put the child in a group of its own, so -pid names that group or
+// nothing.
 func reapProcessGroup(process *os.Process) {
 	if process == nil {
+		return
+	}
+	if syscall.Kill(-process.Pid, 0) != nil {
 		return
 	}
 	_ = syscall.Kill(-process.Pid, syscall.SIGKILL)
