@@ -6,8 +6,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"os/exec"
@@ -79,27 +81,66 @@ const maxUnixSocketPath = 103
 // workerSocket is where a run's worker listens. Normally that is inside the
 // run directory, which keeps it beside the run's other state and disposed of
 // with it. When that path would not fit in sun_path, it falls back to a
-// short path under the system temp directory, derived from the run directory
-// so every mav process working on the same run independently computes the
-// same socket, and two runs never collapse onto one.
+// short path under a private per-uid base (see workerSocketBase), derived
+// from the canonical run directory so every mav process working on the same
+// run independently computes the same socket, and two runs never collapse
+// onto one.
 func workerSocket(run RunState) string {
+	// run.Dir and the system temp dir are both process-local (os.Getwd
+	// applies the $PWD kludge, $TMPDIR varies by caller, and on macOS /tmp
+	// and /var are symlinks into /private/*), so two processes working on the
+	// same physical run directory can spell it differently. Canonicalize
+	// before choosing the branch, not just before hashing: a spelling that
+	// fits and a spelling that does not would otherwise take different
+	// branches, leaving one worker on <run dir>/worker.sock and another on
+	// the fallback -- two live workers for one run, the idle one eventually
+	// reaping it as abandoned.
+	dir := run.Dir
 	natural := filepath.Join(run.Dir, "worker.sock")
-	if len(natural) <= maxUnixSocketPath {
+	resolved := natural
+	if canonical, err := filepath.EvalSymlinks(run.Dir); err == nil {
+		dir = canonical
+		resolved = filepath.Join(canonical, "worker.sock")
+	}
+	// Both spellings name the same file, so either binds and dials the same
+	// listener; the caller's own spelling is preferred only because it keeps
+	// paths recognisable in logs.
+	if len(natural) <= maxUnixSocketPath && len(resolved) <= maxUnixSocketPath {
 		return natural
 	}
-	// run.Dir and the system temp dir are both process-local (os.Getwd
-	// applies the $PWD kludge, and $TMPDIR varies by caller), so two
-	// processes working on the same physical run directory could otherwise
-	// compute two different fallback sockets. Canonicalize the directory and
-	// pin a fixed, uid-scoped base so every process working on the same run
-	// converges on the same path regardless of symlink spelling or TMPDIR.
-	dir := run.Dir
-	if resolved, err := filepath.EvalSymlinks(run.Dir); err == nil {
-		dir = resolved
+	if len(resolved) <= maxUnixSocketPath {
+		return resolved
 	}
 	sum := sha256.Sum256([]byte(dir))
 	name := fmt.Sprintf("mav-worker-%d-%s.sock", os.Getuid(), hex.EncodeToString(sum[:])[:16])
-	return filepath.Join("/tmp", name)
+	return filepath.Join(workerSocketBase(), name)
+}
+
+// workerSocketBase is the directory the fallback socket lives in: a private,
+// uid-scoped directory under /tmp. The base has to be the same for every
+// process working on a run (so $TMPDIR, which is per-caller on macOS, is no
+// good) and short (so the socket still fits in sun_path), but bare /tmp is
+// world-writable and sticky, which lets any other local account pre-create
+// the derived path. This uid cannot then unlink it, net.Listen fails with
+// address-in-use, and mav silently degrades to worker-less "direct" mode --
+// exactly the orphaned-run mode the worker exists to prevent. So the base is
+// created 0700 and verified ssh-agent style before use, and anything
+// unexpected sends us back to the private per-user temp dir.
+func workerSocketBase() string {
+	uid := os.Getuid()
+	base := filepath.Join("/tmp", fmt.Sprintf("mav-%d", uid))
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		return os.TempDir()
+	}
+	info, err := os.Lstat(base)
+	if err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
+		return os.TempDir()
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || int(stat.Uid) != uid {
+		return os.TempDir()
+	}
+	return base
 }
 
 func workerStartLock(run RunState) string { return filepath.Join(run.Dir, "worker.starting") }
@@ -246,7 +287,12 @@ func (c CLI) runInternalWorker(ctx context.Context, args []string) error {
 		}
 		lease = parsed
 	}
-	_ = os.Remove(socket)
+	// Surface a failed unlink instead of letting net.Listen report an opaque
+	// address-in-use: if the path is held by a file this uid cannot remove,
+	// the degrade-to-direct log line should name that cause.
+	if err := os.Remove(socket); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("worker_socket_unlink: %w", err)
+	}
 	listener, err := net.Listen("unix", socket)
 	if err != nil {
 		return err
