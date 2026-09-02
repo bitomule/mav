@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased
+
+### An interrupted run no longer strands its build, its logs and its simulator
+
+Two independent defects turned an agent dying mid-run into a machine paying
+for it all night. Both were measured on a Mac with 288 iOS runtime processes
+alive across two simulators nobody was using, 19.3 GB of swap in use, and a
+`mav run` that had been alive for 6h46m against 4.46s of CPU.
+
+**The run worker never started inside a git worktree.** Its Unix socket lived
+at `<run dir>/worker.sock`, and in a worktree
+(`.../.claude/worktrees/<branch>/.mav/runs/<id>/worker.sock`) that path
+measured 106 bytes against the 104 the platform allows. Every startup failed
+with `bind: invalid argument`; MAV degraded to "direct" mode, logged one line,
+and carried on. The worker is what watches a run's lease and reaps the run
+when nobody renews it, so in the layout every agent actually works in, the
+only cleanup mechanism MAV had was silently absent.
+
+- The socket now falls back to a short, per-run path under the system temp
+  directory whenever the natural one would not fit, and stays where it was
+  when it does.
+
+**An `exec` step leaked its grandchildren and then hung on their pipes.**
+The step ran `/bin/bash -lc` without a process group of its own, so its
+timeout signalled only the shell: `make` and the bazel client underneath it
+survived, reparented to launchd. Worse, with the step's stdout and stderr
+going to pipes and no `WaitDelay`, `Wait` read those pipes until EOF — which
+those same orphans never gave. The timeout could not rescue the step it was
+there to bound. A hung run then kept renewing its simulator lease every 60
+seconds for as long as it existed, which is why a pool manager doing exactly
+the right thing still never got its slot back.
+
+- The step now runs in its own process group, cancels by signalling the whole
+  group, bounds how long it will wait on pipes it no longer owns, and kills
+  whatever is left of the group once it is over — including after a shell
+  that exited cleanly while leaving a background process running.
+
 ## v0.16.3
 
 ### A failing `target_command` is an error, not a different simulator

@@ -6016,6 +6016,17 @@ func (c CLI) execFlowShellOutput(ctx context.Context, run RunState, index int, p
 	defer cancel()
 
 	cmd := exec.CommandContext(stepCtx, "/bin/bash", "-lc", command)
+	// An exec step is where MAV hands control to a build (`make mav-build`
+	// and its bazel client, typically), and both halves of that hand-off used
+	// to leak. Without a process group of its own, CommandContext signals
+	// only the shell, leaving make and bazel reparented to launchd with
+	// nothing left to collect them; and without a WaitDelay, Wait reads the
+	// step's pipes until EOF, which those same orphans never give up. One
+	// pipeline sat that way for 6h46m against 4.46s of CPU, holding the
+	// simulator lease it kept renewing the whole time.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return killProcessGroup(cmd.Process) }
+	cmd.WaitDelay = execShellWaitDelay
 	cmd.Dir = c.Root
 	cmd.Env = append(os.Environ(),
 		"MAV_ROOT="+c.Root,
@@ -6028,6 +6039,12 @@ func (c CLI) execFlowShellOutput(ctx context.Context, run RunState, index int, p
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err = cmd.Run()
+	reapProcessGroup(cmd.Process)
+	if errors.Is(err, exec.ErrWaitDelay) {
+		// The shell itself succeeded; only its orphans were still holding the
+		// pipes open. Nothing about the step failed, so report it as it ran.
+		err = nil
+	}
 	code := 0
 	if err != nil {
 		code = 1
@@ -6046,7 +6063,7 @@ func (c CLI) execFlowShellOutput(ctx context.Context, run RunState, index int, p
 		"stdout":    stdoutPath,
 		"stderr":    stderrPath,
 	}
-	if stepCtx.Err() == context.DeadlineExceeded {
+	if stepCtx.Err() == context.DeadlineExceeded && err != nil {
 		fields["timeout"] = timeout.String()
 		return fields, stdout.String(), fmt.Errorf("exec_timeout")
 	}
@@ -7185,6 +7202,57 @@ func readPID(path string) (int, error) {
 		return 0, err
 	}
 	return strconv.Atoi(strings.TrimSpace(string(pidData)))
+}
+
+// execShellWaitDelay bounds how long an exec step's Wait keeps reading its
+// pipes once the shell it started is gone. Zero — the default — means "until
+// EOF", and EOF only arrives when every process holding the write end has
+// closed it, orphaned grandchildren included. Long enough that a shell
+// flushing a large build log on its way out is never truncated, short enough
+// that a run is never held hostage by a process it no longer owns.
+const execShellWaitDelay = 5 * time.Second
+
+// killProcessGroup asks a process group started with Setpgid to stop. Signals
+// the group (negative pid) rather than the leader alone, which is the whole
+// point: the leader is a shell, and what actually needs stopping are the make
+// and build processes underneath it.
+func killProcessGroup(process *os.Process) error {
+	if process == nil {
+		return nil
+	}
+	if err := syscall.Kill(-process.Pid, syscall.SIGTERM); err != nil {
+		return process.Signal(syscall.SIGTERM)
+	}
+	return nil
+}
+
+// reapProcessGroup removes whatever is left of an exec step's process group
+// once the step is over, so a flow step can never hand a live process back to
+// launchd. Unconditional and after the fact rather than only on the timeout
+// path: a shell that exits cleanly while a backgrounded grandchild keeps
+// running leaks exactly the same way, and it exits with status 0 while doing
+// it. SIGKILL, because the step is already finished — there is nothing left
+// to shut down gracefully, and a grandchild ignoring SIGTERM is precisely the
+// case this exists to end.
+//
+// Wait has already reaped the leader by the time this runs, so its pid is
+// free for the kernel to recycle — as a new group leader, in the worst case,
+// which this would then kill along with its group. The signal-0 probe first
+// is what keeps that out of the common path: a step whose group exited
+// cleanly (nearly all of them) sends no signal at all. It narrows the window
+// rather than closing it, since the probe and the kill are not atomic; that
+// residue is accepted deliberately, because the alternative is leaving the
+// orphans this whole change exists to collect. It can never reach MAV itself:
+// Setpgid put the child in a group of its own, so -pid names that group or
+// nothing.
+func reapProcessGroup(process *os.Process) {
+	if process == nil {
+		return
+	}
+	if syscall.Kill(-process.Pid, 0) != nil {
+		return
+	}
+	_ = syscall.Kill(-process.Pid, syscall.SIGKILL)
 }
 
 func stopProcess(pid int) error {
