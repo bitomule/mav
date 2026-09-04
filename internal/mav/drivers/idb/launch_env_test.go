@@ -40,6 +40,20 @@ func TestLaunchRefusesEnvThatCollidesWithIDBsOwn(t *testing.T) {
 	}
 }
 
+// idb filters its environment on the literal `IDB_` prefix, so `udid` becomes
+// IDB_udid, which idb does not read: it collides with nothing and must go
+// through. Refusing it would be a false alarm.
+func TestLaunchAcceptsALowercaseNameThatCannotCollide(t *testing.T) {
+	exec := &fakeExec{tools: map[string]bool{"idb": true}}
+	spec := drivers.LaunchSpec{BundleID: "com.example.app", Env: map[string]string{"udid": "x"}}
+	if _, err := New(exec).Launch(context.Background(), drivers.Target{UDID: "REAL-1"}, spec); err != nil {
+		t.Fatalf("lowercase udid cannot retarget idb: %v", err)
+	}
+	if !strings.Contains(exec.commands[0], "IDB_udid=x") {
+		t.Fatalf("command=%q", exec.commands[0])
+	}
+}
+
 func TestLaunchWithoutEnvIsUnchanged(t *testing.T) {
 	exec := &fakeExec{tools: map[string]bool{"idb": true}}
 	if _, err := New(exec).Launch(context.Background(), drivers.Target{UDID: "REAL-1"}, drivers.LaunchSpec{BundleID: "com.example.app"}); err != nil {

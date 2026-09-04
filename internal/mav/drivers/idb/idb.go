@@ -251,20 +251,24 @@ func (d *Driver) Uninstall(ctx context.Context, target drivers.Target, bundleID 
 }
 func (d *Driver) Boot(context.Context, drivers.Target) error { return nil }
 
-// idbReservedEnv are the names idb reads for itself. Passed as IDB_<NAME>
-// they would retarget or reconfigure idb instead of reaching the app, so a
-// recipe that asks for one is refused rather than obeyed halfway.
+// idbReservedEnv are the names idb reads for itself: IDB_UDID selects the
+// target, IDB_COMPANION and IDB_COMPANION_TLS point at the companion. Passed
+// as IDB_<NAME> they would retarget or reconfigure idb instead of reaching the
+// app, so a recipe that asks for one is refused rather than obeyed halfway.
+//
+// The comparison is exact, not case-folded: idb filters its environment on the
+// literal `IDB_` prefix, so `udid=x` becomes IDB_udid, which idb does not read
+// and which therefore collides with nothing.
 var idbReservedEnv = map[string]bool{
 	"UDID":          true,
 	"COMPANION":     true,
 	"COMPANION_TLS": true,
-	"LOG":           true,
 }
 
 func rejectReservedEnv(env map[string]string) error {
 	names := make([]string, 0, len(env))
 	for name := range env {
-		if idbReservedEnv[strings.ToUpper(name)] {
+		if idbReservedEnv[name] {
 			names = append(names, name)
 		}
 	}

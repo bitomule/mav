@@ -19,12 +19,19 @@ environment on macOS. Values may refer to the recipe's own `MAV_*` variables
 `launch.launch driver=simctl env=FOO` — and never the values, because evidence
 gets pasted around and a recipe can carry a token.
 
-Two cases fail instead of half-obeying. On a physical device a variable named
-after one idb reads for itself (`UDID`, `COMPANION`, `COMPANION_TLS`, `LOG`)
-would retarget idb rather than reach the app, so it is refused by name. A
-prefix on `install` is not translated at all: those variables are for the
+What cannot be delivered fails instead of being half-obeyed. On a physical
+device a variable named after one idb reads for itself (`UDID`, `COMPANION`,
+`COMPANION_TLS`) would retarget idb rather than reach the app, so it is refused
+by name. A value using command substitution is refused too: the driver path has
+no shell, so shipping it would deliver the text of the command. A launch line
+that parses as nothing but assignments — one missing quote does it — fails with
+`launch_command_only_env` instead of launching the bundle as if the command had
+run. Where the prefix reaches the shell rather than a driver and MAV can tell
+the drop is certain, the run carries a `launch_env_not_translated` warning.
+
+A prefix on `install` is not translated at all: those variables are for the
 install tool, so that step goes to the shell, where they mean exactly what they
-say.
+say. Its values are redacted in the trail, same guarantee as the launch path.
 
 Reproduced end to end against a real simulator with an app that dumps its
 environment: before the fix the app saw nothing and the trail said

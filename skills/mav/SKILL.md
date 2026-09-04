@@ -633,9 +633,17 @@ can use the `MAV_*` variables (`OUT=$MAV_RUN_DIR/out`). The commands trail
 records the names, never the values: `launch.launch driver=simctl
 env=BOXY_FORCE_PAID`. Read that line to confirm the variable was passed — if it
 has no `env=`, MAV did not pass one. On a physical device the names idb uses
-itself (`UDID`, `COMPANION`, `COMPANION_TLS`, `LOG`) are refused with an error.
+itself (`UDID`, `COMPANION`, `COMPANION_TLS`) are refused with an error; the
+match is exact, so a lowercase `udid` — which idb never reads — is allowed.
 A prefix on `install` runs verbatim in the shell instead: those variables are
-for the install tool, not for the app.
+for the install tool, not for the app (its values are redacted in the trail).
+
+Values follow shell rules: single quotes mean literal, and command substitution
+(`$(...)`, backticks) is refused (`launch_env_command_substitution`) because the
+driver path has no shell — compute it in `build`/`app_path` instead. A launch
+line that reduces to assignments only, which one missing quote produces, fails
+with `launch_command_only_env` rather than launching the app as though the
+command had run.
 
 The translation only fires for a launch line MAV recognizes: the canonical
 `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"` / `idb launch ...

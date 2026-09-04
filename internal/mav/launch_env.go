@@ -1,6 +1,7 @@
 package mav
 
 import (
+	"fmt"
 	"os"
 	"sort"
 	"strings"
@@ -12,6 +13,12 @@ import (
 type envAssignment struct {
 	Name  string
 	Value string
+
+	// Literal says the value was written inside single quotes, so it must
+	// not be expanded. A shell delivers 'literal $NOT_A_VAR' unchanged, and
+	// silently disagreeing with the syntax mav is imitating is the same
+	// class of quiet wrongness this whole path exists to remove.
+	Literal bool
 }
 
 // splitEnvPrefix separates the leading `NAME=value` assignments of a recipe
@@ -53,7 +60,7 @@ func scanEnvPrefix(command string) (assignments []envAssignment, consumed int, o
 		if !isAssignment {
 			break
 		}
-		assignments = append(assignments, envAssignment{Name: name, Value: value})
+		assignments = append(assignments, envAssignment{Name: name, Value: value, Literal: token.singleQuoted})
 		consumed = token.end
 	}
 	return assignments, consumed, true
@@ -143,9 +150,35 @@ func expandEnvAssignments(assignments []envAssignment, env map[string]string) ma
 		return os.Getenv(key)
 	}
 	for _, assignment := range assignments {
+		if assignment.Literal {
+			out[assignment.Name] = assignment.Value
+			continue
+		}
 		out[assignment.Name] = os.Expand(assignment.Value, lookup)
 	}
 	return out
+}
+
+// rejectCommandSubstitution refuses a value mav cannot honour. On the driver
+// path there is no shell, so `$(date)` or a backtick would be delivered to the
+// app as its own literal text -- the app would start, the value would be
+// wrong, and the trail (which carries names only) would show nothing. Failing
+// is the honest answer: the recipe asked for something this route cannot do.
+func rejectCommandSubstitution(assignments []envAssignment) error {
+	var offenders []string
+	for _, assignment := range assignments {
+		if assignment.Literal {
+			continue
+		}
+		if strings.Contains(assignment.Value, "$(") || strings.Contains(assignment.Value, "`") {
+			offenders = append(offenders, assignment.Name)
+		}
+	}
+	if len(offenders) == 0 {
+		return nil
+	}
+	sort.Strings(offenders)
+	return fmt.Errorf("launch_env_command_substitution: %s uses command substitution, which mav cannot run for a launch it hands to a driver; next: compute the value in the recipe's build or app_path step, or single-quote it to pass the text as written", strings.Join(offenders, ","))
 }
 
 // envNames lists the variable names sorted, for the commands trail.
@@ -159,8 +192,9 @@ func envNames(env map[string]string) []string {
 }
 
 type shellToken struct {
-	value string
-	end   int // byte offset just past the token in the original string
+	value        string
+	end          int  // byte offset just past the token in the original string
+	singleQuoted bool // any part of it was written inside single quotes
 }
 
 // shellTokens splits on unquoted whitespace and removes one level of quoting,
@@ -172,6 +206,7 @@ func shellTokens(command string) ([]shellToken, bool) {
 	var tokens []shellToken
 	var current strings.Builder
 	started := false
+	single := false
 	quote := byte(0)
 	for i := 0; i < len(command); i++ {
 		ch := command[i]
@@ -189,6 +224,7 @@ func shellTokens(command string) ([]shellToken, bool) {
 			current.WriteByte(ch)
 		case ch == '\'' || ch == '"':
 			quote = ch
+			single = single || ch == '\''
 			started = true
 		case ch == '\\' && i+1 < len(command):
 			i++
@@ -196,9 +232,10 @@ func shellTokens(command string) ([]shellToken, bool) {
 			started = true
 		case ch == ' ' || ch == '\t' || ch == '\n':
 			if started {
-				tokens = append(tokens, shellToken{value: current.String(), end: i})
+				tokens = append(tokens, shellToken{value: current.String(), end: i, singleQuoted: single})
 				current.Reset()
 				started = false
+				single = false
 			}
 		default:
 			current.WriteByte(ch)
@@ -209,7 +246,7 @@ func shellTokens(command string) ([]shellToken, bool) {
 		return nil, false
 	}
 	if started {
-		tokens = append(tokens, shellToken{value: current.String(), end: len(command)})
+		tokens = append(tokens, shellToken{value: current.String(), end: len(command), singleQuoted: single})
 	}
 	return tokens, true
 }

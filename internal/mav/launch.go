@@ -44,6 +44,22 @@ func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clea
 	if strings.TrimSpace(commands.Launch) == "" && !driverLaunch {
 		return appPath, &launchStep{Name: "launch"}, CommandResult{Stderr: "launch command missing; run mav setup or add launch.commands.launch to .mav/config.yaml", Err: fmt.Errorf("launch_command_missing")}, ""
 	}
+	// A launch line that parses as nothing but assignments is a quoting
+	// typo, not a recipe: one missing quote turns the whole command into a
+	// variable's value, and the driver would then launch the bundle and
+	// report success while the text the author wrote never ran.
+	if assignments, rest, ok := recipeEnvPrefix(commands.Launch); ok && len(assignments) > 0 && rest == "" {
+		result := CommandResult{
+			Stderr: "launch_command_only_env: the launch command is nothing but environment assignments (check the quoting): " + redactEnvPrefix(commands.Launch),
+			Code:   1,
+			Err:    fmt.Errorf("launch_command_only_env"),
+		}
+		// This failure is MAV's own, so no command would put it in the
+		// trail, and a run whose evidence does not say why it stopped is
+		// the silence this whole change exists to remove.
+		appendCommand(run, "launch.launch env_only", result)
+		return appPath, &launchStep{Name: "launch", Command: commands.Launch}, result, ""
+	}
 	if clearState && strings.TrimSpace(commands.Install) == "" && strings.TrimSpace(commands.AppPath) == "" {
 		return appPath, &launchStep{Name: "clear_state"}, CommandResult{Stderr: "clearState requires an install command in the launch recipe; add launch.commands.install to .mav/config.yaml", Err: fmt.Errorf("clear_state_install_missing")}, ""
 	}
@@ -204,6 +220,11 @@ func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clea
 		var result CommandResult
 		if driverLaunch {
 			assignments, _, _ := recipeEnvPrefix(commands.Launch)
+			if err := rejectCommandSubstitution(assignments); err != nil {
+				result := CommandResult{Stderr: err.Error(), Code: 1, Err: err}
+				appendCommand(run, "launch.launch env_rejected", result)
+				return appPath, &step, result, warn
+			}
 			step.Env = expandEnvAssignments(assignments, env)
 			result = c.runDriverLifecycle(ctx, cfg, run, step, appPath)
 		} else {
@@ -325,14 +346,17 @@ func (c CLI) runDriverLifecycle(ctx context.Context, cfg Config, run RunState, s
 	}
 	driver, _, err := c.router().Route(ctx, capability, target, "")
 	if err != nil {
-		result := CommandResult{Stderr: err.Error(), Err: err}
+		// Code is set because this failure is MAV's, not a process exit,
+		// and the commands trail records Code and not Err: left at zero
+		// the trail would show a launch that never happened as a success.
+		result := CommandResult{Stderr: err.Error(), Code: 1, Err: err}
 		appendCommand(run, "launch."+step.Name+" capability="+string(capability), result)
 		return result
 	}
 	lifecycle, ok := driver.(drivers.LifecycleDriver)
 	if !ok {
 		err := fmt.Errorf("driver %s does not implement lifecycle", driver.ID())
-		result := CommandResult{Stderr: err.Error(), Err: err}
+		result := CommandResult{Stderr: err.Error(), Code: 1, Err: err}
 		appendCommand(run, "launch."+step.Name+" driver="+driver.ID(), result)
 		return result
 	}
@@ -346,7 +370,7 @@ func (c CLI) runDriverLifecycle(ctx context.Context, cfg Config, run RunState, s
 	}
 	result := CommandResult{}
 	if err != nil {
-		result = CommandResult{Stderr: err.Error(), Err: err}
+		result = CommandResult{Stderr: err.Error(), Code: 1, Err: err}
 	}
 	trail := "launch." + step.Name + " driver=" + driver.ID()
 	// The variable names go in the trail, the values do not: a recipe can
@@ -363,8 +387,25 @@ func (c CLI) runDriverLifecycle(ctx context.Context, cfg Config, run RunState, s
 func (c CLI) runLaunchCommand(ctx context.Context, cfg Config, run RunState, step launchStep, env map[string]string) CommandResult {
 	command := shellEnvPrefix(env) + " " + step.Command
 	result := c.Runner.Run(ctx, "/bin/sh", "-lc", command)
-	appendCommand(run, "launch."+step.Name+" "+step.Command, result)
+	appendCommand(run, "launch."+step.Name+" "+redactEnvPrefix(step.Command), result)
 	return result
+}
+
+// redactEnvPrefix replaces the values of a command's leading assignments
+// before it is written to the evidence. The guarantee is the same one the
+// driver path makes: names yes, values never. A recipe can carry a token and
+// a run's trail gets read and pasted around.
+func redactEnvPrefix(command string) string {
+	assignments, rest, ok := recipeEnvPrefix(command)
+	if !ok || len(assignments) == 0 {
+		return command
+	}
+	parts := make([]string, 0, len(assignments)+1)
+	for _, assignment := range assignments {
+		parts = append(parts, assignment.Name+"=<redacted>")
+	}
+	parts = append(parts, rest)
+	return strings.TrimSpace(strings.Join(parts, " "))
 }
 
 func launchEnv(cfg Config, run RunState, appPath string) map[string]string {

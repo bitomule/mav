@@ -131,6 +131,17 @@ func TestDriverLaunchRoutingIgnoresTheEnvPrefix(t *testing.T) {
 	if !shouldUseDriverLaunch(cfg, commands) {
 		t.Fatal("a prefixed simctl launch must still route to the driver")
 	}
+	// The clause above holds without any stripping, since isMAVSimctlLaunch
+	// is a substring test the raw line already satisfies. What the stripping
+	// really decides is the parse: the prefix must come back as assignments,
+	// not stay glued to the command.
+	assignments, rest, ok := recipeEnvPrefix(commands.Launch)
+	if !ok || len(assignments) != 1 || assignments[0].Name != "FOO" || assignments[0].Value != "bar" {
+		t.Fatalf("assignments=%v ok=%v", assignments, ok)
+	}
+	if rest != `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"` {
+		t.Fatalf("rest=%q", rest)
+	}
 }
 
 // The device install rewrite must keep the author's own prefix bytes, not

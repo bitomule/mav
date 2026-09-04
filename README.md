@@ -1300,9 +1300,17 @@ physical device, the process environment on macOS — which is the translation y
 would otherwise do by hand. Values may refer to the `MAV_*` variables above
 (`OUT=$MAV_RUN_DIR/out`). The run's commands trail records the names that were
 passed (`launch.launch driver=simctl env=BOXY_FORCE_PAID`) and never the values,
-because evidence gets pasted around and a recipe can carry a token. On a
-physical device a name idb reads for itself (`UDID`, `COMPANION`,
-`COMPANION_TLS`, `LOG`) is refused instead of retargeting idb.
+because evidence gets pasted around and a recipe can carry a token — on the
+shell path the prefix is written as `NAME=<redacted>` for the same reason.
+
+Values follow the shell's own rules: single-quoted means literal, and a value
+using command substitution (`$(...)`, backticks) is refused rather than shipped
+as its own text, since the driver path has no shell to run it in. A launch line
+that parses as nothing but assignments — one missing quote does it — fails with
+`launch_command_only_env` instead of launching the bundle as if the command had
+run. On a physical device a name idb reads for itself (`UDID`, `COMPANION`,
+`COMPANION_TLS`) is refused instead of retargeting idb; the comparison is exact,
+so a lowercase `udid`, which idb never reads, goes through.
 
 The translation only happens when the launch line is recognized as one MAV can
 route to a driver: the canonical `xcrun simctl launch "$MAV_UDID"
