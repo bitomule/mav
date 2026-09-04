@@ -1,5 +1,43 @@
 # Changelog
 
+## Unreleased
+
+### The launch recipe's environment prefix reaches the app
+
+A recipe written as `FOO=bar xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`
+was routed to the simctl driver, which read the bundle id and nothing else: the
+assignment was dropped without a warning, a failure or a line in the evidence.
+The app started, so whoever wrote it had every reason to believe the variable
+had arrived, and then read the app's unchanged behaviour as an app bug. The
+cost of that silence is a whole session; the variable had to be delivered by
+relaunching by hand with `SIMCTL_CHILD_*`.
+
+The prefix is now parsed and carried into the app, translated per target:
+`SIMCTL_CHILD_*` on a simulator, `IDB_*` on a physical device, the process
+environment on macOS. Values may refer to the recipe's own `MAV_*` variables
+(`OUT=$MAV_RUN_DIR/out`). The run's commands trail names what was passed —
+`launch.launch driver=simctl env=FOO` — and never the values, because evidence
+gets pasted around and a recipe can carry a token.
+
+What cannot be delivered fails instead of being half-obeyed. On a physical
+device a variable named after one idb reads for itself (`UDID`, `COMPANION`,
+`COMPANION_TLS`) would retarget idb rather than reach the app, so it is refused
+by name. A value using command substitution is refused too: the driver path has
+no shell, so shipping it would deliver the text of the command. A launch line
+that parses as nothing but assignments — one missing quote does it — fails with
+`launch_command_only_env` instead of launching the bundle as if the command had
+run. Where the prefix reaches the shell rather than a driver and MAV can tell
+the drop is certain, the run carries a `launch_env_not_translated` warning.
+
+A prefix on `install` is not translated at all: those variables are for the
+install tool, so that step goes to the shell, where they mean exactly what they
+say. Its values are redacted in the trail, same guarantee as the launch path.
+
+Reproduced end to end against a real simulator with an app that dumps its
+environment: before the fix the app saw nothing and the trail said
+`launch.launch driver=simctl`; after it, the app sees `FOO=bar` and the trail
+says `env=FOO`.
+
 ## v0.16.5
 
 ### Recording video inside a flow works again

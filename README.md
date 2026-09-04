@@ -1286,6 +1286,45 @@ Each command runs from `MAV_ROOT` with stable environment variables:
 `MAV_PLATFORM`. `app_path` must print one `.app` path. If the app is already
 installed, configure only `launch`.
 
+#### Giving the app its own environment
+
+A `launch` command can carry `NAME=value` assignments in front of it, the way a
+shell would, and they reach **the app**:
+
+```yaml
+    launch: BOXY_FORCE_PAID=1 xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"
+```
+
+MAV translates them per target — `SIMCTL_CHILD_*` on a simulator, `IDB_*` on a
+physical device, the process environment on macOS — which is the translation you
+would otherwise do by hand. Values may refer to the `MAV_*` variables above
+(`OUT=$MAV_RUN_DIR/out`). The run's commands trail records the names that were
+passed (`launch.launch driver=simctl env=BOXY_FORCE_PAID`) and never the values,
+because evidence gets pasted around and a recipe can carry a token — on the
+shell path the prefix is written as `NAME=<redacted>` for the same reason.
+
+Values follow the shell's own rules: single-quoted means literal, and a value
+using command substitution (`$(...)`, backticks) is refused rather than shipped
+as its own text, since the driver path has no shell to run it in. A launch line
+that parses as nothing but assignments — one missing quote does it — fails with
+`launch_command_only_env` instead of launching the bundle as if the command had
+run. On a physical device a name idb reads for itself (`UDID`, `COMPANION`,
+`COMPANION_TLS`) is refused instead of retargeting idb; the comparison is exact,
+so a lowercase `udid`, which idb never reads, goes through.
+
+The translation only happens when the launch line is recognized as one MAV can
+route to a driver: the canonical `xcrun simctl launch "$MAV_UDID"
+"$MAV_BUNDLE_ID"` / `idb launch ... "$MAV_BUNDLE_ID"` form, or an empty launch
+command with `bundle_id` set. Any other launch line — a hardcoded bundle id, a
+wrapper script — runs verbatim in a shell instead, where the prefix sets the
+variable on the launch tool, not on the app (`SIMCTL_CHILD_*` is still yours to
+write by hand there). MAV warns (`launch_env_not_translated`) when it can tell
+the drop is certain; a wrapper script is not warned about, since it can and
+often does re-export the variables itself.
+
+A prefix on `install` is left to the shell verbatim: those variables are for the
+install tool, not for the app.
+
 `mav open --clear-state` runs `xcrun simctl uninstall "$MAV_UDID"
 "$MAV_BUNDLE_ID" || true` before the launch recipe. When the configured install
 step fails with a permission error for a `bazel-out` `.app`, MAV retries with a

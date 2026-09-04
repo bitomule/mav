@@ -618,6 +618,41 @@ Each command runs from `MAV_ROOT` with `MAV_RUN_DIR`, `MAV_TARGET_KIND`,
 exactly one `.app` path. If the app is already installed, configure only
 `launch`.
 
+### Giving the app its own environment
+
+Put `NAME=value` in front of the `launch` command and it reaches **the app**:
+
+```yaml
+    launch: BOXY_FORCE_PAID=1 xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"
+```
+
+MAV translates it per target (`SIMCTL_CHILD_*` on a simulator, `IDB_*` on a
+device, the process environment on macOS), so relaunching by hand with
+`SIMCTL_CHILD_*` is no longer needed for a flag the app reads at start. Values
+can use the `MAV_*` variables (`OUT=$MAV_RUN_DIR/out`). The commands trail
+records the names, never the values: `launch.launch driver=simctl
+env=BOXY_FORCE_PAID`. Read that line to confirm the variable was passed — if it
+has no `env=`, MAV did not pass one. On a physical device the names idb uses
+itself (`UDID`, `COMPANION`, `COMPANION_TLS`) are refused with an error; the
+match is exact, so a lowercase `udid` — which idb never reads — is allowed.
+A prefix on `install` runs verbatim in the shell instead: those variables are
+for the install tool, not for the app (its values are redacted in the trail).
+
+Values follow shell rules: single quotes mean literal, and command substitution
+(`$(...)`, backticks) is refused (`launch_env_command_substitution`) because the
+driver path has no shell — compute it in `build`/`app_path` instead. A launch
+line that reduces to assignments only, which one missing quote produces, fails
+with `launch_command_only_env` rather than launching the app as though the
+command had run.
+
+The translation only fires for a launch line MAV recognizes: the canonical
+`xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"` / `idb launch ...
+"$MAV_BUNDLE_ID"` form, or an empty command with `bundle_id` set. A hardcoded
+bundle id or a wrapper script instead runs in the shell verbatim, where the
+prefix sets the variable on the launch tool, not the app; MAV emits a
+`launch_env_not_translated` warning when it can tell that drop is certain
+(not for a wrapper script, which may re-export on its own).
+
 ### Reusing a build across runs
 
 The `build` step is the expensive one and the one that produces nothing new when

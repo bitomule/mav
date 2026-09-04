@@ -105,7 +105,15 @@ func (d *System) Launch(ctx context.Context, target drivers.Target, spec drivers
 	if err != nil {
 		return drivers.LaunchResult{}, err
 	}
-	pid, err := d.exec.Start(ctx, "", binary, spec.Args...)
+	args := spec.Args
+	name := binary
+	// There is no SIMCTL_CHILD_ equivalent here and none is needed: the
+	// binary is the app, so the variables go straight onto it.
+	if len(spec.Env) > 0 {
+		args = append(drivers.EnvArgs("", spec.Env, binary), args...)
+		name = drivers.EnvPrefixPath
+	}
+	pid, err := d.exec.Start(ctx, "", name, args...)
 	if err != nil {
 		return drivers.LaunchResult{}, err
 	}

@@ -226,7 +226,16 @@ func (d *Driver) Launch(ctx context.Context, target drivers.Target, spec drivers
 	}
 	args := []string{"simctl", "launch", simUDID(target), bundleID}
 	args = append(args, simctlLanguageArgs(target)...)
-	res := d.exec.Run(ctx, "xcrun", args...)
+	name := "xcrun"
+	// simctl does not take the app's environment as arguments: it copies
+	// its own SIMCTL_CHILD_* variables into the process it spawns. Setting
+	// them on mav's process would leak into every later simctl call, so
+	// they are set for this one invocation through /usr/bin/env.
+	if len(spec.Env) > 0 {
+		args = append(drivers.EnvArgs("SIMCTL_CHILD_", spec.Env, name), args...)
+		name = drivers.EnvPrefixPath
+	}
+	res := d.exec.Run(ctx, name, args...)
 	if res.Err != nil {
 		return drivers.LaunchResult{}, errors.New(firstLine(res.Stderr))
 	}

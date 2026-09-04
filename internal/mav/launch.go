@@ -15,6 +15,11 @@ import (
 type launchStep struct {
 	Name    string
 	Command string
+
+	// Env is the recipe's `NAME=value` prefix, already expanded, for the
+	// steps that reach a driver instead of a shell. On the shell path the
+	// prefix is still part of Command and this stays empty.
+	Env map[string]string
 }
 
 // errBuildSkippedAppMissing is what --skip-build turns "app_path failed" into.
@@ -38,6 +43,22 @@ func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clea
 	driverLaunch := shouldUseDriverLaunch(cfg, commands)
 	if strings.TrimSpace(commands.Launch) == "" && !driverLaunch {
 		return appPath, &launchStep{Name: "launch"}, CommandResult{Stderr: "launch command missing; run mav setup or add launch.commands.launch to .mav/config.yaml", Err: fmt.Errorf("launch_command_missing")}, ""
+	}
+	// A launch line that parses as nothing but assignments is a quoting
+	// typo, not a recipe: one missing quote turns the whole command into a
+	// variable's value, and the driver would then launch the bundle and
+	// report success while the text the author wrote never ran.
+	if assignments, rest, ok := recipeEnvPrefix(commands.Launch); ok && len(assignments) > 0 && rest == "" {
+		result := CommandResult{
+			Stderr: "launch_command_only_env: the launch command is nothing but environment assignments (check the quoting): " + redactEnvPrefix(commands.Launch),
+			Code:   1,
+			Err:    fmt.Errorf("launch_command_only_env"),
+		}
+		// This failure is MAV's own, so no command would put it in the
+		// trail, and a run whose evidence does not say why it stopped is
+		// the silence this whole change exists to remove.
+		appendCommand(run, "launch.launch env_only", result)
+		return appPath, &launchStep{Name: "launch", Command: commands.Launch}, result, ""
 	}
 	if clearState && strings.TrimSpace(commands.Install) == "" && strings.TrimSpace(commands.AppPath) == "" {
 		return appPath, &launchStep{Name: "clear_state"}, CommandResult{Stderr: "clearState requires an install command in the launch recipe; add launch.commands.install to .mav/config.yaml", Err: fmt.Errorf("clear_state_install_missing")}, ""
@@ -198,8 +219,18 @@ func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clea
 		step := launchStep{Name: "launch", Command: commands.Launch}
 		var result CommandResult
 		if driverLaunch {
+			assignments, _, _ := recipeEnvPrefix(commands.Launch)
+			if err := rejectCommandSubstitution(assignments); err != nil {
+				result := CommandResult{Stderr: err.Error(), Code: 1, Err: err}
+				appendCommand(run, "launch.launch env_rejected", result)
+				return appPath, &step, result, warn
+			}
+			step.Env = expandEnvAssignments(assignments, env)
 			result = c.runDriverLifecycle(ctx, cfg, run, step, appPath)
 		} else {
+			if untranslated := untranslatedLaunchEnvWarning(commands.Launch); untranslated != "" {
+				warn = untranslated
+			}
 			result = c.runLaunchCommand(ctx, cfg, run, step, env)
 		}
 		if result.Err != nil {
@@ -234,7 +265,17 @@ func buildSkippedAppMissing(detail string, cause error) CommandResult {
 }
 
 func shouldUseDriverInstall(cfg Config, commands LaunchCommands) bool {
-	command := strings.TrimSpace(commands.Install)
+	assignments, command, ok := recipeEnvPrefix(commands.Install)
+	if !ok {
+		return false
+	}
+	// An install carrying its own environment goes to the shell verbatim.
+	// Unlike launch, there is nothing to translate: the variables are for
+	// the install tool, not for the app, and the shell is where they mean
+	// exactly what they say.
+	if len(assignments) > 0 {
+		return false
+	}
 	return command == "" ||
 		isMAVSimctlInstall(command) ||
 		strings.Contains(command, "idb install") && strings.Contains(command, "MAV_APP_PATH") ||
@@ -243,11 +284,51 @@ func shouldUseDriverInstall(cfg Config, commands LaunchCommands) bool {
 }
 
 func shouldUseDriverLaunch(cfg Config, commands LaunchCommands) bool {
-	command := strings.TrimSpace(commands.Launch)
+	// The recipe's env prefix does not change which route the launch takes:
+	// the driver carries it into the app (SIMCTL_CHILD_* on a simulator,
+	// IDB_* on a device, the process environment on macOS), which is the
+	// translation the operator would otherwise do by hand.
+	_, command, ok := recipeEnvPrefix(commands.Launch)
+	if !ok {
+		return false
+	}
 	return command == "" && cfg.BundleID != "" ||
 		isMAVSimctlLaunch(command) ||
 		strings.Contains(command, "idb launch") && strings.Contains(command, "MAV_BUNDLE_ID") ||
 		(targetKind(cfg) == drivers.KindDevice && strings.Contains(command, "simctl launch"))
+}
+
+// untranslatedLaunchEnvWarning returns a non-fatal warning when a launch
+// recipe's env prefix is certain to be dropped rather than delivered to the
+// app: the command reached the shell instead of a driver (shouldUseDriverLaunch
+// said no), and it is a direct invocation of the launch tool itself rather
+// than a wrapper script. A wrapper is left alone -- it can and often does
+// re-export the variables itself, so warning there would be a false alarm.
+func untranslatedLaunchEnvWarning(launchCommand string) string {
+	assignments, command, ok := recipeEnvPrefix(launchCommand)
+	if !ok || len(assignments) == 0 {
+		return ""
+	}
+	if !isDirectLaunchToolInvocation(command) {
+		return ""
+	}
+	names := make([]string, 0, len(assignments))
+	for _, assignment := range assignments {
+		names = append(names, assignment.Name)
+	}
+	return "launch_env_not_translated: " + strings.Join(names, ",") +
+		` was set for the launch tool, not for the app; next: use xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID" (or idb launch on a device) so mav can translate it, or set SIMCTL_CHILD_<NAME> yourself`
+}
+
+// isDirectLaunchToolInvocation recognizes the launch-tool commands whose env
+// prefix definitely lands on the tool and not the app: a hardcoded bundle id
+// (so isMAVSimctlLaunch/idb's MAV_BUNDLE_ID check did not match) still starts
+// with the same tool invocation a translated recipe would use.
+func isDirectLaunchToolInvocation(command string) bool {
+	return strings.HasPrefix(command, "xcrun simctl launch") ||
+		strings.HasPrefix(command, "simctl launch") ||
+		strings.HasPrefix(command, "idb launch") ||
+		strings.HasPrefix(command, "open -a")
 }
 
 func (c CLI) runDriverLifecycle(ctx context.Context, cfg Config, run RunState, step launchStep, appPath string) CommandResult {
@@ -265,14 +346,17 @@ func (c CLI) runDriverLifecycle(ctx context.Context, cfg Config, run RunState, s
 	}
 	driver, _, err := c.router().Route(ctx, capability, target, "")
 	if err != nil {
-		result := CommandResult{Stderr: err.Error(), Err: err}
+		// Code is set because this failure is MAV's, not a process exit,
+		// and the commands trail records Code and not Err: left at zero
+		// the trail would show a launch that never happened as a success.
+		result := CommandResult{Stderr: err.Error(), Code: 1, Err: err}
 		appendCommand(run, "launch."+step.Name+" capability="+string(capability), result)
 		return result
 	}
 	lifecycle, ok := driver.(drivers.LifecycleDriver)
 	if !ok {
 		err := fmt.Errorf("driver %s does not implement lifecycle", driver.ID())
-		result := CommandResult{Stderr: err.Error(), Err: err}
+		result := CommandResult{Stderr: err.Error(), Code: 1, Err: err}
 		appendCommand(run, "launch."+step.Name+" driver="+driver.ID(), result)
 		return result
 	}
@@ -280,23 +364,48 @@ func (c CLI) runDriverLifecycle(ctx context.Context, cfg Config, run RunState, s
 	case "install", "install_retry":
 		err = lifecycle.Install(ctx, target, drivers.InstallSpec{Path: appPath})
 	case "launch":
-		_, err = lifecycle.Launch(ctx, target, drivers.LaunchSpec{BundleID: cfg.BundleID})
+		_, err = lifecycle.Launch(ctx, target, drivers.LaunchSpec{BundleID: cfg.BundleID, Env: step.Env})
 	case "clear_state":
 		err = lifecycle.Uninstall(ctx, target, cfg.BundleID)
 	}
 	result := CommandResult{}
 	if err != nil {
-		result = CommandResult{Stderr: err.Error(), Err: err}
+		result = CommandResult{Stderr: err.Error(), Code: 1, Err: err}
 	}
-	appendCommand(run, "launch."+step.Name+" driver="+driver.ID(), result)
+	trail := "launch." + step.Name + " driver=" + driver.ID()
+	// The variable names go in the trail, the values do not: a recipe can
+	// carry a token, and evidence is read and pasted around. Names are
+	// enough to answer the question the trail exists for -- did my variable
+	// reach the app, or did mav drop it.
+	if names := envNames(step.Env); len(names) > 0 {
+		trail += " env=" + strings.Join(names, ",")
+	}
+	appendCommand(run, trail, result)
 	return result
 }
 
 func (c CLI) runLaunchCommand(ctx context.Context, cfg Config, run RunState, step launchStep, env map[string]string) CommandResult {
 	command := shellEnvPrefix(env) + " " + step.Command
 	result := c.Runner.Run(ctx, "/bin/sh", "-lc", command)
-	appendCommand(run, "launch."+step.Name+" "+step.Command, result)
+	appendCommand(run, "launch."+step.Name+" "+redactEnvPrefix(step.Command), result)
 	return result
+}
+
+// redactEnvPrefix replaces the values of a command's leading assignments
+// before it is written to the evidence. The guarantee is the same one the
+// driver path makes: names yes, values never. A recipe can carry a token and
+// a run's trail gets read and pasted around.
+func redactEnvPrefix(command string) string {
+	assignments, rest, ok := recipeEnvPrefix(command)
+	if !ok || len(assignments) == 0 {
+		return command
+	}
+	parts := make([]string, 0, len(assignments)+1)
+	for _, assignment := range assignments {
+		parts = append(parts, assignment.Name+"=<redacted>")
+	}
+	parts = append(parts, rest)
+	return strings.TrimSpace(strings.Join(parts, " "))
 }
 
 func launchEnv(cfg Config, run RunState, appPath string) map[string]string {
@@ -331,11 +440,17 @@ func effectiveLaunchCommands(cfg Config) LaunchCommands {
 	if targetKind(cfg) != drivers.KindDevice {
 		return commands
 	}
-	if isMAVSimctlInstall(commands.Install) || commands.Install == "" && commands.AppPath != "" {
-		commands.Install = `idb install --udid "$MAV_UDID" "$MAV_APP_PATH"`
+	installRaw, installCommand := recipeEnvPrefixRaw(commands.Install)
+	if isMAVSimctlInstall(installCommand) || installCommand == "" && commands.AppPath != "" {
+		commands.Install = joinRawEnvPrefix(installRaw, `idb install --udid "$MAV_UDID" "$MAV_APP_PATH"`)
 	}
-	if commands.Launch == "" || isMAVSimctlLaunch(commands.Launch) {
-		commands.Launch = `idb launch --udid "$MAV_UDID" -f "$MAV_BUNDLE_ID"`
+	// The env prefix survives the rewrite, verbatim: the rewritten install
+	// line still runs in a shell (shouldUseDriverInstall sends any prefixed
+	// install there), so a value like $MAV_APP_PATH must stay unquoted to
+	// expand instead of being frozen into a literal by shellQuote.
+	launchRaw, launchCommand := recipeEnvPrefixRaw(commands.Launch)
+	if launchCommand == "" || isMAVSimctlLaunch(launchCommand) {
+		commands.Launch = joinRawEnvPrefix(launchRaw, `idb launch --udid "$MAV_UDID" -f "$MAV_BUNDLE_ID"`)
 	}
 	return commands
 }
