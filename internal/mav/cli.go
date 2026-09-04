@@ -5146,11 +5146,13 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 		if port := step.Params["port"]; port != "" {
 			args = append(args, "--port", port)
 		}
-		err := c.withStdout(io.Discard).evidenceStart(ctx, GlobalOptions{}, args)
-		return map[string]string{"run": run.ID}, outputErr(err, "evidence_start_failed")
+		return c.runEvidenceFlowCommand(run, "evidence_start_failed", func(inner CLI) error {
+			return inner.evidenceStart(ctx, GlobalOptions{}, args)
+		})
 	case "video.start":
-		err := c.withStdout(io.Discard).evidenceStart(ctx, GlobalOptions{}, []string{"--run", run.ID})
-		return map[string]string{"run": run.ID}, outputErr(err, "video_start_failed")
+		return c.runEvidenceFlowCommand(run, "video_start_failed", func(inner CLI) error {
+			return inner.evidenceStart(ctx, GlobalOptions{}, []string{"--run", run.ID})
+		})
 	case "evidence.step":
 		name := step.Params["name"]
 		if name == "" {
@@ -5162,15 +5164,17 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 		if note := step.Params["note"]; note != "" {
 			args = append(args, "--note", note)
 		}
-		err := c.withStdout(io.Discard).evidenceStop(ctx, GlobalOptions{}, args)
-		return map[string]string{"run": run.ID}, outputErr(err, "evidence_stop_failed")
+		return c.runEvidenceFlowCommand(run, "evidence_stop_failed", func(inner CLI) error {
+			return inner.evidenceStop(ctx, GlobalOptions{}, args)
+		})
 	case "video.stop":
 		args := []string{"--run", run.ID}
 		if note := step.Params["note"]; note != "" {
 			args = append(args, "--note", note)
 		}
-		err := c.withStdout(io.Discard).evidenceStop(ctx, GlobalOptions{}, args)
-		return map[string]string{"run": run.ID}, outputErr(err, "video_stop_failed")
+		return c.runEvidenceFlowCommand(run, "video_stop_failed", func(inner CLI) error {
+			return inner.evidenceStop(ctx, GlobalOptions{}, args)
+		})
 	case "network.start":
 		args := flowArgs(step.Params, "--har", "har", "--port", "port")
 		args = append(args, "--run", run.ID)
@@ -5548,6 +5552,32 @@ func outputErr(err error, code string) error {
 		return fmt.Errorf("%s", code)
 	}
 	return nil
+}
+
+// runEvidenceFlowCommand runs one of the evidence commands as a flow step
+// and, when it fails, carries the command's own fail line into the step's
+// fields as detail -- the same treatment the open step already gives its
+// inner failure.
+//
+// Without it these steps swallowed the only thing worth reading. The inner
+// command writes a structured `fail code=...` line naming the real cause
+// (evidence_run_not_clean, video_unsupported, a target_command failure) and
+// its remedy, the step discarded that line to io.Discard, and outputErr
+// flattened every one of them into the same opaque `video_start_failed`.
+// A run cost three retries and forty minutes to a code that could not
+// distinguish "this simulator has no recorder" from "this run already has a
+// video".
+func (c CLI) runEvidenceFlowCommand(run RunState, code string, invoke func(CLI) error) (map[string]string, error) {
+	var out bytes.Buffer
+	err := invoke(c.withStdout(&out))
+	fields := map[string]string{"run": run.ID}
+	stepErr := commandOutputErr(err, out.String(), code)
+	if stepErr != nil {
+		if detail := firstLine(strings.TrimSpace(out.String())); detail != "" {
+			fields["detail"] = detail
+		}
+	}
+	return fields, stepErr
 }
 
 func commandOutputErr(err error, out, code string) error {
@@ -7154,28 +7184,109 @@ func (c CLI) startVideoRecording(ctx context.Context, cfg Config, run RunState) 
 		target = "booted"
 	}
 	videoPath := filepath.Join(run.Dir, "video.mov")
+	logPath := filepath.Join(run.Dir, "video.log")
 	args := []string{"simctl", "io", target, "recordVideo", "--codec=h264", videoPath}
-	pid, err := c.Runner.Start(ctx, filepath.Join(run.Dir, "video.log"), "xcrun", args...)
-	if err == nil {
-		appendProcess(run, "video", pid, "xcrun "+strings.Join(args, " "))
-		c.ensureRunWorker(run)
+	pid, err := c.Runner.Start(ctx, logPath, "xcrun", args...)
+	if err != nil {
+		return videoPath, pid, err
 	}
-	return videoPath, pid, err
+	appendProcess(run, "video", pid, "xcrun "+strings.Join(args, " "))
+	c.ensureRunWorker(run)
+	if err := c.awaitVideoRecording(logPath); err != nil {
+		// Leaving the recorder alive here would strand exactly the kind of
+		// process the run-death cleanup exists to collect: it holds the
+		// simulator's single recording slot, so every later attempt on that
+		// simulator dies with "Host recording is already in progress" while
+		// its own run is long gone.
+		_ = stopRunProcess(c.Runner, pid)
+		// Dropped from the run's process list only once it is actually gone.
+		// A recorder that ignored the stop is still this run's to collect,
+		// and forgetting it here would take it out of reach of the worker's
+		// lease-expiry reap -- trading one leak for a quieter one.
+		if !processAlive(pid) {
+			removeProcess(run, pid)
+		}
+		return videoPath, 0, err
+	}
+	return videoPath, pid, nil
 }
 
+// awaitVideoRecording blocks until `xcrun simctl io ... recordVideo` has
+// actually started recording, or explains why it never will.
+//
+// Start() only reports that the process was forked, and xcrun reaches
+// simctl through a shell wrapper that resolves the active developer
+// directory first -- measured at over four seconds on a machine busy with
+// builds. Everything a flow did in that window was recorded by nobody: a
+// video.start followed by a short interaction produced an empty video.log
+// and no file at all, and a longer one produced a fragment (measured:
+// 658ms of video across a 5s step). Standalone use hid it because whoever
+// types the next command spends those seconds anyway. It also turns an
+// occupied recording slot into a failure at video.start, where it is
+// actionable, instead of a video_not_written at the end of a run whose
+// evidence is already gone.
+//
+// Only meaningful against a real recorder, so it is skipped for the fake
+// runners the tests drive -- same test, same reason, as ensureRunWorker.
+func (c CLI) awaitVideoRecording(logPath string) error {
+	if _, ok := c.Runner.(ExecRunner); !ok {
+		return nil
+	}
+	deadline := time.Now().Add(videoRecorderStartTimeout)
+	for {
+		data, _ := os.ReadFile(logPath)
+		if failure := videoLogFailure(string(data)); failure != "" {
+			return fmt.Errorf("%s", failure)
+		}
+		if strings.Contains(strings.ToLower(string(data)), videoRecordingStartedMarker) {
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("video_recorder_not_ready after %s", videoRecorderStartTimeout)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// videoRecorderStartTimeout bounds the wait above: well past the worst
+// wrapper resolution measured on a loaded machine, and still bounded, so a
+// simulator that will never record fails one step instead of hanging the
+// run.
+const videoRecorderStartTimeout = 30 * time.Second
+
+// videoRecordingStartedMarker is what simctl prints once frames are
+// actually being captured. Matched lowercase, like every other read of this
+// log.
+const videoRecordingStartedMarker = "recording started"
+
+// existingEvidenceIssue names the state that would make starting a
+// recording produce a broken or ambiguous artifact, and nothing else.
+//
+// Both conditions are about the recorder, because the recorder is what
+// cannot be shared: `simctl io <udid> recordVideo` refuses a second
+// concurrent recording on a simulator ("Host recording is already in
+// progress") and refuses to write over an existing file ("cannot save
+// recorded video output into a file that already exists"). Starting anyway
+// leaves a run whose video.pid points at a process that died on arrival.
+//
+// Screenshot evidence deliberately does NOT count. A run that already has
+// named steps is the normal shape of a flow, not a dirty run: the
+// documented pattern is to capture the navigation that gets the app into
+// position, then start recording the behaviour actually under test
+// (`capture: {name: ...}` steps, then `video.start`). Treating those steps
+// as leftovers failed that flow at the recording step with
+// evidence_run_not_clean -- surfacing through the flow runner as a bare
+// video_start_failed in under a millisecond -- which meant no agent could
+// record video inside a flow that captured anything first. Steps taken
+// before the recording keep VideoOffsetMs zero (attachStepTimings only
+// computes an offset once video.start.ms exists), which is exactly what
+// "this happened before the video" should render as.
 func existingEvidenceIssue(run RunState) string {
 	if fileExists(filepath.Join(run.Dir, "video.pid")) {
 		return "video_already_running"
 	}
 	if fileExists(filepath.Join(run.Dir, "video.mov")) || fileExists(filepath.Join(run.Dir, "video.mp4")) {
 		return "video_exists"
-	}
-	if fileExists(filepath.Join(run.Dir, EvidenceStepsFile)) {
-		return "evidence_steps_exist"
-	}
-	stepsDir := filepath.Join(run.Dir, "steps")
-	if entries, err := os.ReadDir(stepsDir); err == nil && len(entries) > 0 {
-		return "steps_exist"
 	}
 	return ""
 }
@@ -7185,15 +7296,35 @@ func videoLogIssue(path string) string {
 	if err != nil {
 		return ""
 	}
-	lower := strings.ToLower(string(data))
-	switch {
-	case strings.Contains(lower, "cannot save recorded video output into a file that already exists"):
+	return videoLogFailure(string(data))
+}
+
+// videoLogFailure names the recorder's own complaint, or "" if it has none.
+//
+// It reports the offending LINE, not the first line of the log. simctl
+// always opens with a "Note: No display specified. Defaulting to display:
+// ..." preamble, so returning firstLine meant a recording that died on an
+// occupied slot reported that note as its error -- a message that says
+// nothing is wrong, attached to a failure, which sends the reader looking
+// at displays instead of at the process holding the slot.
+func videoLogFailure(log string) string {
+	if strings.Contains(strings.ToLower(log), "cannot save recorded video output into a file that already exists") {
 		return "video_file_exists"
-	case strings.Contains(lower, "error") || strings.Contains(lower, "failed"):
-		return firstLine(string(data))
-	default:
-		return ""
 	}
+	for _, line := range strings.Split(log, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		lower := strings.ToLower(trimmed)
+		if strings.HasPrefix(lower, "note:") {
+			continue
+		}
+		if strings.Contains(lower, "error") || strings.Contains(lower, "failed") {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func readPID(path string) (int, error) {

@@ -1,5 +1,58 @@
 # Changelog
 
+## Unreleased
+
+### Recording video inside a flow works again
+
+Two independent defects meant that a flow which captured anything before it
+started recording produced no usable video, and neither of them said why.
+Both were reproduced against real simulators before and after the fix.
+
+**`video.start` refused any run that already had a screenshot step.** The
+cleanliness check `evidence start` runs treated `evidence.jsonl` and `steps/`
+as leftovers from a previous session, so the documented shape of an evidence
+flow — capture the navigation that gets the app into position, then record the
+behaviour actually under test — failed at the recording step with
+`evidence_run_not_clean`, surfacing through the flow runner as a bare
+`video_start_failed` in under a millisecond. The standalone command worked
+because a fresh run has no steps yet, which is exactly why this looked like a
+flow-only bug. Present since the check was introduced; it is not a regression
+in v0.16.4.
+
+- The check now covers only what actually conflicts with a new recording: a
+  recorder already running for this run, or a video file already on disk. A
+  simulator has one recording slot and simctl will not overwrite an existing
+  file; screenshots contend for neither. Steps captured before the recording
+  keep a zero video offset, which is what "this happened before the video"
+  should render as.
+
+**`evidence start` reported success before the recorder was recording.**
+`Start()` only reports that the process was forked, and `xcrun` reaches
+`simctl` through a shell wrapper that resolves the active developer directory
+first — measured at over four seconds on a machine busy with builds. Whatever
+the flow did in that window was recorded by nobody: a short step left an empty
+`video.log` and no file at all, a five-second step produced 658ms of video.
+Standalone use hid it because whoever types the next command spends those
+seconds anyway.
+
+- `video.start` now waits until simctl reports that it is recording, bounded
+  at 30 seconds, and fails the step if the recorder reports an error instead —
+  killing it rather than leaving it holding the simulator's recording slot.
+  An occupied slot ("Host recording is already in progress") now fails at
+  `video.start`, where it is actionable, instead of at the end of a run whose
+  evidence is already lost.
+
+**The failures said nothing.** The evidence steps discarded the command's own
+`fail code=` line and flattened every cause into the same opaque step code, so
+`video_start_failed` could not be told apart from "this target has no
+recorder"; and the recorder log's failure was reported as its first line,
+which simctl always fills with a "Note: No display specified" preamble that
+says nothing is wrong.
+
+- `video.start`, `video.stop`, `evidence.start` and `evidence.stop` now carry
+  the inner failure as `detail=`, the same way the `open` step already did,
+  and the recorder log reports the line that actually names the error.
+
 ## v0.16.4
 
 ### An interrupted run no longer strands its build, its logs and its simulator
