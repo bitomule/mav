@@ -1286,6 +1286,27 @@ Each command runs from `MAV_ROOT` with stable environment variables:
 `MAV_PLATFORM`. `app_path` must print one `.app` path. If the app is already
 installed, configure only `launch`.
 
+#### Giving the app its own environment
+
+A `launch` command can carry `NAME=value` assignments in front of it, the way a
+shell would, and they reach **the app**:
+
+```yaml
+    launch: BOXY_FORCE_PAID=1 xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"
+```
+
+MAV translates them per target — `SIMCTL_CHILD_*` on a simulator, `IDB_*` on a
+physical device, the process environment on macOS — which is the translation you
+would otherwise do by hand. Values may refer to the `MAV_*` variables above
+(`OUT=$MAV_RUN_DIR/out`). The run's commands trail records the names that were
+passed (`launch.launch driver=simctl env=BOXY_FORCE_PAID`) and never the values,
+because evidence gets pasted around and a recipe can carry a token. On a
+physical device a name idb reads for itself (`UDID`, `COMPANION`,
+`COMPANION_TLS`, `LOG`) is refused instead of retargeting idb.
+
+A prefix on `install` is left to the shell verbatim: those variables are for the
+install tool, not for the app.
+
 `mav open --clear-state` runs `xcrun simctl uninstall "$MAV_UDID"
 "$MAV_BUNDLE_ID" || true` before the launch recipe. When the configured install
 step fails with a permission error for a `bazel-out` `.app`, MAV retries with a

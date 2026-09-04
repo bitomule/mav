@@ -15,6 +15,11 @@ import (
 type launchStep struct {
 	Name    string
 	Command string
+
+	// Env is the recipe's `NAME=value` prefix, already expanded, for the
+	// steps that reach a driver instead of a shell. On the shell path the
+	// prefix is still part of Command and this stays empty.
+	Env map[string]string
 }
 
 // errBuildSkippedAppMissing is what --skip-build turns "app_path failed" into.
@@ -198,6 +203,8 @@ func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clea
 		step := launchStep{Name: "launch", Command: commands.Launch}
 		var result CommandResult
 		if driverLaunch {
+			assignments, _ := recipeEnvPrefix(commands.Launch)
+			step.Env = expandEnvAssignments(assignments, env)
 			result = c.runDriverLifecycle(ctx, cfg, run, step, appPath)
 		} else {
 			result = c.runLaunchCommand(ctx, cfg, run, step, env)
@@ -234,7 +241,14 @@ func buildSkippedAppMissing(detail string, cause error) CommandResult {
 }
 
 func shouldUseDriverInstall(cfg Config, commands LaunchCommands) bool {
-	command := strings.TrimSpace(commands.Install)
+	assignments, command := recipeEnvPrefix(commands.Install)
+	// An install carrying its own environment goes to the shell verbatim.
+	// Unlike launch, there is nothing to translate: the variables are for
+	// the install tool, not for the app, and the shell is where they mean
+	// exactly what they say.
+	if len(assignments) > 0 {
+		return false
+	}
 	return command == "" ||
 		isMAVSimctlInstall(command) ||
 		strings.Contains(command, "idb install") && strings.Contains(command, "MAV_APP_PATH") ||
@@ -243,7 +257,11 @@ func shouldUseDriverInstall(cfg Config, commands LaunchCommands) bool {
 }
 
 func shouldUseDriverLaunch(cfg Config, commands LaunchCommands) bool {
-	command := strings.TrimSpace(commands.Launch)
+	// The recipe's env prefix does not change which route the launch takes:
+	// the driver carries it into the app (SIMCTL_CHILD_* on a simulator,
+	// IDB_* on a device, the process environment on macOS), which is the
+	// translation the operator would otherwise do by hand.
+	_, command := recipeEnvPrefix(commands.Launch)
 	return command == "" && cfg.BundleID != "" ||
 		isMAVSimctlLaunch(command) ||
 		strings.Contains(command, "idb launch") && strings.Contains(command, "MAV_BUNDLE_ID") ||
@@ -280,7 +298,7 @@ func (c CLI) runDriverLifecycle(ctx context.Context, cfg Config, run RunState, s
 	case "install", "install_retry":
 		err = lifecycle.Install(ctx, target, drivers.InstallSpec{Path: appPath})
 	case "launch":
-		_, err = lifecycle.Launch(ctx, target, drivers.LaunchSpec{BundleID: cfg.BundleID})
+		_, err = lifecycle.Launch(ctx, target, drivers.LaunchSpec{BundleID: cfg.BundleID, Env: step.Env})
 	case "clear_state":
 		err = lifecycle.Uninstall(ctx, target, cfg.BundleID)
 	}
@@ -288,7 +306,15 @@ func (c CLI) runDriverLifecycle(ctx context.Context, cfg Config, run RunState, s
 	if err != nil {
 		result = CommandResult{Stderr: err.Error(), Err: err}
 	}
-	appendCommand(run, "launch."+step.Name+" driver="+driver.ID(), result)
+	trail := "launch." + step.Name + " driver=" + driver.ID()
+	// The variable names go in the trail, the values do not: a recipe can
+	// carry a token, and evidence is read and pasted around. Names are
+	// enough to answer the question the trail exists for -- did my variable
+	// reach the app, or did mav drop it.
+	if names := envNames(step.Env); len(names) > 0 {
+		trail += " env=" + strings.Join(names, ",")
+	}
+	appendCommand(run, trail, result)
 	return result
 }
 
@@ -331,11 +357,15 @@ func effectiveLaunchCommands(cfg Config) LaunchCommands {
 	if targetKind(cfg) != drivers.KindDevice {
 		return commands
 	}
-	if isMAVSimctlInstall(commands.Install) || commands.Install == "" && commands.AppPath != "" {
-		commands.Install = `idb install --udid "$MAV_UDID" "$MAV_APP_PATH"`
+	installAssignments, installCommand := recipeEnvPrefix(commands.Install)
+	if isMAVSimctlInstall(installCommand) || installCommand == "" && commands.AppPath != "" {
+		commands.Install = joinEnvPrefix(installAssignments, `idb install --udid "$MAV_UDID" "$MAV_APP_PATH"`)
 	}
-	if commands.Launch == "" || isMAVSimctlLaunch(commands.Launch) {
-		commands.Launch = `idb launch --udid "$MAV_UDID" -f "$MAV_BUNDLE_ID"`
+	// The env prefix survives the rewrite. It is the app's environment, and
+	// which tool puts the app on which machine is not the app's business.
+	assignments, launchCommand := recipeEnvPrefix(commands.Launch)
+	if launchCommand == "" || isMAVSimctlLaunch(launchCommand) {
+		commands.Launch = joinEnvPrefix(assignments, `idb launch --udid "$MAV_UDID" -f "$MAV_BUNDLE_ID"`)
 	}
 	return commands
 }

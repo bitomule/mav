@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -223,7 +224,19 @@ func (d *Driver) Launch(ctx context.Context, target drivers.Target, spec drivers
 	if bundleID == "" {
 		bundleID = target.BundleID
 	}
-	res := d.exec.Run(ctx, "idb", targetArgs(target, "launch", "-f", bundleID)...)
+	args := targetArgs(target, "launch", "-f", bundleID)
+	name := "idb"
+	// idb has no flag for the app's environment: it forwards its own IDB_*
+	// variables to the app with the prefix stripped, which is the device
+	// equivalent of SIMCTL_CHILD_*.
+	if len(spec.Env) > 0 {
+		if err := rejectReservedEnv(spec.Env); err != nil {
+			return drivers.LaunchResult{}, err
+		}
+		args = append(drivers.EnvArgs("IDB_", spec.Env, name), args...)
+		name = drivers.EnvPrefixPath
+	}
+	res := d.exec.Run(ctx, name, args...)
 	if res.Err != nil {
 		return drivers.LaunchResult{}, errors.New(firstLine(res.Stderr))
 	}
@@ -237,6 +250,30 @@ func (d *Driver) Uninstall(ctx context.Context, target drivers.Target, bundleID 
 	return nil
 }
 func (d *Driver) Boot(context.Context, drivers.Target) error { return nil }
+
+// idbReservedEnv are the names idb reads for itself. Passed as IDB_<NAME>
+// they would retarget or reconfigure idb instead of reaching the app, so a
+// recipe that asks for one is refused rather than obeyed halfway.
+var idbReservedEnv = map[string]bool{
+	"UDID":          true,
+	"COMPANION":     true,
+	"COMPANION_TLS": true,
+	"LOG":           true,
+}
+
+func rejectReservedEnv(env map[string]string) error {
+	names := make([]string, 0, len(env))
+	for name := range env {
+		if idbReservedEnv[strings.ToUpper(name)] {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	sort.Strings(names)
+	return errors.New("idb: launch env " + strings.Join(names, ",") + " collides with idb's own IDB_* configuration and cannot be passed to the app on a physical device")
+}
 
 func targetArgs(target drivers.Target, args ...string) []string {
 	out := append([]string{}, args...)

@@ -618,6 +618,25 @@ Each command runs from `MAV_ROOT` with `MAV_RUN_DIR`, `MAV_TARGET_KIND`,
 exactly one `.app` path. If the app is already installed, configure only
 `launch`.
 
+### Giving the app its own environment
+
+Put `NAME=value` in front of the `launch` command and it reaches **the app**:
+
+```yaml
+    launch: BOXY_FORCE_PAID=1 xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"
+```
+
+MAV translates it per target (`SIMCTL_CHILD_*` on a simulator, `IDB_*` on a
+device, the process environment on macOS), so relaunching by hand with
+`SIMCTL_CHILD_*` is no longer needed for a flag the app reads at start. Values
+can use the `MAV_*` variables (`OUT=$MAV_RUN_DIR/out`). The commands trail
+records the names, never the values: `launch.launch driver=simctl
+env=BOXY_FORCE_PAID`. Read that line to confirm the variable was passed — if it
+has no `env=`, MAV did not pass one. On a physical device the names idb uses
+itself (`UDID`, `COMPANION`, `COMPANION_TLS`, `LOG`) are refused with an error.
+A prefix on `install` runs verbatim in the shell instead: those variables are
+for the install tool, not for the app.
+
 ### Reusing a build across runs
 
 The `build` step is the expensive one and the one that produces nothing new when
