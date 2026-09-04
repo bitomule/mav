@@ -83,6 +83,11 @@ func TestFlowVideoStartAcceptsRunWithEarlierScreenshotSteps(t *testing.T) {
 	if _, err := cli.executeFlowStepBound(context.Background(), run, 2, FlowStep{Action: "video.start"}, flowExecBindings{}); err != nil {
 		t.Fatalf("video.start: %v", err)
 	}
+	// Not just "it stopped failing": a video.start that quietly became a
+	// no-op returning success would satisfy the error check alone.
+	if !fileExists(filepath.Join(run.Dir, "video.pid")) {
+		t.Fatal("video.start succeeded without registering a recorder")
+	}
 }
 
 // A recorder already running for this run still blocks a second one: the
@@ -183,7 +188,7 @@ func TestAwaitVideoRecordingWaitsForTheRecorderToStart(t *testing.T) {
 
 	cli := CLI{Runner: ExecRunner{}}
 	started := time.Now()
-	if err := cli.awaitVideoRecording(logPath); err != nil {
+	if err := cli.awaitVideoRecording(context.Background(), logPath); err != nil {
 		t.Fatalf("await: %v", err)
 	}
 	if elapsed := time.Since(started); elapsed < 300*time.Millisecond {
@@ -197,11 +202,36 @@ func TestAwaitVideoRecordingReportsARecorderThatNeverStarts(t *testing.T) {
 		t.Fatal(err)
 	}
 	cli := CLI{Runner: ExecRunner{}}
-	err := cli.awaitVideoRecording(logPath)
+	err := cli.awaitVideoRecording(context.Background(), logPath)
 	if err == nil {
 		t.Fatal("expected a failure")
 	}
 	if !strings.Contains(err.Error(), "Host recording is already in progress") {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+// ctx is what started the recorder, so a cancelled ctx means the process the
+// wait is watching is already dead; sitting out the rest of the 30s timeout
+// after that is time spent on a log nobody will write.
+func TestAwaitVideoRecordingReturnsWhenTheContextIsCancelled(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "video.log")
+	if err := os.WriteFile(logPath, []byte("Note: No display specified.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		cancel()
+	}()
+
+	cli := CLI{Runner: ExecRunner{}}
+	started := time.Now()
+	err := cli.awaitVideoRecording(ctx, logPath)
+	if err == nil {
+		t.Fatal("expected a failure")
+	}
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("waited out the timeout instead of the cancellation: %s", elapsed)
 	}
 }

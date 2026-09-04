@@ -7192,7 +7192,7 @@ func (c CLI) startVideoRecording(ctx context.Context, cfg Config, run RunState) 
 	}
 	appendProcess(run, "video", pid, "xcrun "+strings.Join(args, " "))
 	c.ensureRunWorker(run)
-	if err := c.awaitVideoRecording(logPath); err != nil {
+	if err := c.awaitVideoRecording(ctx, logPath); err != nil {
 		// Leaving the recorder alive here would strand exactly the kind of
 		// process the run-death cleanup exists to collect: it holds the
 		// simulator's single recording slot, so every later attempt on that
@@ -7205,6 +7205,16 @@ func (c CLI) startVideoRecording(ctx context.Context, cfg Config, run RunState) 
 		// lease-expiry reap -- trading one leak for a quieter one.
 		if !processAlive(pid) {
 			removeProcess(run, pid)
+			// Stopping the recorder is how simctl is asked to finalize, so a
+			// recorder that began capturing between the last poll and the
+			// signal writes its file on the way out. Left behind, that file
+			// is not evidence of anything -- the step it belonged to failed
+			// -- and it makes video_exists refuse every retry on this run,
+			// naming a file no step reported creating. It is safe to delete
+			// precisely here: existingEvidenceIssue proved the path was
+			// empty before this attempt, so whatever is there now is this
+			// attempt's.
+			_ = os.Remove(videoPath)
 		}
 		return videoPath, 0, err
 	}
@@ -7226,9 +7236,13 @@ func (c CLI) startVideoRecording(ctx context.Context, cfg Config, run RunState) 
 // actionable, instead of a video_not_written at the end of a run whose
 // evidence is already gone.
 //
-// Only meaningful against a real recorder, so it is skipped for the fake
-// runners the tests drive -- same test, same reason, as ensureRunWorker.
-func (c CLI) awaitVideoRecording(logPath string) error {
+// The wait reads the recorder's log off THIS machine's disk, so it applies
+// only to a recorder running here: the fake runners the tests drive, and
+// vmRunner, whose recorder writes its log on the guest, are skipped. A VM run
+// therefore keeps the start race described above rather than timing out
+// against a local file that will never appear; closing it there means
+// reading the log through the Runner, which is a separate change.
+func (c CLI) awaitVideoRecording(ctx context.Context, logPath string) error {
 	if _, ok := c.Runner.(ExecRunner); !ok {
 		return nil
 	}
@@ -7244,7 +7258,15 @@ func (c CLI) awaitVideoRecording(logPath string) error {
 		if !time.Now().Before(deadline) {
 			return fmt.Errorf("video_recorder_not_ready after %s", videoRecorderStartTimeout)
 		}
-		time.Sleep(100 * time.Millisecond)
+		// ctx is what started the recorder (ExecRunner.Start uses
+		// CommandContext), so a cancelled ctx means the process this loop is
+		// waiting on is already dead. Waiting out the rest of the timeout
+		// after that is 30 seconds spent watching a log nobody will write.
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
 }
 
