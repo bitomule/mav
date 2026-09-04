@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -100,6 +101,38 @@ func TestRunWithIDBCompanionRepairRetriesConnectionLost(t *testing.T) {
 	}
 	if len(runner.commands) != 3 {
 		t.Fatalf("commands=%v", runner.commands)
+	}
+}
+
+// An env-prefixed idb launch (used to carry the app's own environment) is
+// still "idb" underneath /usr/bin/env, and must get the same stale-companion
+// refresh-and-retry as a plain idb launch. Before effectiveIDBCommand this
+// gate looked at the wrapper's own name ("/usr/bin/env") and never fired.
+func TestRunWithIDBCompanionRepairUnwrapsEnvPrefixedLaunch(t *testing.T) {
+	runner := &idbRepairRunner{results: map[string][]CommandResult{
+		"/usr/bin/env IDB_FOO=bar idb --udid SIM-1 launch -f com.example.app": {
+			{Stderr: "Failed to connect to companion at address DomainSocketAddress(path='/tmp/idb/SIM-1_companion.sock'): [Errno 61] Connection refused", Code: 1, Err: errors.New("exit status 1")},
+			{Stdout: "ok\n"},
+		},
+		"idb list-targets --json": {
+			{Stdout: "{}\n"},
+		},
+	}}
+	result := runWithIDBCompanionRepair(context.Background(), runner, "/usr/bin/env",
+		"IDB_FOO=bar", "idb", "--udid", "SIM-1", "launch", "-f", "com.example.app")
+	if result.Err != nil {
+		t.Fatalf("result=%+v", result)
+	}
+	if !result.IDBCompanionRefreshed {
+		t.Fatalf("expected repaired result, got %+v", result)
+	}
+	want := []string{
+		"/usr/bin/env IDB_FOO=bar idb --udid SIM-1 launch -f com.example.app",
+		"idb list-targets --json",
+		"/usr/bin/env IDB_FOO=bar idb --udid SIM-1 launch -f com.example.app",
+	}
+	if !reflect.DeepEqual(runner.commands, want) {
+		t.Fatalf("commands=%v want=%v", runner.commands, want)
 	}
 }
 

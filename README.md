@@ -1304,6 +1304,16 @@ because evidence gets pasted around and a recipe can carry a token. On a
 physical device a name idb reads for itself (`UDID`, `COMPANION`,
 `COMPANION_TLS`, `LOG`) is refused instead of retargeting idb.
 
+The translation only happens when the launch line is recognized as one MAV can
+route to a driver: the canonical `xcrun simctl launch "$MAV_UDID"
+"$MAV_BUNDLE_ID"` / `idb launch ... "$MAV_BUNDLE_ID"` form, or an empty launch
+command with `bundle_id` set. Any other launch line — a hardcoded bundle id, a
+wrapper script — runs verbatim in a shell instead, where the prefix sets the
+variable on the launch tool, not on the app (`SIMCTL_CHILD_*` is still yours to
+write by hand there). MAV warns (`launch_env_not_translated`) when it can tell
+the drop is certain; a wrapper script is not warned about, since it can and
+often does re-export the variables itself.
+
 A prefix on `install` is left to the shell verbatim: those variables are for the
 install tool, not for the app.
 

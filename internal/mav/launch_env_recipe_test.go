@@ -63,6 +63,42 @@ func TestOpenCarriesTheRecipeEnvPrefixIntoTheApp(t *testing.T) {
 	}
 }
 
+// A launch line with a hardcoded bundle id does not match the canonical
+// `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"` form, so it runs in the
+// shell (not the driver) and the prefix lands on simctl, not on the app. The
+// operator must be told, because nothing else in the evidence says so short
+// of noticing the absence of an `env=` field.
+func TestOpenWarnsWhenEnvPrefixCannotReachAHardcodedBundleLaunch(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.app"
+	cfg.SimulatorUDID = "SIM"
+	cfg.Launch = LaunchConfig{Mode: "custom", Commands: LaunchCommands{
+		AppPath: "make ios-app-path",
+		Install: `xcrun simctl install "$MAV_UDID" "$MAV_APP_PATH"`,
+		Launch:  `FOO=bar xcrun simctl launch "$MAV_UDID" "com.example.app"`,
+	}}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runner := &launchRecipeRunner{
+		tools:   map[string]bool{"xcrun": true},
+		results: map[string]CommandResult{"make ios-app-path": {Stdout: "/tmp/App.app\n"}},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"open"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "clear_state_warn=") || !strings.Contains(got, "launch_env_not_translated") {
+		t.Fatalf("expected an untranslated-env warning, got: %s", got)
+	}
+	if !strings.Contains(got, "FOO") {
+		t.Fatalf("warning must name the dropped variable, got: %s", got)
+	}
+}
+
 func readCommandsTrail(t *testing.T, root string) string {
 	t.Helper()
 	matches, err := filepath.Glob(filepath.Join(root, ".mav", "runs", "*", "commands.jsonl"))

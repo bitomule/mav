@@ -2,6 +2,7 @@ package mav
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -132,8 +133,40 @@ func TestDriverLaunchRoutingIgnoresTheEnvPrefix(t *testing.T) {
 	}
 }
 
+// The device install rewrite must keep the author's own prefix bytes, not
+// shellQuote's re-encoding of them: the rewritten line runs in a shell
+// (shouldUseDriverInstall sends any prefixed install there), and a value
+// referring to a MAV variable needs to still expand there.
+func TestEffectiveLaunchCommandsPreservesExpansionInDeviceInstallPrefix(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.TargetKind = "device"
+	cfg.DeviceUDID = "REAL-1"
+	cfg.Launch.Commands = LaunchCommands{
+		Install: `FOO=$MAV_APP_PATH xcrun simctl install "$MAV_UDID" "$MAV_APP_PATH"`,
+	}
+	commands := effectiveLaunchCommands(cfg)
+	if !strings.HasPrefix(commands.Install, `FOO=$MAV_APP_PATH `) {
+		t.Fatalf("install=%q: prefix must stay unquoted to expand", commands.Install)
+	}
+	if strings.Contains(commands.Install, `'$MAV_APP_PATH'`) {
+		t.Fatalf("install=%q: prefix must not be single-quoted", commands.Install)
+	}
+}
+
 // Install is the other way round: its variables are for the install tool,
 // not for the app, so the shell is where they mean what they say.
+// A line that cannot be tokenized (an unbalanced quote) must never be routed
+// to the driver with the prefix silently dropped: it goes to the shell, where
+// the author sees the syntax error they actually made.
+func TestUnparseableEnvPrefixGoesToTheShell(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.BundleID = "com.example.app"
+	commands := LaunchCommands{Launch: `FOO="bar xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`}
+	if shouldUseDriverLaunch(cfg, commands) {
+		t.Fatal("an unparseable launch line must not route to the driver")
+	}
+}
+
 func TestPrefixedInstallGoesToTheShell(t *testing.T) {
 	cfg := DefaultConfig(t.TempDir())
 	commands := LaunchCommands{Install: `FOO=bar xcrun simctl install "$MAV_UDID" "$MAV_APP_PATH"`}

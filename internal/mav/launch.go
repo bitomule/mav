@@ -203,10 +203,13 @@ func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clea
 		step := launchStep{Name: "launch", Command: commands.Launch}
 		var result CommandResult
 		if driverLaunch {
-			assignments, _ := recipeEnvPrefix(commands.Launch)
+			assignments, _, _ := recipeEnvPrefix(commands.Launch)
 			step.Env = expandEnvAssignments(assignments, env)
 			result = c.runDriverLifecycle(ctx, cfg, run, step, appPath)
 		} else {
+			if untranslated := untranslatedLaunchEnvWarning(commands.Launch); untranslated != "" {
+				warn = untranslated
+			}
 			result = c.runLaunchCommand(ctx, cfg, run, step, env)
 		}
 		if result.Err != nil {
@@ -241,7 +244,10 @@ func buildSkippedAppMissing(detail string, cause error) CommandResult {
 }
 
 func shouldUseDriverInstall(cfg Config, commands LaunchCommands) bool {
-	assignments, command := recipeEnvPrefix(commands.Install)
+	assignments, command, ok := recipeEnvPrefix(commands.Install)
+	if !ok {
+		return false
+	}
 	// An install carrying its own environment goes to the shell verbatim.
 	// Unlike launch, there is nothing to translate: the variables are for
 	// the install tool, not for the app, and the shell is where they mean
@@ -261,11 +267,47 @@ func shouldUseDriverLaunch(cfg Config, commands LaunchCommands) bool {
 	// the driver carries it into the app (SIMCTL_CHILD_* on a simulator,
 	// IDB_* on a device, the process environment on macOS), which is the
 	// translation the operator would otherwise do by hand.
-	_, command := recipeEnvPrefix(commands.Launch)
+	_, command, ok := recipeEnvPrefix(commands.Launch)
+	if !ok {
+		return false
+	}
 	return command == "" && cfg.BundleID != "" ||
 		isMAVSimctlLaunch(command) ||
 		strings.Contains(command, "idb launch") && strings.Contains(command, "MAV_BUNDLE_ID") ||
 		(targetKind(cfg) == drivers.KindDevice && strings.Contains(command, "simctl launch"))
+}
+
+// untranslatedLaunchEnvWarning returns a non-fatal warning when a launch
+// recipe's env prefix is certain to be dropped rather than delivered to the
+// app: the command reached the shell instead of a driver (shouldUseDriverLaunch
+// said no), and it is a direct invocation of the launch tool itself rather
+// than a wrapper script. A wrapper is left alone -- it can and often does
+// re-export the variables itself, so warning there would be a false alarm.
+func untranslatedLaunchEnvWarning(launchCommand string) string {
+	assignments, command, ok := recipeEnvPrefix(launchCommand)
+	if !ok || len(assignments) == 0 {
+		return ""
+	}
+	if !isDirectLaunchToolInvocation(command) {
+		return ""
+	}
+	names := make([]string, 0, len(assignments))
+	for _, assignment := range assignments {
+		names = append(names, assignment.Name)
+	}
+	return "launch_env_not_translated: " + strings.Join(names, ",") +
+		` was set for the launch tool, not for the app; next: use xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID" (or idb launch on a device) so mav can translate it, or set SIMCTL_CHILD_<NAME> yourself`
+}
+
+// isDirectLaunchToolInvocation recognizes the launch-tool commands whose env
+// prefix definitely lands on the tool and not the app: a hardcoded bundle id
+// (so isMAVSimctlLaunch/idb's MAV_BUNDLE_ID check did not match) still starts
+// with the same tool invocation a translated recipe would use.
+func isDirectLaunchToolInvocation(command string) bool {
+	return strings.HasPrefix(command, "xcrun simctl launch") ||
+		strings.HasPrefix(command, "simctl launch") ||
+		strings.HasPrefix(command, "idb launch") ||
+		strings.HasPrefix(command, "open -a")
 }
 
 func (c CLI) runDriverLifecycle(ctx context.Context, cfg Config, run RunState, step launchStep, appPath string) CommandResult {
@@ -357,15 +399,17 @@ func effectiveLaunchCommands(cfg Config) LaunchCommands {
 	if targetKind(cfg) != drivers.KindDevice {
 		return commands
 	}
-	installAssignments, installCommand := recipeEnvPrefix(commands.Install)
+	installRaw, installCommand := recipeEnvPrefixRaw(commands.Install)
 	if isMAVSimctlInstall(installCommand) || installCommand == "" && commands.AppPath != "" {
-		commands.Install = joinEnvPrefix(installAssignments, `idb install --udid "$MAV_UDID" "$MAV_APP_PATH"`)
+		commands.Install = joinRawEnvPrefix(installRaw, `idb install --udid "$MAV_UDID" "$MAV_APP_PATH"`)
 	}
-	// The env prefix survives the rewrite. It is the app's environment, and
-	// which tool puts the app on which machine is not the app's business.
-	assignments, launchCommand := recipeEnvPrefix(commands.Launch)
+	// The env prefix survives the rewrite, verbatim: the rewritten install
+	// line still runs in a shell (shouldUseDriverInstall sends any prefixed
+	// install there), so a value like $MAV_APP_PATH must stay unquoted to
+	// expand instead of being frozen into a literal by shellQuote.
+	launchRaw, launchCommand := recipeEnvPrefixRaw(commands.Launch)
 	if launchCommand == "" || isMAVSimctlLaunch(launchCommand) {
-		commands.Launch = joinEnvPrefix(assignments, `idb launch --udid "$MAV_UDID" -f "$MAV_BUNDLE_ID"`)
+		commands.Launch = joinRawEnvPrefix(launchRaw, `idb launch --udid "$MAV_UDID" -f "$MAV_BUNDLE_ID"`)
 	}
 	return commands
 }

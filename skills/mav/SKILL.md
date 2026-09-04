@@ -637,6 +637,14 @@ itself (`UDID`, `COMPANION`, `COMPANION_TLS`, `LOG`) are refused with an error.
 A prefix on `install` runs verbatim in the shell instead: those variables are
 for the install tool, not for the app.
 
+The translation only fires for a launch line MAV recognizes: the canonical
+`xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"` / `idb launch ...
+"$MAV_BUNDLE_ID"` form, or an empty command with `bundle_id` set. A hardcoded
+bundle id or a wrapper script instead runs in the shell verbatim, where the
+prefix sets the variable on the launch tool, not the app; MAV emits a
+`launch_env_not_translated` warning when it can tell that drop is certain
+(not for a wrapper script, which may re-export on its own).
+
 ### Reusing a build across runs
 
 The `build` step is the expensive one and the one that produces nothing new when

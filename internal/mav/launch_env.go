@@ -29,11 +29,25 @@ type envAssignment struct {
 // caller then leaves the command alone and lets the shell path deal with it,
 // which is where a malformed line belongs anyway.
 func splitEnvPrefix(command string) (assignments []envAssignment, rest string, ok bool) {
-	tokens, ok := shellTokens(command)
+	assignments, consumed, ok := scanEnvPrefix(command)
 	if !ok {
 		return nil, command, false
 	}
-	consumed := 0
+	if len(assignments) == 0 {
+		return nil, command, true
+	}
+	return assignments, strings.TrimSpace(command[consumed:]), true
+}
+
+// scanEnvPrefix is the shared tokenizing walk behind splitEnvPrefix and
+// rawEnvPrefix: it reads the leading `NAME=value` tokens and reports how many
+// bytes of the original command they occupy, so a caller can either take the
+// parsed assignments (splitEnvPrefix) or the exact source bytes (rawEnvPrefix).
+func scanEnvPrefix(command string) (assignments []envAssignment, consumed int, ok bool) {
+	tokens, ok := shellTokens(command)
+	if !ok {
+		return nil, 0, false
+	}
 	for _, token := range tokens {
 		name, value, isAssignment := splitAssignment(token.value)
 		if !isAssignment {
@@ -42,21 +56,57 @@ func splitEnvPrefix(command string) (assignments []envAssignment, rest string, o
 		assignments = append(assignments, envAssignment{Name: name, Value: value})
 		consumed = token.end
 	}
-	if len(assignments) == 0 {
-		return nil, command, true
+	return assignments, consumed, true
+}
+
+// rawEnvPrefix is splitEnvPrefix for callers that must reproduce the prefix
+// verbatim rather than normalize it: it returns the exact source bytes the
+// author wrote for the assignments (raw), not shellQuote's re-encoding of
+// them. Needed wherever a rewritten command goes on to run in a shell, since
+// joinEnvPrefix's single-quoting would freeze a value like $MAV_APP_PATH into
+// a literal instead of letting it expand.
+func rawEnvPrefix(command string) (raw string, rest string, ok bool) {
+	assignments, consumed, ok := scanEnvPrefix(command)
+	if !ok {
+		return "", command, false
 	}
-	return assignments, strings.TrimSpace(command[consumed:]), true
+	if len(assignments) == 0 {
+		return "", command, true
+	}
+	return command[:consumed], strings.TrimSpace(command[consumed:]), true
+}
+
+// recipeEnvPrefixRaw is rawEnvPrefix for callers that only route on the
+// command, mirroring recipeEnvPrefix's fallback: an unparseable line has no
+// usable prefix, and it is the shell's problem.
+func recipeEnvPrefixRaw(command string) (raw string, rest string) {
+	raw, rest, ok := rawEnvPrefix(command)
+	if !ok {
+		return "", strings.TrimSpace(command)
+	}
+	return raw, rest
+}
+
+// joinRawEnvPrefix is joinEnvPrefix for verbatim prefixes: it re-attaches the
+// author's own bytes instead of re-quoting them.
+func joinRawEnvPrefix(raw string, command string) string {
+	if raw == "" {
+		return command
+	}
+	return raw + " " + command
 }
 
 // recipeEnvPrefix is splitEnvPrefix for callers that only route on the
-// command: a line that cannot be tokenized has no usable prefix, and it is
-// the shell's problem.
-func recipeEnvPrefix(command string) ([]envAssignment, string) {
-	assignments, rest, ok := splitEnvPrefix(command)
+// command. ok is false when the line cannot be tokenized (an unbalanced
+// quote): callers that route a recipe to the driver vs. the shell must treat
+// that as "not a recognized driver form" and send it to the shell, where the
+// author sees the real syntax error instead of a silently prefix-less launch.
+func recipeEnvPrefix(command string) (assignments []envAssignment, rest string, ok bool) {
+	assignments, rest, ok = splitEnvPrefix(command)
 	if !ok {
-		return nil, strings.TrimSpace(command)
+		return nil, strings.TrimSpace(command), false
 	}
-	return assignments, strings.TrimSpace(rest)
+	return assignments, strings.TrimSpace(rest), true
 }
 
 // joinEnvPrefix puts an assignment prefix back in front of a command mav
