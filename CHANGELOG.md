@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.16.5
 
 ### Recording video inside a flow works again
 
