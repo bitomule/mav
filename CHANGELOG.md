@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.16.6
 
 ### The launch recipe's environment prefix reaches the app
 
