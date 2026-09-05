@@ -2582,6 +2582,17 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			before = c.snapshotForVerification(ctx, cfg)
 		}
 		hidX, hidY, rotation, detectedAngle := c.hidPoint(ctx, cfg, xi, yi)
+		if rotation != 0 && treeShapeContradictsRotation(before, rotation) {
+			// The screen cache only re-probes on an angle change, so a
+			// foreground app that went portrait-shaped under the same angle
+			// still gets its taps rotated off a cache hit. The --verify
+			// snapshot was just read anyway; when its screen extent
+			// contradicts the applied rotation, the transform was into the
+			// wrong space, so the tap goes out raw and the angle is
+			// surfaced as rotation_unavailable instead of a confident
+			// rotation= pointing 100pt away.
+			hidX, hidY, rotation = xi, yi, 0
+		}
 		tapErr := error(nil)
 		_, tapErr = td.Tap(ctx, target, drivers.TapSpec{X: hidX, Y: hidY})
 		result := CommandResult{}
@@ -3148,7 +3159,18 @@ func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args [
 		// hard-coded portrait-HID-space constants, not tree-space points a
 		// caller read off `mav ui tree`, so they must not be rotated again.
 		hidSX, hidSY, rotation, detectedAngle = c.hidPoint(ctx, cfg, sx, sy)
-		hidEX, hidEY, _, _ = c.hidPoint(ctx, cfg, ex, ey)
+		var endRotation int
+		hidEX, hidEY, endRotation, _ = c.hidPoint(ctx, cfg, ex, ey)
+		if rotation != endRotation {
+			// hidPoint's bounds guard is per point: one endpoint's rotated
+			// image can land inside the portrait touch surface while the
+			// other's falls off it, and dispatching one endpoint rotated
+			// and the other raw is the diagonal drag the comment above
+			// exists to forbid. A disagreement is proof the pair was not in
+			// the space the angle claimed, so both endpoints go out raw and
+			// the detected angle is surfaced as rotation_unavailable.
+			hidSX, hidSY, hidEX, hidEY, rotation = sx, sy, ex, ey, 0
+		}
 	} else {
 		// The defaults are dispatched verbatim, which on a rotated simulator
 		// drags along the wrong axis of the screen the caller is looking at.

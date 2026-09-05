@@ -196,7 +196,9 @@ entirely.
 
    Coordinates are always in the space `mav ui tree` reports. On a rotated
    simulator `ui tap` and `ui swipe --start-x/--start-y/--end-x/--end-y`
-   rotate them into the touch surface's own space for you — do **not**
+   rotate them into the touch surface's own space for you (90/270 only; an
+   upside-down tree cannot be told apart from an app that never flipped, so
+   180 dispatches raw with `rotation_unavailable=180`) — do **not**
    pre-rotate them yourself, that compensates twice. `ui tap` says so with
    `rotation=` and `hid_x`/`hid_y` on the result line; `ui swipe` says so
    with `rotation=` only (it has two rotated endpoints, so there is no

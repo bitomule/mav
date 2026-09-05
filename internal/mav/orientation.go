@@ -139,13 +139,13 @@ func parseRotationAngle(dump, udid string) int {
 
 // portraitScreenSize returns the device's native portrait size in points,
 // probing the accessibility tree once per UDID and caching the result. It is
-// only ever called on a simulator Simulator.app reports as rotated, but that
-// report can be stale or the app under test can be portrait-locked, so a
-// fresh probe always checks the observed tree-root shape against the angle
-// before it is trusted or cached: a 90/270 angle requires a landscape
-// (w > h) tree root, and 0/180 requires a portrait (h > w) one. A mismatch
-// means the tree is not actually reporting the rotated space, so nothing is
-// cached and the caller must not rotate anything either.
+// only ever called with a 90 or 270 angle (hidPoint short-circuits 0 and
+// 180), but that report can be stale or the app under test can be
+// portrait-locked, so a fresh probe always checks the observed tree-root
+// shape against the angle before it is trusted or cached: a 90/270 angle
+// requires a landscape (w > h) tree root. A mismatch means the tree is not
+// actually reporting the rotated space, so nothing is cached and the caller
+// must not rotate anything either.
 //
 // A cache entry is reused without re-probing only while the angle it was
 // probed under is still the angle in effect, which keeps the hot path to one
@@ -188,19 +188,40 @@ func (c CLI) portraitScreenSize(ctx context.Context, cfg Config, angle int) (scr
 	if w <= 0 || h <= 0 {
 		return screenCache{}, false
 	}
-	rotated := angle == 90 || angle == 270
-	if rotated && w <= h {
+	if w <= h {
 		return screenCache{}, false
 	}
-	if !rotated && h <= w {
-		return screenCache{}, false
-	}
-	cached := screenCache{PortraitWidth: int(w), PortraitHeight: int(h), Angle: angle}
-	if rotated {
-		cached = screenCache{PortraitWidth: int(h), PortraitHeight: int(w), Angle: angle}
-	}
+	cached := screenCache{PortraitWidth: int(h), PortraitHeight: int(w), Angle: angle}
 	writeScreenCache(c.Root, udid, cached)
 	return cached, true
+}
+
+// treeShapeContradictsRotation reports that a snapshot's screen extent is
+// portrait-shaped even though a 90/270 rotation was applied to the gesture.
+// The screen-size cache only re-probes on an angle change, so a foreground
+// app that went portrait-locked under the same angle sails through on a
+// cache hit; a caller that already paid for a tree read (the --verify
+// snapshot) can use it to catch exactly that case for free. Only a positive
+// proof counts: an empty or frameless snapshot proves nothing and must not
+// downgrade a rotation the probe validated.
+func treeShapeContradictsRotation(elements []Element, rotation int) bool {
+	if rotation != 90 && rotation != 270 {
+		return false
+	}
+	var w, h float64
+	for _, el := range elements {
+		ex, ey, ew, eh, ok := parseElementFrame(el.Frame)
+		if !ok || ex != 0 || ey != 0 {
+			continue
+		}
+		if ew*eh > w*h {
+			w, h = ew, eh
+		}
+	}
+	if w <= 0 || h <= 0 {
+		return false
+	}
+	return w <= h
 }
 
 // addRotationFields records that a gesture's coordinates were rotated, and
@@ -238,6 +259,16 @@ func (c CLI) hidPoint(ctx context.Context, cfg Config, x, y int) (int, int, int,
 	if angle == 0 {
 		return x, y, 0, 0
 	}
+	// At 180 the tree root is portrait-shaped (h > w) whether the app really
+	// flipped upside-down or is portrait-locked and never moved, so the
+	// shape check that makes 90/270 safe proves nothing here — and most
+	// apps (and SpringBoard on every home-button-less iPhone) never rotate
+	// to upside-down at all, in which case mirroring the point sends the
+	// tap to the diagonally opposite corner. No transform is applied until
+	// a proof stronger than the tree shape exists.
+	if angle == 180 {
+		return x, y, 0, angle
+	}
 	screen, ok := c.portraitScreenSize(ctx, cfg, angle)
 	if !ok {
 		// Without the screen size there is no correct rotation to apply.
@@ -250,8 +281,6 @@ func (c CLI) hidPoint(ctx context.Context, cfg Config, x, y int) (int, int, int,
 	switch angle {
 	case 90:
 		hx, hy = screen.PortraitWidth-y, x
-	case 180:
-		hx, hy = screen.PortraitWidth-x, screen.PortraitHeight-y
 	case 270:
 		hx, hy = y, screen.PortraitHeight-x
 	default:

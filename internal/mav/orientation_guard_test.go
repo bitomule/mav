@@ -195,3 +195,132 @@ func TestUISwipeDirectionDefaultsSayNothingOnAnUnrotatedSimulator(t *testing.T) 
 		t.Fatalf("an unrotated direction swipe reported a rotation: %q", out.String())
 	}
 }
+
+// hidPoint's bounds guard is evaluated per point, so a swipe's two endpoints
+// can disagree: here the start's 90 image (402-200, 100) is inside the
+// portrait surface while the end's (402-500 = -98) is not. Dispatching the
+// pair half-rotated turns a vertical drag into a diagonal one and stamps
+// rotation=90 on it. A disagreement must make the pair atomic: both
+// endpoints raw, the angle surfaced as unavailable.
+func TestUISwipeDispatchesBothEndpointsRawWhenOnlyOneRotates(t *testing.T) {
+	const udid = "AAAAAAAA-0000-0000-0000-000000000001"
+	portraitShapedTree := `[{"AXLabel":"App","type":"Application","AXFrame":"{{0, 0}, {402, 874}}"}]`
+	cli, runner, out, root := rotationCLI(t, udid, devicePreferencesDump, portraitShapedTree)
+	writeRawScreenCache(t, root, udid, `{"portrait_width":402,"portrait_height":874,"angle":90}`)
+	if err := cli.Run(context.Background(), []string{"ui", "swipe",
+		"--start-x", "100", "--start-y", "200", "--end-x", "100", "--end-y", "500"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if strings.Contains(got, "rotation=") {
+		t.Fatalf("a half-rotatable swipe was reported as rotated: %q", got)
+	}
+	if !strings.Contains(got, "rotation_unavailable=90") {
+		t.Fatalf("the unapplied rotation was not surfaced: %q", got)
+	}
+	if !strings.Contains(got, "dispatched unrotated") {
+		t.Fatalf("the result line does not say the coordinates went out raw: %q", got)
+	}
+	joined := strings.Join(runner.commands, "\n")
+	if !strings.Contains(joined, "100 200 100 500") &&
+		!strings.Contains(joined, "--start-x 100 --start-y 200 --end-x 100 --end-y 500") {
+		t.Fatalf("the endpoints were not both dispatched raw: %q", runner.commands)
+	}
+	for _, bad := range []string{"202", "-98"} {
+		if strings.Contains(joined, bad) {
+			t.Fatalf("a rotated or off-screen endpoint was dispatched: %q", runner.commands)
+		}
+	}
+}
+
+// A 180 window rotation is indistinguishable, by tree shape, from a
+// portrait-locked app that never flipped: both report h > w. Mirroring the
+// point for an app still rendering plain portrait sends the tap to the
+// diagonally opposite corner, in bounds, stamped rotation=180 -- silently
+// wrong. Until something stronger than the shape can prove the flip, 180
+// dispatches raw and says so.
+const flippedPreferencesDump = `{
+    DevicePreferences =     {
+        "FFFFFFFF-0000-0000-0000-000000000006" =         {
+            SimulatorWindowOrientation = PortraitUpsideDown;
+            SimulatorWindowRotationAngle = 180;
+        };
+    };
+}`
+
+func TestUITapDispatchesRawUnderA180Rotation(t *testing.T) {
+	const udid = "FFFFFFFF-0000-0000-0000-000000000006"
+	portraitTree := `[{"AXLabel":"App","type":"Application","AXFrame":"{{0, 0}, {402, 874}}"}]`
+	cli, runner, out, root := rotationCLI(t, udid, flippedPreferencesDump, portraitTree)
+	if err := cli.Run(context.Background(), []string{"ui", "tap", "--x", "150", "--y", "300"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if strings.Contains(got, "rotation=") || strings.Contains(got, "hid_x=") {
+		t.Fatalf("a 180 rotation was reported as applied: %q", got)
+	}
+	if !strings.Contains(got, "rotation_unavailable=180") {
+		t.Fatalf("the unapplied 180 was not surfaced: %q", got)
+	}
+	joined := strings.Join(runner.commands, "\n")
+	if !strings.Contains(joined, "idb ui tap 150 300") {
+		t.Fatalf("the tap was not dispatched at its original coordinates: %q", runner.commands)
+	}
+	if strings.Contains(joined, "describe-ui") {
+		t.Fatalf("an unappliable 180 still probed the tree: %q", runner.commands)
+	}
+	if _, err := os.Stat(filepath.Join(root, MavDir, "screens")); !os.IsNotExist(err) {
+		t.Fatalf("a 180 run wrote a screen cache")
+	}
+}
+
+// The angle key only re-probes on a rotation change, so a foreground app
+// that went portrait-shaped under the SAME angle sails through on a cache
+// hit and its in-bounds taps rotate 100pt away (200,300 -> 102,200 -- inside
+// the portrait surface, so the off-screen guard cannot catch it). The
+// --verify snapshot is a tree read the caller already paid for; its shape
+// contradicting the applied rotation must downgrade the tap to a raw
+// dispatch with the angle surfaced.
+func TestVerifiedTapCatchesAStaleSameAngleCacheHit(t *testing.T) {
+	const udid = "AAAAAAAA-0000-0000-0000-000000000001"
+	portraitShapedTree := `[{"AXLabel":"App","type":"Application","AXFrame":"{{0, 0}, {402, 874}}"}]`
+	cli, runner, out, root := rotationCLI(t, udid, devicePreferencesDump, portraitShapedTree)
+	writeRawScreenCache(t, root, udid, `{"portrait_width":402,"portrait_height":874,"angle":90}`)
+	if err := cli.Run(context.Background(), []string{"ui", "tap", "--x", "200", "--y", "300", "--verify"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if strings.Contains(got, "rotation=90") || strings.Contains(got, "hid_x=") {
+		t.Fatalf("a rotation contradicted by the verify snapshot was reported as applied: %q", got)
+	}
+	if !strings.Contains(got, "rotation_unavailable=90") {
+		t.Fatalf("the contradicted rotation was not surfaced: %q", got)
+	}
+	joined := strings.Join(runner.commands, "\n")
+	if !strings.Contains(joined, "idb ui tap 200 300") {
+		t.Fatalf("the tap was not dispatched at its original coordinates: %q", runner.commands)
+	}
+	if strings.Contains(joined, "tap 102 200") {
+		t.Fatalf("the tap was dispatched into the wrong space: %q", runner.commands)
+	}
+}
+
+// Without --verify there is no snapshot to check against, and the point of
+// the cache is that a hit costs no tree read: the landscape cache-hit path
+// must keep rotating exactly as before.
+func TestUnverifiedCacheHitStillRotatesWithoutAProbe(t *testing.T) {
+	const udid = "AAAAAAAA-0000-0000-0000-000000000001"
+	landscapeTree := `[{"AXLabel":"App","type":"Application","AXFrame":"{{0, 0}, {874, 402}}"}]`
+	cli, runner, out, root := rotationCLI(t, udid, devicePreferencesDump, landscapeTree)
+	writeRawScreenCache(t, root, udid, `{"portrait_width":402,"portrait_height":874,"angle":90}`)
+	_ = root
+	if err := cli.Run(context.Background(), []string{"ui", "tap", "--x", "249", "--y", "202"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "rotation=90") {
+		t.Fatalf("a legitimate cache hit stopped rotating: %q", out.String())
+	}
+	if strings.Contains(strings.Join(runner.commands, "\n"), "describe-ui") {
+		t.Fatalf("an unverified cache hit probed the tree: %q", runner.commands)
+	}
+}
