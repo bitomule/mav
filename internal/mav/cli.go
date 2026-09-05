@@ -2586,14 +2586,11 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		result := CommandResult{}
 		if tapErr != nil {
 			result = CommandResult{Stderr: tapErr.Error(), Err: tapErr}
+			// No ambiguous-locator hint here: this branch dispatches a
+			// point, never a selector, so the tool has nothing to call
+			// ambiguous. The hint lives in the semantic branch, which is
+			// the only one that can produce that message.
 			tapFields := map[string]string{"stderr": firstLine(result.Stderr)}
-			// An ambiguous locator is not a tap failure: the selector
-			// describes several things and the tool refuses to choose on
-			// its own, which is correct. But the message is the tool's and
-			// does not say what to do, so the agent is left staring.
-			if strings.Contains(result.Stderr, "must be unique") {
-				tapFields["next"] = "the selector matches more than one element; use --id, or a longer --text that only matches one"
-			}
 			return Fail("ui_tap_failed", c.withFallbackFields(tapFields)).Write(c.Stdout)
 		}
 		c.appendCurrentCommand("mav ui tap --x "+x+" --y "+y, result)

@@ -61,19 +61,28 @@ func TestUITapKeepsOriginalFailureWhenTreeCannotResolveEither(t *testing.T) {
 	}
 	runner := &sequenceRecordingRunner{
 		tools: cfg.Tools,
-		out:   map[string]string{"axe describe-ui": `[{"AXLabel":"Otra cosa","type":"Button","AXFrame":"{{0, 0}, {10, 10}}"}]`},
+		out:   map[string]string{"axe describe-ui": `[{"AXUniqueId":"otra_cosa","type":"Button","AXFrame":"{{0, 0}, {10, 10}}"}]`},
 		err: map[string]CommandResult{
-			"axe tap --label Entendido": {Stderr: "Error: DecodingError.typeMismatch", Err: os.ErrInvalid},
+			"axe tap --id got_it": {Stderr: "Error: DecodingError.typeMismatch", Err: os.ErrInvalid},
 		},
 	}
 	var out bytes.Buffer
 	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
-	allowFail(t, cli.Run(context.Background(), []string{"ui", "tap", "--text", "Entendido"}))
+	allowFail(t, cli.Run(context.Background(), []string{"ui", "tap", "--id", "got_it"}))
 	got := out.String()
-	if !strings.Contains(got, "fail code=ui_tap") {
-		t.Fatalf("expected a failure, got %q", got)
+	// The exact code, with its delimiter: "fail code=ui_tap" alone also
+	// matches ui_tap_text_no_label_match and any future ui_tap_* code, so a
+	// regression that reported a different failure would still pass.
+	if !strings.Contains(got, "fail code=ui_tap_failed ") {
+		t.Fatalf("expected ui_tap_failed, got %q", got)
+	}
+	if !strings.Contains(got, "DecodingError") {
+		t.Fatalf("the tool's own error was swallowed: %q", got)
 	}
 	if strings.Contains(got, "selector_via=tree") {
 		t.Fatalf("fallback should not have reported success: %q", got)
+	}
+	if strings.Contains(strings.Join(runner.commands, "\n"), "idb ui tap") {
+		t.Fatalf("an unresolved selector still dispatched a coordinate tap: %q", runner.commands)
 	}
 }
