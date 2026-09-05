@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+### Coordinate gestures land where the tree says, on a rotated simulator
+
+After rotating a simulator to landscape, `mav ui tap --x --y` kept dispatching
+into the device's **portrait** point space while `mav ui tree` reported the
+rotated one — the only place a caller gets coordinates from. A tap read off the
+tree and handed straight back to mav landed somewhere else on screen, or on
+nothing at all. Every flow that ran in landscape had to carry the rotation by
+hand, which is a transformation that belongs to MAV.
+
+Simulator.app rotates the window, not the touch surface: idb and axe dispatch
+HID events in the device's native portrait space whatever the window is doing.
+MAV now reads the rotation Simulator.app applied (a per-device user default,
+~13ms) and rotates coordinate gestures into that space before dispatching.
+
+- **Nothing changes when nothing is rotated.** An angle of 0 — every headless
+  run, every simulator nobody rotated — is the identity, costs one `defaults
+  read`, and neither touches the result line nor reads the tree.
+- When a rotation is applied, the result line carries `rotation=90|180|270` and
+  the `hid_x`/`hid_y` the gesture actually went out at, next to the `x`/`y` you
+  asked for.
+- The device's portrait size is probed from the accessibility tree once per
+  UDID and cached in `.mav/screens/`. Only rotated runs ever probe it.
+
+**Breaking for anyone already compensating by hand.** A flow that pre-rotates
+its own coordinates for a landscape simulator will now be rotated twice. Remove
+the manual compensation and use the coordinates `mav ui tree` reports. No flow
+in this repo's examples did this, and a sweep of the flows in the repos this was
+reported from found none either — the compensation was being done interactively.
+
+Covered: `ui tap` (and therefore every selector tap, which resolves to
+coordinates) and `ui swipe`, both endpoints. **Not** covered: gestures that go
+through baguette — `longPress`, `pinch`, `rotate`, `twoFingerPan`, and
+`doubleTap`'s worker fast path. Their HID space was not measured, and
+half-fixing `doubleTap` so it behaves differently depending on whether the
+worker is up would be worse than leaving it.
+
 ### A selector tap no longer dies with the tool's decoding error
 
 `mav ui tap --id X` and `mav ui tap --text X` failed with

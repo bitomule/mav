@@ -1,0 +1,210 @@
+package mav
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+
+	"github.com/bitomule/mav/internal/mav/drivers"
+)
+
+// Simulator.app rotates the window, not the touch surface. idb and axe
+// dispatch HID events in the device's native portrait point space whatever
+// the window is doing, while the accessibility tree — the only place a caller
+// gets coordinates from — reports the rotated space. So on a simulator that
+// has been rotated, a point read off `mav ui tree` and handed straight to
+// `mav ui tap --x --y` lands somewhere else entirely, and every flow had to
+// carry the rotation by hand.
+//
+// The rotation Simulator.app applied is a user default it keeps per device.
+// Reading it costs ~13ms, and when it is 0 — every headless run, every
+// simulator nobody rotated — nothing else is read and no coordinate changes.
+const simulatorPrefsDomain = "com.apple.iphonesimulator"
+
+// screenCache is the device's native portrait size in points. It never
+// changes for a given UDID, so it is probed once (from the accessibility
+// tree, the only source that speaks points) and kept next to the project's
+// other state.
+type screenCache struct {
+	PortraitWidth  int `json:"portrait_width"`
+	PortraitHeight int `json:"portrait_height"`
+}
+
+func screenCachePath(root, udid string) string {
+	return filepath.Join(root, MavDir, "screens", udid+".json")
+}
+
+func readScreenCache(root, udid string) (screenCache, bool) {
+	data, err := os.ReadFile(screenCachePath(root, udid))
+	if err != nil {
+		return screenCache{}, false
+	}
+	var cached screenCache
+	if json.Unmarshal(data, &cached) != nil || cached.PortraitWidth <= 0 || cached.PortraitHeight <= 0 {
+		return screenCache{}, false
+	}
+	return cached, true
+}
+
+func writeScreenCache(root, udid string, cached screenCache) {
+	path := screenCachePath(root, udid)
+	if os.MkdirAll(filepath.Dir(path), 0o755) != nil {
+		return
+	}
+	data, err := json.Marshal(cached)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(path, data, 0o644)
+}
+
+// simulatorRotationAngle reports the rotation Simulator.app is showing for
+// this device, in degrees clockwise from portrait: 0, 90, 180 or 270. A
+// device Simulator.app has never rotated has no entry at all, which is the
+// same thing as 0. Anything unreadable is also 0, because the fallback has to
+// be "leave the coordinates alone" — that is what MAV did before this
+// existed, and a wrong non-zero angle would break portrait runs, which are
+// almost all of them.
+func simulatorRotationAngle(runner Runner, udid string) int {
+	if udid == "" {
+		return 0
+	}
+	// `defaults read` goes through cfprefsd, so it sees a rotation the
+	// moment it happens. Reading the plist file directly does not: cfprefsd
+	// flushes it lazily, and MAV would act on a stale angle.
+	res := runner.Run(context.Background(), "defaults", "read", simulatorPrefsDomain, "DevicePreferences")
+	if res.Err != nil {
+		return 0
+	}
+	return parseRotationAngle(res.Stdout, udid)
+}
+
+// parseRotationAngle picks one device's SimulatorWindowRotationAngle out of
+// the old-style plist `defaults read` prints. The blocks nest (window
+// geometry is a dictionary of its own), so the end of a device's block is
+// found by the next device key rather than by the next closing brace.
+func parseRotationAngle(dump, udid string) int {
+	start := strings.Index(dump, `"`+udid+`"`)
+	if start < 0 {
+		return 0
+	}
+	block := dump[start:]
+	// A device key is quoted at the same indentation for every entry; the
+	// first one after this device's own key ends its block.
+	if next := strings.Index(block[1:], "\n    \""); next >= 0 {
+		block = block[:next+1]
+	}
+	const key = "SimulatorWindowRotationAngle"
+	at := strings.Index(block, key)
+	if at < 0 {
+		return 0
+	}
+	rest := block[at+len(key):]
+	rest = strings.TrimLeft(rest, " =")
+	end := strings.IndexAny(rest, ";\n")
+	if end < 0 {
+		return 0
+	}
+	// The value's shape varies by rotation: Simulator.app writes 90 bare
+	// but LandscapeRight as the quoted string "-90", and PlistBuddy renders
+	// the same key as 90.000000. All three have to parse, and a quoted -90
+	// falling through to 0 would leave exactly one of the two landscapes
+	// broken -- the one the original report came from.
+	value := strings.TrimSpace(rest[:end])
+	value = strings.Trim(value, `"`)
+	if dot := strings.Index(value, "."); dot >= 0 {
+		value = value[:dot]
+	}
+	angle, err := strconv.Atoi(value)
+	if err != nil {
+		return 0
+	}
+	switch ((angle % 360) + 360) % 360 {
+	case 90:
+		return 90
+	case 180:
+		return 180
+	case 270:
+		return 270
+	}
+	return 0
+}
+
+// portraitScreenSize returns the device's native portrait size in points,
+// probing the accessibility tree once per UDID and caching the result. It is
+// only ever called on a rotated simulator, so the tree root is guaranteed to
+// be reporting the rotated space and the portrait size is its transpose.
+func (c CLI) portraitScreenSize(ctx context.Context, cfg Config, angle int) (screenCache, bool) {
+	udid := cfg.SimulatorUDID
+	if udid == "" {
+		return screenCache{}, false
+	}
+	if cached, ok := readScreenCache(c.Root, udid); ok {
+		return cached, true
+	}
+	described, err := c.describeUITree(ctx, cfg, "auto", false)
+	if err != nil || described.Result.Err != nil {
+		return screenCache{}, false
+	}
+	elements := ExtractElementsRaw(described.Result.Stdout)
+	if len(elements) == 0 {
+		return screenCache{}, false
+	}
+	_, _, w, h, ok := parseElementFrame(elements[0].Frame)
+	if !ok || w <= 0 || h <= 0 {
+		return screenCache{}, false
+	}
+	cached := screenCache{PortraitWidth: int(w), PortraitHeight: int(h)}
+	if angle == 90 || angle == 270 {
+		cached = screenCache{PortraitWidth: int(h), PortraitHeight: int(w)}
+	}
+	writeScreenCache(c.Root, udid, cached)
+	return cached, true
+}
+
+// addRotationFields records that a gesture's coordinates were rotated, and
+// where they actually went. Nothing is added when nothing moved, so the
+// common portrait result line is unchanged.
+func addRotationFields(fields map[string]string, rotation, hidX, hidY int) {
+	if rotation == 0 {
+		return
+	}
+	fields["rotation"] = strconv.Itoa(rotation)
+	fields["hid_x"] = strconv.Itoa(hidX)
+	fields["hid_y"] = strconv.Itoa(hidY)
+}
+
+// hidPoint maps a point in the accessibility tree's coordinate space to the
+// space idb and axe dispatch touches in. On an unrotated simulator — and on
+// every non-simulator target — it is the identity and costs one `defaults
+// read`. The reported angle is 0 whenever nothing had to move, so a caller
+// can put `rotation=` on its result line and have it mean something.
+func (c CLI) hidPoint(ctx context.Context, cfg Config, x, y int) (int, int, int) {
+	if targetKind(cfg) != drivers.KindSim {
+		return x, y, 0
+	}
+	angle := simulatorRotationAngle(c.Runner, cfg.SimulatorUDID)
+	if angle == 0 {
+		return x, y, 0
+	}
+	screen, ok := c.portraitScreenSize(ctx, cfg, angle)
+	if !ok {
+		// Without the screen size there is no correct rotation to apply.
+		// Passing the point through unchanged is the old behaviour, which
+		// is wrong here but is at least the wrongness callers already
+		// compensate for; inventing a size would be a new one.
+		return x, y, 0
+	}
+	switch angle {
+	case 90:
+		return screen.PortraitWidth - y, x, 90
+	case 180:
+		return screen.PortraitWidth - x, screen.PortraitHeight - y, 180
+	case 270:
+		return y, screen.PortraitHeight - x, 270
+	}
+	return x, y, 0
+}

@@ -2581,8 +2581,9 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		if verify {
 			before = c.snapshotForVerification(ctx, cfg)
 		}
+		hidX, hidY, rotation := c.hidPoint(ctx, cfg, xi, yi)
 		tapErr := error(nil)
-		_, tapErr = td.Tap(ctx, target, drivers.TapSpec{X: xi, Y: yi})
+		_, tapErr = td.Tap(ctx, target, drivers.TapSpec{X: hidX, Y: hidY})
 		result := CommandResult{}
 		if tapErr != nil {
 			result = CommandResult{Stderr: tapErr.Error(), Err: tapErr}
@@ -2595,6 +2596,7 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		}
 		c.appendCurrentCommand("mav ui tap --x "+x+" --y "+y, result)
 		coordFields := map[string]string{"x": x, "y": y, "driver": driver.ID(), "route_recorded": "false"}
+		addRotationFields(coordFields, rotation, hidX, hidY)
 		if verify {
 			coordFields["verified"] = c.verifyTapChangedSomething(ctx, cfg, before)
 		}
@@ -3127,10 +3129,18 @@ func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args [
 	sy, _ := strconv.Atoi(startY)
 	ex, _ := strconv.Atoi(endX)
 	ey, _ := strconv.Atoi(endY)
-	if err := gd.Swipe(ctx, target, drivers.SwipeSpec{Direction: direction, StartX: sx, StartY: sy, EndX: ex, EndY: ey}); err != nil {
+	// Both endpoints go through the same rotation: a swipe is two points in
+	// the same space, and rotating one of them would turn a vertical drag
+	// into a diagonal one.
+	hidSX, hidSY, rotation := c.hidPoint(ctx, cfg, sx, sy)
+	hidEX, hidEY, _ := c.hidPoint(ctx, cfg, ex, ey)
+	if err := gd.Swipe(ctx, target, drivers.SwipeSpec{Direction: direction, StartX: hidSX, StartY: hidSY, EndX: hidEX, EndY: hidEY}); err != nil {
 		return Fail("ui_swipe_failed", map[string]string{"stderr": firstLine(err.Error())}).Write(c.Stdout)
 	}
 	fields := map[string]string{"direction": direction, "driver": driver.ID()}
+	if rotation != 0 {
+		fields["rotation"] = strconv.Itoa(rotation)
+	}
 	if customCoordinates {
 		fields["direction"] = "custom"
 		fields["start_x"] = startX

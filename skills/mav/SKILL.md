@@ -193,6 +193,13 @@ entirely.
    unambiguous. Use text as the last option because labels change with
    localization and copy edits. Use `mav ui wait --id`, `--text`, or `--value`
    for readiness checks.
+
+   Coordinates are always in the space `mav ui tree` reports. On a rotated
+   simulator `ui tap` and `ui swipe` rotate them into the touch surface's own
+   space for you and say so with `rotation=` and `hid_x`/`hid_y` on the result
+   line — do **not** pre-rotate them yourself, that compensates twice. The
+   baguette gestures (`longPress`, `pinch`, `rotate`, `twoFingerPan`) do not
+   carry this transform.
 8. `mav ui tree` may report a natural screen id when the AX root already has a
    `View`-suffix identifier, such as `SettingsView` → `settings-view`. This is
    a labelling/observability signal only. Selectors for tapping still work
