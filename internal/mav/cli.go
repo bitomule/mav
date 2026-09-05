@@ -58,6 +58,13 @@ type CLI struct {
 	// plain coordinate tap: the agent would never learn that the selector
 	// path is broken on this machine.
 	tapFallback map[string]string
+
+	// tapFallbackSink, when set, receives the tree-fallback context the
+	// moment tapSelectorViaTree dispatches. The flow "tap" step runs uiTap
+	// into a private buffer and discards its ok line on success, so without
+	// this the fallback diagnosis (selector_via/selector_error/next) would
+	// never reach the step record inside `mav run`.
+	tapFallbackSink *map[string]string
 }
 
 func (c CLI) withSkipBuild(skip bool) CLI {
@@ -2637,6 +2644,9 @@ func (c CLI) tapSelectorViaTree(ctx context.Context, opts GlobalOptions, cfg Con
 	if strings.Contains(reason, "DecodingError") {
 		fallback["next"] = "the installed axe cannot resolve selectors on this screen; brew upgrade cameroncooke/axe/axe (fixed in 1.7.0)"
 	}
+	if c.tapFallbackSink != nil {
+		*c.tapFallbackSink = fallback
+	}
 	return c.withTapFallback(fallback).uiTap(ctx, opts, cfg, append(onlyFastPathArgs(args),
 		"--x", strconv.Itoa(int(mx+mw/2)), "--y", strconv.Itoa(int(my+mh/2))))
 }
@@ -5079,13 +5089,26 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 		if cfgErr != nil {
 			return flowStepTargetFailure(step, cfgErr)
 		}
-		err := c.withStdout(&out).uiTap(ctx, GlobalOptions{PreferDriver: prefer}, cfg, args)
+		// The tap runs into a private buffer, so the ok line that would
+		// carry the tree-fallback diagnosis is discarded. The sink threads
+		// it back out; without it a flow tap on a machine with a broken
+		// selector path records a plain tap and the agent never learns.
+		var fallback map[string]string
+		sub := c.withStdout(&out)
+		sub.tapFallbackSink = &fallback
+		err := sub.uiTap(ctx, GlobalOptions{PreferDriver: prefer}, cfg, args)
+		fields := copyParams(step.Params)
+		for _, key := range []string{"selector_via", "selector_error", "next"} {
+			if value := fallback[key]; value != "" && fields[key] == "" {
+				fields[key] = value
+			}
+		}
 		// An optional tap is skipped by the shared failure policy, like
 		// every other optional step. Swallowing the error here instead
 		// dropped the reason on the floor: the run recorded skipped=true
 		// with no cause and finished green, so a flow that never tapped
 		// anything read exactly like one that did.
-		return copyParams(step.Params), commandOutputErr(err, out.String(), "tap_failed")
+		return fields, commandOutputErr(err, out.String(), "tap_failed")
 	case "doubleTap":
 		args := append(selectorCLIArgs(flowStepSelector(step)), flowArgs(step.Params, "--x", "x", "--y", "y", "--duration", "duration")...)
 		var out bytes.Buffer
