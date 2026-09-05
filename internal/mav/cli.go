@@ -70,6 +70,22 @@ func (c CLI) withTapFallback(fields map[string]string) CLI {
 	return c
 }
 
+// withFallbackFields copies c.tapFallback into fields, letting fields' own
+// keys win. Every exit of a coordinate tap -- success or failure -- must
+// carry this, or a tap that only reached coordinates because the selector
+// path failed loses that context (selector_via/selector_error/next) the
+// moment the coordinate tap itself also fails.
+func (c CLI) withFallbackFields(fields map[string]string) map[string]string {
+	out := map[string]string{}
+	for key, value := range c.tapFallback {
+		out[key] = value
+	}
+	for key, value := range fields {
+		out[key] = value
+	}
+	return out
+}
+
 type GlobalOptions struct {
 	Verbose      bool
 	Raw          bool
@@ -2523,7 +2539,7 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 					fields["next"] = caps.IDBNext
 				}
 			}
-			return Fail("tool_missing", fields).Write(c.Stdout)
+			return Fail("tool_missing", c.withFallbackFields(fields)).Write(c.Stdout)
 		}
 		xi, _ := strconv.Atoi(x)
 		yi, _ := strconv.Atoi(y)
@@ -2545,11 +2561,18 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		}
 		driver, _, err := c.router().Route(ctx, drivers.CapCoordTap, target, coordPrefer)
 		if err != nil {
-			return Fail("tool_missing", coordMissing()).Write(c.Stdout)
+			return Fail("tool_missing", c.withFallbackFields(coordMissing())).Write(c.Stdout)
 		}
 		td, ok := driver.(drivers.TapDriver)
 		if !ok {
-			return Fail("tool_missing", coordMissing()).Write(c.Stdout)
+			return Fail("tool_missing", c.withFallbackFields(coordMissing())).Write(c.Stdout)
+		}
+		// The BEFORE tree is only read when verification is requested,
+		// because reading it costs seconds and this is the hot loop.
+		verify := hasFlag(args, "--verify")
+		var before []Element
+		if verify {
+			before = c.snapshotForVerification(ctx, cfg)
 		}
 		tapErr := error(nil)
 		_, tapErr = td.Tap(ctx, target, drivers.TapSpec{X: xi, Y: yi})
@@ -2564,13 +2587,14 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			if strings.Contains(result.Stderr, "must be unique") {
 				tapFields["next"] = "the selector matches more than one element; use --id, or a longer --text that only matches one"
 			}
-			return Fail("ui_tap_failed", tapFields).Write(c.Stdout)
+			return Fail("ui_tap_failed", c.withFallbackFields(tapFields)).Write(c.Stdout)
 		}
 		c.appendCurrentCommand("mav ui tap --x "+x+" --y "+y, result)
 		coordFields := map[string]string{"x": x, "y": y, "driver": driver.ID(), "route_recorded": "false"}
-		for key, value := range c.tapFallback {
-			coordFields[key] = value
+		if verify {
+			coordFields["verified"] = c.verifyTapChangedSomething(ctx, cfg, before)
 		}
+		coordFields = c.withFallbackFields(coordFields)
 		return c.writeFastPathResult(ctx, cfg, args, "ui.tap", coordFields)
 	}
 	return Fail("tap_target_missing", map[string]string{"usage": "mav ui tap --id ID | --x X --y Y | --text TEXT"}).Write(c.Stdout)
@@ -2588,12 +2612,19 @@ var errSelectorTreeFallbackUnavailable = errors.New("selector_tree_fallback_unav
 // (SwiftUI TabView items, for one), so this runs as a retry rather than as a
 // replacement.
 func (c CLI) tapSelectorViaTree(ctx context.Context, opts GlobalOptions, cfg Config, args []string, selector Selector, prefer string, reason string) error {
+	// Without a coordinate driver the recursive uiTap call below cannot run
+	// at all, and it would report ITS OWN tool_missing (already written to
+	// stdout) instead of leaving the caller's original diagnosis in place --
+	// so bail before dispatching, not after.
+	if !c.resolveCapabilities(ctx, cfg).CoordinateTap {
+		return errSelectorTreeFallbackUnavailable
+	}
 	matched, matchErr := c.resolveSelector(ctx, cfg, selector, prefer)
 	if matchErr != nil {
 		return errSelectorTreeFallbackUnavailable
 	}
 	mx, my, mw, mh, ok := parseElementFrame(matched.Frame)
-	if !ok {
+	if !ok || mw <= 0 || mh <= 0 {
 		return errSelectorTreeFallbackUnavailable
 	}
 	fallback := map[string]string{
@@ -4232,10 +4263,13 @@ func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) err
 			failFields["code"] = err.Error()
 			failFields["elapsed"] = elapsed.String()
 			failFields["run"] = run.ID
+			if len(skipped) > 0 {
+				failFields["skipped_steps"] = strings.Join(skipped, ",")
+			}
 			runData, _ := json.MarshalIndent(map[string]any{
 				"id": run.ID, "name": flow.Name, "status": "failed", "step": index + 1,
 				"action": step.Action, "code": err.Error(), "elapsed": time.Since(start).String(),
-				"outputs": flowVariableOutputs(bindings),
+				"outputs": flowVariableOutputs(bindings), "skipped": skipped,
 			}, "", "  ")
 			_ = os.WriteFile(filepath.Join(run.Dir, "run.json"), runData, 0o644)
 			c.cleanupFailedFlow(ctx, run, failFields)
@@ -5407,7 +5441,11 @@ func (c CLI) executeWhenFlowStepWithOptions(ctx context.Context, opts GlobalOpti
 			}
 			return fields, err
 		}
-		appendFlowStep(run, index, "when."+child.Action, elapsed, "ok", childFields)
+		childStatus := "ok"
+		if childFields["skipped"] == "true" {
+			childStatus = "skipped"
+		}
+		appendFlowStep(run, index, "when."+child.Action, elapsed, childStatus, childFields)
 	}
 	fields["executed"] = strconv.Itoa(len(step.Do))
 	return fields, nil
@@ -5449,7 +5487,11 @@ func (c CLI) executeWhenFlowStepBoundWithOptions(ctx context.Context, opts Globa
 			}
 			return fields, err
 		}
-		appendFlowStep(run, index, "when."+child.Action, elapsed, "ok", childFields)
+		childStatus := "ok"
+		if childFields["skipped"] == "true" {
+			childStatus = "skipped"
+		}
+		appendFlowStep(run, index, "when."+child.Action, elapsed, childStatus, childFields)
 	}
 	fields["executed"] = strconv.Itoa(len(step.Do))
 	return fields, nil
@@ -5471,6 +5513,7 @@ func (c CLI) executeWhileNotVisibleFlowStepBoundWithOptions(ctx context.Context,
 	fields := copyParams(step.Params)
 	iterations := 0
 	executed := 0
+	skippedChildren := 0
 	for {
 		matched, err := c.evaluateConditionSet(ctx, step.Params, step.Any, step.All, step.Not, prefer)
 		if err != nil {
@@ -5480,12 +5523,18 @@ func (c CLI) executeWhileNotVisibleFlowStepBoundWithOptions(ctx context.Context,
 			fields["matched"] = "true"
 			fields["iterations"] = strconv.Itoa(iterations)
 			fields["executed"] = strconv.Itoa(executed)
+			if skippedChildren > 0 {
+				fields["skipped"] = strconv.Itoa(skippedChildren)
+			}
 			return fields, nil
 		}
 		if time.Since(start) >= timeout {
 			fields["matched"] = "false"
 			fields["iterations"] = strconv.Itoa(iterations)
 			fields["executed"] = strconv.Itoa(executed)
+			if skippedChildren > 0 {
+				fields["skipped"] = strconv.Itoa(skippedChildren)
+			}
 			return fields, fmt.Errorf("while_timeout")
 		}
 		iterations++
@@ -5508,8 +5557,14 @@ func (c CLI) executeWhileNotVisibleFlowStepBoundWithOptions(ctx context.Context,
 				}
 				return fields, err
 			}
-			executed++
-			appendFlowStep(run, index, "whileNotVisible."+child.Action, elapsed, "ok", childFields)
+			childStatus := "ok"
+			if childFields["skipped"] == "true" {
+				childStatus = "skipped"
+				skippedChildren++
+			} else {
+				executed++
+			}
+			appendFlowStep(run, index, "whileNotVisible."+child.Action, elapsed, childStatus, childFields)
 			if time.Since(start) >= timeout {
 				break
 			}
