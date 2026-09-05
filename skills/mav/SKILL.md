@@ -200,9 +200,17 @@ entirely.
    pre-rotate them yourself, that compensates twice. `ui tap` says so with
    `rotation=` and `hid_x`/`hid_y` on the result line; `ui swipe` says so
    with `rotation=` only (it has two rotated endpoints, so there is no
-   single `hid_x`/`hid_y` pair to report). `ui swipe --direction` without
-   explicit coordinates uses fixed portrait-space defaults and is never
-   rotated. The baguette gestures (`longPress`, `pinch`, `rotate`,
+   single `hid_x`/`hid_y` pair to report). Pass all four coordinate flags or
+   none: a partial set fails `swipe_coordinates_incomplete`, because the
+   endpoints you leave out are direction defaults in the other coordinate
+   space. `ui swipe --direction` without explicit coordinates uses fixed
+   portrait-space defaults, which are dispatched unrotated **and are not
+   axis-compensated**: on a rotated simulator the drag runs along the wrong
+   axis of the screen you are looking at, so `--direction up` does not scroll
+   a vertical list (and `ui scrollUntil`, which only swipes by direction, just
+   times out). Both say so with `rotation_unavailable=`; pass explicit
+   coordinates read from `mav ui tree` instead. The baguette gestures
+   (`longPress`, `pinch`, `rotate`,
    `twoFingerPan`) do not carry this transform.
 8. `mav ui tree` may report a natural screen id when the AX root already has a
    `View`-suffix identifier, such as `SettingsView` → `settings-view`. This is

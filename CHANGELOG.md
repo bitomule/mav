@@ -23,7 +23,25 @@ MAV now reads the rotation Simulator.app applied (a per-device user default,
   the `hid_x`/`hid_y` the gesture actually went out at, next to the `x`/`y` you
   asked for.
 - The device's portrait size is probed from the accessibility tree once per
-  UDID and cached in `.mav/screens/`. Only rotated runs ever probe it.
+  UDID and cached in `.mav/screens/`. Only rotated runs ever probe it. The
+  probe checks the tree's own shape against the angle before trusting it — a
+  portrait-locked app under a rotated window is not rotated — and the cache
+  records the angle it was probed under, so a rotation change re-probes
+  instead of reusing a check that was made about a different screen.
+- A rotation that would send the gesture off the touch surface is never
+  reported as applied. That is proof the point was not in the space the angle
+  claimed, so the coordinates go out untouched with `rotation_unavailable=`
+  instead of an `ok` carrying a negative `hid_x`.
+- `ui swipe` now requires all four of `--start-x/--start-y/--end-x/--end-y` or
+  none of them: `swipe_coordinates_incomplete`. Each endpoint left out kept a
+  direction default, which is a portrait-HID-space constant, and the rotation
+  gate then transformed it as though the caller had read it off the tree.
+- `ui swipe --direction` (and therefore `ui scrollUntil`, which only ever
+  swipes by direction) still dispatches its fixed portrait-space defaults
+  unrotated — and now says that on a rotated simulator the drag is **not**
+  axis-compensated, so an "up" swipe runs sideways. It carries
+  `rotation_unavailable=` and a `next` pointing at explicit coordinates rather
+  than returning a bare `ok` for a gesture that did nothing.
 
 **Breaking for anyone already compensating by hand.** A flow that pre-rotates
 its own coordinates for a landscape simulator will now be rotated twice. Remove

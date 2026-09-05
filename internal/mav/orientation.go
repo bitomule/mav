@@ -27,10 +27,14 @@ const simulatorPrefsDomain = "com.apple.iphonesimulator"
 // screenCache is the device's native portrait size in points. It never
 // changes for a given UDID, so it is probed once (from the accessibility
 // tree, the only source that speaks points) and kept next to the project's
-// other state.
+// other state. Angle is the rotation the probe ran under: the size is
+// trustworthy only while that is still the rotation in effect, because the
+// probe's tree-shape check is what proved the tree really was reporting the
+// rotated space.
 type screenCache struct {
 	PortraitWidth  int `json:"portrait_width"`
 	PortraitHeight int `json:"portrait_height"`
+	Angle          int `json:"angle"`
 }
 
 func screenCachePath(root, udid string) string {
@@ -141,16 +145,21 @@ func parseRotationAngle(dump, udid string) int {
 // before it is trusted or cached: a 90/270 angle requires a landscape
 // (w > h) tree root, and 0/180 requires a portrait (h > w) one. A mismatch
 // means the tree is not actually reporting the rotated space, so nothing is
-// cached and the caller must not rotate anything either. An existing cache
-// entry is trusted without re-probing — it was only ever written once this
-// same check had already passed — which keeps the hot path to one probe per
-// UDID.
+// cached and the caller must not rotate anything either.
+//
+// A cache entry is reused without re-probing only while the angle it was
+// probed under is still the angle in effect, which keeps the hot path to one
+// probe per UDID per rotation. Trusting it across a rotation change would
+// re-open the hole the shape check exists to close: the cached size stays
+// right, but nothing would have re-checked whether the tree is still
+// reporting the rotated space, and a portrait tree read under a 90 angle
+// rotates to an off-screen point.
 func (c CLI) portraitScreenSize(ctx context.Context, cfg Config, angle int) (screenCache, bool) {
 	udid := cfg.SimulatorUDID
 	if udid == "" {
 		return screenCache{}, false
 	}
-	if cached, ok := readScreenCache(c.Root, udid); ok {
+	if cached, ok := readScreenCache(c.Root, udid); ok && cached.Angle == angle {
 		return cached, true
 	}
 	described, err := c.describeUITree(ctx, cfg, "auto", false)
@@ -186,9 +195,9 @@ func (c CLI) portraitScreenSize(ctx context.Context, cfg Config, angle int) (scr
 	if !rotated && h <= w {
 		return screenCache{}, false
 	}
-	cached := screenCache{PortraitWidth: int(w), PortraitHeight: int(h)}
+	cached := screenCache{PortraitWidth: int(w), PortraitHeight: int(h), Angle: angle}
 	if rotated {
-		cached = screenCache{PortraitWidth: int(h), PortraitHeight: int(w)}
+		cached = screenCache{PortraitWidth: int(h), PortraitHeight: int(w), Angle: angle}
 	}
 	writeScreenCache(c.Root, udid, cached)
 	return cached, true
@@ -237,13 +246,43 @@ func (c CLI) hidPoint(ctx context.Context, cfg Config, x, y int) (int, int, int,
 		// compensate for; inventing a size would be a new one.
 		return x, y, 0, angle
 	}
+	hx, hy := x, y
 	switch angle {
 	case 90:
-		return screen.PortraitWidth - y, x, 90, angle
+		hx, hy = screen.PortraitWidth-y, x
 	case 180:
-		return screen.PortraitWidth - x, screen.PortraitHeight - y, 180, angle
+		hx, hy = screen.PortraitWidth-x, screen.PortraitHeight-y
 	case 270:
-		return y, screen.PortraitHeight - x, 270, angle
+		hx, hy = y, screen.PortraitHeight-x
+	default:
+		return x, y, 0, angle
 	}
-	return x, y, 0, angle
+	// A point read off the rotated tree always lands inside the portrait
+	// touch surface, so one that does not is proof the input was not in the
+	// space the angle says it was — a portrait-locked app, a stale angle, a
+	// caller passing HID-space constants. Reporting the transform as applied
+	// there would stamp rotation= and a negative, off-screen hid_x onto an ok
+	// line, which is worse than not rotating: the caller is told the
+	// coordinate it can trust is the one that cannot be tapped.
+	if hx < 0 || hy < 0 || hx >= screen.PortraitWidth || hy >= screen.PortraitHeight {
+		return x, y, 0, angle
+	}
+	return hx, hy, angle, angle
+}
+
+// directionSwipeRotationNext is the hint a direction-default swipe carries on
+// a rotated simulator. The coordinates swipeCoordinates returns are fixed
+// portrait-HID-space constants, so they are dispatched exactly as written —
+// which means the drag runs along the wrong axis of the rotated screen, and
+// no rotation can fix that because there is no tree-space input to rotate.
+const directionSwipeRotationNext = "direction swipes use fixed portrait-space coordinates and are not axis-compensated on a rotated simulator; pass --start-x/--start-y/--end-x/--end-y read from `mav ui tree`"
+
+// directionSwipeRotationAngle reports the rotation a direction-default
+// gesture is about to ignore, so the caller can say so instead of returning a
+// plain ok for a drag that went sideways.
+func (c CLI) directionSwipeRotationAngle(cfg Config) int {
+	if targetKind(cfg) != drivers.KindSim {
+		return 0
+	}
+	return simulatorRotationAngle(c.Runner, cfg.SimulatorUDID)
 }

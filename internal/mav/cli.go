@@ -3077,23 +3077,34 @@ func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args [
 		return Fail("swipe_direction_invalid", map[string]string{"direction": direction, "usage": "mav ui swipe [--direction up|down|left|right] [--start-x X --start-y Y --end-x X --end-y Y]"}).Write(c.Stdout)
 	}
 	startX, startY, endX, endY := swipeCoordinates(direction)
-	customCoordinates := false
-	if value := flagValue(args, "--start-x"); value != "" {
-		startX = value
-		customCoordinates = true
+	// A partial coordinate set is not a gesture. Every endpoint the caller
+	// leaves out keeps a direction default, which is a hard-coded portrait-
+	// HID-space constant, so the drag would mix one tree-space point with
+	// three touch-space ones and be rotated as if all four were tree-space.
+	// There is no reading of that a caller could have meant.
+	supplied := 0
+	for _, coordinate := range []struct {
+		flag  string
+		value *string
+	}{
+		{"--start-x", &startX},
+		{"--start-y", &startY},
+		{"--end-x", &endX},
+		{"--end-y", &endY},
+	} {
+		if value := flagValue(args, coordinate.flag); value != "" {
+			*coordinate.value = value
+			supplied++
+		}
 	}
-	if value := flagValue(args, "--start-y"); value != "" {
-		startY = value
-		customCoordinates = true
+	if supplied > 0 && supplied < 4 {
+		return Fail("swipe_coordinates_incomplete", map[string]string{
+			"supplied": strconv.Itoa(supplied),
+			"next":     "pass all four of --start-x --start-y --end-x --end-y, or none of them to use the --direction defaults",
+			"usage":    "mav ui swipe [--direction up|down|left|right] [--start-x X --start-y Y --end-x X --end-y Y]",
+		}).Write(c.Stdout)
 	}
-	if value := flagValue(args, "--end-x"); value != "" {
-		endX = value
-		customCoordinates = true
-	}
-	if value := flagValue(args, "--end-y"); value != "" {
-		endY = value
-		customCoordinates = true
-	}
+	customCoordinates := supplied == 4
 	target := targetFromConfig(cfg)
 	preferred := ""
 	switch {
@@ -3138,6 +3149,13 @@ func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args [
 		// caller read off `mav ui tree`, so they must not be rotated again.
 		hidSX, hidSY, rotation, detectedAngle = c.hidPoint(ctx, cfg, sx, sy)
 		hidEX, hidEY, _, _ = c.hidPoint(ctx, cfg, ex, ey)
+	} else {
+		// The defaults are dispatched verbatim, which on a rotated simulator
+		// drags along the wrong axis of the screen the caller is looking at.
+		// Nothing can be rotated to fix it, but returning a bare ok for a
+		// gesture that did nothing is how a scrollUntil burns every swipe and
+		// then reports only a timeout.
+		detectedAngle = c.directionSwipeRotationAngle(cfg)
 	}
 	if err := gd.Swipe(ctx, target, drivers.SwipeSpec{Direction: direction, StartX: hidSX, StartY: hidSY, EndX: hidEX, EndY: hidEY}); err != nil {
 		return Fail("ui_swipe_failed", map[string]string{"stderr": firstLine(err.Error())}).Write(c.Stdout)
@@ -3147,7 +3165,10 @@ func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args [
 		fields["rotation"] = strconv.Itoa(rotation)
 	} else if detectedAngle != 0 {
 		fields["rotation_unavailable"] = strconv.Itoa(detectedAngle)
-		fields["next"] = "coordinates were dispatched unrotated; re-run once the app's accessibility tree is available"
+		fields["next"] = directionSwipeRotationNext
+		if customCoordinates {
+			fields["next"] = "coordinates were dispatched unrotated; re-run once the app's accessibility tree is available"
+		}
 	}
 	if customCoordinates {
 		fields["direction"] = "custom"
@@ -6166,7 +6187,17 @@ func (c CLI) scrollUntilFlowConditionWithSelector(ctx context.Context, params ma
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	return map[string]string{"swipes": strconv.Itoa(maxSwipes), "direction": direction}, fmt.Errorf("scroll_until_timeout")
+	fields := map[string]string{"swipes": strconv.Itoa(maxSwipes), "direction": direction}
+	// scrollUntil only ever swipes by direction, so on a rotated simulator
+	// every one of those swipes dragged along the wrong axis and the timeout
+	// says nothing about why nothing scrolled.
+	if cfg, err := c.mustLoadConfig(); err == nil {
+		if angle := c.directionSwipeRotationAngle(cfg); angle != 0 {
+			fields["rotation_unavailable"] = strconv.Itoa(angle)
+			fields["next"] = directionSwipeRotationNext
+		}
+	}
+	return fields, fmt.Errorf("scroll_until_timeout")
 }
 
 func (c CLI) execFlowShell(ctx context.Context, run RunState, index int, params map[string]string) (map[string]string, error) {
