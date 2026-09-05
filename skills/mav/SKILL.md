@@ -431,6 +431,11 @@ records that step as `status: skipped` with the reason in `error`, and
 `run.json` lists it. Read those before believing a green run did everything the
 flow says.
 
+`skipped=N` always counts top-level steps. A `when` or `whileNotVisible` step
+that skipped an optional child inside its `do:` block reports that separately,
+as `skipped_children=N` on its own step record, and its `executed=N` counts
+only the children that actually ran.
+
 `mav run --prefer-driver axe flow.yaml` forces AXe for semantic UI steps. Use a
 per-step `prefer-driver` override when a single interaction needs to pin the
 driver:

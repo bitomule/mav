@@ -33,7 +33,13 @@ Optional taps now go through the same failure policy as every other optional
 step, which records why the step was skipped. Skipped steps are recorded as
 `status: skipped` rather than `ok`, `run.json` lists them, and the pass line
 carries `skipped=N` with `skipped_steps=<step>:<action>` so a green run says out
-loud what it did not do.
+loud what it did not do. The fail line carries the same two fields, so a run
+that skipped something before it broke does not read like one that did not.
+
+`skipped=N` always means top-level steps. A `when` or `whileNotVisible` step
+that skipped an optional child of its `do:` block reports `skipped_children=N`
+on its own record instead, and its `executed=N` now counts only the children
+that ran -- `when` used to report the whole block as executed.
 
 ## v0.16.6
 

@@ -4263,8 +4263,14 @@ func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) err
 			failFields["code"] = err.Error()
 			failFields["elapsed"] = elapsed.String()
 			failFields["run"] = run.ID
+			// `skipped` on a fail line means run-level skipped optional
+			// steps, the same thing run.json records. A step field of that
+			// name is a different count and must not be mistaken for it.
 			if len(skipped) > 0 {
+				failFields["skipped"] = strconv.Itoa(len(skipped))
 				failFields["skipped_steps"] = strings.Join(skipped, ",")
+			} else {
+				delete(failFields, "skipped")
 			}
 			runData, _ := json.MarshalIndent(map[string]any{
 				"id": run.ID, "name": flow.Name, "status": "failed", "step": index + 1,
@@ -5025,7 +5031,7 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 		}
 		return fields, stepErr
 	case "when":
-		return c.executeWhenFlowStepWithOptions(ctx, opts, run, index, step)
+		return c.executeWhenFlowStepBoundWithOptions(ctx, opts, run, index, step, nil)
 	case "whileNotVisible":
 		return c.executeWhileNotVisibleFlowStepBoundWithOptions(ctx, opts, run, index, step, nil)
 	case "tree":
@@ -5406,49 +5412,7 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 }
 
 func (c CLI) executeWhenFlowStep(ctx context.Context, run RunState, index int, step FlowStep) (map[string]string, error) {
-	return c.executeWhenFlowStepWithOptions(ctx, GlobalOptions{}, run, index, step)
-}
-
-func (c CLI) executeWhenFlowStepWithOptions(ctx context.Context, opts GlobalOptions, run RunState, index int, step FlowStep) (map[string]string, error) {
-	if len(step.Do) == 0 {
-		return nil, fmt.Errorf("when_do_missing")
-	}
-	prefer, preferErr := c.flowStepPreferDriver(opts, step)
-	if preferErr != nil {
-		return copyParams(step.Params), preferErr
-	}
-	matched, err := c.evaluateConditionSet(ctx, step.Params, step.Any, step.All, step.Not, prefer)
-	if err != nil {
-		return copyParams(step.Params), err
-	}
-	fields := copyParams(step.Params)
-	fields["matched"] = strconv.FormatBool(matched)
-	fields["steps"] = strconv.Itoa(len(step.Do))
-	if !matched {
-		fields["skipped"] = strconv.Itoa(len(step.Do))
-		return fields, nil
-	}
-	for childIndex, child := range step.Do {
-		childStart := time.Now()
-		childFields, err := c.executeFlowStepWithOptions(ctx, opts, run, childIndex+1, child)
-		elapsed := time.Since(childStart)
-		if err != nil {
-			fields["child_step"] = strconv.Itoa(childIndex + 1)
-			fields["child_action"] = child.Action
-			fields["child_code"] = err.Error()
-			for key, value := range childFields {
-				fields["child_"+key] = value
-			}
-			return fields, err
-		}
-		childStatus := "ok"
-		if childFields["skipped"] == "true" {
-			childStatus = "skipped"
-		}
-		appendFlowStep(run, index, "when."+child.Action, elapsed, childStatus, childFields)
-	}
-	fields["executed"] = strconv.Itoa(len(step.Do))
-	return fields, nil
+	return c.executeWhenFlowStepBoundWithOptions(ctx, GlobalOptions{}, run, index, step, nil)
 }
 
 func (c CLI) executeWhenFlowStepBound(ctx context.Context, run RunState, index int, step FlowStep, bindings flowExecBindings) (map[string]string, error) {
@@ -5474,9 +5438,20 @@ func (c CLI) executeWhenFlowStepBoundWithOptions(ctx context.Context, opts Globa
 		fields["skipped"] = strconv.Itoa(len(step.Do))
 		return fields, nil
 	}
+	executed := 0
+	skippedChildren := 0
 	for childIndex, child := range step.Do {
 		childStart := time.Now()
-		childFields, err := c.executeFlowStepBoundWithOptions(ctx, opts, run, childIndex+1, child, bindings)
+		var childFields map[string]string
+		var err error
+		// The two child executors are not interchangeable: the bound one
+		// wraps onFailure/optional-skip, retry and After around the plain
+		// one, so an unbound `when` must not borrow those semantics.
+		if bindings != nil {
+			childFields, err = c.executeFlowStepBoundWithOptions(ctx, opts, run, childIndex+1, child, bindings)
+		} else {
+			childFields, err = c.executeFlowStepWithOptions(ctx, opts, run, childIndex+1, child)
+		}
 		elapsed := time.Since(childStart)
 		if err != nil {
 			fields["child_step"] = strconv.Itoa(childIndex + 1)
@@ -5490,10 +5465,16 @@ func (c CLI) executeWhenFlowStepBoundWithOptions(ctx context.Context, opts Globa
 		childStatus := "ok"
 		if childFields["skipped"] == "true" {
 			childStatus = "skipped"
+			skippedChildren++
+		} else {
+			executed++
 		}
 		appendFlowStep(run, index, "when."+child.Action, elapsed, childStatus, childFields)
 	}
-	fields["executed"] = strconv.Itoa(len(step.Do))
+	fields["executed"] = strconv.Itoa(executed)
+	if skippedChildren > 0 {
+		fields["skipped_children"] = strconv.Itoa(skippedChildren)
+	}
 	return fields, nil
 }
 
@@ -5524,7 +5505,7 @@ func (c CLI) executeWhileNotVisibleFlowStepBoundWithOptions(ctx context.Context,
 			fields["iterations"] = strconv.Itoa(iterations)
 			fields["executed"] = strconv.Itoa(executed)
 			if skippedChildren > 0 {
-				fields["skipped"] = strconv.Itoa(skippedChildren)
+				fields["skipped_children"] = strconv.Itoa(skippedChildren)
 			}
 			return fields, nil
 		}
@@ -5533,7 +5514,7 @@ func (c CLI) executeWhileNotVisibleFlowStepBoundWithOptions(ctx context.Context,
 			fields["iterations"] = strconv.Itoa(iterations)
 			fields["executed"] = strconv.Itoa(executed)
 			if skippedChildren > 0 {
-				fields["skipped"] = strconv.Itoa(skippedChildren)
+				fields["skipped_children"] = strconv.Itoa(skippedChildren)
 			}
 			return fields, fmt.Errorf("while_timeout")
 		}
