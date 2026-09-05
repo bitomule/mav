@@ -51,10 +51,22 @@ type CLI struct {
 	// run --skip-build` has to reach every `open` step the flow dispatches,
 	// and those go through this same value.
 	skipBuild bool
+
+	// tapFallback carries the reason a selector tap ended up going through
+	// the tree and coordinates. uiTap dispatches that fallback by calling
+	// itself with --x/--y, and without this the result line would read as a
+	// plain coordinate tap: the agent would never learn that the selector
+	// path is broken on this machine.
+	tapFallback map[string]string
 }
 
 func (c CLI) withSkipBuild(skip bool) CLI {
 	c.skipBuild = c.skipBuild || skip
+	return c
+}
+
+func (c CLI) withTapFallback(fields map[string]string) CLI {
+	c.tapFallback = fields
 	return c
 }
 
@@ -2469,6 +2481,16 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		result := CommandResult{}
 		if tapErr != nil {
 			result = CommandResult{Stderr: tapErr.Error(), Err: tapErr}
+			// The tree is the other way to reach the same element, and it
+			// keeps working when the tool's own selector resolution does
+			// not -- AXe below 1.7.0 cannot decode a tree that carries a
+			// numeric AXValue (a slider), so every selector tap on such a
+			// screen dies with a Swift decoding error while `mav ui tree`
+			// lists the element perfectly. Retry through coordinates
+			// before calling the tap failed.
+			if fallbackErr := c.tapSelectorViaTree(ctx, opts, cfg, args, selector, prefer, result.Stderr); fallbackErr != errSelectorTreeFallbackUnavailable {
+				return fallbackErr
+			}
 			diagnosticFields, hasTextDiagnostic := c.diagnoseTextTapFailure(ctx, cfg, text, result.Stderr)
 			if hasTextDiagnostic {
 				return Fail("ui_tap_text_no_label_match", diagnosticFields).Write(c.Stdout)
@@ -2545,9 +2567,47 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			return Fail("ui_tap_failed", tapFields).Write(c.Stdout)
 		}
 		c.appendCurrentCommand("mav ui tap --x "+x+" --y "+y, result)
-		return c.writeFastPathResult(ctx, cfg, args, "ui.tap", map[string]string{"x": x, "y": y, "driver": driver.ID(), "route_recorded": "false"})
+		coordFields := map[string]string{"x": x, "y": y, "driver": driver.ID(), "route_recorded": "false"}
+		for key, value := range c.tapFallback {
+			coordFields[key] = value
+		}
+		return c.writeFastPathResult(ctx, cfg, args, "ui.tap", coordFields)
 	}
 	return Fail("tap_target_missing", map[string]string{"usage": "mav ui tap --id ID | --x X --y Y | --text TEXT"}).Write(c.Stdout)
+}
+
+// errSelectorTreeFallbackUnavailable says the tree could not resolve the
+// selector either, so the caller should report its own diagnosis of the
+// original failure instead of this one.
+var errSelectorTreeFallbackUnavailable = errors.New("selector_tree_fallback_unavailable")
+
+// tapSelectorViaTree taps the element a selector names by reading it out of
+// the accessibility tree and tapping the centre of its frame. It is the same
+// route mav already takes for compound selectors; the semantic path only
+// exists because the tool can reach a few elements the tree does not expose
+// (SwiftUI TabView items, for one), so this runs as a retry rather than as a
+// replacement.
+func (c CLI) tapSelectorViaTree(ctx context.Context, opts GlobalOptions, cfg Config, args []string, selector Selector, prefer string, reason string) error {
+	matched, matchErr := c.resolveSelector(ctx, cfg, selector, prefer)
+	if matchErr != nil {
+		return errSelectorTreeFallbackUnavailable
+	}
+	mx, my, mw, mh, ok := parseElementFrame(matched.Frame)
+	if !ok {
+		return errSelectorTreeFallbackUnavailable
+	}
+	fallback := map[string]string{
+		"selector_via":   "tree",
+		"selector_error": firstLine(reason),
+		"matched_id":     matched.ID,
+		"matched_text":   elementText(matched),
+		"role":           matched.Role,
+	}
+	if strings.Contains(reason, "DecodingError") {
+		fallback["next"] = "the installed axe cannot resolve selectors on this screen; brew upgrade cameroncooke/axe/axe (fixed in 1.7.0)"
+	}
+	return c.withTapFallback(fallback).uiTap(ctx, opts, cfg, append(onlyFastPathArgs(args),
+		"--x", strconv.Itoa(int(mx+mw/2)), "--y", strconv.Itoa(int(my+mh/2))))
 }
 
 func isSimpleSemanticSelector(selector Selector) bool {
@@ -4151,6 +4211,10 @@ func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) err
 	bindFlowTarget(cfg, bindings)
 	stopTargetCommandKeepAlive := c.startTargetCommandKeepAlive(run, cfg, c.targetCommandInEffectForRun())
 	defer stopTargetCommandKeepAlive()
+	// Which steps the flow declared optional and then failed. A green run
+	// that quietly did not do half of what it says is worse than a red one,
+	// so the pass line and run.json name them.
+	skipped := []string{}
 	for index, step := range flow.Steps {
 		stepStart := time.Now()
 		fields, err := c.executeFlowStepBoundWithOptions(ctx, opts, run, index+1, step, bindings)
@@ -4177,7 +4241,12 @@ func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) err
 			c.cleanupFailedFlow(ctx, run, failFields)
 			return Fail(err.Error(), failFields).Write(c.Stdout)
 		}
-		appendFlowStep(run, index+1, step.Action, elapsed, "ok", fields)
+		status := "ok"
+		if fields["skipped"] == "true" {
+			status = "skipped"
+			skipped = append(skipped, strconv.Itoa(index+1)+":"+step.Action)
+		}
+		appendFlowStep(run, index+1, step.Action, elapsed, status, fields)
 	}
 	for _, step := range flow.Steps {
 		if step.Action == "open" && step.Params["timeControl"] == "true" && step.Params["preserve"] != "true" {
@@ -4193,10 +4262,16 @@ func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) err
 	}
 	runData, _ := json.MarshalIndent(map[string]any{
 		"id": run.ID, "name": flow.Name, "status": "passed", "steps": len(flow.Steps),
+		"skipped": skipped,
 		"elapsed": time.Since(start).String(), "outputs": outputs,
 	}, "", "  ")
 	_ = os.WriteFile(filepath.Join(run.Dir, "run.json"), runData, 0o644)
 	fields := map[string]string{"name": flow.Name, "run": run.ID, "dir": run.Dir, "steps": strconv.Itoa(len(flow.Steps)), "elapsed": time.Since(start).String()}
+	if len(skipped) > 0 {
+		fields["skipped"] = strconv.Itoa(len(skipped))
+		fields["skipped_steps"] = strings.Join(skipped, ",")
+		fields["next"] = "optional steps failed and were skipped; see status=skipped in " + run.Commands + " for the reason"
+	}
 	if len(outputs) > 0 {
 		fields["outputs"] = filepath.Join(run.Dir, "outputs.json")
 	}
@@ -4965,13 +5040,12 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 			return flowStepTargetFailure(step, cfgErr)
 		}
 		err := c.withStdout(&out).uiTap(ctx, GlobalOptions{PreferDriver: prefer}, cfg, args)
-		cmdErr := commandOutputErr(err, out.String(), "tap_failed")
-		if cmdErr != nil && step.Params["optional"] == "true" {
-			fields := copyParams(step.Params)
-			fields["skipped"] = "true"
-			return fields, nil
-		}
-		return copyParams(step.Params), cmdErr
+		// An optional tap is skipped by the shared failure policy, like
+		// every other optional step. Swallowing the error here instead
+		// dropped the reason on the floor: the run recorded skipped=true
+		// with no cause and finished green, so a flow that never tapped
+		// anything read exactly like one that did.
+		return copyParams(step.Params), commandOutputErr(err, out.String(), "tap_failed")
 	case "doubleTap":
 		args := append(selectorCLIArgs(flowStepSelector(step)), flowArgs(step.Params, "--x", "x", "--y", "y", "--duration", "duration")...)
 		var out bytes.Buffer

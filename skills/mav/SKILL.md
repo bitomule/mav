@@ -425,6 +425,12 @@ only some prompts appear:
       - delay: 500ms
 ```
 
+An optional step that fails is skipped, not done. The run still passes, but the
+pass line carries `skipped=N` and `skipped_steps=<step>:<action>`, the trail
+records that step as `status: skipped` with the reason in `error`, and
+`run.json` lists it. Read those before believing a green run did everything the
+flow says.
+
 `mav run --prefer-driver axe flow.yaml` forces AXe for semantic UI steps. Use a
 per-step `prefer-driver` override when a single interaction needs to pin the
 driver:
