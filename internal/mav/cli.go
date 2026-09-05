@@ -2581,7 +2581,7 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		if verify {
 			before = c.snapshotForVerification(ctx, cfg)
 		}
-		hidX, hidY, rotation := c.hidPoint(ctx, cfg, xi, yi)
+		hidX, hidY, rotation, detectedAngle := c.hidPoint(ctx, cfg, xi, yi)
 		tapErr := error(nil)
 		_, tapErr = td.Tap(ctx, target, drivers.TapSpec{X: hidX, Y: hidY})
 		result := CommandResult{}
@@ -2596,7 +2596,7 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		}
 		c.appendCurrentCommand("mav ui tap --x "+x+" --y "+y, result)
 		coordFields := map[string]string{"x": x, "y": y, "driver": driver.ID(), "route_recorded": "false"}
-		addRotationFields(coordFields, rotation, hidX, hidY)
+		addRotationFields(coordFields, rotation, hidX, hidY, detectedAngle)
 		if verify {
 			coordFields["verified"] = c.verifyTapChangedSomething(ctx, cfg, before)
 		}
@@ -3129,17 +3129,25 @@ func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args [
 	sy, _ := strconv.Atoi(startY)
 	ex, _ := strconv.Atoi(endX)
 	ey, _ := strconv.Atoi(endY)
-	// Both endpoints go through the same rotation: a swipe is two points in
-	// the same space, and rotating one of them would turn a vertical drag
-	// into a diagonal one.
-	hidSX, hidSY, rotation := c.hidPoint(ctx, cfg, sx, sy)
-	hidEX, hidEY, _ := c.hidPoint(ctx, cfg, ex, ey)
+	hidSX, hidSY, hidEX, hidEY, rotation, detectedAngle := sx, sy, ex, ey, 0, 0
+	if customCoordinates {
+		// Both endpoints go through the same rotation: a swipe is two points
+		// in the same space, and rotating one of them would turn a vertical
+		// drag into a diagonal one. Direction-default coordinates are
+		// hard-coded portrait-HID-space constants, not tree-space points a
+		// caller read off `mav ui tree`, so they must not be rotated again.
+		hidSX, hidSY, rotation, detectedAngle = c.hidPoint(ctx, cfg, sx, sy)
+		hidEX, hidEY, _, _ = c.hidPoint(ctx, cfg, ex, ey)
+	}
 	if err := gd.Swipe(ctx, target, drivers.SwipeSpec{Direction: direction, StartX: hidSX, StartY: hidSY, EndX: hidEX, EndY: hidEY}); err != nil {
 		return Fail("ui_swipe_failed", map[string]string{"stderr": firstLine(err.Error())}).Write(c.Stdout)
 	}
 	fields := map[string]string{"direction": direction, "driver": driver.ID()}
 	if rotation != 0 {
 		fields["rotation"] = strconv.Itoa(rotation)
+	} else if detectedAngle != 0 {
+		fields["rotation_unavailable"] = strconv.Itoa(detectedAngle)
+		fields["next"] = "coordinates were dispatched unrotated; re-run once the app's accessibility tree is available"
 	}
 	if customCoordinates {
 		fields["direction"] = "custom"

@@ -195,11 +195,15 @@ entirely.
    for readiness checks.
 
    Coordinates are always in the space `mav ui tree` reports. On a rotated
-   simulator `ui tap` and `ui swipe` rotate them into the touch surface's own
-   space for you and say so with `rotation=` and `hid_x`/`hid_y` on the result
-   line — do **not** pre-rotate them yourself, that compensates twice. The
-   baguette gestures (`longPress`, `pinch`, `rotate`, `twoFingerPan`) do not
-   carry this transform.
+   simulator `ui tap` and `ui swipe --start-x/--start-y/--end-x/--end-y`
+   rotate them into the touch surface's own space for you — do **not**
+   pre-rotate them yourself, that compensates twice. `ui tap` says so with
+   `rotation=` and `hid_x`/`hid_y` on the result line; `ui swipe` says so
+   with `rotation=` only (it has two rotated endpoints, so there is no
+   single `hid_x`/`hid_y` pair to report). `ui swipe --direction` without
+   explicit coordinates uses fixed portrait-space defaults and is never
+   rotated. The baguette gestures (`longPress`, `pinch`, `rotate`,
+   `twoFingerPan`) do not carry this transform.
 8. `mav ui tree` may report a natural screen id when the AX root already has a
    `View`-suffix identifier, such as `SettingsView` → `settings-view`. This is
    a labelling/observability signal only. Selectors for tapping still work

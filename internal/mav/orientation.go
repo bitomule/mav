@@ -135,8 +135,16 @@ func parseRotationAngle(dump, udid string) int {
 
 // portraitScreenSize returns the device's native portrait size in points,
 // probing the accessibility tree once per UDID and caching the result. It is
-// only ever called on a rotated simulator, so the tree root is guaranteed to
-// be reporting the rotated space and the portrait size is its transpose.
+// only ever called on a simulator Simulator.app reports as rotated, but that
+// report can be stale or the app under test can be portrait-locked, so a
+// fresh probe always checks the observed tree-root shape against the angle
+// before it is trusted or cached: a 90/270 angle requires a landscape
+// (w > h) tree root, and 0/180 requires a portrait (h > w) one. A mismatch
+// means the tree is not actually reporting the rotated space, so nothing is
+// cached and the caller must not rotate anything either. An existing cache
+// entry is trusted without re-probing — it was only ever written once this
+// same check had already passed — which keeps the hot path to one probe per
+// UDID.
 func (c CLI) portraitScreenSize(ctx context.Context, cfg Config, angle int) (screenCache, bool) {
 	udid := cfg.SimulatorUDID
 	if udid == "" {
@@ -153,12 +161,33 @@ func (c CLI) portraitScreenSize(ctx context.Context, cfg Config, angle int) (scr
 	if len(elements) == 0 {
 		return screenCache{}, false
 	}
-	_, _, w, h, ok := parseElementFrame(elements[0].Frame)
-	if !ok || w <= 0 || h <= 0 {
+	// elements[0] is the first pre-order node that survives dedup, which is
+	// usually the screen root but is not guaranteed to be (a node with no
+	// AXFrame, or one that does not cover the whole screen, can sort first).
+	// The largest zero-origin frame is the screen extent regardless of
+	// where it falls in the list.
+	var w, h float64
+	for _, el := range elements {
+		ex, ey, ew, eh, ok := parseElementFrame(el.Frame)
+		if !ok || ex != 0 || ey != 0 {
+			continue
+		}
+		if ew*eh > w*h {
+			w, h = ew, eh
+		}
+	}
+	if w <= 0 || h <= 0 {
+		return screenCache{}, false
+	}
+	rotated := angle == 90 || angle == 270
+	if rotated && w <= h {
+		return screenCache{}, false
+	}
+	if !rotated && h <= w {
 		return screenCache{}, false
 	}
 	cached := screenCache{PortraitWidth: int(w), PortraitHeight: int(h)}
-	if angle == 90 || angle == 270 {
+	if rotated {
 		cached = screenCache{PortraitWidth: int(h), PortraitHeight: int(w)}
 	}
 	writeScreenCache(c.Root, udid, cached)
@@ -167,9 +196,16 @@ func (c CLI) portraitScreenSize(ctx context.Context, cfg Config, angle int) (scr
 
 // addRotationFields records that a gesture's coordinates were rotated, and
 // where they actually went. Nothing is added when nothing moved, so the
-// common portrait result line is unchanged.
-func addRotationFields(fields map[string]string, rotation, hidX, hidY int) {
+// common portrait result line is unchanged. When Simulator.app reports a
+// rotation but it could not be applied (the screen probe failed or
+// disagreed with the tree shape), the caller knows the dispatched point may
+// be in the wrong space and that is surfaced instead of a silent plain ok.
+func addRotationFields(fields map[string]string, rotation, hidX, hidY, detectedAngle int) {
 	if rotation == 0 {
+		if detectedAngle != 0 {
+			fields["rotation_unavailable"] = strconv.Itoa(detectedAngle)
+			fields["next"] = "coordinates were dispatched unrotated; re-run once the app's accessibility tree is available"
+		}
 		return
 	}
 	fields["rotation"] = strconv.Itoa(rotation)
@@ -181,14 +217,17 @@ func addRotationFields(fields map[string]string, rotation, hidX, hidY int) {
 // space idb and axe dispatch touches in. On an unrotated simulator — and on
 // every non-simulator target — it is the identity and costs one `defaults
 // read`. The reported angle is 0 whenever nothing had to move, so a caller
-// can put `rotation=` on its result line and have it mean something.
-func (c CLI) hidPoint(ctx context.Context, cfg Config, x, y int) (int, int, int) {
+// can put `rotation=` on its result line and have it mean something. The
+// fourth return value is the angle Simulator.app reported regardless of
+// whether it could be applied, so a caller can tell "nothing to rotate"
+// (0, 0) apart from "rotation detected but not applied" (0, detected != 0).
+func (c CLI) hidPoint(ctx context.Context, cfg Config, x, y int) (int, int, int, int) {
 	if targetKind(cfg) != drivers.KindSim {
-		return x, y, 0
+		return x, y, 0, 0
 	}
 	angle := simulatorRotationAngle(c.Runner, cfg.SimulatorUDID)
 	if angle == 0 {
-		return x, y, 0
+		return x, y, 0, 0
 	}
 	screen, ok := c.portraitScreenSize(ctx, cfg, angle)
 	if !ok {
@@ -196,15 +235,15 @@ func (c CLI) hidPoint(ctx context.Context, cfg Config, x, y int) (int, int, int)
 		// Passing the point through unchanged is the old behaviour, which
 		// is wrong here but is at least the wrongness callers already
 		// compensate for; inventing a size would be a new one.
-		return x, y, 0
+		return x, y, 0, angle
 	}
 	switch angle {
 	case 90:
-		return screen.PortraitWidth - y, x, 90
+		return screen.PortraitWidth - y, x, 90, angle
 	case 180:
-		return screen.PortraitWidth - x, screen.PortraitHeight - y, 180
+		return screen.PortraitWidth - x, screen.PortraitHeight - y, 180, angle
 	case 270:
-		return y, screen.PortraitHeight - x, 270
+		return y, screen.PortraitHeight - x, 270, angle
 	}
-	return x, y, 0
+	return x, y, 0, angle
 }

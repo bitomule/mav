@@ -75,6 +75,51 @@ func TestParseRotationAngleAcceptsAFloatValue(t *testing.T) {
 	}
 }
 
+// The real shape `defaults read com.apple.iphonesimulator DevicePreferences`
+// prints on a live machine: no `DevicePreferences = {` wrapper, device UDID
+// keys at exactly four spaces, and a nested SimulatorWindowGeometry
+// dictionary at eight. devicePreferencesDump above is the wrong shape (it
+// wraps everything in an outer `DevicePreferences` key, which pushes every
+// device key to eight spaces) and so never exercises parseRotationAngle's
+// block-truncation branch at all.
+const realDevicePreferencesDump = `{
+    "AAAAAAAA-0000-0000-0000-000000000001" =     {
+        SimulatorWindowGeometry =         {
+            "1C4804D2-7060-46B2-8DA0-1BE785AC8BED" =             {
+                WindowCenter = "{1046, 529.5}";
+            };
+        };
+        SimulatorWindowOrientation = Portrait;
+    };
+    "BBBBBBBB-0000-0000-0000-000000000002" =     {
+        SimulatorWindowOrientation = LandscapeLeft;
+        SimulatorWindowRotationAngle = 90;
+    };
+    "CCCCCCCC-0000-0000-0000-000000000003" =     {
+        SimulatorWindowOrientation = LandscapeRight;
+        SimulatorWindowRotationAngle = "-90";
+    };
+}`
+
+// The device immediately before a rotated one has no rotation key at all -
+// exactly the case that goes unnoticed if block truncation stops working:
+// with no boundary, the search for SimulatorWindowRotationAngle inside
+// AAAAAAAA's "block" runs off the end of the dump and finds BBBBBBBB's own
+// 90, attributing a neighbour's rotation to a device that was never
+// rotated. Revert parseRotationAngle's block-truncation search (e.g. make it
+// always take the rest of the dump) and this test fails.
+func TestParseRotationAngleDoesNotBleedIntoTheNextDeviceBlock(t *testing.T) {
+	if got := parseRotationAngle(realDevicePreferencesDump, "AAAAAAAA-0000-0000-0000-000000000001"); got != 0 {
+		t.Fatalf("got %d want 0 (no rotation key, and must not see BBBBBBBB's)", got)
+	}
+	if got := parseRotationAngle(realDevicePreferencesDump, "BBBBBBBB-0000-0000-0000-000000000002"); got != 90 {
+		t.Fatalf("got %d want 90", got)
+	}
+	if got := parseRotationAngle(realDevicePreferencesDump, "CCCCCCCC-0000-0000-0000-000000000003"); got != 270 {
+		t.Fatalf("got %d want 270", got)
+	}
+}
+
 func rotationCLI(t *testing.T, udid string, dump string, treeJSON string) (CLI, *sequenceRecordingRunner, *bytes.Buffer, string) {
 	t.Helper()
 	root := t.TempDir()
@@ -209,5 +254,60 @@ func TestUISwipeRotatesBothEndpoints(t *testing.T) {
 	if !strings.Contains(joined, "swipe --start-x 202 --start-y 100 --end-x 202 --end-y 700") &&
 		!strings.Contains(joined, "ui swipe 202 100 202 700") {
 		t.Fatalf("the swipe endpoints were not both rotated: %q", runner.commands)
+	}
+}
+
+// A direction swipe with no explicit coordinates uses swipeCoordinates'
+// hard-coded portrait-HID-space constants. Those are not points read off the
+// accessibility tree, so rotating them again on a landscape simulator sends
+// the drag out at a negative, off-screen coordinate. Revert the
+// customCoordinates gate in uiSwipe and this test fails: "up" (220,760 ->
+// 220,260) rotates at angle 90 to (-358,220) -> (142,220).
+func TestUISwipeDirectionDefaultsAreNotRotated(t *testing.T) {
+	const udid = "AAAAAAAA-0000-0000-0000-000000000001"
+	landscapeTree := `[{"AXLabel":"App","type":"Application","AXFrame":"{{0, 0}, {874, 402}}"}]`
+	cli, runner, out, _ := rotationCLI(t, udid, devicePreferencesDump, landscapeTree)
+	if err := cli.Run(context.Background(), []string{"ui", "swipe", "--direction", "up"}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "rotation=") {
+		t.Fatalf("a direction default swipe reported a rotation: %q", out.String())
+	}
+	joined := strings.Join(runner.commands, "\n")
+	if !strings.Contains(joined, "220 760") && !strings.Contains(joined, "--start-x 220 --start-y 760") {
+		t.Fatalf("the direction defaults were not dispatched unrotated: %q", runner.commands)
+	}
+	for _, bad := range []string{"-358", "-98"} {
+		if strings.Contains(joined, bad) {
+			t.Fatalf("a direction default swipe went negative/off-screen: %q", runner.commands)
+		}
+	}
+}
+
+// A portrait-locked app keeps reporting its ~402x874 tree even though
+// Simulator.app's window (and hence SimulatorWindowRotationAngle) is
+// rotated to 90. Rotating the tap into that mismatched space is worse than
+// not rotating at all. Revert the shape check in portraitScreenSize and
+// this test fails: the tap comes out rotated even though the tree root is
+// portrait-shaped.
+func TestUITapSkipsRotationWhenTreeShapeContradictsTheAngle(t *testing.T) {
+	const udid = "AAAAAAAA-0000-0000-0000-000000000001"
+	portraitShapedTree := `[{"AXLabel":"App","type":"Application","AXFrame":"{{0, 0}, {402, 874}}"}]`
+	cli, runner, out, root := rotationCLI(t, udid, devicePreferencesDump, portraitShapedTree)
+	if err := cli.Run(context.Background(), []string{"ui", "tap", "--x", "200", "--y", "700"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if strings.Contains(got, "rotation=90") || strings.Contains(got, "hid_x=") {
+		t.Fatalf("a portrait-shaped tree under a stale angle was still rotated: %q", got)
+	}
+	if !strings.Contains(got, "rotation_unavailable=90") {
+		t.Fatalf("the mismatch was not surfaced: %q", got)
+	}
+	if !strings.Contains(strings.Join(runner.commands, "\n"), "idb ui tap 200 700") {
+		t.Fatalf("the tap was not dispatched at its original coordinates: %q", runner.commands)
+	}
+	if _, err := os.Stat(filepath.Join(root, MavDir, "screens", udid+".json")); !os.IsNotExist(err) {
+		t.Fatalf("a mismatched probe wrote a screen cache")
 	}
 }
