@@ -1,5 +1,46 @@
 # Changelog
 
+## Unreleased
+
+### A selector tap no longer dies with the tool's decoding error
+
+`mav ui tap --id X` and `mav ui tap --text X` failed with
+`Expected to decode Dictionary<String, Any> but found an array instead` for
+elements `mav ui tree` had just listed with their id and label, while a
+coordinate tap on the same element worked every time. The cause is upstream and
+narrow: AXe below 1.7.0 cannot decode an accessibility tree that carries a
+numeric `AXValue`, so a single slider anywhere on screen breaks selector
+resolution for *every* element on that screen. Reading the tree is a different
+code path in AXe and stays fine, which is why the two disagreed.
+
+MAV now retries through the tree when the tool's own selector resolution fails:
+it resolves the element from the tree it can already read and taps the centre of
+its frame. The result line says so — `selector_via=tree`, the tool's error in
+`selector_error`, and `next` pointing at `brew upgrade cameroncooke/axe/axe`
+when the failure is that decoding bug. The semantic path is still tried first,
+because AXe reaches a few elements the tree does not expose (SwiftUI `TabView`
+items among them); when the tree cannot resolve the selector either, the tool's
+original failure is reported unchanged.
+
+### A skipped optional step stops passing for a done one
+
+An `optional: true` tap that failed was swallowed whole: the run recorded
+`skipped=true` with no reason, the step went into the trail as `status: ok`, and
+the flow finished green counting it as done. A flow that dismissed no banner
+read exactly like one that did.
+
+Optional taps now go through the same failure policy as every other optional
+step, which records why the step was skipped. Skipped steps are recorded as
+`status: skipped` rather than `ok`, `run.json` lists them, and the pass line
+carries `skipped=N` with `skipped_steps=<step>:<action>` so a green run says out
+loud what it did not do. The fail line carries the same two fields, so a run
+that skipped something before it broke does not read like one that did not.
+
+`skipped=N` always means top-level steps. A `when` or `whileNotVisible` step
+that skipped an optional child of its `do:` block reports `skipped_children=N`
+on its own record instead, and its `executed=N` now counts only the children
+that ran -- `when` used to report the whole block as executed.
+
 ## v0.16.6
 
 ### The launch recipe's environment prefix reaches the app
