@@ -66,7 +66,12 @@ func (c CLI) uiOrientation(ctx context.Context, opts GlobalOptions, cfg Config, 
 	// failed rotation never leaves MAV believing a rotation is in effect --
 	// which would be worse than not knowing, because every later tap would
 	// be transformed into a space the device is not in.
-	if err := writeDeclaredOrientation(c.Root, udid, declaredOrientation{Value: value, Rotation: rotation}); err != nil {
+	//
+	// The window angle is sampled right now, at the moment the declaration
+	// becomes true, so a LATER Simulator.app rotation can be told apart from
+	// this one: resolveRotation compares a future live reading against it.
+	windowAngle := simulatorRotationAngle(c.Runner, udid)
+	if err := writeDeclaredOrientation(c.Root, udid, declaredOrientation{Value: value, Rotation: rotation, WindowAngle: &windowAngle}); err != nil {
 		// The rotation genuinely happened but mav could not record it, so
 		// any PREVIOUS declaration (and the angle-keyed screen cache that
 		// goes with it) is now describing an orientation the device is no

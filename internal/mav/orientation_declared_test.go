@@ -96,6 +96,98 @@ func TestDeclaredOrientationOutranksTheWindowAngle(t *testing.T) {
 	}
 }
 
+// A declaration is not forever: Simulator.app's Device > Rotate menu can turn
+// the window again AFTER `mav ui orientation` ran, and that later rotation
+// must win, because it is the last thing that actually happened to the
+// device. The declaration recorded a window angle of 0 at declare time (the
+// portrait/0 device in the fixture); a live reading of 90 disagrees with
+// that, so the declaration -- and the screen cache that goes with it -- must
+// be dropped in favour of the window.
+func TestALaterWindowRotationInvalidatesAStaleDeclaration(t *testing.T) {
+	const udid = "CCCCCCCC-0000-0000-0000-000000000003"
+	root := t.TempDir()
+	windowAngleAtDeclare := 0
+	if err := writeDeclaredOrientation(root, udid, declaredOrientation{
+		Value: orientationLandscapeLeft, Rotation: 270, WindowAngle: &windowAngleAtDeclare,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writeScreenCache(root, udid, screenCache{PortraitWidth: 402, PortraitHeight: 874, Angle: 270})
+
+	// The fixture's AAAAAAAA block reads SimulatorWindowRotationAngle = 90,
+	// so borrowing it under CCCCCCCC's key stands in for "someone rotated
+	// the window since the declaration was written".
+	liveDump := strings.Replace(devicePreferencesDump, "AAAAAAAA-0000-0000-0000-000000000001", udid, 1)
+	runner := &sequenceRecordingRunner{
+		tools: map[string]bool{"axe": true, "idb": true},
+		out:   map[string]string{"defaults read com.apple.iphonesimulator DevicePreferences": liveDump},
+	}
+	reading := resolveRotation(runner, root, udid)
+	if reading.Angle != 90 || reading.Source != orientationSourceWindow {
+		t.Fatalf("got %+v, want the live window's 90", reading)
+	}
+	if _, ok := readDeclaredOrientation(root, udid); ok {
+		t.Fatal("the stale declaration survived a disagreeing live window angle")
+	}
+	if _, ok := readScreenCache(root, udid); ok {
+		t.Fatal("the screen cache survived a disagreeing live window angle")
+	}
+}
+
+// A live window angle of 0 must NOT invalidate the declaration: 0 is what a
+// headless boot with no window at all reads as, and is also what "nobody
+// touched the window since the declaration" reads as. Either way the
+// declaration -- which is about the device, not the window -- must still
+// win. Same for a `defaults read` that errors outright.
+func TestDeclarationSurvivesAZeroOrUnreadableLiveWindowAngle(t *testing.T) {
+	const udid = "CCCCCCCC-0000-0000-0000-000000000003"
+
+	t.Run("live angle reads zero", func(t *testing.T) {
+		root := t.TempDir()
+		windowAngleAtDeclare := 0
+		if err := writeDeclaredOrientation(root, udid, declaredOrientation{
+			Value: orientationLandscapeLeft, Rotation: 270, WindowAngle: &windowAngleAtDeclare,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		runner := &sequenceRecordingRunner{
+			tools: map[string]bool{"axe": true, "idb": true},
+			// CCCCCCCC's own block in the fixture reads angle 0.
+			out: map[string]string{"defaults read com.apple.iphonesimulator DevicePreferences": devicePreferencesDump},
+		}
+		reading := resolveRotation(runner, root, udid)
+		if reading.Angle != 270 || reading.Source != orientationSourceDeclared {
+			t.Fatalf("got %+v, want the declared 270 to survive a live 0", reading)
+		}
+		if _, ok := readDeclaredOrientation(root, udid); !ok {
+			t.Fatal("the declaration was dropped on a live angle of 0")
+		}
+	})
+
+	t.Run("defaults read errors", func(t *testing.T) {
+		root := t.TempDir()
+		windowAngleAtDeclare := 0
+		if err := writeDeclaredOrientation(root, udid, declaredOrientation{
+			Value: orientationLandscapeLeft, Rotation: 270, WindowAngle: &windowAngleAtDeclare,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		runner := &sequenceRecordingRunner{
+			tools: map[string]bool{"axe": true, "idb": true},
+			err: map[string]CommandResult{
+				"defaults read com.apple.iphonesimulator DevicePreferences": {Err: os.ErrNotExist},
+			},
+		}
+		reading := resolveRotation(runner, root, udid)
+		if reading.Angle != 270 || reading.Source != orientationSourceDeclared {
+			t.Fatalf("got %+v, want the declared 270 to survive an unreadable window angle", reading)
+		}
+		if _, ok := readDeclaredOrientation(root, udid); !ok {
+			t.Fatal("the declaration was dropped on an unreadable window angle")
+		}
+	})
+}
+
 // A declaration MAV cannot parse -- a future vocabulary, a truncated file --
 // must read as "no declaration" and fall through to the window angle, not as
 // a rotation of 0 that overrides it.

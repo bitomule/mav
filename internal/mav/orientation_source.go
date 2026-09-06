@@ -76,9 +76,18 @@ func declaredOrientationRotation(value string) (int, bool) {
 // Like screenCache, it is stored under this project's .mav directory, keyed
 // by UDID: the same simulator declared from two different project roots is
 // tracked separately in each root, not shared globally.
+// WindowAngle is the Simulator.app window angle observed at the moment this
+// declaration was written, so a LATER window rotation can be told apart from
+// a stale leftover one. It is a pointer, not an int, because a declaration
+// file written before this field existed has no window_angle key at all, and
+// that "unknown" case must be told apart from a recorded angle of 0 (a
+// genuinely portrait window at declare time): only the latter should ever be
+// compared against a live reading. nil always keeps the pre-existing
+// behaviour of trusting the declaration outright.
 type declaredOrientation struct {
-	Value    string `json:"value"`
-	Rotation int    `json:"rotation"`
+	Value       string `json:"value"`
+	Rotation    int    `json:"rotation"`
+	WindowAngle *int   `json:"window_angle,omitempty"`
 }
 
 func declaredOrientationPath(root, udid string) string {
@@ -183,11 +192,29 @@ type rotationReading struct {
 // default is about a window that may not even exist on a headless boot. When
 // MAV has declared an orientation, a stale window angle left over from an
 // earlier session must not override it.
+//
+// But a declaration can itself go stale: Simulator.app's Device ▸ Rotate menu
+// can turn the window again AFTER `mav ui orientation` ran, and nothing else
+// would ever notice -- the declaration file never expires on its own. So the
+// live window angle is still read whenever a declaration exists, and the
+// declaration is dropped in favour of it, but only when the live angle is
+// non-zero AND differs from the angle recorded at declare time. A live 0 is
+// indistinguishable from "no window at all" (headless boot) or "nobody
+// touched the window since", either of which must keep the declaration; and a
+// declaration with no recorded window angle at all (WindowAngle == nil, i.e.
+// written by an older MAV) is never second-guessed, so upgrading MAV mid-run
+// does not retroactively invalidate a declaration that predates this check.
 func resolveRotation(runner Runner, root, udid string) rotationReading {
 	if udid == "" {
 		return rotationReading{}
 	}
 	if declared, ok := readDeclaredOrientation(root, udid); ok {
+		liveAngle := simulatorRotationAngle(runner, udid)
+		if liveAngle != 0 && declared.WindowAngle != nil && liveAngle != *declared.WindowAngle {
+			clearDeclaredOrientation(root, udid)
+			clearScreenCache(root, udid)
+			return rotationReading{Angle: liveAngle, Source: orientationSourceWindow}
+		}
 		return rotationReading{Angle: declared.Rotation, Source: orientationSourceDeclared}
 	}
 	if angle := simulatorRotationAngle(runner, udid); angle != 0 {
