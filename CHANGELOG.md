@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.18.0
 
 ### Every coordinate gesture is rotation-aware, and MAV can rotate the simulator itself
 
