@@ -1203,6 +1203,20 @@ func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 			return Fail("sim_not_selected", map[string]string{"next": "mav sim select --device 'iPhone' --ios 26"}).Write(c.Stdout)
 		}
 		target := targetFromConfig(cfg)
+		// Booting an already-booted simulator is a documented simctl no-op
+		// (see Driver.Boot's tolerance for "Unable to boot device in
+		// current state"): it performs no state transition at all, so
+		// checking here -- before we possibly change that state -- is what
+		// tells a genuine boot from that no-op below.
+		//
+		// Deliberately NOT isSimulatorBooted: that helper answers a
+		// different question ("should a failed command be retried?") and so
+		// defaults an unknown state to booted. Here the same default would
+		// keep a declaration alive across a real boot, which is the exact
+		// staleness this check exists to clear. Unknown must mean "assume it
+		// booted" -- clearing costs one re-probe, keeping costs every
+		// subsequent gesture landing in the wrong place.
+		wasBooted := simulatorAlreadyBooted(c.Runner, cfg.SimulatorUDID)
 		driver, _, routeErr := c.router().Route(ctx, drivers.CapBoot, target, "")
 		if routeErr != nil {
 			return Fail("sim_boot_failed", map[string]string{"stderr": firstLine(routeErr.Error())}).Write(c.Stdout)
@@ -1218,10 +1232,16 @@ func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 		if status.Err != nil {
 			return Fail("sim_bootstatus_failed", map[string]string{"stderr": firstLine(status.Stderr)}).Write(c.Stdout)
 		}
-		// A fresh boot resets the device to portrait; a declaration or
-		// screen cache from before this boot would misdescribe it.
-		clearDeclaredOrientation(c.Root, cfg.SimulatorUDID)
-		clearScreenCache(c.Root, cfg.SimulatorUDID)
+		// A fresh boot resets the device to portrait, so a declaration or
+		// screen cache from before this boot would misdescribe it -- but
+		// only when the device actually transitioned from non-booted. On an
+		// already-booted device `simctl boot` is a no-op (Driver.Boot
+		// tolerates it) and the device's real orientation, including a
+		// caller's rotation declaration, is untouched.
+		if !wasBooted {
+			clearDeclaredOrientation(c.Root, cfg.SimulatorUDID)
+			clearScreenCache(c.Root, cfg.SimulatorUDID)
+		}
 		return c.OK("sim.boot", map[string]string{"udid": cfg.SimulatorUDID, "name": cfg.SimulatorName}).Write(c.Stdout)
 	default:
 		return Fail("sim_unknown_command", map[string]string{"command": args[0]}).Write(c.Stdout)
@@ -3538,7 +3558,9 @@ func (c CLI) uiDragPath(ctx context.Context, opts GlobalOptions, cfg Config, arg
 		hidPoints[i] = drivers.PathPoint{X: hid.X, Y: hid.Y, DurationMs: p.DurationMs}
 		if i == 0 {
 			rotation, detectedAngle = hid.Rotation, hid.Detected
-			workerWidth, workerHeight = hid.PortraitWidth, hid.PortraitHeight
+			if hid.Rotation != 0 {
+				workerWidth, workerHeight = hid.PortraitWidth, hid.PortraitHeight
+			}
 		} else if hid.Rotation != rotation {
 			// The first point rotated (or didn't) one way and this one
 			// disagrees -- a mid-path bounds-guard trip or an angle change.

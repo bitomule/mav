@@ -1,6 +1,7 @@
 package mav
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -126,6 +127,46 @@ func writeDeclaredOrientation(root, udid string, declared declaredOrientation) e
 
 func clearDeclaredOrientation(root, udid string) {
 	_ = os.Remove(declaredOrientationPath(root, udid))
+}
+
+// simulatorAlreadyBooted reports whether a device is booted RIGHT NOW, for
+// deciding whether a `mav sim boot` is about to be a real state transition or
+// simctl's documented no-op.
+//
+// It exists next to isSimulatorBooted rather than reusing it because the two
+// answer different questions and therefore need opposite failure defaults.
+// isSimulatorBooted guards a retry, so an unknown state defaults to "booted"
+// and skips a pointless ~15s re-resolve. Here an unknown state must default
+// to "not booted": the caller clears a rotation declaration when the device
+// really booted, and getting that wrong in the other direction leaves a
+// declaration describing an orientation the device no longer has, so every
+// later gesture is confidently transformed into the wrong space. Clearing
+// when we did not have to costs one screen re-probe.
+func simulatorAlreadyBooted(runner Runner, udid string) bool {
+	if runner == nil || udid == "" {
+		return false
+	}
+	result := runner.Run(context.Background(), "xcrun", "simctl", "list", "devices", "booted", "-j")
+	if result.Err != nil {
+		return false
+	}
+	var parsed struct {
+		Devices map[string][]struct {
+			UDID  string `json:"udid"`
+			State string `json:"state"`
+		} `json:"devices"`
+	}
+	if err := json.Unmarshal([]byte(result.Stdout), &parsed); err != nil {
+		return false
+	}
+	for _, devices := range parsed.Devices {
+		for _, device := range devices {
+			if device.UDID == udid && device.State == "Booted" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // rotationReading is what MAV concluded about a device's rotation and how it
