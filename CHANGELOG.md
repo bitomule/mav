@@ -1,5 +1,93 @@
 # Changelog
 
+## Unreleased
+
+### Every coordinate gesture is rotation-aware, and MAV can rotate the simulator itself
+
+v0.17.0 compensated `ui tap` and `ui swipe` for a rotated simulator and said
+plainly that the rest were not covered. They are now, and the reason the gap
+existed turned out to be smaller than the reason it was hard to close.
+
+**The gestures.** `longPress`, `pinch`, `twoFingerPan` and `doubleTap`'s worker
+fast path all dispatch through baguette, whose coordinate space was never
+measured. It was measured: baguette consumes the same native-portrait points
+idb does — the same transformed point lands the same element through both — so
+they now take the same transform, reported the same way. An anchor rotates as
+a position; a pan delta rotates as a *displacement* (only the axis swap, no
+screen-width translation), because rotating it as a point would send the
+gesture off the surface.
+
+`ui rotate` gets the same treatment for the day it works: baguette's
+`Provides()` still excludes `CapRotate`, so the router picks nothing for it and
+the command cannot dispatch at all.
+
+**Direction swipes are axis-compensated.** `ui swipe --direction up` used to
+send fixed portrait-space constants whatever the screen was doing, so on a
+rotated simulator it dragged sideways — and `ui scrollUntil`, which only ever
+swipes by direction, burned every attempt and reported a timeout. The endpoints
+are now re-derived as fractions of the rotated screen and rotated like any
+tree-space pair, so "up" is up on the screen you are looking at. The result
+line says `direction_endpoints=derived` and carries the dispatched
+`hid_start`/`hid_end`. When no screen size can be resolved the constants still
+go out as written and `rotation_unavailable=` says so.
+
+**`mav ui orientation <portrait|landscape-left|landscape-right|portrait-upside-down>`.**
+Only two things leave a trace MAV can read about a rotation: Simulator.app
+writes a window angle to a user default, and this command writes its own
+record. A simulator turned by `baguette orientation`, a raw GSEvent, or an app
+that is landscape-only leaves neither — and the accessibility tree alone cannot
+say *which* of the two landscapes is in effect. They differ by 180°, so a guess
+puts every tap in the diagonally opposite corner.
+
+So this is not a convenience wrapper. On a headless boot — every `simpool` run,
+where Simulator.app has no window to have an angle at all — it is the only way
+coordinate gestures stay correct. A declaration outranks the window angle,
+survives across commands, is dropped if the rotation itself failed, and
+invalidates the screen-size cache so the next gesture re-probes. Result lines
+carry `rotation_source=mav` or `rotation_source=window` so it is visible which
+one was believed.
+
+`portrait-upside-down` is applied but never compensated, and says so: an
+upside-down tree is portrait-shaped exactly like an app that refused to flip.
+
+Where a tree has already been read for another reason (a selector tap, a
+`--verify` snapshot) and it is landscape while nothing claims a rotation, the
+result now carries `rotation_unavailable=unknown_landscape` and points at this
+command. It is not checked on a bare `--x/--y` tap, because reading a tree per
+tap would cost seconds in the hot loop.
+
+**AXe 1.7+ refuses rotated coordinate gestures, so MAV routes around it.**
+
+```
+Error: Unable to determine rotated simulator orientation. AXe can read
+landscape coordinates only when SimulatorKit reports the current UI
+orientation; the screenshot confirms the simulator is rotated, but the
+private orientation probe was unavailable.
+```
+
+That is a correct refusal — better than dispatching into the wrong space — but
+SimulatorKit does not report the orientation on a headless boot, which is every
+`simpool` run, and MAV already knows the rotation and has applied it. AXe is
+canonical (cost 0) for `CapSwipe`, so *preferring* another driver was not
+enough: it is taken out of the running for the call, and the result line says
+`rotation_rerouted=axe`. Same for `longPress`, which dispatches as a coordinate
+tap and lost the alphabetical tie to AXe. Unrotated runs still route to AXe.
+
+### The baguette swipe driver sent flags baguette rejects
+
+`baguette swipe` takes `--start-x/--start-y/--end-x/--end-y`; MAV sent
+`--startX/--startY/--endX/--endY` and got
+
+```
+Error: Missing expected argument '--start-x <start-x>'
+```
+
+Nobody had seen it because AXe won every swipe route, so the path was
+unreachable — until a rotated simulator started routing around AXe. The unit
+test that covered it was named `TestSwipeUsesCamelCaseFlags` and passed,
+because the fake executor accepts any arguments; it now pins the spelling the
+real binary accepts and fails on the old one.
+
 ## v0.17.0
 
 ### Coordinate gestures land where the tree says, on a rotated simulator

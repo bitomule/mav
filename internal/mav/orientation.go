@@ -53,6 +53,10 @@ func readScreenCache(root, udid string) (screenCache, bool) {
 	return cached, true
 }
 
+func clearScreenCache(root, udid string) {
+	_ = os.Remove(screenCachePath(root, udid))
+}
+
 func writeScreenCache(root, udid string, cached screenCache) {
 	path := screenCachePath(root, udid)
 	if os.MkdirAll(filepath.Dir(path), 0o755) != nil {
@@ -175,25 +179,36 @@ func (c CLI) portraitScreenSize(ctx context.Context, cfg Config, angle int) (scr
 	// AXFrame, or one that does not cover the whole screen, can sort first).
 	// The largest zero-origin frame is the screen extent regardless of
 	// where it falls in the list.
-	var w, h float64
+	w, h, sized := screenExtent(elements)
+	if !sized || w <= h {
+		return screenCache{}, false
+	}
+	cached := screenCache{PortraitWidth: int(h), PortraitHeight: int(w), Angle: angle}
+	writeScreenCache(c.Root, udid, cached)
+	return cached, true
+}
+
+// screenExtent is the largest zero-origin frame in a snapshot, which is the
+// screen the elements were laid out on. Returns false when the snapshot
+// carries no frame that could be one, because "no evidence" must never read
+// as "portrait".
+func screenExtent(elements []Element) (w, h float64, ok bool) {
 	for _, el := range elements {
-		ex, ey, ew, eh, ok := parseElementFrame(el.Frame)
-		if !ok || ex != 0 || ey != 0 {
+		ex, ey, ew, eh, parsed := parseElementFrame(el.Frame)
+		if !parsed || ex != 0 || ey != 0 {
 			continue
 		}
 		if ew*eh > w*h {
 			w, h = ew, eh
 		}
 	}
-	if w <= 0 || h <= 0 {
-		return screenCache{}, false
-	}
-	if w <= h {
-		return screenCache{}, false
-	}
-	cached := screenCache{PortraitWidth: int(h), PortraitHeight: int(w), Angle: angle}
-	writeScreenCache(c.Root, udid, cached)
-	return cached, true
+	return w, h, w > 0 && h > 0
+}
+
+// treeIsLandscape reports that a snapshot was laid out on a landscape screen.
+func treeIsLandscape(elements []Element) bool {
+	w, h, ok := screenExtent(elements)
+	return ok && w > h
 }
 
 // treeShapeContradictsRotation reports that a snapshot's screen extent is
@@ -208,83 +223,93 @@ func treeShapeContradictsRotation(elements []Element, rotation int) bool {
 	if rotation != 90 && rotation != 270 {
 		return false
 	}
-	var w, h float64
-	for _, el := range elements {
-		ex, ey, ew, eh, ok := parseElementFrame(el.Frame)
-		if !ok || ex != 0 || ey != 0 {
-			continue
-		}
-		if ew*eh > w*h {
-			w, h = ew, eh
-		}
-	}
-	if w <= 0 || h <= 0 {
-		return false
-	}
-	return w <= h
+	w, h, ok := screenExtent(elements)
+	return ok && w <= h
+}
+
+// hidResult is what hidPoint concluded: the point to dispatch, the rotation
+// it applied (0 when none was), the rotation the source claimed regardless of
+// whether it could be applied, and where that claim came from.
+type hidResult struct {
+	X, Y     int
+	Rotation int
+	Detected int
+	Source   string
 }
 
 // addRotationFields records that a gesture's coordinates were rotated, and
 // where they actually went. Nothing is added when nothing moved, so the
-// common portrait result line is unchanged. When Simulator.app reports a
-// rotation but it could not be applied (the screen probe failed or
-// disagreed with the tree shape), the caller knows the dispatched point may
-// be in the wrong space and that is surfaced instead of a silent plain ok.
-func addRotationFields(fields map[string]string, rotation, hidX, hidY, detectedAngle int) {
-	if rotation == 0 {
-		if detectedAngle != 0 {
-			fields["rotation_unavailable"] = strconv.Itoa(detectedAngle)
+// common portrait result line is unchanged. When a rotation was claimed but
+// could not be applied (the screen probe failed or disagreed with the tree
+// shape), the caller knows the dispatched point may be in the wrong space and
+// that is surfaced instead of a silent plain ok.
+func addRotationFields(fields map[string]string, hid hidResult) {
+	if hid.Rotation == 0 {
+		if hid.Detected != 0 {
+			fields["rotation_unavailable"] = strconv.Itoa(hid.Detected)
 			fields["next"] = "coordinates were dispatched unrotated; re-run once the app's accessibility tree is available"
 		}
 		return
 	}
-	fields["rotation"] = strconv.Itoa(rotation)
-	fields["hid_x"] = strconv.Itoa(hidX)
-	fields["hid_y"] = strconv.Itoa(hidY)
+	fields["rotation"] = strconv.Itoa(hid.Rotation)
+	fields["hid_x"] = strconv.Itoa(hid.X)
+	fields["hid_y"] = strconv.Itoa(hid.Y)
+	if hid.Source != "" {
+		fields["rotation_source"] = hid.Source
+	}
+}
+
+// addUnknownLandscapeFields says the last tree MAV read was landscape while
+// nothing on the machine claims a rotation — the signature of a simulator
+// rotated by something that is not Simulator.app (baguette, a raw GSEvent, an
+// app that is landscape-only). MAV cannot tell the two landscapes apart from
+// the tree alone and they differ by 180 degrees, so it dispatches raw and
+// says so rather than guessing and landing every tap in the opposite corner.
+func addUnknownLandscapeFields(fields map[string]string) {
+	fields["rotation_unavailable"] = "unknown_landscape"
+	fields["next"] = "the tree is landscape but no rotation is declared; run `mav ui orientation landscape-left|landscape-right` so mav knows which one"
 }
 
 // hidPoint maps a point in the accessibility tree's coordinate space to the
-// space idb and axe dispatch touches in. On an unrotated simulator — and on
-// every non-simulator target — it is the identity and costs one `defaults
-// read`. The reported angle is 0 whenever nothing had to move, so a caller
-// can put `rotation=` on its result line and have it mean something. The
-// fourth return value is the angle Simulator.app reported regardless of
-// whether it could be applied, so a caller can tell "nothing to rotate"
-// (0, 0) apart from "rotation detected but not applied" (0, detected != 0).
-func (c CLI) hidPoint(ctx context.Context, cfg Config, x, y int) (int, int, int, int) {
+// space idb, baguette and axe dispatch touches in. On an unrotated simulator
+// — and on every non-simulator target — it is the identity and costs one
+// cheap source read. The applied rotation is 0 whenever nothing had to move,
+// so a caller can put `rotation=` on its result line and have it mean
+// something.
+func (c CLI) hidPoint(ctx context.Context, cfg Config, x, y int) hidResult {
 	if targetKind(cfg) != drivers.KindSim {
-		return x, y, 0, 0
+		return hidResult{X: x, Y: y}
 	}
-	angle := simulatorRotationAngle(c.Runner, cfg.SimulatorUDID)
-	if angle == 0 {
-		return x, y, 0, 0
+	reading := resolveRotation(c.Runner, c.Root, cfg.SimulatorUDID)
+	if reading.Angle == 0 {
+		return hidResult{X: x, Y: y}
 	}
 	// At 180 the tree root is portrait-shaped (h > w) whether the app really
 	// flipped upside-down or is portrait-locked and never moved, so the
-	// shape check that makes 90/270 safe proves nothing here — and most
-	// apps (and SpringBoard on every home-button-less iPhone) never rotate
-	// to upside-down at all, in which case mirroring the point sends the
-	// tap to the diagonally opposite corner. No transform is applied until
-	// a proof stronger than the tree shape exists.
-	if angle == 180 {
-		return x, y, 0, angle
+	// shape check that makes 90/270 safe proves nothing here — and most apps
+	// (and SpringBoard on every home-button-less iPhone) never rotate to
+	// upside-down at all, in which case mirroring the point sends the tap to
+	// the diagonally opposite corner. Short-circuited before the probe
+	// because there is no answer the tree could give that would change it.
+	if reading.Angle == 180 {
+		return hidResult{X: x, Y: y, Detected: reading.Angle, Source: reading.Source}
 	}
-	screen, ok := c.portraitScreenSize(ctx, cfg, angle)
+	screen, ok := c.portraitScreenSize(ctx, cfg, reading.Angle)
 	if !ok {
 		// Without the screen size there is no correct rotation to apply.
 		// Passing the point through unchanged is the old behaviour, which
 		// is wrong here but is at least the wrongness callers already
 		// compensate for; inventing a size would be a new one.
-		return x, y, 0, angle
+		return hidResult{X: x, Y: y, Detected: reading.Angle, Source: reading.Source}
 	}
-	hx, hy := x, y
-	switch angle {
+	var hx, hy int
+	switch reading.Angle {
 	case 90:
 		hx, hy = screen.PortraitWidth-y, x
 	case 270:
 		hx, hy = y, screen.PortraitHeight-x
 	default:
-		return x, y, 0, angle
+		return hidResult{X: x, Y: y, Detected: reading.Angle, Source: reading.Source}
 	}
 	// A point read off the rotated tree always lands inside the portrait
 	// touch surface, so one that does not is proof the input was not in the
@@ -294,17 +319,36 @@ func (c CLI) hidPoint(ctx context.Context, cfg Config, x, y int) (int, int, int,
 	// line, which is worse than not rotating: the caller is told the
 	// coordinate it can trust is the one that cannot be tapped.
 	if hx < 0 || hy < 0 || hx >= screen.PortraitWidth || hy >= screen.PortraitHeight {
-		return x, y, 0, angle
+		return hidResult{X: x, Y: y, Detected: reading.Angle, Source: reading.Source}
 	}
-	return hx, hy, angle, angle
+	return hidResult{X: hx, Y: hy, Rotation: reading.Angle, Detected: reading.Angle, Source: reading.Source}
 }
 
-// directionSwipeRotationNext is the hint a direction-default swipe carries on
-// a rotated simulator. The coordinates swipeCoordinates returns are fixed
-// portrait-HID-space constants, so they are dispatched exactly as written —
-// which means the drag runs along the wrong axis of the rotated screen, and
-// no rotation can fix that because there is no tree-space input to rotate.
-const directionSwipeRotationNext = "direction swipes use fixed portrait-space coordinates and are not axis-compensated on a rotated simulator; pass --start-x/--start-y/--end-x/--end-y read from `mav ui tree`"
+// hidVector rotates a displacement rather than a position: a pan or a drag
+// delta has no origin to translate, so only the axis swap applies. Rotating
+// it as if it were a point would add the screen's width to it and send the
+// gesture off the surface.
+//
+// The rotations are the derivatives of hidPoint's:
+//
+//	90:  (x, y) -> (W - y, x)   so   (dx, dy) -> (-dy,  dx)
+//	270: (x, y) -> (y, H - x)   so   (dx, dy) -> ( dy, -dx)
+func hidVector(dx, dy, rotation int) (int, int) {
+	switch rotation {
+	case 90:
+		return -dy, dx
+	case 270:
+		return dy, -dx
+	}
+	return dx, dy
+}
+
+// directionSwipeRotationNext is the hint a direction-default swipe carries
+// when MAV cannot compensate its axis. The coordinates swipeCoordinates
+// returns are fixed portrait-space constants, so with no screen size to
+// re-derive them from they are dispatched exactly as written — which means
+// the drag runs along the wrong axis of the rotated screen.
+const directionSwipeRotationNext = "the simulator is rotated and this direction swipe could not be re-derived for it; pass --start-x/--start-y/--end-x/--end-y read from `mav ui tree`"
 
 // directionSwipeRotationAngle reports the rotation a direction-default
 // gesture is about to ignore, so the caller can say so instead of returning a
@@ -313,5 +357,44 @@ func (c CLI) directionSwipeRotationAngle(cfg Config) int {
 	if targetKind(cfg) != drivers.KindSim {
 		return 0
 	}
-	return simulatorRotationAngle(c.Runner, cfg.SimulatorUDID)
+	return resolveRotation(c.Runner, c.Root, cfg.SimulatorUDID).Angle
+}
+
+// rotatedDirectionSwipe re-derives a direction swipe's endpoints for a
+// rotated screen instead of dispatching the portrait constants sideways. The
+// endpoints are expressed as fractions of the CURRENT (rotated) screen, read
+// from the same cache the point transform uses, and then pushed through
+// hidPoint like any caller-supplied pair — so "up" is up on the screen the
+// user is looking at, whichever way it is turned.
+//
+// The fractions match what swipeCoordinates encodes for a portrait iPhone:
+// the long axis runs from 0.87 to 0.30 of the screen for up/down, and the
+// short axis from 0.10 to 0.90 for left/right, both centred on the other.
+func (c CLI) rotatedDirectionSwipe(ctx context.Context, cfg Config, direction string, angle int) (sx, sy, ex, ey int, ok bool) {
+	screen, sized := c.portraitScreenSize(ctx, cfg, angle)
+	if !sized {
+		return 0, 0, 0, 0, false
+	}
+	// The tree-space screen is the portrait one turned on its side.
+	w, h := screen.PortraitHeight, screen.PortraitWidth
+	near, far := 0.87, 0.30
+	lo, hi := 0.10, 0.90
+	switch direction {
+	case "up":
+		sx, sy, ex, ey = w/2, int(float64(h)*near), w/2, int(float64(h)*far)
+	case "down":
+		sx, sy, ex, ey = w/2, int(float64(h)*far), w/2, int(float64(h)*near)
+	case "left":
+		sx, sy, ex, ey = int(float64(w)*hi), h/2, int(float64(w)*lo), h/2
+	case "right":
+		sx, sy, ex, ey = int(float64(w)*lo), h/2, int(float64(w)*hi), h/2
+	default:
+		return 0, 0, 0, 0, false
+	}
+	start := c.hidPoint(ctx, cfg, sx, sy)
+	end := c.hidPoint(ctx, cfg, ex, ey)
+	if start.Rotation == 0 || end.Rotation == 0 || start.Rotation != end.Rotation {
+		return 0, 0, 0, 0, false
+	}
+	return start.X, start.Y, end.X, end.Y, true
 }

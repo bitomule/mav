@@ -7,17 +7,18 @@
 // on device targets so the router never picks it; cli.go must surface a
 // structured `gesture_unsupported_on_device` error in that case.
 //
-// CLI shape (verified against v0.1.73, May 2026):
+// CLI shape (verified against v0.1.97, September 2026):
 //
 //	baguette tap          --udid UDID --x X --y Y --width W --height H [--duration S]
 //	baguette double-tap   --udid UDID --x X --y Y --width W --height H [--interval S] [--duration S]
-//	baguette swipe        --udid UDID --startX X1 --startY Y1 --endX X2 --endY Y2 --width W --height H
+//	baguette swipe        --udid UDID --start-x X1 --start-y Y1 --end-x X2 --end-y Y2 --width W --height H
 //	baguette pinch        --udid UDID --cx CX --cy CY --startSpread S1 --endSpread S2 --width W --height H
 //	baguette pan          --udid UDID --x1 X --y1 Y --x2 X --y2 Y --dx DX --dy DY --width W --height H
 //	baguette type         --udid UDID --text TEXT
 //	baguette key          --udid UDID --code <KeyA..ArrowRight> [--modifiers] [--duration S]
 //	baguette press        --udid UDID --button (home|lock|power|action|volumeUp|volumeDown) [--duration S]
 //	baguette describe-ui  --udid UDID [--x X --y Y] [--output PATH]
+//	baguette orientation  --udid UDID (portrait|landscape-left|landscape-right|portrait-upside-down)
 //	baguette screenshot   --udid UDID [--output PATH]
 //	baguette list         [--json]
 //
@@ -247,10 +248,16 @@ func (d *Driver) Swipe(ctx context.Context, target drivers.Target, spec drivers.
 	args := []string{
 		"swipe",
 		"--udid", target.UDID,
-		"--startX", strconv.Itoa(spec.StartX),
-		"--startY", strconv.Itoa(spec.StartY),
-		"--endX", strconv.Itoa(spec.EndX),
-		"--endY", strconv.Itoa(spec.EndY),
+		// Hyphenated, matching `baguette swipe --help`. The camelCase
+		// spelling this used to send has been rejected with "Missing
+		// expected argument '--start-x'" for as long as anyone has looked;
+		// nothing noticed because AXe is canonical for CapSwipe and always
+		// won the route, so this path only became reachable when a rotated
+		// simulator started routing around AXe.
+		"--start-x", strconv.Itoa(spec.StartX),
+		"--start-y", strconv.Itoa(spec.StartY),
+		"--end-x", strconv.Itoa(spec.EndX),
+		"--end-y", strconv.Itoa(spec.EndY),
 		"--width", strconv.Itoa(w),
 		"--height", strconv.Itoa(h),
 	}

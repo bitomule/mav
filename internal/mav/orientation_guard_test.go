@@ -156,16 +156,18 @@ func TestFlowSwipeStepRejectsAPartialCoordinateSet(t *testing.T) {
 	}
 }
 
-// Direction defaults are dispatched unrotated, which is right -- and along
-// the wrong axis of a rotated screen, which nothing can fix from inside the
-// gesture. Saying so is the whole remedy: an "up" swipe that drags sideways
-// and returns a bare ok is how a scrollUntil burns every swipe and reports
-// only a timeout. Remove the direction branch's angle read and this test
-// fails.
+// When the screen size cannot be resolved there is nothing to re-derive the
+// endpoints against, so the portrait constants go out as written -- along the
+// wrong axis of the rotated screen. Saying so is the whole remedy: an "up"
+// swipe that drags sideways and returns a bare ok is how a scrollUntil burns
+// every attempt and reports only a timeout. Remove the direction branch's
+// fallback reporting and this test fails.
 func TestUISwipeDirectionDefaultsReportTheUncompensatedAxis(t *testing.T) {
 	const udid = "AAAAAAAA-0000-0000-0000-000000000001"
-	landscapeTree := `[{"AXLabel":"App","type":"Application","AXFrame":"{{0, 0}, {874, 402}}"}]`
-	cli, runner, out, _ := rotationCLI(t, udid, devicePreferencesDump, landscapeTree)
+	// A portrait-shaped tree under a 90 angle fails portraitScreenSize's
+	// shape check, so no screen size is available to re-derive against.
+	portraitShapedTree := `[{"AXLabel":"App","type":"Application","AXFrame":"{{0, 0}, {402, 874}}"}]`
+	cli, runner, out, _ := rotationCLI(t, udid, devicePreferencesDump, portraitShapedTree)
 	if err := cli.Run(context.Background(), []string{"ui", "swipe", "--direction", "up"}); err != nil {
 		t.Fatal(err)
 	}
@@ -173,10 +175,9 @@ func TestUISwipeDirectionDefaultsReportTheUncompensatedAxis(t *testing.T) {
 	if !strings.Contains(got, "rotation_unavailable=90") {
 		t.Fatalf("a direction swipe on a rotated simulator claimed nothing was wrong: %q", got)
 	}
-	if !strings.Contains(got, "not axis-compensated") {
-		t.Fatalf("the result line does not say the axis is uncompensated: %q", got)
+	if !strings.Contains(got, "could not be re-derived") {
+		t.Fatalf("the result line does not say why the axis is uncompensated: %q", got)
 	}
-	// The contract itself is unchanged: the constants still go out as written.
 	joined := strings.Join(runner.commands, "\n")
 	if !strings.Contains(joined, "220 760") && !strings.Contains(joined, "--start-x 220 --start-y 760") {
 		t.Fatalf("the direction defaults were not dispatched unrotated: %q", runner.commands)
