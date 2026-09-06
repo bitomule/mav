@@ -29,6 +29,16 @@ func (c CLI) router() *drivers.Router {
 	return drivers.NewRouter(c.driverRegistry(), NewExecutor(c.Runner), disabled)
 }
 
+// routerWithout is router() with one more driver taken out of the running,
+// for the case where a driver is installed and healthy but cannot serve this
+// particular call. Preferring a different driver is not enough: a preference
+// only breaks ties, so a driver that is canonical (cost 0) for the capability
+// still wins.
+func (c CLI) routerWithout(driverID string) *drivers.Router {
+	disabled := append(strings.Split(os.Getenv("MAV_DRIVERS_DISABLE"), ","), driverID)
+	return drivers.NewRouter(c.driverRegistry(), NewExecutor(c.Runner), disabled)
+}
+
 // targetFromConfig projects the cfg fields the drivers need onto Target.
 func targetFromConfig(cfg Config) drivers.Target {
 	target := drivers.Target{

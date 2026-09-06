@@ -195,25 +195,45 @@ entirely.
    for readiness checks.
 
    Coordinates are always in the space `mav ui tree` reports. On a rotated
-   simulator `ui tap` and `ui swipe --start-x/--start-y/--end-x/--end-y`
-   rotate them into the touch surface's own space for you (90/270 only; an
-   upside-down tree cannot be told apart from an app that never flipped, so
-   180 dispatches raw with `rotation_unavailable=180`) — do **not**
-   pre-rotate them yourself, that compensates twice. `ui tap` says so with
-   `rotation=` and `hid_x`/`hid_y` on the result line; `ui swipe` says so
-   with `rotation=` only (it has two rotated endpoints, so there is no
-   single `hid_x`/`hid_y` pair to report). Pass all four coordinate flags or
-   none: a partial set fails `swipe_coordinates_incomplete`, because the
-   endpoints you leave out are direction defaults in the other coordinate
-   space. `ui swipe --direction` without explicit coordinates uses fixed
-   portrait-space defaults, which are dispatched unrotated **and are not
-   axis-compensated**: on a rotated simulator the drag runs along the wrong
-   axis of the screen you are looking at, so `--direction up` does not scroll
-   a vertical list (and `ui scrollUntil`, which only swipes by direction, just
-   times out). Both say so with `rotation_unavailable=`; pass explicit
-   coordinates read from `mav ui tree` instead. The baguette gestures
-   (`longPress`, `pinch`, `rotate`,
-   `twoFingerPan`) do not carry this transform.
+   simulator every coordinate gesture — `tap`, `doubleTap`, `swipe`,
+   `longPress`, `pinch`, `twoFingerPan`, `drag`, `dragPath` — rotates them
+   into the touch surface's own space for you (90/270 only; an upside-down
+   tree cannot be told apart from an app that never flipped, so 180
+   dispatches raw with `rotation_unavailable=180`). Do **not** pre-rotate
+   them yourself, that compensates twice. The result line carries
+   `rotation=` plus the dispatched `hid_x`/`hid_y`, or `hid_start`/`hid_end`
+   for a swipe's two endpoints.
+
+   Pass all four swipe coordinate flags or none: a partial set fails
+   `swipe_coordinates_incomplete`. `ui swipe --direction` has no
+   caller-supplied points, so its endpoints are re-derived as fractions of the
+   rotated screen and reported with `direction_endpoints=derived` — "up" is up
+   on the screen you are looking at. If no screen size can be resolved the
+   fixed portrait defaults go out as written and `rotation_unavailable=` says
+   the axis is uncompensated.
+
+   **Rotate through `mav ui orientation`, not around it.** MAV can only
+   compensate for a rotation it can see, and there are exactly two it can: one
+   it applied itself, and one Simulator.app's window records. A simulator
+   turned by `baguette orientation` or a raw GSEvent leaves no readable trace,
+   and the tree alone cannot say which of the two landscapes is in effect —
+   they differ by 180°, so a guess puts every tap in the opposite corner. On a
+   headless boot (every `simpool` run) Simulator.app has no window at all, so
+   this is the only source there is.
+
+   ```
+   mav ui orientation landscape-right
+   mav ui tap --x 624 --y 330
+     ok ... rotation=90 hid_x=72 hid_y=624 rotation_source=mav
+   ```
+
+   `rotation_unavailable=` means MAV saw a rotation it could not apply and
+   dispatched raw; `unknown_landscape` specifically means run
+   `mav ui orientation` and try again. `portrait-upside-down` is applied but
+   never compensated. `rotation_rerouted=axe` means the gesture avoided AXe,
+   which refuses coordinate gestures on a rotated simulator it cannot read the
+   orientation of. `ui rotate` cannot dispatch at all: no driver provides that
+   capability.
 8. `mav ui tree` may report a natural screen id when the AX root already has a
    `View`-suffix identifier, such as `SettingsView` → `settings-view`. This is
    a labelling/observability signal only. Selectors for tapping still work

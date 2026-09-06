@@ -257,29 +257,42 @@ func TestUISwipeRotatesBothEndpoints(t *testing.T) {
 	}
 }
 
-// A direction swipe with no explicit coordinates uses swipeCoordinates'
-// hard-coded portrait-HID-space constants. Those are not points read off the
-// accessibility tree, so rotating them again on a landscape simulator sends
-// the drag out at a negative, off-screen coordinate. Revert the
-// customCoordinates gate in uiSwipe and this test fails: "up" (220,760 ->
-// 220,260) rotates at angle 90 to (-358,220) -> (142,220).
-func TestUISwipeDirectionDefaultsAreNotRotated(t *testing.T) {
+// A direction swipe has no caller-supplied points to rotate -- its endpoints
+// are fractions of the screen -- so on a rotated simulator they are
+// re-derived against the screen the caller is looking at and then rotated
+// like any tree-space pair. "up" must run up the visible screen, which on a
+// 90-rotated device is a constant-y drag in the portrait touch space.
+//
+// The screen is 874x402 in tree space, so up = (437, 349) -> (437, 120),
+// which at angle 90 dispatches as (53, 437) -> (282, 437). Revert the
+// re-derivation and this test fails: the raw portrait constants 220,760 go
+// out instead and the drag runs across the screen rather than up it.
+func TestUISwipeDirectionDefaultsAreDerivedForARotatedScreen(t *testing.T) {
 	const udid = "AAAAAAAA-0000-0000-0000-000000000001"
 	landscapeTree := `[{"AXLabel":"App","type":"Application","AXFrame":"{{0, 0}, {874, 402}}"}]`
 	cli, runner, out, _ := rotationCLI(t, udid, devicePreferencesDump, landscapeTree)
 	if err := cli.Run(context.Background(), []string{"ui", "swipe", "--direction", "up"}); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out.String(), "rotation=") {
-		t.Fatalf("a direction default swipe reported a rotation: %q", out.String())
+	got := out.String()
+	for _, want := range []string{"rotation=90", "direction_endpoints=derived"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in %q", want, got)
+		}
 	}
 	joined := strings.Join(runner.commands, "\n")
-	if !strings.Contains(joined, "220 760") && !strings.Contains(joined, "--start-x 220 --start-y 760") {
-		t.Fatalf("the direction defaults were not dispatched unrotated: %q", runner.commands)
+	if !strings.Contains(joined, "53 437 282 437") &&
+		!strings.Contains(joined, "--start-x 53 --start-y 437 --end-x 282 --end-y 437") {
+		t.Fatalf("the direction swipe was not re-derived for the rotated screen: %q", runner.commands)
 	}
+	if strings.Contains(joined, "220 760") {
+		t.Fatalf("the raw portrait constants were dispatched on a rotated screen: %q", runner.commands)
+	}
+	// Whatever the transform does, it must never send a gesture off the
+	// touch surface.
 	for _, bad := range []string{"-358", "-98"} {
 		if strings.Contains(joined, bad) {
-			t.Fatalf("a direction default swipe went negative/off-screen: %q", runner.commands)
+			t.Fatalf("a direction swipe went negative/off-screen: %q", runner.commands)
 		}
 	}
 }

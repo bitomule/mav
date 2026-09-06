@@ -142,7 +142,13 @@ func TestTapRejectsSemanticSelector(t *testing.T) {
 	}
 }
 
-func TestSwipeUsesCamelCaseFlags(t *testing.T) {
+// baguette spells the swipe endpoints with hyphens. This test used to pin the
+// camelCase spelling -- and pass, because the fake executor accepts anything.
+// The real binary answers "Missing expected argument '--start-x'", which
+// nobody saw: AXe is canonical for CapSwipe and always won the route, so this
+// code path was unreachable until a rotated simulator started routing around
+// AXe. Revert the flag names and this test fails.
+func TestSwipeUsesTheHyphenatedEndpointFlags(t *testing.T) {
 	exec := newFake()
 	d := New(exec)
 	err := d.Swipe(context.Background(), simTarget(), drivers.SwipeSpec{
@@ -154,13 +160,43 @@ func TestSwipeUsesCamelCaseFlags(t *testing.T) {
 	got := exec.calls[0]
 	for _, want := range []string{
 		"baguette swipe",
-		"--startX 100 --startY 200",
-		"--endX 300 --endY 400",
+		"--start-x 100 --start-y 200",
+		"--end-x 300 --end-y 400",
 		"--width 402 --height 874",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("expected %q in %q", want, got)
 		}
+	}
+	if strings.Contains(got, "--startX") || strings.Contains(got, "--endX") {
+		t.Errorf("the camelCase spelling baguette rejects is still being sent: %q", got)
+	}
+}
+
+// Driver.Drag routes through the same `baguette swipe` subcommand as
+// Driver.Swipe and must spell the endpoints the same way. It used to send
+// the camelCase flags baguette rejects; this pins the hyphenated form.
+func TestDragUsesTheHyphenatedEndpointFlags(t *testing.T) {
+	exec := newFake()
+	d := New(exec)
+	err := d.Drag(context.Background(), simTarget(), drivers.DragSpec{
+		StartX: 100, StartY: 200, EndX: 300, EndY: 400,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := exec.calls[0]
+	for _, want := range []string{
+		"baguette swipe",
+		"--start-x 100 --start-y 200",
+		"--end-x 300 --end-y 400",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected %q in %q", want, got)
+		}
+	}
+	if strings.Contains(got, "--startX") || strings.Contains(got, "--endX") {
+		t.Errorf("the camelCase spelling baguette rejects is still being sent: %q", got)
 	}
 }
 

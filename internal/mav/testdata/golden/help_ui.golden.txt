@@ -1,5 +1,6 @@
 Usage:
   mav ui tree [--prefer-driver auto|axe] [--include-system]
+  mav ui orientation portrait|landscape-left|landscape-right|portrait-upside-down
   mav ui tap --id ID [--verify] [--prefer-driver auto|<driver-id>]
   mav ui tap --x X --y Y
   mav ui tap --text TEXT [--prefer-driver auto|axe]
