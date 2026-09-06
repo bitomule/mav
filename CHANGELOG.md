@@ -2,6 +2,71 @@
 
 ## Unreleased
 
+### Coordinate gestures land where the tree says, on a rotated simulator
+
+After rotating a simulator to landscape, `mav ui tap --x --y` kept dispatching
+into the device's **portrait** point space while `mav ui tree` reported the
+rotated one — the only place a caller gets coordinates from. A tap read off the
+tree and handed straight back to mav landed somewhere else on screen, or on
+nothing at all. Every flow that ran in landscape had to carry the rotation by
+hand, which is a transformation that belongs to MAV.
+
+Simulator.app rotates the window, not the touch surface: idb and axe dispatch
+HID events in the device's native portrait space whatever the window is doing.
+MAV now reads the rotation Simulator.app applied (a per-device user default,
+~13ms) and rotates coordinate gestures into that space before dispatching.
+
+- **Nothing changes when nothing is rotated.** An angle of 0 — every headless
+  run, every simulator nobody rotated — is the identity, costs one `defaults
+  read`, and neither touches the result line nor reads the tree.
+- When a rotation is applied, the result line carries `rotation=90|270` and
+  the `hid_x`/`hid_y` the gesture actually went out at, next to the `x`/`y` you
+  asked for. A 180 rotation is never applied: an upside-down tree is
+  portrait-shaped just like an app that never flipped, so there is no way to
+  prove which space the coordinates are in, and most apps (and SpringBoard on
+  home-button-less iPhones) never rotate to upside-down at all. Coordinates
+  go out untouched with `rotation_unavailable=180`.
+- The device's portrait size is probed from the accessibility tree once per
+  UDID and cached in `.mav/screens/`. Only rotated runs ever probe it. The
+  probe checks the tree's own shape against the angle before trusting it — a
+  portrait-locked app under a rotated window is not rotated — and the cache
+  records the angle it was probed under, so a rotation *change* re-probes.
+  A cache hit at the same angle does not re-check the foreground app, so a
+  screen that went portrait-shaped after the probe can still get its taps
+  rotated; `ui tap --verify` closes that for free by checking the shape of
+  the snapshot it already reads and downgrading a contradicted rotation to
+  `rotation_unavailable=` with a raw dispatch.
+- A rotation that would send the gesture off the touch surface is never
+  reported as applied. That is proof the point was not in the space the angle
+  claimed, so the coordinates go out untouched with `rotation_unavailable=`
+  instead of an `ok` carrying a negative `hid_x`. For a swipe the two
+  endpoints are atomic: if the guard rejects either one, both are dispatched
+  raw — one rotated and one raw endpoint would turn a vertical drag into a
+  diagonal one.
+- `ui swipe` now requires all four of `--start-x/--start-y/--end-x/--end-y` or
+  none of them: `swipe_coordinates_incomplete`. Each endpoint left out kept a
+  direction default, which is a portrait-HID-space constant, and the rotation
+  gate then transformed it as though the caller had read it off the tree.
+- `ui swipe --direction` (and therefore `ui scrollUntil`, which only ever
+  swipes by direction) still dispatches its fixed portrait-space defaults
+  unrotated — and now says that on a rotated simulator the drag is **not**
+  axis-compensated, so an "up" swipe runs sideways. It carries
+  `rotation_unavailable=` and a `next` pointing at explicit coordinates rather
+  than returning a bare `ok` for a gesture that did nothing.
+
+**Breaking for anyone already compensating by hand.** A flow that pre-rotates
+its own coordinates for a landscape simulator will now be rotated twice. Remove
+the manual compensation and use the coordinates `mav ui tree` reports. No flow
+in this repo's examples did this, and a sweep of the flows in the repos this was
+reported from found none either — the compensation was being done interactively.
+
+Covered: `ui tap` (and therefore every selector tap, which resolves to
+coordinates) and `ui swipe`, both endpoints. **Not** covered: gestures that go
+through baguette — `longPress`, `pinch`, `rotate`, `twoFingerPan`, and
+`doubleTap`'s worker fast path. Their HID space was not measured, and
+half-fixing `doubleTap` so it behaves differently depending on whether the
+worker is up would be worse than leaving it.
+
 ### A selector tap no longer dies with the tool's decoding error
 
 `mav ui tap --id X` and `mav ui tap --text X` failed with

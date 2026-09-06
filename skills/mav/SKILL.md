@@ -193,6 +193,27 @@ entirely.
    unambiguous. Use text as the last option because labels change with
    localization and copy edits. Use `mav ui wait --id`, `--text`, or `--value`
    for readiness checks.
+
+   Coordinates are always in the space `mav ui tree` reports. On a rotated
+   simulator `ui tap` and `ui swipe --start-x/--start-y/--end-x/--end-y`
+   rotate them into the touch surface's own space for you (90/270 only; an
+   upside-down tree cannot be told apart from an app that never flipped, so
+   180 dispatches raw with `rotation_unavailable=180`) — do **not**
+   pre-rotate them yourself, that compensates twice. `ui tap` says so with
+   `rotation=` and `hid_x`/`hid_y` on the result line; `ui swipe` says so
+   with `rotation=` only (it has two rotated endpoints, so there is no
+   single `hid_x`/`hid_y` pair to report). Pass all four coordinate flags or
+   none: a partial set fails `swipe_coordinates_incomplete`, because the
+   endpoints you leave out are direction defaults in the other coordinate
+   space. `ui swipe --direction` without explicit coordinates uses fixed
+   portrait-space defaults, which are dispatched unrotated **and are not
+   axis-compensated**: on a rotated simulator the drag runs along the wrong
+   axis of the screen you are looking at, so `--direction up` does not scroll
+   a vertical list (and `ui scrollUntil`, which only swipes by direction, just
+   times out). Both say so with `rotation_unavailable=`; pass explicit
+   coordinates read from `mav ui tree` instead. The baguette gestures
+   (`longPress`, `pinch`, `rotate`,
+   `twoFingerPan`) do not carry this transform.
 8. `mav ui tree` may report a natural screen id when the AX root already has a
    `View`-suffix identifier, such as `SettingsView` → `settings-view`. This is
    a labelling/observability signal only. Selectors for tapping still work

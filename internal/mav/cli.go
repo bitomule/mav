@@ -2581,8 +2581,20 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		if verify {
 			before = c.snapshotForVerification(ctx, cfg)
 		}
+		hidX, hidY, rotation, detectedAngle := c.hidPoint(ctx, cfg, xi, yi)
+		if rotation != 0 && treeShapeContradictsRotation(before, rotation) {
+			// The screen cache only re-probes on an angle change, so a
+			// foreground app that went portrait-shaped under the same angle
+			// still gets its taps rotated off a cache hit. The --verify
+			// snapshot was just read anyway; when its screen extent
+			// contradicts the applied rotation, the transform was into the
+			// wrong space, so the tap goes out raw and the angle is
+			// surfaced as rotation_unavailable instead of a confident
+			// rotation= pointing 100pt away.
+			hidX, hidY, rotation = xi, yi, 0
+		}
 		tapErr := error(nil)
-		_, tapErr = td.Tap(ctx, target, drivers.TapSpec{X: xi, Y: yi})
+		_, tapErr = td.Tap(ctx, target, drivers.TapSpec{X: hidX, Y: hidY})
 		result := CommandResult{}
 		if tapErr != nil {
 			result = CommandResult{Stderr: tapErr.Error(), Err: tapErr}
@@ -2595,6 +2607,7 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		}
 		c.appendCurrentCommand("mav ui tap --x "+x+" --y "+y, result)
 		coordFields := map[string]string{"x": x, "y": y, "driver": driver.ID(), "route_recorded": "false"}
+		addRotationFields(coordFields, rotation, hidX, hidY, detectedAngle)
 		if verify {
 			coordFields["verified"] = c.verifyTapChangedSomething(ctx, cfg, before)
 		}
@@ -3075,23 +3088,34 @@ func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args [
 		return Fail("swipe_direction_invalid", map[string]string{"direction": direction, "usage": "mav ui swipe [--direction up|down|left|right] [--start-x X --start-y Y --end-x X --end-y Y]"}).Write(c.Stdout)
 	}
 	startX, startY, endX, endY := swipeCoordinates(direction)
-	customCoordinates := false
-	if value := flagValue(args, "--start-x"); value != "" {
-		startX = value
-		customCoordinates = true
+	// A partial coordinate set is not a gesture. Every endpoint the caller
+	// leaves out keeps a direction default, which is a hard-coded portrait-
+	// HID-space constant, so the drag would mix one tree-space point with
+	// three touch-space ones and be rotated as if all four were tree-space.
+	// There is no reading of that a caller could have meant.
+	supplied := 0
+	for _, coordinate := range []struct {
+		flag  string
+		value *string
+	}{
+		{"--start-x", &startX},
+		{"--start-y", &startY},
+		{"--end-x", &endX},
+		{"--end-y", &endY},
+	} {
+		if value := flagValue(args, coordinate.flag); value != "" {
+			*coordinate.value = value
+			supplied++
+		}
 	}
-	if value := flagValue(args, "--start-y"); value != "" {
-		startY = value
-		customCoordinates = true
+	if supplied > 0 && supplied < 4 {
+		return Fail("swipe_coordinates_incomplete", map[string]string{
+			"supplied": strconv.Itoa(supplied),
+			"next":     "pass all four of --start-x --start-y --end-x --end-y, or none of them to use the --direction defaults",
+			"usage":    "mav ui swipe [--direction up|down|left|right] [--start-x X --start-y Y --end-x X --end-y Y]",
+		}).Write(c.Stdout)
 	}
-	if value := flagValue(args, "--end-x"); value != "" {
-		endX = value
-		customCoordinates = true
-	}
-	if value := flagValue(args, "--end-y"); value != "" {
-		endY = value
-		customCoordinates = true
-	}
+	customCoordinates := supplied == 4
 	target := targetFromConfig(cfg)
 	preferred := ""
 	switch {
@@ -3127,10 +3151,47 @@ func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args [
 	sy, _ := strconv.Atoi(startY)
 	ex, _ := strconv.Atoi(endX)
 	ey, _ := strconv.Atoi(endY)
-	if err := gd.Swipe(ctx, target, drivers.SwipeSpec{Direction: direction, StartX: sx, StartY: sy, EndX: ex, EndY: ey}); err != nil {
+	hidSX, hidSY, hidEX, hidEY, rotation, detectedAngle := sx, sy, ex, ey, 0, 0
+	if customCoordinates {
+		// Both endpoints go through the same rotation: a swipe is two points
+		// in the same space, and rotating one of them would turn a vertical
+		// drag into a diagonal one. Direction-default coordinates are
+		// hard-coded portrait-HID-space constants, not tree-space points a
+		// caller read off `mav ui tree`, so they must not be rotated again.
+		hidSX, hidSY, rotation, detectedAngle = c.hidPoint(ctx, cfg, sx, sy)
+		var endRotation int
+		hidEX, hidEY, endRotation, _ = c.hidPoint(ctx, cfg, ex, ey)
+		if rotation != endRotation {
+			// hidPoint's bounds guard is per point: one endpoint's rotated
+			// image can land inside the portrait touch surface while the
+			// other's falls off it, and dispatching one endpoint rotated
+			// and the other raw is the diagonal drag the comment above
+			// exists to forbid. A disagreement is proof the pair was not in
+			// the space the angle claimed, so both endpoints go out raw and
+			// the detected angle is surfaced as rotation_unavailable.
+			hidSX, hidSY, hidEX, hidEY, rotation = sx, sy, ex, ey, 0
+		}
+	} else {
+		// The defaults are dispatched verbatim, which on a rotated simulator
+		// drags along the wrong axis of the screen the caller is looking at.
+		// Nothing can be rotated to fix it, but returning a bare ok for a
+		// gesture that did nothing is how a scrollUntil burns every swipe and
+		// then reports only a timeout.
+		detectedAngle = c.directionSwipeRotationAngle(cfg)
+	}
+	if err := gd.Swipe(ctx, target, drivers.SwipeSpec{Direction: direction, StartX: hidSX, StartY: hidSY, EndX: hidEX, EndY: hidEY}); err != nil {
 		return Fail("ui_swipe_failed", map[string]string{"stderr": firstLine(err.Error())}).Write(c.Stdout)
 	}
 	fields := map[string]string{"direction": direction, "driver": driver.ID()}
+	if rotation != 0 {
+		fields["rotation"] = strconv.Itoa(rotation)
+	} else if detectedAngle != 0 {
+		fields["rotation_unavailable"] = strconv.Itoa(detectedAngle)
+		fields["next"] = directionSwipeRotationNext
+		if customCoordinates {
+			fields["next"] = "coordinates were dispatched unrotated; re-run once the app's accessibility tree is available"
+		}
+	}
 	if customCoordinates {
 		fields["direction"] = "custom"
 		fields["start_x"] = startX
@@ -6148,7 +6209,17 @@ func (c CLI) scrollUntilFlowConditionWithSelector(ctx context.Context, params ma
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	return map[string]string{"swipes": strconv.Itoa(maxSwipes), "direction": direction}, fmt.Errorf("scroll_until_timeout")
+	fields := map[string]string{"swipes": strconv.Itoa(maxSwipes), "direction": direction}
+	// scrollUntil only ever swipes by direction, so on a rotated simulator
+	// every one of those swipes dragged along the wrong axis and the timeout
+	// says nothing about why nothing scrolled.
+	if cfg, err := c.mustLoadConfig(); err == nil {
+		if angle := c.directionSwipeRotationAngle(cfg); angle != 0 {
+			fields["rotation_unavailable"] = strconv.Itoa(angle)
+			fields["next"] = directionSwipeRotationNext
+		}
+	}
+	return fields, fmt.Errorf("scroll_until_timeout")
 }
 
 func (c CLI) execFlowShell(ctx context.Context, run RunState, index int, params map[string]string) (map[string]string, error) {
