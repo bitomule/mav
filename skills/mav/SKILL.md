@@ -196,12 +196,13 @@ entirely.
 
    Coordinates are always in the space `mav ui tree` reports. On a rotated
    simulator every coordinate gesture — `tap`, `doubleTap`, `swipe`,
-   `longPress`, `pinch`, `twoFingerPan` — rotates them into the touch
-   surface's own space for you (90/270 only; an upside-down tree cannot be
-   told apart from an app that never flipped, so 180 dispatches raw with
-   `rotation_unavailable=180`). Do **not** pre-rotate them yourself, that
-   compensates twice. The result line carries `rotation=` plus the dispatched
-   `hid_x`/`hid_y`, or `hid_start`/`hid_end` for a swipe's two endpoints.
+   `longPress`, `pinch`, `twoFingerPan`, `drag`, `dragPath` — rotates them
+   into the touch surface's own space for you (90/270 only; an upside-down
+   tree cannot be told apart from an app that never flipped, so 180
+   dispatches raw with `rotation_unavailable=180`). Do **not** pre-rotate
+   them yourself, that compensates twice. The result line carries
+   `rotation=` plus the dispatched `hid_x`/`hid_y`, or `hid_start`/`hid_end`
+   for a swipe's two endpoints.
 
    Pass all four swipe coordinate flags or none: a partial set fails
    `swipe_coordinates_incomplete`. `ui swipe --direction` has no

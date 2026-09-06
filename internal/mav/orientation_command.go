@@ -67,9 +67,19 @@ func (c CLI) uiOrientation(ctx context.Context, opts GlobalOptions, cfg Config, 
 	// which would be worse than not knowing, because every later tap would
 	// be transformed into a space the device is not in.
 	if err := writeDeclaredOrientation(c.Root, udid, declaredOrientation{Value: value, Rotation: rotation}); err != nil {
+		// The rotation genuinely happened but mav could not record it, so
+		// any PREVIOUS declaration (and the angle-keyed screen cache that
+		// goes with it) is now describing an orientation the device is no
+		// longer in. Leaving them in place would silently apply the old
+		// angle to every later gesture instead of the new one; discarding
+		// them degrades to "no declaration", which falls back to the
+		// window angle (or no compensation) instead of a confidently wrong
+		// old one.
+		clearDeclaredOrientation(c.Root, udid)
+		clearScreenCache(c.Root, udid)
 		return Fail("orientation_not_recorded", map[string]string{
 			"error": err.Error(),
-			"next":  "the simulator did rotate, but mav could not record it; coordinate gestures will not be compensated",
+			"next":  "the simulator did rotate but mav could not record it; the previous declaration was discarded -- re-run mav ui orientation before dispatching coordinate gestures",
 		}).Write(c.Stdout)
 	}
 	// The screen-size cache is keyed by the angle it was probed under, so a

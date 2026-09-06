@@ -8,14 +8,18 @@ v0.17.0 compensated `ui tap` and `ui swipe` for a rotated simulator and said
 plainly that the rest were not covered. They are now, and the reason the gap
 existed turned out to be smaller than the reason it was hard to close.
 
-**The gestures.** `longPress`, `pinch`, `twoFingerPan` and `doubleTap`'s worker
-fast path all dispatch through baguette, whose coordinate space was never
-measured. It was measured: baguette consumes the same native-portrait points
-idb does — the same transformed point lands the same element through both — so
-they now take the same transform, reported the same way. An anchor rotates as
-a position; a pan delta rotates as a *displacement* (only the axis swap, no
-screen-width translation), because rotating it as a point would send the
-gesture off the surface.
+**The gestures.** `longPress`, `pinch`, `twoFingerPan`, `doubleTap`'s worker
+fast path, `drag` and `dragPath` all dispatch through baguette, whose
+coordinate space was never measured. It was measured: baguette consumes the
+same native-portrait points idb does — the same transformed point lands the
+same element through both — so they now take the same transform, reported the
+same way. An anchor rotates as a position; a pan delta rotates as a
+*displacement* (only the axis swap, no screen-width translation), because
+rotating it as a point would send the gesture off the surface. `drag`'s two
+endpoints, and every point in a `dragPath`, rotate atomically — one endpoint
+rotated and the other left raw would turn a straight drag into a diagonal
+one, so a disagreement (a bounds-guard trip on one point) sends the whole
+gesture out raw instead.
 
 `ui rotate` gets the same treatment for the day it works: baguette's
 `Provides()` still excludes `CapRotate`, so the router picks nothing for it and

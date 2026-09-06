@@ -173,6 +173,33 @@ func TestSwipeUsesTheHyphenatedEndpointFlags(t *testing.T) {
 	}
 }
 
+// Driver.Drag routes through the same `baguette swipe` subcommand as
+// Driver.Swipe and must spell the endpoints the same way. It used to send
+// the camelCase flags baguette rejects; this pins the hyphenated form.
+func TestDragUsesTheHyphenatedEndpointFlags(t *testing.T) {
+	exec := newFake()
+	d := New(exec)
+	err := d.Drag(context.Background(), simTarget(), drivers.DragSpec{
+		StartX: 100, StartY: 200, EndX: 300, EndY: 400,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := exec.calls[0]
+	for _, want := range []string{
+		"baguette swipe",
+		"--start-x 100 --start-y 200",
+		"--end-x 300 --end-y 400",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected %q in %q", want, got)
+		}
+	}
+	if strings.Contains(got, "--startX") || strings.Contains(got, "--endX") {
+		t.Errorf("the camelCase spelling baguette rejects is still being sent: %q", got)
+	}
+}
+
 func TestPinchUsesSpreadModel(t *testing.T) {
 	exec := newFake()
 	d := New(exec)

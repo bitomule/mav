@@ -72,8 +72,9 @@ func declaredOrientationRotation(value string) (int, bool) {
 }
 
 // declaredOrientation is what `mav ui orientation` last applied to a device.
-// It is stored per UDID rather than per project because it describes the
-// simulator, which outlives any one project's run directory.
+// Like screenCache, it is stored under this project's .mav directory, keyed
+// by UDID: the same simulator declared from two different project roots is
+// tracked separately in each root, not shared globally.
 type declaredOrientation struct {
 	Value    string `json:"value"`
 	Rotation int    `json:"rotation"`

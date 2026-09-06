@@ -235,6 +235,13 @@ type hidResult struct {
 	Rotation int
 	Detected int
 	Source   string
+	// PortraitWidth/PortraitHeight are the native portrait screen size the
+	// point above was computed against, set whenever Rotation != 0. A
+	// caller that must hand X/Y to something expecting a width/height pair
+	// (the gesture worker's wire format) needs these, not the tree-derived
+	// rotated-space dimensions — X/Y live in portrait space and pairing
+	// them with landscape dims silently sends the gesture off-surface.
+	PortraitWidth, PortraitHeight int
 }
 
 // addRotationFields records that a gesture's coordinates were rotated, and
@@ -321,7 +328,10 @@ func (c CLI) hidPoint(ctx context.Context, cfg Config, x, y int) hidResult {
 	if hx < 0 || hy < 0 || hx >= screen.PortraitWidth || hy >= screen.PortraitHeight {
 		return hidResult{X: x, Y: y, Detected: reading.Angle, Source: reading.Source}
 	}
-	return hidResult{X: hx, Y: hy, Rotation: reading.Angle, Detected: reading.Angle, Source: reading.Source}
+	return hidResult{
+		X: hx, Y: hy, Rotation: reading.Angle, Detected: reading.Angle, Source: reading.Source,
+		PortraitWidth: screen.PortraitWidth, PortraitHeight: screen.PortraitHeight,
+	}
 }
 
 // hidVector rotates a displacement rather than a position: a pan or a drag
@@ -370,10 +380,10 @@ func (c CLI) directionSwipeRotationAngle(cfg Config) int {
 // The fractions match what swipeCoordinates encodes for a portrait iPhone:
 // the long axis runs from 0.87 to 0.30 of the screen for up/down, and the
 // short axis from 0.10 to 0.90 for left/right, both centred on the other.
-func (c CLI) rotatedDirectionSwipe(ctx context.Context, cfg Config, direction string, angle int) (sx, sy, ex, ey int, ok bool) {
+func (c CLI) rotatedDirectionSwipe(ctx context.Context, cfg Config, direction string, angle int) (sx, sy, ex, ey int, source string, ok bool) {
 	screen, sized := c.portraitScreenSize(ctx, cfg, angle)
 	if !sized {
-		return 0, 0, 0, 0, false
+		return 0, 0, 0, 0, "", false
 	}
 	// The tree-space screen is the portrait one turned on its side.
 	w, h := screen.PortraitHeight, screen.PortraitWidth
@@ -389,12 +399,12 @@ func (c CLI) rotatedDirectionSwipe(ctx context.Context, cfg Config, direction st
 	case "right":
 		sx, sy, ex, ey = int(float64(w)*lo), h/2, int(float64(w)*hi), h/2
 	default:
-		return 0, 0, 0, 0, false
+		return 0, 0, 0, 0, "", false
 	}
 	start := c.hidPoint(ctx, cfg, sx, sy)
 	end := c.hidPoint(ctx, cfg, ex, ey)
 	if start.Rotation == 0 || end.Rotation == 0 || start.Rotation != end.Rotation {
-		return 0, 0, 0, 0, false
+		return 0, 0, 0, 0, "", false
 	}
-	return start.X, start.Y, end.X, end.Y, true
+	return start.X, start.Y, end.X, end.Y, start.Source, true
 }

@@ -1181,6 +1181,11 @@ func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 		if err := persistTargetSelection(c.Root, cfg); err != nil {
 			return err
 		}
+		// A declaration and screen cache from a previous selection of this
+		// UDID (or carried over from .mav) describe whatever orientation
+		// that earlier session left the device in, not this one's.
+		clearDeclaredOrientation(c.Root, sim.UDID)
+		clearScreenCache(c.Root, sim.UDID)
 		return c.OK("sim.select", map[string]string{"udid": sim.UDID, "name": sim.Name, "runtime": sim.Runtime}).Write(c.Stdout)
 	case "boot":
 		cfg, err := LoadConfig(c.Root)
@@ -1213,6 +1218,10 @@ func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 		if status.Err != nil {
 			return Fail("sim_bootstatus_failed", map[string]string{"stderr": firstLine(status.Stderr)}).Write(c.Stdout)
 		}
+		// A fresh boot resets the device to portrait; a declaration or
+		// screen cache from before this boot would misdescribe it.
+		clearDeclaredOrientation(c.Root, cfg.SimulatorUDID)
+		clearScreenCache(c.Root, cfg.SimulatorUDID)
 		return c.OK("sim.boot", map[string]string{"udid": cfg.SimulatorUDID, "name": cfg.SimulatorName}).Write(c.Stdout)
 	default:
 		return Fail("sim_unknown_command", map[string]string{"command": args[0]}).Write(c.Stdout)
@@ -2214,6 +2223,11 @@ func (c CLI) recoverEmptyAXTree(ctx context.Context, cfg Config) error {
 	if boot.Err != nil && !strings.Contains(boot.Stderr, "Unable to boot device in current state") {
 		return fmt.Errorf("sim_boot_failed")
 	}
+	// The shutdown/boot pair above resets the device to portrait; a
+	// declaration or screen cache from before it would misdescribe the
+	// device recoverEmptyAXTree just rebooted.
+	clearDeclaredOrientation(c.Root, cfg.SimulatorUDID)
+	clearScreenCache(c.Root, cfg.SimulatorUDID)
 	status := c.Runner.Run(ctx, "xcrun", "simctl", "bootstatus", cfg.SimulatorUDID, "-b")
 	if run.ID != "" {
 		appendCommand(run, "xcrun simctl bootstatus "+cfg.SimulatorUDID+" -b", status)
@@ -3133,6 +3147,11 @@ func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args [
 	}
 	customCoordinates := supplied == 4
 	target := targetFromConfig(cfg)
+	// Resolved once and reused below for the routing switch and the
+	// direction branch: resolveRotation reads a declaration file (or, on the
+	// window path, shells out through cfprefsd) and every one of those
+	// resolves returns the same reading for the duration of this command.
+	swipeRotationAngle := c.directionSwipeRotationAngle(cfg)
 	preferred := ""
 	rotationRerouted := false
 	switch {
@@ -3142,7 +3161,7 @@ func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args [
 		// kind target_command_ignored exists to make visible: the user asks
 		// for a driver, mav says yes, and runs another without a word.
 		preferred = prefer
-	case hasTool(cfg, "axe") && c.directionSwipeRotationAngle(cfg) == 0:
+	case hasTool(cfg, "axe") && swipeRotationAngle == 0:
 		preferred = "axe"
 	case hasTool(cfg, "axe"):
 		// AXe 1.7 and later refuse coordinate gestures outright on a rotated
@@ -3211,17 +3230,17 @@ func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args [
 			// the detected angle is surfaced as rotation_unavailable.
 			hidSX, hidSY, hidEX, hidEY, rotation = sx, sy, ex, ey, 0
 		}
-	} else if angle := c.directionSwipeRotationAngle(cfg); angle != 0 {
+	} else if angle := swipeRotationAngle; angle != 0 {
 		// A direction default is a fraction of the screen, not a fixed
 		// point, so on a rotated simulator it is re-derived against the
 		// screen the caller is actually looking at and then rotated like any
 		// tree-space pair. Dispatching the portrait constants verbatim drags
 		// along the wrong axis: an "up" swipe runs sideways, which is how a
 		// scrollUntil burns every attempt and reports only a timeout.
-		if dsx, dsy, dex, dey, ok := c.rotatedDirectionSwipe(ctx, cfg, direction, angle); ok {
+		if dsx, dsy, dex, dey, source, ok := c.rotatedDirectionSwipe(ctx, cfg, direction, angle); ok {
 			hidSX, hidSY, hidEX, hidEY = dsx, dsy, dex, dey
 			rotation, detectedAngle, derived = angle, angle, true
-			rotationSource = resolveRotation(c.Runner, c.Root, cfg.SimulatorUDID).Source
+			rotationSource = source
 		} else {
 			// No screen size to re-derive against. The constants go out as
 			// written, which is wrong on a rotated screen, so the angle is
@@ -3293,7 +3312,17 @@ func (c CLI) uiDoubleTap(ctx context.Context, opts GlobalOptions, cfg Config, ar
 	// whether the gesture worker happened to be up, which is the worst of
 	// the three possible behaviours.
 	hid := c.hidPoint(ctx, cfg, x, y)
-	if sendErr := c.sendWorkerGestureWithRestart(target.UDID, tapWorkerEvents(hid.X, hid.Y, screenWidth, screenHeight, int(duration.Milliseconds()), 2)); sendErr == nil {
+	// hid.X/Y live in the native portrait space once a rotation was applied
+	// (that is what hidPoint dispatches in), so the worker's width/height
+	// must be the portrait size the transform was computed against, not
+	// targetScreenSize's tree-derived dims — those are in the rotated
+	// (landscape) space and would normalize the portrait point against the
+	// wrong axis.
+	workerWidth, workerHeight := screenWidth, screenHeight
+	if hid.Rotation != 0 {
+		workerWidth, workerHeight = hid.PortraitWidth, hid.PortraitHeight
+	}
+	if sendErr := c.sendWorkerGestureWithRestart(target.UDID, tapWorkerEvents(hid.X, hid.Y, workerWidth, workerHeight, int(duration.Milliseconds()), 2)); sendErr == nil {
 		workerFields := map[string]string{
 			"x": strconv.Itoa(x), "y": strconv.Itoa(y), "driver": "baguette", "session": "worker",
 		}
@@ -3431,10 +3460,33 @@ func (c CLI) uiDrag(ctx context.Context, opts GlobalOptions, cfg Config, args []
 	duration := parseFlowDuration(flagValue(args, "--duration"), 500*time.Millisecond)
 	target := targetFromConfig(cfg)
 	screenWidth, screenHeight := c.targetScreenSize(ctx, cfg)
+	// Both endpoints must go through the same rotation atomically: a drag is
+	// two points in the same space, and rotating only one would turn a
+	// straight drag into a diagonal one. If either endpoint's rotated image
+	// falls off the portrait surface (hidPoint's bounds guard), both go out
+	// raw rather than mixing spaces.
+	hidSX, hidSY, hidEX, hidEY, rotation, workerWidth, workerHeight := sx, sy, ex, ey, 0, screenWidth, screenHeight
+	detectedAngle := 0
+	start := c.hidPoint(ctx, cfg, sx, sy)
+	end := c.hidPoint(ctx, cfg, ex, ey)
+	detectedAngle = start.Detected
+	if start.Rotation != 0 && start.Rotation == end.Rotation {
+		hidSX, hidSY, hidEX, hidEY, rotation = start.X, start.Y, end.X, end.Y, start.Rotation
+		workerWidth, workerHeight = start.PortraitWidth, start.PortraitHeight
+	}
+	fields := map[string]string{}
+	if rotation != 0 {
+		fields["rotation"] = strconv.Itoa(rotation)
+	} else if detectedAngle != 0 {
+		fields["rotation_unavailable"] = strconv.Itoa(detectedAngle)
+		fields["next"] = "coordinates were dispatched unrotated; re-run once the app's accessibility tree is available"
+	}
 	if sendErr := c.sendWorkerGestureWithRestart(target.UDID, dragPathWorkerEvents([]drivers.PathPoint{
-		{X: sx, Y: sy}, {X: ex, Y: ey, DurationMs: int(duration.Milliseconds())},
-	}, screenWidth, screenHeight)); sendErr == nil {
-		return c.writeFastPathResult(ctx, cfg, args, "ui.drag", map[string]string{"driver": "baguette", "session": "worker"})
+		{X: hidSX, Y: hidSY}, {X: hidEX, Y: hidEY, DurationMs: int(duration.Milliseconds())},
+	}, workerWidth, workerHeight)); sendErr == nil {
+		fields["driver"] = "baguette"
+		fields["session"] = "worker"
+		return c.writeFastPathResult(ctx, cfg, args, "ui.drag", fields)
 	}
 	driver, _, err := c.router().Route(ctx, drivers.CapDrag, target, "")
 	if err != nil {
@@ -3445,11 +3497,13 @@ func (c CLI) uiDrag(ctx context.Context, opts GlobalOptions, cfg Config, args []
 		return Fail("drag_unsupported", nil).Write(c.Stdout)
 	}
 	if err := advanced.Drag(ctx, target, drivers.DragSpec{
-		StartX: sx, StartY: sy, EndX: ex, EndY: ey, DurationMs: int(duration.Milliseconds()),
+		StartX: hidSX, StartY: hidSY, EndX: hidEX, EndY: hidEY, DurationMs: int(duration.Milliseconds()),
 	}); err != nil {
 		return Fail("ui_drag_failed", map[string]string{"stderr": firstLine(err.Error())}).Write(c.Stdout)
 	}
-	return c.writeFastPathResult(ctx, cfg, args, "ui.drag", map[string]string{"driver": driver.ID(), "session": "direct"})
+	fields["driver"] = driver.ID()
+	fields["session"] = "direct"
+	return c.writeFastPathResult(ctx, cfg, args, "ui.drag", fields)
 }
 
 func (c CLI) uiDragPath(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
@@ -3470,10 +3524,46 @@ func (c CLI) uiDragPath(ctx context.Context, opts GlobalOptions, cfg Config, arg
 	}
 	target := targetFromConfig(cfg)
 	screenWidth, screenHeight := c.targetScreenSize(ctx, cfg)
-	if err := c.sendWorkerGestureWithRestart(target.UDID, dragPathWorkerEvents(points, screenWidth, screenHeight)); err == nil {
-		return c.writeFastPathResult(ctx, cfg, args, "ui.dragPath", map[string]string{
-			"driver": "baguette", "session": "worker", "points": strconv.Itoa(len(points)),
-		})
+	// Every point in the path must go through the same rotation, all or
+	// nothing: rotating some points and not others would bend a straight
+	// path at whichever point the guard rejected. A single hidPoint failure
+	// (a bounds-guard trip, a disagreeing angle) drops the whole path back
+	// to raw tree-space coordinates rather than partially rotating it.
+	hidPoints := make([]drivers.PathPoint, len(points))
+	rotation, detectedAngle := 0, 0
+	workerWidth, workerHeight := screenWidth, screenHeight
+	consistent := true
+	for i, p := range points {
+		hid := c.hidPoint(ctx, cfg, p.X, p.Y)
+		hidPoints[i] = drivers.PathPoint{X: hid.X, Y: hid.Y, DurationMs: p.DurationMs}
+		if i == 0 {
+			rotation, detectedAngle = hid.Rotation, hid.Detected
+			workerWidth, workerHeight = hid.PortraitWidth, hid.PortraitHeight
+		} else if hid.Rotation != rotation {
+			// The first point rotated (or didn't) one way and this one
+			// disagrees -- a mid-path bounds-guard trip or an angle change.
+			// Bending part of the path is worse than sending it all raw.
+			consistent = false
+		}
+	}
+	if !consistent {
+		for i, p := range points {
+			hidPoints[i] = p
+		}
+		workerWidth, workerHeight = screenWidth, screenHeight
+		rotation = 0
+	}
+	fields := map[string]string{"points": strconv.Itoa(len(points))}
+	if rotation != 0 {
+		fields["rotation"] = strconv.Itoa(rotation)
+	} else if detectedAngle != 0 {
+		fields["rotation_unavailable"] = strconv.Itoa(detectedAngle)
+		fields["next"] = "coordinates were dispatched unrotated; re-run once the app's accessibility tree is available"
+	}
+	if err := c.sendWorkerGestureWithRestart(target.UDID, dragPathWorkerEvents(hidPoints, workerWidth, workerHeight)); err == nil {
+		fields["driver"] = "baguette"
+		fields["session"] = "worker"
+		return c.writeFastPathResult(ctx, cfg, args, "ui.dragPath", fields)
 	}
 	driver, _, err := c.router().Route(ctx, drivers.CapDragPath, target, "")
 	if err != nil {
@@ -3483,12 +3573,12 @@ func (c CLI) uiDragPath(ctx context.Context, opts GlobalOptions, cfg Config, arg
 	if !ok {
 		return Fail("drag_path_unsupported", nil).Write(c.Stdout)
 	}
-	if err := advanced.DragPath(ctx, target, drivers.DragPathSpec{Points: points}); err != nil {
+	if err := advanced.DragPath(ctx, target, drivers.DragPathSpec{Points: hidPoints}); err != nil {
 		return Fail("ui_drag_path_failed", map[string]string{"stderr": firstLine(err.Error())}).Write(c.Stdout)
 	}
-	return c.writeFastPathResult(ctx, cfg, args, "ui.dragPath", map[string]string{
-		"driver": driver.ID(), "points": strconv.Itoa(len(points)), "session": "direct",
-	})
+	fields["driver"] = driver.ID()
+	fields["session"] = "direct"
+	return c.writeFastPathResult(ctx, cfg, args, "ui.dragPath", fields)
 }
 
 func (c CLI) sendWorkerGestureWithRestart(udid string, events []workerGestureEvent) error {
@@ -3742,13 +3832,13 @@ func (c CLI) uiLongPress(ctx context.Context, opts GlobalOptions, cfg Config, ar
 	hid := c.hidPoint(ctx, cfg, int(xv), int(yv))
 	spec := drivers.TapSpec{X: hid.X, Y: hid.Y, Duration: durationMs}
 	// A long press is a coordinate tap, which AXe ties for and wins on
-	// alphabetical order -- and AXe 1.7+ refuses any coordinate gesture on a
-	// rotated simulator it cannot read the orientation of. Take it out of
-	// the running once a rotation is in play, same as `ui swipe` does.
-	pressRouter := c.router()
-	if hid.Rotation != 0 {
-		pressRouter = c.routerWithout("axe")
-	}
+	// alphabetical order -- but AXe cannot dispatch a coordinate tap at all
+	// (it requires an id/text selector), rotated or not. Take it out of the
+	// running unconditionally: keying this on hid.Rotation != 0 left every
+	// detected-but-unapplied case (a 180 angle, a failed screen probe, the
+	// bounds guard) routed straight into AXe's selector error instead of
+	// falling back to a raw dispatch with rotation_unavailable.
+	pressRouter := c.routerWithout("axe")
 	if _, err := baguetteTap(ctx, pressRouter, target, spec); err != nil {
 		return c.writeGestureError(err)
 	}
@@ -6309,13 +6399,22 @@ func (c CLI) scrollUntilFlowConditionWithSelector(ctx context.Context, params ma
 		time.Sleep(500 * time.Millisecond)
 	}
 	fields := map[string]string{"swipes": strconv.Itoa(maxSwipes), "direction": direction}
-	// scrollUntil only ever swipes by direction, so on a rotated simulator
-	// every one of those swipes dragged along the wrong axis and the timeout
-	// says nothing about why nothing scrolled.
+	// uiSwipe itself re-derives a rotated direction swipe's endpoints
+	// (rotatedDirectionSwipe), so a rotated angle alone no longer means the
+	// swipes above dragged along the wrong axis -- only that re-derivation
+	// failing would mean it. Ask the same question uiSwipe answered instead
+	// of re-diagnosing from the angle alone, or a scrollUntil whose swipes
+	// were correctly compensated gets told to hand-supply coordinates,
+	// which skills/mav/SKILL.md explicitly forbids (it compensates twice).
 	if cfg, err := c.mustLoadConfig(); err == nil {
 		if angle := c.directionSwipeRotationAngle(cfg); angle != 0 {
-			fields["rotation_unavailable"] = strconv.Itoa(angle)
-			fields["next"] = directionSwipeRotationNext
+			if _, _, _, _, _, ok := c.rotatedDirectionSwipe(ctx, cfg, direction, angle); ok {
+				fields["rotation"] = strconv.Itoa(angle)
+				fields["direction_endpoints"] = "derived"
+			} else {
+				fields["rotation_unavailable"] = strconv.Itoa(angle)
+				fields["next"] = directionSwipeRotationNext
+			}
 		}
 	}
 	return fields, fmt.Errorf("scroll_until_timeout")

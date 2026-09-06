@@ -112,8 +112,8 @@ func (d *Driver) Drag(ctx context.Context, target drivers.Target, spec drivers.D
 	w, h := defaultGestureSize()
 	args := []string{
 		"swipe", "--udid", target.UDID,
-		"--startX", strconv.Itoa(spec.StartX), "--startY", strconv.Itoa(spec.StartY),
-		"--endX", strconv.Itoa(spec.EndX), "--endY", strconv.Itoa(spec.EndY),
+		"--start-x", strconv.Itoa(spec.StartX), "--start-y", strconv.Itoa(spec.StartY),
+		"--end-x", strconv.Itoa(spec.EndX), "--end-y", strconv.Itoa(spec.EndY),
 		"--width", strconv.Itoa(w), "--height", strconv.Itoa(h),
 	}
 	if spec.DurationMs > 0 {
