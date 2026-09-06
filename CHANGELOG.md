@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.17.0
 
 ### Coordinate gestures land where the tree says, on a rotated simulator
 
