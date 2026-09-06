@@ -3290,9 +3290,13 @@ func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args [
 		}
 	} else if detectedAngle != 0 {
 		fields["rotation_unavailable"] = strconv.Itoa(detectedAngle)
-		fields["next"] = directionSwipeRotationNext
+		// The direction hint tells the caller to pass explicit coordinates.
+		// Saying that to somebody who just passed all four of them names
+		// their gesture wrong and asks for what they already did.
 		if customCoordinates {
 			fields["next"] = "coordinates were dispatched unrotated; re-run once the app's accessibility tree is available"
+		} else {
+			fields["next"] = directionSwipeRotationNext
 		}
 	}
 	if customCoordinates {
@@ -3497,6 +3501,14 @@ func (c CLI) uiDrag(ctx context.Context, opts GlobalOptions, cfg Config, args []
 	fields := map[string]string{}
 	if rotation != 0 {
 		fields["rotation"] = strconv.Itoa(rotation)
+		// Same shape as ui swipe's: a drag has two endpoints, so there is no
+		// single hid_x/hid_y pair to report. SKILL.md promises these on every
+		// rotated coordinate gesture.
+		fields["hid_start"] = strconv.Itoa(hidSX) + "," + strconv.Itoa(hidSY)
+		fields["hid_end"] = strconv.Itoa(hidEX) + "," + strconv.Itoa(hidEY)
+		if start.Source != "" {
+			fields["rotation_source"] = start.Source
+		}
 	} else if detectedAngle != 0 {
 		fields["rotation_unavailable"] = strconv.Itoa(detectedAngle)
 		fields["next"] = "coordinates were dispatched unrotated; re-run once the app's accessibility tree is available"
@@ -3551,13 +3563,14 @@ func (c CLI) uiDragPath(ctx context.Context, opts GlobalOptions, cfg Config, arg
 	// to raw tree-space coordinates rather than partially rotating it.
 	hidPoints := make([]drivers.PathPoint, len(points))
 	rotation, detectedAngle := 0, 0
+	rotationSource := ""
 	workerWidth, workerHeight := screenWidth, screenHeight
 	consistent := true
 	for i, p := range points {
 		hid := c.hidPoint(ctx, cfg, p.X, p.Y)
 		hidPoints[i] = drivers.PathPoint{X: hid.X, Y: hid.Y, DurationMs: p.DurationMs}
 		if i == 0 {
-			rotation, detectedAngle = hid.Rotation, hid.Detected
+			rotation, detectedAngle, rotationSource = hid.Rotation, hid.Detected, hid.Source
 			if hid.Rotation != 0 {
 				workerWidth, workerHeight = hid.PortraitWidth, hid.PortraitHeight
 			}
@@ -3578,6 +3591,15 @@ func (c CLI) uiDragPath(ctx context.Context, opts GlobalOptions, cfg Config, arg
 	fields := map[string]string{"points": strconv.Itoa(len(points))}
 	if rotation != 0 {
 		fields["rotation"] = strconv.Itoa(rotation)
+		// The whole path was rotated by one angle (a mid-path disagreement
+		// resets rotation to 0 above), so its ends are enough to show where
+		// it went without printing every point.
+		fields["hid_start"] = strconv.Itoa(hidPoints[0].X) + "," + strconv.Itoa(hidPoints[0].Y)
+		last := hidPoints[len(hidPoints)-1]
+		fields["hid_end"] = strconv.Itoa(last.X) + "," + strconv.Itoa(last.Y)
+		if rotationSource != "" {
+			fields["rotation_source"] = rotationSource
+		}
 	} else if detectedAngle != 0 {
 		fields["rotation_unavailable"] = strconv.Itoa(detectedAngle)
 		fields["next"] = "coordinates were dispatched unrotated; re-run once the app's accessibility tree is available"
