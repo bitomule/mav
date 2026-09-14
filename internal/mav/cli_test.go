@@ -2426,6 +2426,53 @@ func TestPinchOnDeviceFailsWithStructuredError(t *testing.T) {
 	}
 }
 
+// A long press holds one finger down, so it is not multitouch and has no
+// business sharing pinch's device gate. It used to fail with
+// gesture_unsupported_on_device ("use sim for multitouch") even though idb --
+// the only tap driver a physical device has -- holds there exactly as it does
+// on a simulator.
+func TestLongPressOnDeviceHoldsThroughIDB(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.TargetKind = "device"
+	cfg.DeviceUDID = "REAL-1"
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	runner := &sequenceRecordingRunner{tools: map[string]bool{"idb": true}}
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "longPress", "--x", "100", "--y", "200"}); err != nil {
+		t.Fatalf("err=%v out=%s", err, out.String())
+	}
+	if strings.Contains(out.String(), "gesture_unsupported_on_device") {
+		t.Fatalf("a long press was refused on a device: %q", out.String())
+	}
+	if !containsCall(runner.commands, "idb ui tap 100 200 --udid REAL-1 --duration 0.800") {
+		t.Fatalf("the hold never reached idb: %v", runner.commands)
+	}
+}
+
+// The result line used to name baguette whatever ran, which on a device is a
+// tool that cannot even reach the target.
+func TestLongPressReportsTheDriverThatRan(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.TargetKind = "device"
+	cfg.DeviceUDID = "REAL-1"
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: &sequenceRecordingRunner{tools: map[string]bool{"idb": true}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "longPress", "--x", "100", "--y", "200"}); err != nil {
+		t.Fatalf("err=%v out=%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "driver=idb") {
+		t.Fatalf("got %q", out.String())
+	}
+}
+
 func TestUITreeIncludeSystemOnDeviceFailsWithStructuredError(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)

@@ -99,6 +99,29 @@ func baguetteTap(ctx context.Context, router *drivers.Router, target drivers.Tar
 	return td.Tap(ctx, target, spec)
 }
 
+// baguetteTapDriver is baguetteTap for callers that report which driver ran.
+// The routed driver is not always baguette -- on a physical device baguette
+// declares nothing and idb serves the tap -- so a hard-coded driver field on
+// the result line would name a tool that never executed.
+func baguetteTapDriver(ctx context.Context, router *drivers.Router, target drivers.Target, spec drivers.TapSpec) (string, error) {
+	cap := drivers.CapCoordTap
+	if !spec.Selector.IsZero() {
+		cap = drivers.CapSemanticTap
+	}
+	driver, _, err := router.Route(ctx, cap, target, "")
+	if err != nil {
+		return "", err
+	}
+	td, ok := driver.(drivers.TapDriver)
+	if !ok {
+		return "", fmt.Errorf("driver %q does not implement TapDriver", driver.ID())
+	}
+	if _, err := td.Tap(ctx, target, spec); err != nil {
+		return driver.ID(), err
+	}
+	return driver.ID(), nil
+}
+
 func baguettePinch(ctx context.Context, router *drivers.Router, target drivers.Target, spec drivers.PinchSpec) error {
 	driver, _, err := router.Route(ctx, drivers.CapPinch, target, "")
 	if err != nil {
