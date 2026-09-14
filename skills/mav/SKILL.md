@@ -536,6 +536,10 @@ id nor coordinates are appropriate.
 
 ## Gestures
 
+`mav ui longPress --x X --y Y [--duration 800ms]` holds one finger down. It is
+not multitouch, so it works on a physical device as well as on a simulator: on
+a device the hold goes out through idb.
+
 Multitouch gestures (pinch, rotate, two-finger pan) dispatch through baguette on
 simulator. They return `gesture_unsupported_on_device` on a physical device:
 

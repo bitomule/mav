@@ -1,5 +1,45 @@
 # Changelog
 
+## Unreleased
+
+### `ui longPress` holds through idb, and is no longer refused on a device
+
+**The hold reached idb and was thrown away.** `uiLongPress` computes its 800ms
+default, puts it in `TapSpec.Duration` and routes; the idb driver built
+`idb ui tap X Y` and never looked at the field. What went out was an ordinary
+tap, so the command reported `ok` while SwiftUI's `onLongPressGesture` never
+fired — the most expensive kind of green, because nothing in the output said
+anything was missing.
+
+The trap in fixing it is that the two sides disagree on units: MAV carries a
+tap hold in **milliseconds**, `idb ui tap --duration` reads **seconds**
+(measured, not assumed: `--duration 4` takes 4.4s of wall clock). Passing the
+field straight through would have asked a simulator for an 800-second press.
+It is converted, the way baguette's driver already converted it, and a tap
+with no hold still goes out with no `--duration` at all so idb's own 0.05s
+press is not replaced by an instantaneous one.
+
+This was only ever reachable when idb won the route, which on a simulator it
+does not: baguette ties on cost, wins on name, and has always sent the hold.
+The path that was broken is the one a physical device has — and a device could
+not get there at all, because:
+
+**A long press is not multitouch.** It was gated with pinch, rotate and
+two-finger pan behind `gesture_unsupported_on_device` ("use sim for
+multitouch"), which is the wrong company: one finger goes down and comes back
+up, and `idb ui tap --duration` holds on a device exactly as it does on a
+simulator. The gate is gone, and `mav ui longPress` now routes normally on a
+device, where idb is the only tap driver there is.
+
+**The result line named the wrong tool.** `driver=baguette` was a string
+literal, printed whatever actually ran — including on a device, where baguette
+declares no capabilities and cannot touch the target. It now reports the driver
+the router picked.
+
+Verified by ablation against a SwiftUI `onLongPressGesture(minimumDuration:
+0.5)`: through idb, 0 of 5 runs opened the gesture's sheet before the fix and 5
+of 5 after, with the dispatch going from 0.2s of wall clock to 1.1s.
+
 ## v0.18.0
 
 ### Every coordinate gesture is rotation-aware, and MAV can rotate the simulator itself

@@ -3848,11 +3848,12 @@ func (c CLI) uiPress(ctx context.Context, opts GlobalOptions, cfg Config, args [
 	return c.OK("ui.press", map[string]string{"button": button, "driver": driver.ID()}).Write(c.Stdout)
 }
 
+// uiLongPress holds one finger down. It is not multitouch, so unlike pinch,
+// rotate and twoFingerPan it is not gated to the simulator: on a physical
+// device idb is the only tap driver, and `idb ui tap --duration` holds there
+// exactly as it does on a simulator.
 func (c CLI) uiLongPress(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
 	_ = opts
-	if targetKind(cfg) != drivers.KindSim {
-		return Fail("gesture_unsupported_on_device", map[string]string{"gesture": "longPress", "next": "use sim for multitouch"}).Write(c.Stdout)
-	}
 	x := flagValue(args, "--x")
 	y := flagValue(args, "--y")
 	durationText := flagValue(args, "--duration")
@@ -3883,14 +3884,15 @@ func (c CLI) uiLongPress(ctx context.Context, opts GlobalOptions, cfg Config, ar
 	// bounds guard) routed straight into AXe's selector error instead of
 	// falling back to a raw dispatch with rotation_unavailable.
 	pressRouter := c.routerWithout("axe")
-	if _, err := baguetteTap(ctx, pressRouter, target, spec); err != nil {
-		return c.writeGestureError(err)
+	pressDriver, pressErr := baguetteTapDriver(ctx, pressRouter, target, spec)
+	if pressErr != nil {
+		return c.writeGestureError(pressErr)
 	}
 	fields := map[string]string{
 		"x":        formatNumber(xv),
 		"y":        formatNumber(yv),
 		"duration": strconv.Itoa(durationMs) + "ms",
-		"driver":   "baguette",
+		"driver":   pressDriver,
 	}
 	addRotationFields(fields, hid)
 	c.appendCurrentCommand("mav ui longPress "+strings.Join(args, " "), CommandResult{})

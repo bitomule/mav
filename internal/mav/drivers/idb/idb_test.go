@@ -82,3 +82,33 @@ func TestIDBTreeStaysBehindAXeOnSimulators(t *testing.T) {
 		t.Fatal("idb must not tie with AXe for the tree on a simulator")
 	}
 }
+
+// A long press reaches idb as a TapSpec carrying a hold in MILLISECONDS, but
+// `idb ui tap --duration` reads SECONDS. Dropping the field turned the press
+// into a bare tap, so SwiftUI's onLongPressGesture never fired; passing the
+// field through unconverted would ask for an 800-second hold instead.
+func TestTapHoldIsSentInSeconds(t *testing.T) {
+	exec := &fakeExec{tools: map[string]bool{"idb": true}}
+	d := New(exec)
+	_, err := d.Tap(context.Background(), drivers.Target{UDID: "REAL-1"}, drivers.TapSpec{X: 10, Y: 20, Duration: 800})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "idb ui tap 10 20 --udid REAL-1 --duration 0.800"
+	if exec.commands[0] != want {
+		t.Fatalf("command=%q want=%q", exec.commands[0], want)
+	}
+}
+
+// A tap with no hold must stay a plain tap: appending --duration 0 would
+// replace idb's own 0.05s press with an instantaneous one.
+func TestTapWithoutHoldOmitsDuration(t *testing.T) {
+	exec := &fakeExec{tools: map[string]bool{"idb": true}}
+	d := New(exec)
+	if _, err := d.Tap(context.Background(), drivers.Target{UDID: "REAL-1"}, drivers.TapSpec{X: 10, Y: 20}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(exec.commands[0], "--duration") {
+		t.Fatalf("a tap with no hold carried a duration: %q", exec.commands[0])
+	}
+}

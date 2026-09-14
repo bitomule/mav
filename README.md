@@ -618,6 +618,10 @@ simulator. On a physical device they return `erase_unsupported_on_device` and
 `hide_keyboard_unsupported_on_device` respectively. Tap and retype the field,
 or tap outside the input area to dismiss the keyboard.
 
+`mav ui longPress --x X --y Y [--duration 800ms]` is a single-finger hold, not
+multitouch, and runs on a simulator and on a physical device alike: baguette
+serves it on a simulator, idb on a device.
+
 True multitouch gestures that Baguette currently exposes (pinch and
 two-finger pan) go through baguette on simulator. On device they return
 `gesture_unsupported_on_device` with a remediation hint — use a simulator for

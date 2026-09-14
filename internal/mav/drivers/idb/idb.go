@@ -146,6 +146,9 @@ func (d *Driver) Tap(ctx context.Context, target drivers.Target, spec drivers.Ta
 		return drivers.TapResult{}, errors.New("idb: semantic tap unsupported")
 	}
 	args := targetArgs(target, "ui", "tap", strconv.Itoa(spec.X), strconv.Itoa(spec.Y))
+	if spec.Duration > 0 {
+		args = append(args, "--duration", floatSeconds(spec.Duration))
+	}
 	res := d.exec.Run(ctx, "idb", args...)
 	if res.Err != nil {
 		return drivers.TapResult{}, errors.New(firstLine(res.Stderr))
@@ -285,6 +288,16 @@ func targetArgs(target drivers.Target, args ...string) []string {
 		out = append(out, "--udid", target.UDID)
 	}
 	return out
+}
+
+// floatSeconds converts a TapSpec duration, which MAV carries in
+// milliseconds, into the seconds `idb ui tap --duration` expects. Passing the
+// millisecond value straight through would ask for an 800-second press.
+func floatSeconds(ms int) string {
+	if ms <= 0 {
+		return "0"
+	}
+	return strconv.FormatFloat(float64(ms)/1000.0, 'f', 3, 64)
 }
 
 func firstLine(s string) string {
