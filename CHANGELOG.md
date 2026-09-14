@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.18.1
 
 ### `ui longPress` holds through idb, and is no longer refused on a device
 
