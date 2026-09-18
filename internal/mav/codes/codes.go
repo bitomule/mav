@@ -137,6 +137,19 @@ var TargetCommandTimeoutInvalid = Code{
 	Remediation: "Set target_command_timeout in .mav/config.yaml to a Go duration such as 90s or 3m",
 }
 
+// AmbiguousBootedSimulator is emitted when nothing named a target -- no
+// MAV_TARGET_UDID, no simulator_udid pin, no target_command -- and more
+// than one simulator is booted. mav used to answer this by driving the
+// first entry of a randomised map iteration and reporting ok; with several
+// agents leasing slots on one machine that means silently measuring
+// somebody else's device. A refusal that names the candidates is the only
+// honest answer: "booted" is all mav knows about any of them.
+var AmbiguousBootedSimulator = Code{
+	ID:          "ambiguous_booted_simulator",
+	Title:       "Several simulators are booted and none was selected",
+	Remediation: "Pick one: `mav sim select <udid>`, or set target_command in .mav/config.yaml (a pool manager such as `simpool lease`), or export MAV_TARGET_KIND=simulator with MAV_TARGET_UDID",
+}
+
 var FlowLintFailed = Code{
 	ID:          "flow_lint_failed",
 	Title:       "Flow lint found errors",
@@ -158,4 +171,5 @@ var Registry = map[string]Code{
 	TargetCommandTimeout.ID:          TargetCommandTimeout,
 	TargetCommandEmpty.ID:            TargetCommandEmpty,
 	TargetCommandTimeoutInvalid.ID:   TargetCommandTimeoutInvalid,
+	AmbiguousBootedSimulator.ID:      AmbiguousBootedSimulator,
 }

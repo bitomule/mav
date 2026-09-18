@@ -365,7 +365,13 @@ func TestSaveLoadConfig(t *testing.T) {
 	}
 }
 
-func TestLoadConfigIgnoresLegacyToolsSection(t *testing.T) {
+// The legacy `tools:` section used to be loaded and silently ignored: mav
+// detects tools at run time, so the key has had no effect for several
+// releases. Silence was the wrong answer -- it is indistinguishable from a
+// key that IS applied and happens to match reality, which is the whole
+// failure mode rejectUnknownConfigKeys exists to close. A config carrying
+// it now says so, in one line, with the fix being to delete the section.
+func TestLoadConfigRejectsLegacyToolsSection(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, ConfigFile), `project_name: Demo
 target_kind: simulator
@@ -379,22 +385,56 @@ tools:
   axe: true
   idb: true
 `)
-	loaded, err := LoadConfig(root)
-	if err != nil {
+	_, err := LoadConfig(root)
+	if err == nil {
+		t.Fatal("a `tools:` section is dead configuration and must be rejected, not ignored")
+	}
+	if !strings.Contains(err.Error(), "config_unknown_key") || !strings.Contains(err.Error(), "key=tools") {
+		t.Fatalf("error should name the code and the key, got %v", err)
+	}
+}
+
+func TestLoadConfigRejectsMisspelledSimulatorKey(t *testing.T) {
+	// The reported defect, in the shape it was written: `simulator: {udid}`
+	// instead of `simulator_udid`. It used to load clean, leaving mav to
+	// pick a booted simulator of its own and report ok.
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, ConfigFile), `project_name: Demo
+target_kind: simulator
+bundle_id: com.example.demo
+simulator:
+  udid: 1111-2222
+`)
+	_, err := LoadConfig(root)
+	if err == nil {
+		t.Fatal("a misspelled top-level key must be rejected, not ignored")
+	}
+	for _, want := range []string{"config_unknown_key", "key=simulator", "simulator_udid"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error should contain %q so the fix is readable off the line, got %v", want, err)
+		}
+	}
+}
+
+func TestKnownConfigKeysCoversEveryWrittenField(t *testing.T) {
+	// The guard that keeps rejectUnknownConfigKeys honest: whatever
+	// SaveConfig writes must load back. A field added to configYAML without
+	// this check would make mav reject its own output.
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.ProjectName = "Demo"
+	cfg.BundleID = "com.example.demo"
+	cfg.SimulatorUDID = "SIM"
+	cfg.TargetCommand = "simpool lease"
+	cfg.Fixtures = map[string][]string{"seeded": {"echo hi"}}
+	cfg.DefaultProfile = "mac"
+	cfg.Profiles = map[string]profileYAML{"mac": {}}
+	cfg.Launch = LaunchConfig{Mode: "custom", Commands: LaunchCommands{Build: "make"}}
+	if err := SaveConfig(root, cfg); err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded.Tools) != 0 {
-		t.Fatalf("legacy tools should not be loaded into config state: %+v", loaded.Tools)
-	}
-	if err := SaveConfig(root, loaded); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(filepath.Join(root, ConfigFile))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(data), "tools:") || strings.Contains(string(data), "axe: true") {
-		t.Fatalf("legacy tools should be dropped on save:\n%s", data)
+	if _, err := LoadConfig(root); err != nil {
+		t.Fatalf("mav must accept the config it writes itself: %v", err)
 	}
 }
 

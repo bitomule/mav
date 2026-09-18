@@ -119,12 +119,7 @@ func (c CLI) withResolvedTarget(fields map[string]string) map[string]string {
 	// stopped working between dispatch and reporting.
 	warn, resolveErr := c.resolveConfigTarget(&cfg)
 	if resolveErr != nil {
-		var tcErr *targetCommandError
-		if errors.As(resolveErr, &tcErr) {
-			warn = tcErr.message()
-		} else {
-			warn = resolveErr.Error()
-		}
+		warn = targetCommandWarnText(resolveErr)
 	}
 	if warn != "" {
 		fields["target_command_warn"] = warn
@@ -160,6 +155,18 @@ func (c CLI) withResolvedTarget(fields map[string]string) map[string]string {
 	// for next.
 	if _, ok := fields["target_kind"]; !ok {
 		fields["target_kind"] = kind
+	}
+	// Reported beside the kind and before the udid guard, for the reason
+	// the udid alone does not cover: a reader can only tell whether this is
+	// THEIR simulator by comparing identifiers by hand, and with several
+	// agents leasing slots on one machine that comparison is the one step
+	// everybody skips. `target_source=config` and `target_source=booted`
+	// are different situations even when the UDID is the same, and only
+	// the second means "mav chose this for you".
+	if cfg.TargetSource != "" {
+		if _, ok := fields["target_source"]; !ok {
+			fields["target_source"] = cfg.TargetSource
+		}
 	}
 	if udid == "" {
 		if name != "" {
@@ -245,23 +252,84 @@ func writeBootedSimulatorCache(run RunState, udid, name string) {
 // a new risk -- the TTL exists only to bound the case where a run outlives
 // that assumption (resumed hours later, simulator rebooted or switched
 // outside mav in the meantime).
-func (c CLI) resolveBootedSimulator() (string, string) {
+func (c CLI) resolveBootedSimulator() (string, string, error) {
 	if c.Runner == nil {
-		return "", ""
+		return "", "", nil
 	}
 	run, err := c.resolveRun("")
 	if err != nil {
 		// No run to cache against (e.g. a standalone command before `mav
 		// open`); resolve fresh. This path is rare and never the hot loop.
-		udid, name, _ := detectBootedSimulator(c.Runner)
-		return udid, name
+		return pickBootedSimulator(detectBootedSimulators(c.Runner))
 	}
 	if cache, ok := readBootedSimulatorCache(run); ok {
-		return cache.UDID, cache.Name
+		return cache.UDID, cache.Name, nil
 	}
-	udid, name, _ := detectBootedSimulator(c.Runner)
+	udid, name, pickErr := pickBootedSimulator(detectBootedSimulators(c.Runner))
+	if pickErr != nil {
+		// Deliberately not cached: an ambiguity is a property of the
+		// machine right now, not of this run, and it clears the moment
+		// somebody shuts a simulator down. Caching it would keep failing a
+		// run for the whole TTL on evidence it never re-tested.
+		return "", "", pickErr
+	}
 	writeBootedSimulatorCache(run, udid, name)
-	return udid, name
+	return udid, name, nil
+}
+
+// pickBootedSimulator turns the list of booted simulators into the one mav
+// will drive, or refuses.
+//
+// None booted is not an error here: it is the pre-existing "no target
+// resolved" state, which each command reports in its own vocabulary.
+//
+// Exactly one booted is the case the old behaviour got right, and it stays
+// -- with nothing configured and one simulator on the machine, driving it
+// is what anybody means.
+//
+// More than one is the case that bit us, on 2026-09-19. mav returned the
+// first entry of a randomised map iteration and reported ok; an agent with
+// a misspelt config read the accessibility tree of a simulator leased by a
+// different agent, and the only clue was a UDID field nobody compares by
+// hand. There is no criterion available here that would pick correctly --
+// "booted" is all mav knows about any of them, and the one it wants may
+// well be the one another process leased -- so it refuses and names the
+// candidates. Saying which simulator to use is cheap (three documented
+// ways, all in the remediation); recovering from a measurement taken on
+// the wrong device is not.
+func pickBootedSimulator(booted []bootedSimulator) (string, string, error) {
+	switch len(booted) {
+	case 0:
+		return "", "", nil
+	case 1:
+		return booted[0].UDID, booted[0].Name, nil
+	}
+	candidates := make([]string, 0, len(booted))
+	for _, b := range booted {
+		candidates = append(candidates, fmt.Sprintf("%s (%s)", b.UDID, b.Name))
+	}
+	return "", "", &ambiguousBootedError{candidates: candidates}
+}
+
+// ambiguousBootedError is "several simulators are booted and nothing said
+// which". It carries the candidates so the reader can paste one straight
+// into the remediation instead of going back to simctl for them.
+type ambiguousBootedError struct {
+	candidates []string
+}
+
+func (e *ambiguousBootedError) Error() string { return codes.AmbiguousBootedSimulator.ID }
+
+func (e *ambiguousBootedError) message() string {
+	return fmt.Sprintf("%s: %d simulators booted (%s)", codes.AmbiguousBootedSimulator.ID, len(e.candidates), strings.Join(e.candidates, ", "))
+}
+
+func (e *ambiguousBootedError) fields() map[string]string {
+	f := codes.AmbiguousBootedSimulator.Fields()
+	f["booted"] = strings.Join(e.candidates, ", ")
+	f["booted_count"] = fmt.Sprintf("%d", len(e.candidates))
+	f["fallback"] = "none"
+	return f
 }
 
 // resolveConfigTarget is the generic, simpool-agnostic answer to "which
@@ -295,11 +363,22 @@ func (c CLI) resolveBootedSimulator() (string, string) {
 //     through the same target_command_warn field as the failure case, since
 //     both boil down to "target_command is configured but not in effect."
 func (c CLI) resolveConfigTarget(cfg *Config) (string, error) {
+	if targetKind(*cfg) == drivers.KindMac {
+		cfg.TargetSource = targetSourceLocalhost
+		return "", nil
+	}
 	if targetKind(*cfg) != drivers.KindSim {
+		// A device: its UDID can only have come from the config or from
+		// MAV_TARGET_UDID, and LoadConfig has already applied both.
+		cfg.TargetSource = deviceTargetSource()
 		return "", nil
 	}
 	if os.Getenv("MAV_TARGET_KIND") != "" {
+		cfg.TargetSource = targetSourceEnv
 		return "", nil
+	}
+	if cfg.SimulatorUDID != "" {
+		cfg.TargetSource = targetSourceConfig
 	}
 	warn, err := c.resolveConfigTargetCommand(cfg)
 	if err != nil {
@@ -322,9 +401,28 @@ func (c CLI) resolveConfigTarget(cfg *Config) (string, error) {
 	// Resolving it here instead means every caller of resolveConfigTarget
 	// gets the same, real answer.
 	if cfg.SimulatorUDID == "" {
-		cfg.SimulatorUDID, cfg.SimulatorName = c.resolveBootedSimulator()
+		udid, name, bootErr := c.resolveBootedSimulator()
+		if bootErr != nil {
+			return "", bootErr
+		}
+		if udid != "" {
+			cfg.SimulatorUDID, cfg.SimulatorName = udid, name
+			cfg.TargetSource = targetSourceBooted
+		}
 	}
 	return warn, nil
+}
+
+// deviceTargetSource distinguishes a physical device pinned in the config
+// from one MAV_TARGET_UDID named, which is the same distinction the
+// simulator path draws and for the same reason: `mav run --matrix` sets
+// those variables on its children, and a reader of the child's output
+// otherwise cannot tell a matrix leg from a repo-wide pin.
+func deviceTargetSource() string {
+	if os.Getenv("MAV_TARGET_KIND") != "" {
+		return targetSourceEnv
+	}
+	return targetSourceConfig
 }
 
 // resolveConfigTargetCommand runs target_command (cases 3/4 of the
@@ -358,6 +456,7 @@ func (c CLI) resolveConfigTargetCommand(cfg *Config) (string, error) {
 	}
 	cfg.SimulatorUDID = udid
 	cfg.SimulatorName = name
+	cfg.TargetSource = targetSourceTargetCommand
 	return "", nil
 }
 
@@ -477,6 +576,10 @@ func targetCommandWarnText(err error) string {
 	if errors.As(err, &tcErr) {
 		return tcErr.message()
 	}
+	var ambErr *ambiguousBootedError
+	if errors.As(err, &ambErr) {
+		return ambErr.message()
+	}
 	return err.Error()
 }
 
@@ -488,6 +591,10 @@ func (c CLI) failTargetCommand(err error) error {
 	var tcErr *targetCommandError
 	if errors.As(err, &tcErr) {
 		return FailCode(tcErr.code, tcErr.fields()).Write(c.Stdout)
+	}
+	var ambErr *ambiguousBootedError
+	if errors.As(err, &ambErr) {
+		return FailCode(codes.AmbiguousBootedSimulator, ambErr.fields()).Write(c.Stdout)
 	}
 	return Fail("target_command_failed", map[string]string{"error": err.Error(), "fallback": "none"}).Write(c.Stdout)
 }
