@@ -1,5 +1,96 @@
 # Changelog
 
+## v0.19.1
+
+Two defects with the same shape: **mav acted on something that was not what
+you thought, and said `ok`.** Both were found in one afternoon on a machine
+running a dozen agents, and both had been invisible for exactly that reason —
+success was reported either way.
+
+### A tap that reported success and never landed
+
+`mav ui tap --text` was navigating about half the time, and reporting `ok`
+every time. It is not mav's code and it is not the iPhone Duo, where it was
+first noticed: AXe's `tap` has a `--tap-style` whose default, `automatic`,
+routes anything that is not a switch through FBSimulator's `tapAt`. **`tapAt`
+drops the touch under load and still exits 0**, printing
+`✓ Tap ... completed successfully`.
+
+Measured on an iPhone 17 Pro / iOS 26.3 from a pooled slot, tapping the same
+Settings row from a clean launch each time and counting accessibility-tree
+nodes before and after (135 on the root screen, 188 after navigating):
+
+| `--tap-style` | Navigated |
+| --- | --- |
+| `automatic` (AXe's default, what mav sent) | 6 of 12, then 0 of 8 |
+| `simulator` (`tapAt`, explicit) | 2 of 10 |
+| `physical` (touch down/up) | 10 of 10 |
+
+All 30 invocations exited 0 and printed success. End to end through
+`mav ui tap --text`, same simulator, same minute: **0 of 10 before, 10 of 10
+after.**
+
+mav now passes `--tap-style physical` on every semantic tap, which makes
+**AXe 1.8.0 the version floor**.
+
+Two things this also explains, both reported as separate bugs:
+
+- `ui tap --id` failing to find an identifier `ui tree --agent` had just
+  printed. The tree was read before a tap that silently evaporated, so it no
+  longer described the screen.
+- "semantic taps are broken, coordinates work". `axe tap -x -y` failed 8 of 12
+  in the same session — the comparison that looked decisive was AXe-semantic
+  against **idb**-coordinates, which are two different pipes. What fails is
+  `tapAt`, whatever names the point.
+
+### A simulator nobody chose
+
+With several simulators booted and nothing naming one, target resolution
+returned the first entry of a `range` over simctl's runtime→devices map. Go
+randomises map iteration, so two consecutive commands could drive two
+different devices — and the only trace was the `udid=` field.
+
+Measured with three booted: **ten consecutive resolutions in one project
+picked two different devices, nine of them a slot another agent had leased.**
+`ok` all ten times.
+
+- `ambiguous_booted_simulator` refuses the choice and names the candidates.
+  "Booted" is all mav knows about any of them, so there is no criterion here
+  that picks correctly; saying which one to use costs one command, and a
+  measurement taken on the wrong device costs however long it takes somebody
+  to notice. One booted simulator is still an unambiguous answer and still
+  works with no configuration at all.
+- `mav doctor`, whose job is to diagnose rather than dispatch, reports it in
+  `target_command_warn` instead of failing.
+
+Nothing changes for a project that pins `simulator_udid`, sets
+`target_command` (the pool-manager hook `simpool lease` plugs into), or runs
+under `MAV_TARGET_UDID`.
+
+### Every `ok` line says where the target came from
+
+Reading which simulator mav used off a UDID means comparing identifiers by
+hand, which is the step everybody skips. Success lines now carry
+`target_source=`: `env`, `config`, `target_command`, `booted`, or
+`localhost`. **`booted` is the only value that means mav chose the device
+itself.**
+
+### An unrecognised key in `.mav/config.yaml` is an error
+
+`simulator: {udid: ...}` instead of `simulator_udid: ...` used to load clean:
+YAML decoding drops what it does not recognise, so mav resolved the target as
+if nothing had been configured and reported `ok`. That is how the wrong
+simulator got driven in the first place. A config file ignored in silence is
+worse than no config file, because whoever wrote it believes it is in effect.
+
+`config_unknown_key` now names the key and lists every valid one, at the top
+level as it already did inside a profile. The known keys are read off the
+config struct's own tags, so the list cannot drift.
+
+**The one migration:** delete the legacy `tools:` section if your config
+still has one. Tool detection has been a run-time probe for several releases
+and that section has had no effect since.
+
 ## v0.19.0
 
 ### `mav sim language` — the iPad status bar stops shipping in the wrong language

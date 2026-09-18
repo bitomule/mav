@@ -27,7 +27,7 @@ func TestUITapFallsBackToTreeWhenSelectorResolutionFails(t *testing.T) {
 			                     {"type":"Slider","AXValue":0.2,"AXFrame":"{{0, 0}, {300, 30}}"}]`,
 		},
 		err: map[string]CommandResult{
-			"axe tap --label Entendido": {
+			"axe tap --tap-style physical --label Entendido": {
 				Stderr: "Error: DecodingError.typeMismatch: expected value of type Dictionary<String, Any>. Debug description: Expected to decode Dictionary<String, Any> but found an array instead.",
 				Err:    os.ErrInvalid,
 			},
@@ -63,7 +63,7 @@ func TestUITapKeepsOriginalFailureWhenTreeCannotResolveEither(t *testing.T) {
 		tools: cfg.Tools,
 		out:   map[string]string{"axe describe-ui": `[{"AXUniqueId":"otra_cosa","type":"Button","AXFrame":"{{0, 0}, {10, 10}}"}]`},
 		err: map[string]CommandResult{
-			"axe tap --id got_it": {Stderr: "Error: DecodingError.typeMismatch", Err: os.ErrInvalid},
+			"axe tap --tap-style physical --id got_it": {Stderr: "Error: DecodingError.typeMismatch", Err: os.ErrInvalid},
 		},
 	}
 	var out bytes.Buffer

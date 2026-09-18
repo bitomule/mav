@@ -345,7 +345,10 @@ decided and what was deliberately left out.
 - macOS.
 - Xcode command line tools.
 - Go, for development builds.
-- AXe, for accessibility tree and semantic UI actions.
+- AXe **1.8.0 or newer**, for accessibility tree and semantic UI actions. The
+  version floor is `axe tap --tap-style`, which MAV passes on every semantic
+  tap: AXe's default style drops taps under load and reports success anyway
+  (see [Semantic taps](#semantic-taps-use-physical-touch)).
 - idb, for coordinate taps and device/simulator fallback operations.
 - Baguette, for simulator multitouch (pinch, two-finger pan), the
   SpringBoard / system UI tree, hardware buttons, keyboard erase, and
@@ -593,6 +596,28 @@ accessibility tree inspection, semantic taps, typing, swipes, waits, and
 assertions. idb is used for coordinate taps and device/simulator fallback
 operations. Baguette provides multitouch, system UI, hardware buttons, erase,
 and hideKeyboard on simulator.
+
+### Semantic taps use physical touch
+
+MAV passes `--tap-style physical` on every semantic tap. AXe's own default is
+`automatic`: physical touch down/up for switches and toggles, and
+FBSimulator's `tapAt` for everything else. `tapAt` drops the touch under load
+and still exits 0 with `✓ Tap ... completed successfully`, so a tap that
+evaporated is indistinguishable from one that worked -- the symptom is a flow
+that keeps reporting `ok` while the screen never changes.
+
+Measured on 2026-09-19, iPhone 17 Pro / iOS 26.3, tapping the same Settings
+row from a clean launch each time and counting accessibility-tree nodes
+before and after (135 on the root screen, 188 after navigating):
+
+| `--tap-style` | Navigated |
+| --- | --- |
+| `automatic` (AXe's default) | 6 of 12, then 0 of 8 |
+| `simulator` (`tapAt`, explicit) | 2 of 10 |
+| `physical` | 10 of 10 |
+
+All 30 exited 0 and printed success. End to end through `mav ui tap --text`
+on the same simulator in the same minute: 0 of 10 before, 10 of 10 after.
 
 For `mav ui tree` and semantic `mav ui tap`, `--prefer-driver auto` is the
 default. Use `--prefer-driver axe` to debug AXe-only behavior. `mav ui tree
@@ -1058,6 +1083,26 @@ for itself (`${params.theme}`) is left alone. `sim.statusbar.clear`
 takes no fields; carrying any is a warning, because the step resets the whole
 status bar rather than overriding what it was given.
 
+### An unrecognised key in `.mav/config.yaml` is an error
+
+A key mav does not know is rejected on load, at the top level and inside a
+profile alike:
+
+```
+config_unknown_key key=simulator path=.mav/config.yaml known=allow_shell,app,app_target,... (next: fix or remove the key ...)
+```
+
+The alternative is what mav used to do: YAML decoding drops what it does not
+recognise, so `simulator: {udid: ...}` instead of `simulator_udid: ...` loaded
+clean, mav resolved the target as if nothing had been configured, and it
+reported `ok`. A config file that is ignored in silence is worse than no
+config file, because whoever wrote it believes it is in effect. The list of
+valid keys travels in the error, so the fix is readable off the line.
+
+The one key this removes from existing configs is the legacy `tools:`
+section. Tool detection has been a run-time probe for several releases and
+that section has had no effect since; delete it.
+
 ### Knowing which target you just used
 
 Every command that acts on a simulator or device reports `udid` (and
@@ -1137,7 +1182,7 @@ Precedence, most to least specific:
 2. `MAV_TARGET_KIND` / `MAV_TARGET_UDID` set directly in the environment.
 3. `simulator_udid` pinned in `.mav/config.yaml` (`mav sim select`).
 4. `target_command`.
-5. The pre-existing fallback: whatever simulator is booted. Reached only
+5. The booted simulator -- **only when exactly one is booted**. Reached only
    when no `target_command` is configured, or when one is configured with
    `target_command_required: false` and it failed -- never as a silent
    substitute for a `target_command` that was supposed to answer.
@@ -1145,6 +1190,47 @@ Precedence, most to least specific:
 `target_command` only fires where case 5 used to apply -- the case that used
 to mean "guess the booted simulator" -- so it never overrides an explicit
 flag, env var, or pinned selection.
+
+#### Several booted and nothing selected is refused
+
+Case 5 with more than one simulator booted is not a choice mav can make. It
+used to make one anyway: it returned the first entry of a `range` over
+simctl's runtime map, which Go randomises, and reported `ok`. Measured on
+2026-09-19 with three simulators booted, ten consecutive resolutions in one
+project picked two different devices -- one of them a slot another agent had
+leased. The only trace was the `udid=` field, and a caller who does not
+compare identifiers by hand sees a clean `ok` either way.
+
+So mav refuses instead:
+
+```
+fail code=ambiguous_booted_simulator booted="AAAA-1111 (iPhone 17 Pro), BBBB-2222 (iPhone Duo)" booted_count=2 fallback=none remediation="Pick one: `mav sim select <udid>`, ..."
+```
+
+"Booted" is all mav knows about any of them, so there is no criterion here
+that would pick correctly. Saying which one to use costs one command; a
+measurement taken on the wrong device costs however long it takes somebody to
+notice. One booted simulator is still an unambiguous answer and still works
+with no configuration at all. `mav doctor`, whose job is to diagnose rather
+than dispatch, reports the ambiguity in `target_command_warn` instead of
+failing.
+
+#### Every `ok` line says where the target came from
+
+Reading which simulator mav used off a UDID means comparing identifiers by
+hand, which is the step everybody skips. Every success line now also carries
+`target_source=`, one of:
+
+| `target_source` | Means |
+|---|---|
+| `env` | `MAV_TARGET_UDID` -- a `mav run --matrix` child, or a `simpool with`/`acquire` wrapper |
+| `config` | `simulator_udid` / `device_udid` in `.mav/config.yaml` |
+| `target_command` | the UDID a pool manager printed |
+| `booted` | **mav chose this one itself**: nothing named a target and exactly one simulator was booted |
+| `localhost` | a macOS target; the machine is this one |
+
+`target_source=booted` is the one to notice in a script: it is the only value
+that means nobody said which simulator this was.
 
 It is cached per run the same way the booted-simulator fallback already is
 (`.mav/runs/<run-id>/target-command.json`, same couple-of-minutes TTL): a hot

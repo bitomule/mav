@@ -817,6 +817,60 @@ deliberate escape hatch is `target_command_required: false` in
 `.mav/config.yaml`, which restores the warn-and-fall-back behaviour and
 reports `target_command_warn=...` on the command's success output.
 
+## Semantic taps need AXe 1.8.0
+
+MAV passes `axe tap --tap-style physical` on every semantic tap, so AXe
+1.8.0 or newer is the floor. AXe's own default (`automatic`) routes anything
+that is not a switch through FBSimulator's `tapAt`, which **drops the touch
+under load and still exits 0** printing `✓ Tap ... completed successfully`.
+The symptom is a flow reporting `ok` step after step while the screen never
+changes -- and a stale tree afterwards, so the next `--id` from that tree
+looks like it does not exist.
+
+Measured 2026-09-19 (iPhone 17 Pro / iOS 26.3, same Settings row, clean
+launch each time, counting tree nodes 135 → 188): `automatic` 6 of 12 then
+0 of 8; `simulator` 2 of 10; `physical` 10 of 10. Through `mav ui tap
+--text`: 0 of 10 before, 10 of 10 after.
+
+If a tap ever reports `ok` and nothing moves, **count nodes before and
+after** (`mav ui tree` reports `nodes=`). An `ok` from a tap is not evidence
+that anything happened.
+
+## Which simulator did I just drive?
+
+Every success line carries `target_source=` beside `udid=`, because a UDID
+only answers that question for someone willing to compare identifiers by
+hand:
+
+| `target_source` | Means |
+| --- | --- |
+| `env` | `MAV_TARGET_UDID` -- a `mav run --matrix` child, or a `simpool with`/`acquire` wrapper |
+| `config` | `simulator_udid` / `device_udid` in `.mav/config.yaml` |
+| `target_command` | the UDID a pool manager printed |
+| `booted` | **MAV chose this one itself**: nothing named a target and exactly one simulator was booted |
+| `localhost` | a macOS target |
+
+`target_source=booted` is the value to check for in a script: it is the only
+one that means nobody said which simulator this was.
+
+With **several** simulators booted and nothing naming one, MAV refuses
+instead of choosing:
+
+```text
+fail code=ambiguous_booted_simulator booted="AAAA-1111 (iPhone 17 Pro), BBBB-2222 (iPhone Duo)" booted_count=2 fallback=none remediation="Pick one: `mav sim select <udid>`, or set target_command in .mav/config.yaml (a pool manager such as `simpool lease`), or export MAV_TARGET_KIND=simulator with MAV_TARGET_UDID"
+```
+
+It used to pick one at random and report `ok`, which on a shared machine
+means measuring somebody else's device. `mav doctor` reports the ambiguity
+in `target_command_warn` rather than failing.
+
+## An unrecognised key in `.mav/config.yaml` fails the load
+
+`config_unknown_key key=<key> ... known=<every valid key>`. A misspelt key
+used to be dropped in silence, so a config that looked applied did nothing.
+The legacy `tools:` section is the one key this removes from older configs:
+tool detection is a run-time probe, so delete that section.
+
 ## Command Output
 
 Output is intentionally compact and agent-friendly by default:

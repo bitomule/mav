@@ -79,8 +79,31 @@ func (d *Driver) Warm(_ context.Context, _ drivers.Target) <-chan error {
 	return ch
 }
 
+// tapStyle is passed on every semantic tap, and it is the whole fix for a
+// tap that reported success and did nothing.
+//
+// AXe's default style is `automatic`: physical touch down/up for switches
+// and toggles, and FBSimulator's `tapAt` for everything else. `tapAt`
+// drops the touch under load and still exits 0 with "✓ Tap ... completed
+// successfully", so nothing downstream can tell a tap that landed from one
+// that evaporated.
+//
+// Measured on 2026-09-19, iPhone 17 Pro / iOS 26.3 from a simpool slot,
+// tapping the same Settings row from a clean launch each time and counting
+// accessibility-tree nodes before and after (135 on the root screen, 188
+// after navigating):
+//
+//	automatic (the old default)   6 of 12 navigated, then 0 of 8
+//	simulator (tapAt, explicit)   2 of 10 navigated
+//	physical  (touch down/up)    10 of 10 navigated
+//
+// Every one of those 30 invocations exited 0 and printed success. The
+// toggles `automatic` reserves physical touch for already take this path,
+// so pinning it changes nothing for them and fixes everything else.
+const tapStyle = "physical"
+
 func (d *Driver) Tap(ctx context.Context, target drivers.Target, spec drivers.TapSpec) (drivers.TapResult, error) {
-	args := targetArgs(target, "tap")
+	args := targetArgs(target, "tap", "--tap-style", tapStyle)
 	if spec.Selector.ID != "" {
 		args = append(args, "--id", spec.Selector.ID)
 	} else if spec.Selector.Text != "" {

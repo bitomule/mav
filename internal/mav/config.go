@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -78,7 +79,38 @@ type Config struct {
 	// it is neither read from nor written to the YAML. It is how the macOS
 	// driver knows which bundle to run, its equivalent of the UDID.
 	AppPath string
+
+	// TargetSource records WHERE the resolved target came from, filled by
+	// resolveConfigTarget and reported as `target_source=` on every ok
+	// line. Neither read from nor written to the YAML. A UDID on its own
+	// answers "which simulator" only for a reader willing to compare
+	// identifiers by hand; with several agents leasing slots on one
+	// machine, the question that actually matters is "is this the one I
+	// asked for, or one mav picked for me", and that is not derivable from
+	// the UDID. See targetSource* below for the vocabulary.
+	TargetSource string
 }
+
+// The vocabulary of Config.TargetSource, in precedence order. Every ok line
+// carries exactly one of these.
+const (
+	// targetSourceEnv: MAV_TARGET_KIND/MAV_TARGET_UDID in the environment,
+	// which is what `mav run --matrix` sets on its children and what
+	// `simpool with`/`acquire` export around a whole command.
+	targetSourceEnv = "env"
+	// targetSourceConfig: device_udid/simulator_udid pinned in
+	// .mav/config.yaml (by hand or by `mav sim select`).
+	targetSourceConfig = "config"
+	// targetSourceTargetCommand: the UDID printed by target_command, the
+	// pool-manager hook (`simpool lease ...` is the documented consumer).
+	targetSourceTargetCommand = "target_command"
+	// targetSourceBooted: nothing above named a target, and exactly one
+	// simulator was booted. More than one is ambiguous and refused -- see
+	// resolveBootedSimulator.
+	targetSourceBooted = "booted"
+	// targetSourceLocalhost: a macOS target. The machine is this one.
+	targetSourceLocalhost = "localhost"
+)
 
 type LaunchConfig struct {
 	Mode     string         `yaml:"mode"`
@@ -155,9 +187,12 @@ var knownProfileKeys = map[string]bool{
 // yaml.Unmarshal silently ignores what it does not know, and in a profile
 // that is especially expensive: you write `fixture: x`, nothing happens,
 // and there is no way to tell it apart from the fixture applying and having
-// no effect. It is scoped to profiles on purpose: they are new, so no
-// existing configuration can break because of this, while hardening the
-// whole file could.
+// no effect. It used to be scoped to profiles alone, on the grounds that
+// they were new and nothing on disk could break; rejectUnknownConfigKeys
+// now applies the same rule to the top level, which is where the misspelt
+// key that caused an agent to drive somebody else's simulator lived. The
+// two stay separate functions because the key sets differ: a profile
+// overlays a subset of the base.
 func rejectUnknownProfileKeys(data []byte) error {
 	var doc struct {
 		Profiles map[string]map[string]yaml.Node `yaml:"profiles"`
@@ -177,6 +212,66 @@ func rejectUnknownProfileKeys(data []byte) error {
 	return nil
 }
 
+// knownConfigKeys is the set of top-level keys .mav/config.yaml accepts,
+// read off configYAML's own yaml tags rather than written out by hand: a
+// hand-maintained second list drifts the first time someone adds a field,
+// and a drifted list rejects configuration that works.
+func knownConfigKeys() map[string]bool {
+	keys := map[string]bool{}
+	t := reflect.TypeOf(configYAML{})
+	for i := 0; i < t.NumField(); i++ {
+		tag := t.Field(i).Tag.Get("yaml")
+		if tag == "" || tag == "-" {
+			continue
+		}
+		name, _, _ := strings.Cut(tag, ",")
+		if name != "" {
+			keys[name] = true
+		}
+	}
+	return keys
+}
+
+// rejectUnknownConfigKeys turns a top-level key that does not exist into an
+// error, the same way rejectUnknownProfileKeys already does inside a
+// profile.
+//
+// It is the top half of the bug this file's target resolution is about. A
+// repo wrote `simulator: {udid: ...}` instead of `simulator_udid: ...`;
+// yaml.Unmarshal ignored the key it did not know, mav resolved the target
+// as if nothing had been configured, picked a booted simulator of its own
+// and reported ok. The only trace was a UDID field nobody compares by
+// hand. A config file that is ignored in silence is worse than no config
+// file, because whoever wrote it believes it is in effect -- so this is an
+// error and not a warning: warnings on the ok line are exactly what the
+// silent path already produced.
+func rejectUnknownConfigKeys(data []byte) error {
+	var doc map[string]yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		// The main decode already gave the real error; it is not duplicated
+		// here.
+		return nil
+	}
+	known := knownConfigKeys()
+	var unknown []string
+	for key := range doc {
+		if !known[key] {
+			unknown = append(unknown, key)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	sort.Strings(unknown)
+	valid := make([]string, 0, len(known))
+	for key := range known {
+		valid = append(valid, key)
+	}
+	sort.Strings(valid)
+	return fmt.Errorf("config_unknown_key key=%s path=%s known=%s (next: fix or remove the key in .mav/config.yaml; an unrecognised key is ignored, which looks exactly like configuration that had no effect)",
+		strings.Join(unknown, ","), ConfigFile, strings.Join(valid, ","))
+}
+
 func loadConfig(root, profileOverride string, skipProfile bool) (Config, error) {
 	path := filepath.Join(root, ConfigFile)
 	data, err := os.ReadFile(path)
@@ -186,6 +281,9 @@ func loadConfig(root, profileOverride string, skipProfile bool) (Config, error) 
 	cfg := DefaultConfig(root)
 	var raw configYAML
 	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return Config{}, err
+	}
+	if err := rejectUnknownConfigKeys(data); err != nil {
 		return Config{}, err
 	}
 	if err := rejectUnknownProfileKeys(data); err != nil {
@@ -701,10 +799,26 @@ func probeLogCategory(cfg Config) string {
 	return "probe"
 }
 
-func detectBootedSimulator(runner Runner) (string, string, string) {
+// bootedSimulator is one entry of `xcrun simctl list devices booted`.
+type bootedSimulator struct {
+	UDID    string
+	Name    string
+	Runtime string
+}
+
+// detectBootedSimulators lists every booted simulator, sorted by UDID.
+//
+// The sort is not cosmetic. This used to be a single-result function that
+// returned the first match of a `range` over simctl's runtime->devices MAP,
+// and Go randomises map iteration: with two simulators booted, two
+// consecutive mav commands could legitimately drive two different devices,
+// and nothing in the output said which. Returning the whole list lets the
+// caller refuse an ambiguous choice instead of making one; the sort makes
+// the list itself reproducible so tests and error messages are stable.
+func detectBootedSimulators(runner Runner) []bootedSimulator {
 	result := runner.Run(context.Background(), "xcrun", "simctl", "list", "devices", "booted", "-j")
 	if result.Err != nil {
-		return "", "", ""
+		return nil
 	}
 	var parsed struct {
 		Devices map[string][]struct {
@@ -714,16 +828,30 @@ func detectBootedSimulator(runner Runner) (string, string, string) {
 		} `json:"devices"`
 	}
 	if err := json.Unmarshal([]byte(result.Stdout), &parsed); err != nil {
-		return "", "", ""
+		return nil
 	}
+	var booted []bootedSimulator
 	for runtime, devices := range parsed.Devices {
 		for _, device := range devices {
 			if device.State == "Booted" && device.UDID != "" {
-				return device.UDID, device.Name, runtime
+				booted = append(booted, bootedSimulator{UDID: device.UDID, Name: device.Name, Runtime: runtime})
 			}
 		}
 	}
-	return "", "", ""
+	sort.Slice(booted, func(i, j int) bool { return booted[i].UDID < booted[j].UDID })
+	return booted
+}
+
+// detectBootedSimulator is `mav setup`'s view of the same list: setup is
+// writing a config for a human to review, so proposing the first booted
+// simulator is a suggestion, not a silent dispatch decision, and it stays
+// a single answer. Deterministic now that the list is sorted.
+func detectBootedSimulator(runner Runner) (string, string, string) {
+	booted := detectBootedSimulators(runner)
+	if len(booted) == 0 {
+		return "", "", ""
+	}
+	return booted[0].UDID, booted[0].Name, booted[0].Runtime
 }
 
 func detectAppTarget(root, projectName string) string {
