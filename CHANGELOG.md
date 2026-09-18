@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.19.0
 
 ### `mav sim language` — the iPad status bar stops shipping in the wrong language
 
