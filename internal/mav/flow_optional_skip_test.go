@@ -29,7 +29,7 @@ func TestRunFlowOptionalTapSkipIsVisibleAndCarriesItsReason(t *testing.T) {
 		tools: cfg.Tools,
 		out:   map[string]string{"axe describe-ui": `[]`},
 		err: map[string]CommandResult{
-			"axe tap --label Entendido": {Stderr: "Error: DecodingError.typeMismatch", Err: os.ErrInvalid},
+			"axe tap --tap-style physical --label Entendido": {Stderr: "Error: DecodingError.typeMismatch", Err: os.ErrInvalid},
 		},
 	}
 	var out bytes.Buffer
@@ -87,7 +87,7 @@ func TestWhileNotVisibleOptionalChildSkipIsVisibleInTrail(t *testing.T) {
 		tools: cfg.Tools,
 		out:   map[string]string{"axe describe-ui": `[]`},
 		err: map[string]CommandResult{
-			"axe tap --label Entendido": {Stderr: "tap_failed", Err: os.ErrInvalid},
+			"axe tap --tap-style physical --label Entendido": {Stderr: "tap_failed", Err: os.ErrInvalid},
 		},
 	}
 	var out bytes.Buffer
@@ -141,8 +141,8 @@ func TestRunFlowFailureStillNamesEarlierSkippedSteps(t *testing.T) {
 		tools: cfg.Tools,
 		out:   map[string]string{"axe describe-ui": `[]`},
 		err: map[string]CommandResult{
-			"axe tap --label Entendido": {Stderr: "Error: DecodingError.typeMismatch", Err: os.ErrInvalid},
-			"axe tap --label Required":  {Stderr: "tap_failed", Err: os.ErrInvalid},
+			"axe tap --tap-style physical --label Entendido": {Stderr: "Error: DecodingError.typeMismatch", Err: os.ErrInvalid},
+			"axe tap --tap-style physical --label Required":  {Stderr: "tap_failed", Err: os.ErrInvalid},
 		},
 	}
 	var out bytes.Buffer

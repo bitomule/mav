@@ -34,7 +34,7 @@ func TestRunFlowTapRecordsTreeFallbackContext(t *testing.T) {
 			                     {"type":"Slider","AXValue":0.2,"AXFrame":"{{0, 0}, {300, 30}}"}]`,
 		},
 		err: map[string]CommandResult{
-			"axe tap --label Entendido": {
+			"axe tap --tap-style physical --label Entendido": {
 				Stderr: "Error: DecodingError.typeMismatch: expected value of type Dictionary<String, Any>. Debug description: Expected to decode Dictionary<String, Any> but found an array instead.",
 				Err:    os.ErrInvalid,
 			},

@@ -28,7 +28,7 @@ func TestUITapPreservesOriginalFailureWhenNoCoordinateDriverExists(t *testing.T)
 			"axe describe-ui": `[{"AXLabel":"Entendido","AXUniqueId":"got_it","type":"Button","AXFrame":"{{100, 200}, {80, 40}}"}]`,
 		},
 		err: map[string]CommandResult{
-			"axe tap --label Entendido": {
+			"axe tap --tap-style physical --label Entendido": {
 				Stderr: "Error: DecodingError.typeMismatch",
 				Err:    os.ErrInvalid,
 			},
@@ -66,7 +66,7 @@ func TestUITapDoesNotFallBackToDegenerateFrame(t *testing.T) {
 			"axe describe-ui": `[{"AXLabel":"Entendido","AXUniqueId":"got_it","type":"Button","AXFrame":"{{0, 0}, {0, 0}}"}]`,
 		},
 		err: map[string]CommandResult{
-			"axe tap --label Entendido": {
+			"axe tap --tap-style physical --label Entendido": {
 				Stderr: "Error: DecodingError.typeMismatch",
 				Err:    os.ErrInvalid,
 			},
@@ -103,7 +103,7 @@ func TestUITapKeepsSelectorContextWhenCoordinateTapAlsoFails(t *testing.T) {
 			"axe describe-ui": `[{"AXLabel":"Entendido","AXUniqueId":"got_it","type":"Button","AXFrame":"{{100, 200}, {80, 40}}"}]`,
 		},
 		err: map[string]CommandResult{
-			"axe tap --label Entendido": {
+			"axe tap --tap-style physical --label Entendido": {
 				Stderr: "Error: DecodingError.typeMismatch",
 				Err:    os.ErrInvalid,
 			},
@@ -145,7 +145,7 @@ func TestUITapVerifiesWhenTappingThroughTreeFallback(t *testing.T) {
 			"axe describe-ui": `[{"AXLabel":"Entendido","AXUniqueId":"got_it","type":"Button","AXFrame":"{{100, 200}, {80, 40}}"}]`,
 		},
 		err: map[string]CommandResult{
-			"axe tap --label Entendido": {
+			"axe tap --tap-style physical --label Entendido": {
 				Stderr: "Error: DecodingError.typeMismatch",
 				Err:    os.ErrInvalid,
 			},

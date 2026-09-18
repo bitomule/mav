@@ -960,7 +960,7 @@ func TestUITapTextFailureReportsValueMatch(t *testing.T) {
 		tools: cfg.Tools,
 		out:   map[string]string{"axe describe-ui": `[{"AXValue":"Email","role":"text field"}]`},
 		err: map[string]CommandResult{
-			"axe tap --label Email": {Stderr: "No accessibility element matched --label 'Email'", Err: os.ErrNotExist},
+			"axe tap --tap-style physical --label Email": {Stderr: "No accessibility element matched --label 'Email'", Err: os.ErrNotExist},
 		},
 	}
 	var out bytes.Buffer
@@ -1672,7 +1672,7 @@ func TestFlowWhenExecutesDoBlockWhenVisible(t *testing.T) {
 	if fields["matched"] != "true" || fields["executed"] != "1" {
 		t.Fatalf("fields=%v", fields)
 	}
-	if !containsCall(runner.commands, "axe describe-ui") || !containsCall(runner.commands, "axe tap --id ToggleX") {
+	if !containsCall(runner.commands, "axe describe-ui") || !containsCall(runner.commands, "axe tap --tap-style physical --id ToggleX") {
 		t.Fatalf("commands=%v", runner.commands)
 	}
 }
@@ -1708,7 +1708,7 @@ func TestFlowWhenSkipsDoBlockWhenNotVisible(t *testing.T) {
 	if fields["matched"] != "false" || fields["skipped"] != "1" {
 		t.Fatalf("fields=%v", fields)
 	}
-	if containsCall(runner.commands, "axe tap --id ToggleX") {
+	if containsCall(runner.commands, "axe tap --tap-style physical --id ToggleX") {
 		t.Fatalf("tap should not run: %v", runner.commands)
 	}
 }
@@ -1739,7 +1739,7 @@ steps:
 	if err := cli.Run(context.Background(), []string{"--prefer-driver", "auto", "run", flowPath}); err != nil {
 		t.Fatal(err)
 	}
-	if !containsCall(runner.commands, "axe tap --label Continue") {
+	if !containsCall(runner.commands, "axe tap --tap-style physical --label Continue") {
 		t.Fatalf("step override should force axe: commands=%v output=%q", runner.commands, out.String())
 	}
 }

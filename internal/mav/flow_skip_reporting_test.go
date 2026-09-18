@@ -42,7 +42,7 @@ func TestFailLineSkippedAgreesWithRunJSON(t *testing.T) {
 		tools: cfg.Tools,
 		out:   map[string]string{"axe describe-ui": `[]`},
 		err: map[string]CommandResult{
-			"axe tap --label Entendido": {Stderr: "tap_failed", Err: os.ErrInvalid},
+			"axe tap --tap-style physical --label Entendido": {Stderr: "tap_failed", Err: os.ErrInvalid},
 		},
 	}
 	var out bytes.Buffer
@@ -96,8 +96,8 @@ func TestFailLineCountsRunLevelSkippedSteps(t *testing.T) {
 		tools: cfg.Tools,
 		out:   map[string]string{"axe describe-ui": `[]`},
 		err: map[string]CommandResult{
-			"axe tap --label Entendido": {Stderr: "Error: DecodingError.typeMismatch", Err: os.ErrInvalid},
-			"axe tap --label Required":  {Stderr: "tap_failed", Err: os.ErrInvalid},
+			"axe tap --tap-style physical --label Entendido": {Stderr: "Error: DecodingError.typeMismatch", Err: os.ErrInvalid},
+			"axe tap --tap-style physical --label Required":  {Stderr: "tap_failed", Err: os.ErrInvalid},
 		},
 	}
 	var out bytes.Buffer
@@ -147,7 +147,7 @@ func TestWhenReportsExecutedExcludingSkippedChildren(t *testing.T) {
 		tools: cfg.Tools,
 		out:   map[string]string{"axe describe-ui": `[{"AXUniqueId":"Gate","AXLabel":"Gate"}]`},
 		err: map[string]CommandResult{
-			"axe tap --id Gate": {Stderr: "tap_failed", Err: os.ErrInvalid},
+			"axe tap --tap-style physical --id Gate": {Stderr: "tap_failed", Err: os.ErrInvalid},
 		},
 	}
 	var out bytes.Buffer
@@ -225,7 +225,7 @@ func TestWhenWithoutBindingsStillRunsItsChildren(t *testing.T) {
 	if fields["skipped_children"] != "" {
 		t.Fatalf("nothing was skipped but fields=%v", fields)
 	}
-	if !containsCall(runner.commands, "axe tap --id Gate") {
+	if !containsCall(runner.commands, "axe tap --tap-style physical --id Gate") {
 		t.Fatalf("commands=%v", runner.commands)
 	}
 
@@ -238,7 +238,7 @@ func TestWhenWithoutBindingsStillRunsItsChildren(t *testing.T) {
 		tools: cfg.Tools,
 		out:   map[string]string{"axe describe-ui": `[{"AXUniqueId":"Gate","AXLabel":"Gate"}]`},
 		err: map[string]CommandResult{
-			"axe tap --id Gate": {Stderr: "tap_failed", Err: os.ErrInvalid},
+			"axe tap --tap-style physical --id Gate": {Stderr: "tap_failed", Err: os.ErrInvalid},
 		},
 	}
 	cli = CLI{Runner: failing, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}

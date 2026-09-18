@@ -817,6 +817,25 @@ deliberate escape hatch is `target_command_required: false` in
 `.mav/config.yaml`, which restores the warn-and-fall-back behaviour and
 reports `target_command_warn=...` on the command's success output.
 
+## Semantic taps need AXe 1.8.0
+
+MAV passes `axe tap --tap-style physical` on every semantic tap, so AXe
+1.8.0 or newer is the floor. AXe's own default (`automatic`) routes anything
+that is not a switch through FBSimulator's `tapAt`, which **drops the touch
+under load and still exits 0** printing `✓ Tap ... completed successfully`.
+The symptom is a flow reporting `ok` step after step while the screen never
+changes -- and a stale tree afterwards, so the next `--id` from that tree
+looks like it does not exist.
+
+Measured 2026-09-19 (iPhone 17 Pro / iOS 26.3, same Settings row, clean
+launch each time, counting tree nodes 135 → 188): `automatic` 6 of 12 then
+0 of 8; `simulator` 2 of 10; `physical` 10 of 10. Through `mav ui tap
+--text`: 0 of 10 before, 10 of 10 after.
+
+If a tap ever reports `ok` and nothing moves, **count nodes before and
+after** (`mav ui tree` reports `nodes=`). An `ok` from a tap is not evidence
+that anything happened.
+
 ## Which simulator did I just drive?
 
 Every success line carries `target_source=` beside `udid=`, because a UDID

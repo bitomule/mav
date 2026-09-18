@@ -345,7 +345,10 @@ decided and what was deliberately left out.
 - macOS.
 - Xcode command line tools.
 - Go, for development builds.
-- AXe, for accessibility tree and semantic UI actions.
+- AXe **1.8.0 or newer**, for accessibility tree and semantic UI actions. The
+  version floor is `axe tap --tap-style`, which MAV passes on every semantic
+  tap: AXe's default style drops taps under load and reports success anyway
+  (see [Semantic taps](#semantic-taps-use-physical-touch)).
 - idb, for coordinate taps and device/simulator fallback operations.
 - Baguette, for simulator multitouch (pinch, two-finger pan), the
   SpringBoard / system UI tree, hardware buttons, keyboard erase, and
@@ -593,6 +596,28 @@ accessibility tree inspection, semantic taps, typing, swipes, waits, and
 assertions. idb is used for coordinate taps and device/simulator fallback
 operations. Baguette provides multitouch, system UI, hardware buttons, erase,
 and hideKeyboard on simulator.
+
+### Semantic taps use physical touch
+
+MAV passes `--tap-style physical` on every semantic tap. AXe's own default is
+`automatic`: physical touch down/up for switches and toggles, and
+FBSimulator's `tapAt` for everything else. `tapAt` drops the touch under load
+and still exits 0 with `✓ Tap ... completed successfully`, so a tap that
+evaporated is indistinguishable from one that worked -- the symptom is a flow
+that keeps reporting `ok` while the screen never changes.
+
+Measured on 2026-09-19, iPhone 17 Pro / iOS 26.3, tapping the same Settings
+row from a clean launch each time and counting accessibility-tree nodes
+before and after (135 on the root screen, 188 after navigating):
+
+| `--tap-style` | Navigated |
+| --- | --- |
+| `automatic` (AXe's default) | 6 of 12, then 0 of 8 |
+| `simulator` (`tapAt`, explicit) | 2 of 10 |
+| `physical` | 10 of 10 |
+
+All 30 exited 0 and printed success. End to end through `mav ui tap --text`
+on the same simulator in the same minute: 0 of 10 before, 10 of 10 after.
 
 For `mav ui tree` and semantic `mav ui tap`, `--prefer-driver auto` is the
 default. Use `--prefer-driver axe` to debug AXe-only behavior. `mav ui tree
