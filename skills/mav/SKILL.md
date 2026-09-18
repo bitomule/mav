@@ -871,6 +871,18 @@ used to be dropped in silence, so a config that looked applied did nothing.
 The legacy `tools:` section is the one key this removes from older configs:
 tool detection is a run-time probe, so delete that section.
 
+Each reason reports its own code — `config_unknown_key`,
+`profile_unknown_key`, `profile_not_found`, `target_kind_invalid`,
+`vm_unsupported_target` — and `config_not_found` means the file really is
+absent. **Do not answer any of the others with `mav setup`**: it rewrites
+the file, and the fix is the one key the code already names.
+
+`mav doctor` is the exception, in one direction only: with no config file
+it still reports `ok`, because that is how you check tools before
+`mav setup`. With a config it cannot load it prints the whole diagnosis
+under `fail code=<the load error>` — an `ok` next to `launch_recipe=missing`
+is the contradiction this closes.
+
 ## Command Output
 
 Output is intentionally compact and agent-friendly by default:

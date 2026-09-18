@@ -583,6 +583,33 @@ func targetCommandWarnText(err error) string {
 	return err.Error()
 }
 
+// failConfig writes the structured failure for a config that could not be
+// loaded, with the code the load itself produced.
+//
+// Every call site used to write `fail code=config_not_found next="mav
+// setup"` for ANY load error. For a file that is genuinely missing that is
+// still what comes out, since the load says so. For every other reason it
+// was a lie with a destructive remediation attached: `mav setup` rewrites
+// the file, which is the last thing you want when the file is one key away
+// from correct. `config_unknown_key` reached no output at all until this
+// existed -- the code was produced, carried up, and discarded one frame
+// below the writer.
+// configMissing says the config could not be loaded because there is no
+// file, as opposed to because the file is wrong. The two need opposite
+// treatment in `mav doctor` (see doctorConfigFail) and nowhere else.
+func configMissing(err error) bool {
+	var cfgErr *ConfigError
+	return errors.As(err, &cfgErr) && cfgErr.Code == "config_not_found"
+}
+
+func (c CLI) failConfig(err error) error {
+	var cfgErr *ConfigError
+	if errors.As(err, &cfgErr) {
+		return Fail(cfgErr.Code, cfgErr.Fields).Write(c.Stdout)
+	}
+	return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
+}
+
 // failTargetCommand writes the structured failure for a target_command that
 // was required and did not deliver a simulator. Every command that resolves
 // a target routes its resolution error through here, so the failure has the
