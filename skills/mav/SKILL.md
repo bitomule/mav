@@ -578,7 +578,22 @@ mav sim appearance light
 mav sim statusbar set --preset appstore          # 9:41, full battery, full signal
 mav sim statusbar set --time 9:41 --battery-level 100 --cellular-bars 4 --wifi-bars 3
 mav sim statusbar clear
+mav sim language set --language en-US             # or --language en --locale en_US
+mav sim language get
 ```
+
+**`sim language` is not optional on iPad.** An iPad status bar shows the DATE,
+and SpringBoard draws it in the SIMULATOR's language — `open: { language: en }`
+is a launch argument and reaches the app process only. An English iPad capture
+on a Spanish simulator reads `Viernes 18 de septiembre`, which is how Boxy
+published English screenshots with a Spanish date for several versions. iPhone
+captures never showed it: no date in that status bar.
+
+A bare subtag (`--language fr`) is refused, because simctl takes it and iOS
+falls back to English without saying so; `--language de --locale de_DE` is
+enough, so a flow can pass the params it already has. The change restarts
+SpringBoard (~5s) and waits for it, is a no-op when the language is already
+set, and outlives the run — set it back on a pooled simulator.
 
 `--preset appstore` is the status bar Apple uses in its own marketing shots. Every
 field stays individually settable and an explicit flag overrides the preset, so a

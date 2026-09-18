@@ -403,6 +403,8 @@ With --install it installs tools and configures nothing.
   mav sim appearance light|dark
   mav sim statusbar set [--preset appstore] [--time 9:41] [--battery-state charged] [--battery-level 100] [--cellular-bars 4] [--wifi-bars 3]
   mav sim statusbar clear
+  mav sim language set --language fr-FR [--locale fr_FR]
+  mav sim language get
 `
 	case "sim list":
 		return "Usage: mav sim list\n\nLists available iOS simulators.\n"
@@ -417,6 +419,8 @@ Selects the active simulator in .mav/config.yaml. --force ignores a fresh MAV si
 		return "Usage: mav sim boot\n\nBoots the selected simulator.\n"
 	case "sim appearance":
 		return "Usage: mav sim appearance light|dark\n\nSets the simulator-wide light/dark user interface style, for App Store screenshots in both appearances. Physical devices return appearance_unsupported_on_device.\n"
+	case "sim language":
+		return simLanguageUsage
 	case "sim statusbar":
 		return `Usage:
   mav sim statusbar set [--preset appstore] [--time 9:41] [--battery-state charging|charged|discharging] [--battery-level 0-100]
@@ -1118,13 +1122,15 @@ func displayPromptDefault(value string) string {
 
 func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 	if len(args) == 0 {
-		return Fail("sim_command_missing", map[string]string{"usage": "mav sim list|select|boot|appearance|statusbar"}).Write(c.Stdout)
+		return Fail("sim_command_missing", map[string]string{"usage": "mav sim list|select|boot|appearance|statusbar|language"}).Write(c.Stdout)
 	}
 	switch args[0] {
 	case "appearance":
 		return c.simAppearance(ctx, args[1:])
 	case "statusbar":
 		return c.simStatusBar(ctx, args[1:])
+	case "language":
+		return c.simLanguage(ctx, args[1:])
 	case "list":
 		sims, err := ListSimulators(c.Runner)
 		if err != nil {
@@ -1298,6 +1304,106 @@ func (c CLI) simAppearance(ctx context.Context, args []string) error {
 	}
 	time.Sleep(appearanceSettle)
 	return c.OK("sim.appearance", map[string]string{"appearance": appearance, "driver": driver.ID()}).Write(c.Stdout)
+}
+
+const simLanguageUsage = `Usage:
+  mav sim language set --language fr-FR [--locale fr_FR]
+  mav sim language get
+
+Sets the SIMULATOR's language and region, which is what SpringBoard draws the
+status bar, the system alerts and every system string with. This is not the
+app's language: ` + "`open: { language: ... }`" + ` is a launch argument and reaches one
+process only.
+
+It matters for App Store screenshots because an iPad status bar shows the DATE.
+Measured on iPad Pro 13-inch (M4) / iOS 26.3: an English capture taken on a
+Spanish-configured simulator reads "Viernes 18 de septiembre", and that shipped
+in Boxy's published iPad screenshots for several versions. An iPhone status bar
+shows no date, which is why nobody saw it.
+
+--language must carry a region ("fr-FR", not "fr"). A bare subtag does not fail:
+it falls back to English, silently, which is the same defect wearing a different
+hat.
+
+Changing the language restarts SpringBoard (~5s) and is a no-op when the
+simulator is already on that pair, so a screenshot matrix pays it once per
+language. It changes the SLOT, not just this run: pair it with a reset at the
+end of the flow if the slot is shared.
+`
+
+func (c CLI) simLanguage(ctx context.Context, args []string) error {
+	if len(args) == 0 {
+		return Fail("sim_language_command_missing", map[string]string{"usage": simLanguageUsage}).Write(c.Stdout)
+	}
+	command := args[0]
+	if command != "set" && command != "get" {
+		return Fail("sim_language_unknown_command", map[string]string{"command": command, "usage": simLanguageUsage}).Write(c.Stdout)
+	}
+	target, err := c.simTarget("sim_language", "the simulator language is simulator-only; select a simulator with mav sim select")
+	if err != nil {
+		return err
+	}
+	driver, _, routeErr := c.router().Route(ctx, drivers.CapSystemLanguage, target, "")
+	if routeErr != nil {
+		return Fail("sim_language_unsupported", map[string]string{"next": "install the Xcode command-line tools so xcrun simctl is available"}).Write(c.Stdout)
+	}
+	language, ok := driver.(drivers.SystemLanguageDriver)
+	if !ok {
+		return Fail("sim_language_unsupported", map[string]string{"driver": driver.ID()}).Write(c.Stdout)
+	}
+	if command == "get" {
+		current, locale, readErr := language.SystemLanguage(ctx, target)
+		if readErr != nil {
+			return Fail("sim_language_read_failed", map[string]string{"stderr": firstLine(readErr.Error())}).Write(c.Stdout)
+		}
+		return c.OK("sim.language.get", map[string]string{"language": current, "locale": locale, "driver": driver.ID()}).Write(c.Stdout)
+	}
+	wanted := flagValue(args, "--language")
+	if wanted == "" || strings.HasPrefix(wanted, "--") {
+		return Fail("sim_language_missing", map[string]string{"usage": simLanguageUsage}).Write(c.Stdout)
+	}
+	locale := flagValue(args, "--locale")
+	if strings.HasPrefix(locale, "--") {
+		return Fail("sim_language_value_missing", map[string]string{"flag": "--locale", "usage": simLanguageUsage}).Write(c.Stdout)
+	}
+	// A bare subtag is never passed through, because simctl accepts it and
+	// iOS then falls back to English without saying so: `fr` produced an
+	// English status bar on a simulator that had just been told to be
+	// French, measured on iOS 26.3. A region alongside it in --locale is
+	// enough to build the tag, which is what every screenshot pipeline
+	// already carries -- `--param language=de --param locale=de_DE`.
+	if !strings.Contains(wanted, "-") {
+		if region := localeRegion(locale); region != "" {
+			wanted = wanted + "-" + region
+		} else {
+			return Fail("sim_language_region_missing", map[string]string{
+				"language": wanted,
+				"next":     "pass a language tag with a region (" + wanted + "-XX) or a --locale that carries one (" + wanted + "_XX); a bare subtag falls back to English silently",
+			}).Write(c.Stdout)
+		}
+	}
+	if locale == "" {
+		locale = strings.ReplaceAll(wanted, "-", "_")
+	}
+	if setErr := language.SetSystemLanguage(ctx, target, wanted, locale); setErr != nil {
+		return Fail("sim_language_set_failed", map[string]string{"language": wanted, "locale": locale, "stderr": firstLine(setErr.Error())}).Write(c.Stdout)
+	}
+	return c.OK("sim.language.set", map[string]string{"language": wanted, "locale": locale, "driver": driver.ID()}).Write(c.Stdout)
+}
+
+// localeRegion pulls the region out of a POSIX locale ("de_DE" -> "DE"). It
+// returns "" for a locale with no region, which is the case that has to fail
+// rather than guess one.
+func localeRegion(locale string) string {
+	_, region, found := strings.Cut(locale, "_")
+	if !found {
+		return ""
+	}
+	region, _, _ = strings.Cut(region, ".")
+	if region == "" {
+		return ""
+	}
+	return strings.ToUpper(region)
 }
 
 func (c CLI) simStatusBar(ctx context.Context, args []string) error {
@@ -5640,6 +5746,13 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 	case "sim.appearance":
 		err := c.withStdout(io.Discard).sim(ctx, GlobalOptions{}, []string{"appearance", step.Params["appearance"]})
 		return copyParams(step.Params), outputErr(err, "appearance_set_failed")
+	case "sim.language.set":
+		args := []string{"language", "set", "--language", step.Params["language"]}
+		if locale := step.Params["locale"]; locale != "" {
+			args = append(args, "--locale", locale)
+		}
+		err := c.withStdout(io.Discard).sim(ctx, GlobalOptions{}, args)
+		return copyParams(step.Params), outputErr(err, "sim_language_set_failed")
 	case "sim.statusbar.set":
 		args := append([]string{"statusbar", "set"}, statusBarFlowArgs(step.Params)...)
 		err := c.withStdout(io.Discard).sim(ctx, GlobalOptions{}, args)

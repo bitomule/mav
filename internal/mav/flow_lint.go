@@ -109,6 +109,19 @@ func lintFlowStep(index int, step FlowStep, cfg Config) []flowLintIssue {
 		if !isFlowBinding(appearance) && appearance != "light" && appearance != "dark" {
 			add("error", "appearance_invalid", fmt.Sprintf("sim.appearance requires appearance: light|dark, got %q", appearance))
 		}
+	case "sim.language.set":
+		// A bare subtag ("fr") is not rejected by simctl -- iOS takes it and
+		// falls back to English -- so the only place it can be caught is
+		// here, before a whole capture matrix runs in the wrong language.
+		language := step.Params["language"]
+		locale := step.Params["locale"]
+		if !isFlowBinding(language) {
+			if strings.TrimSpace(language) == "" {
+				add("error", "sim_language_missing", "sim.language.set requires language, such as fr-FR")
+			} else if !strings.Contains(language, "-") && !isFlowBinding(locale) && localeRegion(locale) == "" {
+				add("error", "sim_language_region_missing", fmt.Sprintf("sim.language.set needs a region, in the language tag (%s-XX) or in locale (%s_XX); a bare subtag falls back to English silently", language, language))
+			}
+		}
 	case "sim.statusbar.set":
 		// Validated by the parser the executor itself uses, so the linter
 		// cannot drift from what a run would accept.

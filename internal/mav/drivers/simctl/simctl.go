@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bitomule/mav/internal/mav/drivers"
 )
@@ -24,9 +25,10 @@ type Driver struct {
 }
 
 var (
-	_ drivers.DeviceUtilityDriver = (*Driver)(nil)
-	_ drivers.AppearanceDriver    = (*Driver)(nil)
-	_ drivers.StatusBarDriver     = (*Driver)(nil)
+	_ drivers.DeviceUtilityDriver  = (*Driver)(nil)
+	_ drivers.AppearanceDriver     = (*Driver)(nil)
+	_ drivers.StatusBarDriver      = (*Driver)(nil)
+	_ drivers.SystemLanguageDriver = (*Driver)(nil)
 )
 
 // New constructs a Driver.
@@ -55,6 +57,7 @@ func (d *Driver) Provides(target drivers.Target) drivers.CapabilitySet {
 		drivers.CapClipboard,
 		drivers.CapAppearance,
 		drivers.CapStatusBar,
+		drivers.CapSystemLanguage,
 	)
 }
 
@@ -175,7 +178,7 @@ func statusBarOverrideArgs(spec drivers.StatusBarSpec) []string {
 // fallback for screenshots (axe is preferred).
 func (d *Driver) Cost(c drivers.Capability, _ drivers.Target) int {
 	switch c {
-	case drivers.CapBoot, drivers.CapLocale, drivers.CapInstall, drivers.CapLaunch, drivers.CapUninstall, drivers.CapVideo, drivers.CapLogStream, drivers.CapAppearance, drivers.CapStatusBar:
+	case drivers.CapBoot, drivers.CapLocale, drivers.CapInstall, drivers.CapLaunch, drivers.CapUninstall, drivers.CapVideo, drivers.CapLogStream, drivers.CapAppearance, drivers.CapStatusBar, drivers.CapSystemLanguage:
 		return 0
 	case drivers.CapScreenshot:
 		return 80
@@ -273,6 +276,96 @@ func (d *Driver) LogStreamStart(ctx context.Context, target drivers.Target, spec
 	return drivers.LogStreamResult{PID: pid, OutPath: spec.OutPath}, nil
 }
 func (d *Driver) LogStreamStop(context.Context, int) error { return errNotYet }
+
+// springBoardSettle is how long SpringBoard needs after `launchctl stop` before
+// it has relaunched and repainted the status bar in the new language. Measured
+// on iPad Pro 13-inch (M4) / iOS 26.3: the job is back with a pid in 4.3s and
+// 5.7s across two languages, and a capture taken 2s after that showed the new
+// language in every trial. The poll below does the waiting; this is the extra
+// margin once the pid is there, plus the ceiling that turns a SpringBoard that
+// never comes back into an error instead of a hang.
+const (
+	springBoardSettle  = 2 * time.Second
+	springBoardTimeout = 60 * time.Second
+)
+
+// SystemLanguage reads the simulator-wide language and region.
+func (d *Driver) SystemLanguage(ctx context.Context, target drivers.Target) (string, string, error) {
+	udid := simUDID(target)
+	langRes := d.exec.Run(ctx, "xcrun", "simctl", "spawn", udid, "defaults", "read", "-g", "AppleLanguages")
+	locRes := d.exec.Run(ctx, "xcrun", "simctl", "spawn", udid, "defaults", "read", "-g", "AppleLocale")
+	if langRes.Err != nil && locRes.Err != nil {
+		return "", "", errors.New(firstLine(langRes.Stderr))
+	}
+	return firstPlistArrayEntry(langRes.Stdout), strings.TrimSpace(locRes.Stdout), nil
+}
+
+// SetSystemLanguage writes the simulator-wide language and region and restarts
+// SpringBoard so it repaints with them. It is a no-op when the simulator is
+// already on that pair, because the restart is the only expensive part and a
+// screenshot matrix calls this once per language on a slot that is usually
+// already correct.
+func (d *Driver) SetSystemLanguage(ctx context.Context, target drivers.Target, language string, locale string) error {
+	current, currentLocale, readErr := d.SystemLanguage(ctx, target)
+	if readErr == nil && current == language && (locale == "" || currentLocale == locale) {
+		return nil
+	}
+	udid := simUDID(target)
+	if res := d.exec.Run(ctx, "xcrun", "simctl", "spawn", udid, "defaults", "write", "-g", "AppleLanguages", "-array", language); res.Err != nil {
+		return errors.New(firstLine(res.Stderr))
+	}
+	if locale != "" {
+		if res := d.exec.Run(ctx, "xcrun", "simctl", "spawn", udid, "defaults", "write", "-g", "AppleLocale", "-string", locale); res.Err != nil {
+			return errors.New(firstLine(res.Stderr))
+		}
+	}
+	if res := d.exec.Run(ctx, "xcrun", "simctl", "spawn", udid, "launchctl", "stop", "com.apple.SpringBoard"); res.Err != nil {
+		return errors.New(firstLine(res.Stderr))
+	}
+	return d.waitForSpringBoard(ctx, udid)
+}
+
+// waitForSpringBoard polls until the job reports a pid again. Sleeping a fixed
+// interval instead was tried first and is the wrong shape: it is either longer
+// than the restart needs on every language of the matrix, or shorter than it
+// needs on the one cold run that matters, and that run produces a screenshot
+// in the previous language while reporting ok.
+func (d *Driver) waitForSpringBoard(ctx context.Context, udid string) error {
+	deadline := time.Now().Add(springBoardTimeout)
+	for time.Now().Before(deadline) {
+		res := d.exec.Run(ctx, "xcrun", "simctl", "spawn", udid, "launchctl", "list", "com.apple.SpringBoard")
+		if res.Err == nil && strings.Contains(res.Stdout, "\"PID\"") {
+			time.Sleep(springBoardSettle)
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+	return errors.New("SpringBoard did not come back after the language change")
+}
+
+// firstPlistArrayEntry pulls the first entry out of `defaults read -g
+// AppleLanguages`, which prints a plist array rather than a bare value:
+//
+//	(
+//	    "es-ES",
+//	    "en-ES"
+//	)
+func firstPlistArrayEntry(out string) string {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		line = strings.TrimSuffix(line, ",")
+		line = strings.Trim(line, "\"")
+		if line == "" || line == "(" || line == ")" {
+			continue
+		}
+		return line
+	}
+	return ""
+}
 
 func simUDID(target drivers.Target) string {
 	if target.UDID != "" {

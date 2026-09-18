@@ -150,6 +150,19 @@ type StatusBarDriver interface {
 	ClearStatusBar(ctx context.Context, target Target) error
 }
 
+// SystemLanguageDriver sets the simulator-wide language and region. This is
+// NOT the app's language: `open: { language: ... }` is a launch argument and
+// reaches one process, while the status bar, the springboard alerts and every
+// system-drawn string follow the SIMULATOR's language. On iPad that gap is
+// visible in every App Store screenshot, because an iPad status bar shows the
+// date -- measured on iPad Pro 13-inch (M4) / iOS 26.3, an English capture on
+// a Spanish-configured simulator reads "Viernes 18 de septiembre".
+type SystemLanguageDriver interface {
+	Driver
+	SystemLanguage(ctx context.Context, target Target) (language string, locale string, err error)
+	SetSystemLanguage(ctx context.Context, target Target, language string, locale string) error
+}
+
 type WallClockDriver interface {
 	Driver
 	InjectTimeControl(ctx context.Context, target Target) error
