@@ -935,6 +935,8 @@ mav sim appearance light
 mav sim appearance dark
 mav sim statusbar set --preset appstore
 mav sim statusbar clear
+mav sim language get
+mav sim language set --language fr-FR
 ```
 
 You can also pass simulator selection flags to `mav open`:
@@ -955,6 +957,40 @@ mav sim statusbar set --preset appstore
 mav capture --name home-dark
 mav sim statusbar clear
 ```
+
+#### The status bar is drawn in the SIMULATOR's language, not the app's
+
+`open: { language: fr }` is a launch argument: it reaches the app process and
+nothing else. The status bar belongs to SpringBoard, and SpringBoard follows
+the simulator's own language. **On iPhone this is invisible, because an iPhone
+status bar shows no date. On iPad it shows the date**, so an English capture
+taken on a Spanish-configured simulator reads `Viernes 18 de septiembre` — and
+that shipped in published App Store screenshots for several versions of a real
+app before anyone noticed.
+
+Set the simulator's language once per matrix cell, next to the appearance:
+
+```bash
+mav sim language set --language en-US     # or --language en --locale en_US
+mav sim statusbar set --preset appstore
+mav capture --name home
+```
+
+Three things worth knowing:
+
+- **The tag needs a region.** `--language fr` is accepted by simctl and then
+  falls back to English without a word, measured on iOS 26.3. MAV refuses a
+  bare subtag, unless `--locale` carries the region it can build the tag from
+  (`--language de --locale de_DE` → `de-DE`), which is what screenshot
+  pipelines already pass around.
+- **It changes the simulator, not the run.** The setting outlives the capture,
+  so on a shared or pooled simulator, set it back when the matrix is done.
+- **It restarts SpringBoard** (~5s, measured on iPad Pro 13-inch M4 / iOS 26.3)
+  and waits for it to come back. Setting the language it is already on does
+  nothing at all, so a matrix pays this once per language.
+
+It fixes more than the words: the same setting decides the 12h/24h clock, the
+date order and the separators.
 
 `--preset appstore` is the status bar Apple uses in its own marketing shots:
 `--time 9:41 --data-network wifi --wifi-mode active --wifi-bars 3

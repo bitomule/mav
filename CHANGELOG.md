@@ -1,5 +1,47 @@
 # Changelog
 
+## Unreleased
+
+### `mav sim language` — the iPad status bar stops shipping in the wrong language
+
+**An App Store screenshot of an iPad shows the date, and the date was in the
+simulator's language.** Boxy's published English iPad screenshot reads
+`Lunes 7 de septiembre`; it had been on the store for several versions. The
+app's language is a launch argument (`open: { language: en }`) and reaches one
+process — the status bar is drawn by SpringBoard, which follows the SIMULATOR's
+language, and nothing in the pipeline was setting it. iPhone captures hid the
+defect because an iPhone status bar has no date on it.
+
+`--preset appstore` was never the cause and is not the fix: it sets the clock,
+the battery and the signal bars, none of which carry a language.
+
+```yaml
+- sim.language.set: { language: "${params.language}", locale: "${params.locale}" }
+- sim.statusbar.set: { preset: appstore }
+```
+
+Measured on iPad Pro 13-inch (M4) / iOS 26.3, with the ablation both ways:
+`es-ES` → `Viernes 18 de septiembre`, `en-US` → `Fri Sep 18`, back to `es-ES` →
+the Spanish date returns.
+
+Three details that are the whole reason this is a command and not a line of
+shell:
+
+- **A bare subtag falls back to English, silently.** `--language fr` is accepted
+  by simctl and produces an English status bar. It is refused, both at flow-lint
+  time and at run time — unless `--locale` carries the region, so the
+  `language=de locale=de_DE` pair every screenshot script already passes builds
+  `de-DE` on its own.
+- **SpringBoard has to restart, and the capture has to wait for it.** A fixed
+  sleep is either too long on every cell of the matrix or too short on the one
+  cold run that matters, and the short one produces a screenshot in the previous
+  language while reporting `ok`. It polls for the job's pid instead (~5s).
+- **Setting a language it is already on does nothing**, so a three-language
+  matrix pays the restart three times, not once per capture.
+
+It also fixes what nobody had looked at yet: the 12h/24h clock, the date order
+and the separators all come from the same setting.
+
 ## v0.18.1
 
 ### `ui longPress` holds through idb, and is no longer refused on a device
