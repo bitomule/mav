@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.21.0
 
 ### The 80-node cap on `mav ui tree` is gone
 
