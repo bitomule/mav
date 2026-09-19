@@ -328,3 +328,88 @@ Importa para `goto` más que para nada: una pantalla que no está en los primero
 requiere desplazarse es inalcanzable para el bucle. Se puede construir `goto` sin swipe y sólo
 con taps, pero entonces su alcance es "lo que cabe sin desplazar", y eso hay que decirlo en vez
 de descubrirlo.
+
+---
+
+## 9. ¿Ahorra lecturas de pantalla? Sí: la mitad. Y depende de un comando roto
+
+Medido el 19 sep 2026 en `iPhone-17-Pro@26.3` de simpool, con Ajustes de iOS y `mav` v0.21.0.
+Esta sección existe porque la pregunta *"¿cuántas lecturas te ahorras de verdad?"* tenía que
+contestarse **antes** de escribir el bucle, no después.
+
+### La causa que nadie había nombrado: el tap por selector relee el árbol
+
+| primitiva | coste | ¿lee el árbol? |
+|---|---|---|
+| `mav ui tree` | ~500 ms | sí, una |
+| `mav ui tap --x --y` | **277 ms** | **no** |
+| `mav ui tap --text` | 1.480 ms | **sí, otra vez** |
+| `mav ui tap --id` | 1.680 ms | **sí, otra vez** |
+| `mav ui find` | ~1.010 ms | sí, una (+ ~480 ms de jev) |
+
+Un tap por selector cuesta **cinco veces** lo que un tap por coordenadas, y la diferencia es
+que tiene que releer la pantalla para resolver el selector.
+
+**De ahí sale por qué `find` no puede ganar en tiempo, y no es culpa de jev.** Hoy, un paso ya
+cuesta **dos lecturas**: una para que el agente mire y otra dentro del tap para resolver. `find`
+no sustituye ninguna de las dos — sustituye el criterio del agente, no su lectura — así que
+añade jev encima de dos lecturas que siguen ahí.
+
+### Los tres caminos, ejecutados de punta a punta, dos toques cada uno
+
+| camino | tiempo | lecturas | jev |
+|---|---|---|---|
+| **A** hoy: agente lee el árbol + `tap --text` | 10.130 ms | **5** | 0 |
+| **B** con `find` + `tap --text` | 14.041 ms | **5** | 2 |
+| **C** forma de un paso de `goto`: `find` + `tap --x --y` | 7.210 ms | **3** | 2 |
+
+- **B es un 39% más lento que A y no ahorra ni una lectura.** Concuerda con los 13,8 s contra
+  15,5 s medidos en la demo sobre Undolly: `find` compra contexto, no tiempo.
+- **C hace 3 lecturas donde A hace 5: un 40% menos**, porque tapa el punto que ya resolvió en
+  lugar de pedir que alguien lo resuelva otra vez.
+
+**Honestidad sobre C:** su segundo `find` se abstuvo, así que dio un toque menos que A y su
+tiempo absoluto está inflado. Lo que no depende de eso es el recuento de lecturas, que sale
+de la estructura y no de esa ejecución: **A cuesta dos lecturas por paso, C cuesta una.**
+
+### Y el bloqueo, que es exactamente la primitiva de la que depende todo
+
+**El tap por coordenadas devuelve `ok` y no entrega el gesto.** Con su control al lado, mismo
+slot y mismo minuto:
+
+```
+tap --x/--y  (el punto que ocupa "General")  -> ok   y la pantalla NO cambió
+tap --text   (esa misma fila, por nombre)    -> ok   y la pantalla SÍ cambió
+```
+
+El punto era correcto —salió del `frame` de esa misma fila— así que no es puntería: es la ruta
+HID. Y el control importa: si no cambiara nada con ninguno de los dos, el hallazgo sería "el
+simulador está sordo" y no diría nada sobre coordenadas.
+
+**Así que toda la ventaja de `goto` descansa sobre el único comando que está roto.** Construir
+el bucle usando `tap --text` funcionaría y **no ahorraría ni una lectura**: sería `find` en
+bucle, o sea el camino B, que ya sabemos que pierde.
+
+`hive/mav-demo` está en ello (PR #94): añade `delivered=unconfirmed` cuando no verificas y
+`verified=changed|unchanged` con `--verify`, y arregla el verificador, que comparaba con
+`TreeDiff` —que mira `frame`— y por eso daba `changed` en dos lecturas de una pantalla quieta.
+
+### Recomendación
+
+**No escribir el bucle hasta que el tap por coordenadas entregue el gesto.** El diseño está
+completo y la medida dice que merece la pena: la mitad de las lecturas. Pero construirlo ahora
+obliga a tapar por selector, y entonces `goto` no gana nada y habríamos gastado el
+presupuesto en demostrarlo.
+
+Dos cosas más que condicionan el bucle cuando se escriba:
+
+- **El swipe no está roto siempre**, es dependiente de pantalla: no movió Ajustes de iOS en mis
+  pruebas y sí movió la pantalla de inicio de Undolly en las de `hive/mav-demo`. El bucle no
+  puede dar por hecho ninguna de las dos cosas; necesita `--verify` para distinguir "no se
+  movió" de "ya está al final", que es la confusión que lo dejaría girando hasta el tope.
+- **`tap --id` falla cuando el id está duplicado, y en las listas de iOS lo está siempre.** En
+  Ajustes → General **no hay una sola etiqueta ni un solo id únicos**: iOS mete cada fila dos
+  veces, un botón contenedor y uno interior. Eso además deja sin efecto la ruta literal de
+  `find` en esas pantallas, que se abstiene por ambigüedad — correctamente, pero significa que
+  el 14,4% de resoluciones literales medido sobre el corpus es bastante más débil en listas
+  reales.
