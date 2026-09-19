@@ -178,6 +178,14 @@ entirely.
      `reason` says whether the screen was judged (`abstained`) or could not be
      (`no_key`, `no_network`, `ci_refused`).
 
+   Every run also prints what it cost, in a `cost` block: `total_ms`,
+   `tree_ms` (reading the screen, usually most of it), `model_ms` (the
+   provider round trip, as jev measured it — `0` when no model was asked) and
+   `local_ms` (what is left: candidates, rendering, the vetoes). No token
+   counts: `find` asks jev, not a large model, so what it spends is not where
+   the saving is — the saving is the tree you no longer paste into your own
+   context.
+
    `find` needs a jev API key, and says on every run which of three places it
    read one from (`key_source=env|keychain|file`). Set one with
    **`mav jev set-key < key.txt`** — it reads the key from stdin, never from an

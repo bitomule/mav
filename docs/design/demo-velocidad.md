@@ -29,9 +29,16 @@ demo**, y una demo montada esperando que lo sea sale decepcionante por construcc
 El reloj sólo se mueve de verdad si el lado "después" hace **menos vueltas al modelo**, no
 sólo vueltas más rápidas. Por eso se miden las tres cosas y el orden del titular es:
 
-1. **Vueltas al modelo** — cuántas veces hay que preguntar para hacer el mismo recorrido.
-2. **Tokens** — entrada y salida. El árbol volcado en el prompt del lado "antes" vive aquí.
+1. **Lo que entra en el contexto del agente** — y esto no hay que instrumentarlo, se mide
+   solo: el árbol de una pantalla densa son **177 líneas y 19.819 bytes** (iOS Ajustes →
+   General, medido el 19 sep 2026), y la respuesta de `find` es **una línea**. Ésa es la
+   comparación de tokens, y vive en el lado del agente, no dentro de `mav`.
+2. **Vueltas al modelo** — cuántas veces hay que preguntar para hacer el mismo recorrido.
 3. **Reloj** — número secundario. **Puede salir empate, y si sale, se dice.**
+
+**`find` no reporta tokens y no debe hacerlo.** Llama a jev, no al modelo grande: lo que
+gasta `find` no es donde está el ahorro. El ahorro es el árbol que el agente deja de meterse
+en su propio contexto, y eso se cuenta por fuera.
 
 ### Por qué el A/B y no un cronómetro suelto
 
@@ -153,21 +160,21 @@ que pierda.
 
 ---
 
-## 3. Lo que falta para poder medir, y no existe hoy
+## 3. Lo que ya se instrumentó, y lo que sigue sin existir
 
-La medida está **bloqueada por instrumentación que no está construida**. Concretamente:
+**Hecho:** `mav ui find` emite un bloque `cost` con `total_ms`, `tree_ms` (leer la pantalla,
+que en un simulador real es la mayor parte), `model_ms` (el viaje a jev, leído de la medida
+que jev hace de sí mismo y no cronometrando el subproceso) y `local_ms` (lo que queda: elegir
+candidatos, renderizar, los vetos). Así el 8x se vuelve a sacar corriendo el comando, en vez
+de citando un fichero que está en un portátil.
 
-- **`mav ui find` no emite ni tiempo ni tokens.** Su `FindResult`
-  (`internal/mav/uifind.go`) tiene `resolved_by`, `element`, `verdict`, `reason`,
-  `candidates`, `omitted`, `next` y `key_source`. No hay `latency_ms` y no hay uso de tokens.
-  Sin eso, dos de las tres cifras del lado "después" no se pueden leer del comando: hay que
-  cronometrar por fuera y los tokens no se pueden saber en absoluto.
-- **No hay arnés para el lado "antes".** Ese lado es un bucle de agente que hay que escribir:
-  pedir árbol, elegir, tocar, contando vueltas y tokens. No existe en el repo.
+**Sin tokens, y a propósito:** `find` llama a jev, no al modelo grande, así que lo que gasta
+`find` no es donde está el ahorro.
 
-Son las dos cosas que hay que construir antes de que la demo pase de intención a número. La
-primera es pequeña y útil más allá de la demo — un comando que no dice lo que costó no se
-puede optimizar.
+**Sin hacer, y no hace falta para el vídeo:** un arnés para el lado "antes" — un bucle de
+agente que pida árbol, elija y toque contando vueltas. Para el vídeo ese lado se conduce a
+mano, y lo que se enseña es el bulto del árbol llenando la pantalla, que es la imagen y es
+cierta.
 
 ---
 

@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+### `mav ui find` now says what it cost
+
+A command that does not say what it cost cannot be optimised, and the figure
+everyone quotes for jev — 378 ms against 3.05 s for the large model — lived in a
+note on one laptop rather than in anything you could re-run. Now you run the
+command and read it off.
+
+Every `find` prints a `cost` block:
+
+| field | what it is |
+| --- | --- |
+| `total_ms` | the whole answer |
+| `tree_ms` | reading the screen; on a real simulator, most of it |
+| `model_ms` | the provider round trip, as jev measured it. `0` means no model was asked |
+| `local_ms` | what is left: candidate selection, rendering, the vetoes — the only part changing mav can move |
+
+The split is the point: a single `total_ms` mixes a network round trip with our
+own work and tells you nothing about which to attack. `model_ms` is read from
+jev's own measurement rather than timed around the subprocess, so mav's fork and
+exec are not charged to jev.
+
+No token counts, on purpose. `find` asks jev, not a large model, so what it
+spends is not where the saving is — the saving is the screen the caller stops
+pasting into its own context, and that is measured on the caller's side.
+
+A run that ends in no element still reports what it spent: a find that pays for a
+round trip and then vetoes the answer has spent it.
+
 ## v0.21.0
 
 ### The 80-node cap on `mav ui tree` is gone

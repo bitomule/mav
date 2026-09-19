@@ -41,6 +41,34 @@ type FindResult struct {
 	// alternative is depending on recalling what you configured, and that is
 	// what bit us. Never the key itself.
 	KeySource string `json:"key_source,omitempty"`
+	// Cost is always present, even on the routes that never ask a model: a
+	// zero there is a measurement and not a gap.
+	Cost FindCost `json:"cost"`
+}
+
+// FindCost is what the answer cost, split so that each part can be worked on
+// separately. It exists because a command that does not say what it cost cannot
+// be optimised: the figure everyone quotes for jev — 378 ms against 3.05 s —
+// lived in a note on one laptop rather than in anything you could re-run, so
+// "where does that 8x come from" had no answer but "trust us". Run the command
+// and read it off.
+//
+// The split is the point. total_ms on its own says nothing actionable, because
+// most of it is neither the model's nor ours to fix.
+type FindCost struct {
+	TotalMS int64 `json:"total_ms"`
+	// TreeMS is reading the screen: the driver call behind `ui tree`. Usually
+	// the largest of the three and the one find does not control.
+	TreeMS int64 `json:"tree_ms"`
+	// ModelMS is the provider round trip as jev measured it, network
+	// included. Not ours, and not comparable to LocalMS. Zero means no model
+	// was asked at all — resolved_by says which route it took, so a zero here
+	// is never ambiguous.
+	ModelMS int64 `json:"model_ms"`
+	// LocalMS is total minus tree minus model: picking candidates, rendering
+	// the batch, interpreting the answer, the vetoes. This is the only part
+	// that changing mav can move.
+	LocalMS int64 `json:"local_ms"`
 }
 
 // How a find resolved.
