@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+### A coordinate tap and a swipe no longer imply they were delivered
+
+Measured on 2026-09-19, iPhone 17 Pro / iOS 26.3 on a simpool slot: `axe tap -x
+364 -y 84` prints `✓ Tap at (364.0, 84.0) completed successfully` and the
+accessibility tree is identical before and after — on two different targets, and
+`idb`'s own CLI cannot even reach its companion. A tap by selector works on the
+same screen in the same second, so the point was right and the HID path is what
+swallowed it. mav printed `ok` for all of it.
+
+So `ui tap --x --y` and `ui swipe` now say what they actually know:
+
+- Without `--verify`: `delivered=unconfirmed`, plus a `next` saying the driver
+  accepted the gesture and nothing here says the app received it.
+- With `--verify`: `verified=changed|unchanged`, and on `unchanged` a `next`
+  pointing at the selector path, which works.
+
+**`--verify` is still opt-in and the default is still fast.** Verifying costs a
+tree read (323-537 ms measured) and the hot loop is guaranteed not to take one.
+That trade is a decision for a person; what is not a decision is a line that
+reads like delivery when nothing checked.
+
+**The verification itself was wrong for this job and is fixed too.** It compared
+trees with `TreeDiff`, which includes `frame` — and two reads of a perfectly
+still screen disagree there by fractions of a point, so a gesture that did
+nothing came back `changed`. It now compares a fingerprint of identity only (id,
+label, role, sorted), with `frame` and `value` left out, `value` because clocks
+and spinners move on their own. Counting nodes is not an alternative: 80 nodes
+before a tap and 80 after, with the screen changed entirely, is measured.
+
+First thing it caught, the same hour: a swipe reported broken on one screen came
+back `verified=changed` on another. The defect is real and it is not universal —
+which is exactly the distinction nobody could make before.
+
 ### `mav ui find` now says what it cost
 
 A command that does not say what it cost cannot be optimised, and the figure

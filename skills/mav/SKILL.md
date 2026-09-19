@@ -214,7 +214,15 @@ entirely.
    insufficient or visual evidence is needed. Captures are unique by default
    under `.mav/runs/<run-id>/captures/`, and `--name` gives the client and report
    a stable, readable proof point such as `largest-videos-after-pinch`.
-7. Use `mav ui tap/type/erase/hideKeyboard/swipe/longPress/wait/scrollUntil`
+7. **Prefer a selector tap over a coordinate tap, and do not read `ok` as
+   "it tapped".** `ui tap --x --y` and `ui swipe` report `delivered=unconfirmed`
+   because the driver accepting a gesture has been measured to mean nothing:
+   on iOS 26.3 simulator slots a coordinate tap prints success and the tree is
+   identical either side, while a tap by `--text` on the same element in the
+   same second works. Add `--verify` when the answer matters; it costs a tree
+   read and returns `verified=changed|unchanged`.
+
+   Use `mav ui tap/type/erase/hideKeyboard/swipe/longPress/wait/scrollUntil`
    for manual exploration. Prefer accessibility identifiers first (`--id`).
    `mav ui erase --focused` clears a focused field: baguette on simulator, and on
    macOS the driver sets the field to the empty value, which does not depend on

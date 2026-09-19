@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -2541,11 +2542,34 @@ func (c CLI) verifyTapChangedSomething(ctx context.Context, cfg Config, before [
 	if after == nil {
 		return "unknown"
 	}
-	delta := TreeDiff(before, after)
-	if len(delta.Added) == 0 && len(delta.Removed) == 0 && len(delta.Changed) == 0 {
+	if screenFingerprint(before) == screenFingerprint(after) {
 		return "unchanged"
 	}
 	return "changed"
+}
+
+// screenFingerprint identifies a screen by what is on it, and deliberately
+// not by TreeDiff.
+//
+// TreeDiff answers "what is different", which is a different question and a
+// worse instrument for this one: it compares `frame`, and two reads of a
+// perfectly still screen disagree there by fractions of a point, so a gesture
+// that did nothing comes back `changed`. That is the silent green this
+// verification exists to catch, arriving through the check itself. `value` is
+// out for the same reason one step louder — a clock, a counter or a spinner
+// moves on its own.
+//
+// Counting nodes is not an option either, measured: 80 nodes before a tap and
+// 80 after, with the screen changed from one settings list to another.
+// Identity, not arithmetic.
+func screenFingerprint(els []Element) string {
+	keys := make([]string, 0, len(els))
+	for _, el := range els {
+		keys = append(keys, el.ID+"\x1f"+el.Label+"\x1f"+el.Role)
+	}
+	sort.Strings(keys)
+	sum := sha256.Sum256([]byte(strings.Join(keys, "\x1e")))
+	return hex.EncodeToString(sum[:])
 }
 
 // tapToolPresent answers whether ANY tool capable of tapping exists.
@@ -2807,8 +2831,22 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		if !ok {
 			return Fail("tool_missing", c.withFallbackFields(coordMissing())).Write(c.Stdout)
 		}
-		// The BEFORE tree is only read when verification is requested,
-		// because reading it costs seconds and this is the hot loop.
+		// Measured on 2026-09-19, iPhone 17 Pro / iOS 26.3 on a simpool slot:
+		// EVERY coordinate tap available here delivers nothing while
+		// reporting success. `axe tap -x -y` prints "✓ Tap at (364.0, 84.0)
+		// completed successfully" and the tree is byte-identical before and
+		// after, on two different targets; idb's own CLI cannot even reach
+		// its companion. Semantic taps through AX actions work on the same
+		// screen in the same second, so the point was not wrong — the HID
+		// path is. mav printed `ok` for all of it.
+		//
+		// The obvious fix — verify every coordinate tap — is not taken here,
+		// and deliberately: it costs a tree read per tap (323-537 ms
+		// measured) and the hot loop is guaranteed not to read one, which
+		// several tests hold mav to. So the default stays fast and stops
+		// implying delivery instead: without --verify the result now says
+		// `delivered=unconfirmed` in as many words. Whether that trade is
+		// right is a decision for a person, not for this function.
 		verify := hasFlag(args, "--verify")
 		var before []Element
 		if verify {
@@ -2855,7 +2893,22 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			addUnknownLandscapeFields(coordFields)
 		}
 		if verify {
-			coordFields["verified"] = c.verifyTapChangedSomething(ctx, cfg, before)
+			effect := c.verifyTapChangedSomething(ctx, cfg, before)
+			coordFields["verified"] = effect
+			// `unchanged` after a tap the driver called a success is the
+			// signature of the HID path swallowing it. Naming it here is the
+			// difference between a caller retrying blind and a caller
+			// switching to a selector, which does work.
+			if effect == "unchanged" {
+				coordFields["next"] = "the driver reported the tap and the screen did not change; on a simulator the coordinate path can swallow it silently — tap the element by selector (`mav ui tap --text ...`) rather than by point"
+			}
+		} else {
+			// `ok` on this line means the driver accepted the point, and on
+			// a simulator that has been measured to mean nothing at all.
+			// Saying so costs a word and stops the caller reading delivery
+			// into a line that never promised it.
+			coordFields["delivered"] = "unconfirmed"
+			coordFields["next"] = "the driver accepted the point; nothing here says the app received it — simulator coordinate taps have been measured reporting success and delivering nothing. Pass --verify, or tap by selector (`mav ui tap --text ...`), which goes through a path that works"
 		}
 		coordFields = c.withFallbackFields(coordFields)
 		return c.writeFastPathResult(ctx, cfg, args, "ui.tap", coordFields)
@@ -3511,10 +3564,32 @@ func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args [
 			detectedAngle = angle
 		}
 	}
+	// Same story as the coordinate tap, and measured twice by two different
+	// nodes on 2026-09-19: `mav ui swipe --direction up` returns
+	// `ok cmd=ui.swipe driver=axe` with the tree identical either side, on
+	// slot-5 and slot-2. A swipe that reports ok and leaves the screen where
+	// it was is worse than one that fails, because the caller reads it as
+	// "already at the end of the list". --verify looks; without it the
+	// result says it did not.
+	swipeVerify := hasFlag(args, "--verify")
+	var swipeBefore []Element
+	if swipeVerify {
+		swipeBefore = c.snapshotForVerification(ctx, cfg)
+	}
 	if err := gd.Swipe(ctx, target, drivers.SwipeSpec{Direction: direction, StartX: hidSX, StartY: hidSY, EndX: hidEX, EndY: hidEY}); err != nil {
 		return Fail("ui_swipe_failed", map[string]string{"stderr": firstLine(err.Error())}).Write(c.Stdout)
 	}
 	fields := map[string]string{"direction": direction, "driver": driver.ID()}
+	if swipeVerify {
+		effect := c.verifyTapChangedSomething(ctx, cfg, swipeBefore)
+		fields["verified"] = effect
+		if effect == "unchanged" {
+			fields["next"] = "the driver reported the swipe and the screen did not change; the gesture did not reach the app — do not treat this as 'already at the end of the list'"
+		}
+	} else {
+		fields["delivered"] = "unconfirmed"
+		fields["next"] = "the driver accepted the gesture; nothing here says the screen moved — simulator swipes have been measured reporting ok and moving nothing. Pass --verify to find out"
+	}
 	if rotation != 0 {
 		fields["rotation"] = strconv.Itoa(rotation)
 		fields["hid_start"] = strconv.Itoa(hidSX) + "," + strconv.Itoa(hidSY)
