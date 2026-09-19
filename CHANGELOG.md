@@ -2,6 +2,82 @@
 
 ## Unreleased
 
+### `mav ui find`, and a tree that stops hiding half a screen
+
+`mav ui tree` prints **at most 80 nodes**, and the line meant to announce that
+cut **could never fire**: the list was capped by `Compact` before it reached the
+printer that warns above 80, so `i >= maxNodes` was unreachable. Measured live
+on an iOS Settings screen at **213 nodes — 80 printed, 133 gone with nothing in
+the output saying so**. There were elements no command could show you.
+
+That, and not token thrift, is why this exists: deciding from mav trees is about
+**0.7% of a session's spend**, which never justified anything.
+
+**`mav ui find "<what you want to tap>"`** resolves one element from a
+description in your own words, reading the uncapped extraction so it can see
+what the tree does not print. It answers with an element or with nothing, and
+nothing is a real answer — it means read the tree yourself.
+
+Three rules, each from a measurement:
+
+- **No numeric threshold anywhere.** Correct picks score from 0.76 and wrong ones
+  reach 0.88, so no cut separates them. What separates them is the model
+  declining, so that is what is read: the function that interprets an answer
+  **takes no confidence argument at all**.
+- **It never returns an element it is unsure of.** It abstains, and the caller
+  falls back to the tree it was going to read anyway.
+- **A veto in code that can only remove a yes, never add one.** Asked for
+  something absent from the screen, the model chose an element anyway **13 times
+  out of 26**, so an answer naming something outside the batch is discarded
+  rather than looked up. The same veto refuses a destructive element unless your
+  own words asked for one.
+
+The exit code carries no answers: 0 whenever `find` could answer at all,
+`resolved_by=none` included. `reason` keeps apart the two states callers confuse
+— **"could not ask"** (`no_key`, `no_network`, `ci_refused`) and **"looked and am
+not sure"** (`abstained`, `veto_*`). It **refuses** to consult a model when `CI`
+is set, so "not used in CI" is a guarantee rather than a convention.
+
+Measured live against a real simulator, a real screen and a real model, controls
+first: **4 of 4** targets absent from the screen resolved to `none`; **2 of 2**
+literal goals resolved with no model at all; **2 of 4** oblique descriptions
+resolved correctly and the other two abstained. **Zero wrong answers in 10.** The
+abstention rate on oblique goals is real and is not hidden here.
+
+And `mav ui tree` now hands the printer the whole list, so `node_more` fires. The
+80-node cap itself is unchanged; it just stops lying about it.
+
+### Where the jev key lives
+
+`MAV_JEV_API_KEY`, then the system keychain (service `mav-jev`), then
+`~/.config/bitomule/mav/config.json` at mode 0600 — inside the namespace that
+already exists rather than a new top-level directory. Both names sit in **one
+line of the code**, so pointing several tools at one shared secret later is a
+two-constant change.
+
+`mav jev set-key < key.txt` reads from stdin and never from an argument, so the
+secret does not reach shell history. `mav jev doctor` says whether there is a key
+and where it came from without printing it. Every `find` that consults a model
+reports `key_source=env|keychain|file`, because the alternative is remembering
+what you configured. With no key, `find` does not go quiet: it names all three
+places it looked and what to type.
+
+mav reads neither musts' key nor jevi's. Inheriting another tool's credential
+silently is how "it works on my machine and I do not know why" starts.
+
+### `mav goto` — design only, no code
+
+`docs/design/goto.md`. The loop is not written; what is written is when it stops,
+how it knows it arrived without the model grading its own work, how it notices it
+is going in circles, and what it never touches.
+
+Worth knowing even if the loop is never built: **`browser-use`, the leading
+browser-driving agent loop, does not verify arrival in code.** Its `done` action
+returns the `success` the model passed and the loop ends there; its only
+independent checker is a second model looking at screenshots, it runs after the
+agent has stopped, and its own docstring says it does not override the
+self-report. There was nothing to copy.
+
 ### A hook that says "that had a cheaper form", because saying it in the docs did not work
 
 A model reads "prefer X" in a skill, repeats it back, and issues the expensive
@@ -22,14 +98,22 @@ One rule today, and the design is a table so the second costs a line:
 | --- | --- | --- |
 | `jevi ask "<question>"` without `-f` | always | jevi's own help says the positional form is "for a one-off from a terminal. Use `-f` for anything you run twice", and an agent's questions are always run twice |
 
-**There is deliberately no rule for `mav ui tree`.** An earlier draft had one,
-pointing at `mav ui tree --agent`; that flag was then rejected as the form to
-recommend. It caps the screen at **40 elements with no flag to raise the cap**,
-and it **ranks after capping**, so its ordering cannot rescue an element that
-already fell outside the 40 — on a real 202-node screen that is more than half
-the screen gone. With no cheaper form of a tree to point at, the hook has
-nothing to say about one, and a test asserts it stays silent on `mav ui tree`
-however large the tree is.
+**The rule for `mav ui tree` points at `mav ui find`.** An earlier draft pointed
+at `mav ui tree --agent` and that flag was rejected as the form to recommend: it
+caps the screen at **40 elements with no flag to raise the cap** and it **ranks
+after capping**, so its ordering cannot rescue an element that already fell
+outside the 40. A rule pointing at a form we do not recommend is worse than no
+rule, so it was removed. `find` is a form we do recommend, so the rule is back
+pointing there, behind two gates:
+
+| gate | fires when | because |
+| --- | --- | --- |
+| size | 40 or more printed nodes | with a dozen elements, reading them is cheaper than asking anything, and advice that costs more than it saves is worse than silence |
+| truncation | a `node_more` marker, whatever the printed count | elements were not shown at all, so `find` is not a cheaper way but the only way to see them — this overrides the size gate |
+| availability | a key exists in any of the three places | without one `find` answers `resolved_by=none` and the advice is noise. Checked by asking whether a key EXISTS, never by reading one and never over the network: the variable, the keychain queried without `-w` so no secret is fetched, then the file's presence |
+
+Measured at **40 ms worst of five runs** against the `timeout: 2` pin; the
+keychain query is local and adds nothing worth noticing.
 
 **It says it every time, and keeps no state.** No counter, no per-session file,
 nothing that can go stale. An earlier draft said it twice and then every tenth

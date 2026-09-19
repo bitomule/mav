@@ -190,6 +190,8 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 		return c.open(ctx, opts, rest[1:])
 	case "ui":
 		return c.ui(ctx, opts, rest[1:])
+	case "jev":
+		return c.jev(ctx, opts, rest[1:])
 	case "capture":
 		return c.capture(ctx, opts, rest[1:])
 	case "app":
@@ -472,6 +474,7 @@ Selects a physical iOS device and switches target_kind to device.
 	case "ui":
 		return `Usage:
   mav ui tree [--prefer-driver auto|axe] [--include-system]
+  mav ui find "<what you want to tap>" [--include-system]
   mav ui orientation portrait|landscape-left|landscape-right|portrait-upside-down
   mav ui tap --id ID [--verify] [--prefer-driver auto|<driver-id>]
   mav ui tap --x X --y Y
@@ -495,6 +498,28 @@ Selects a physical iOS device and switches target_kind to device.
 		return "Usage: mav capture [--name NAME] [--run RUN_ID]\n"
 	case "ui tree":
 		return "Usage: mav ui tree [--prefer-driver auto|axe] [--include-system] [--agent] [--with-frame]\n\nPrints compact screen metadata followed by bounded node lines with id, label, role, value, enabled, subrole, title, pid, focused, and frame when available. --include-system asks the system/SpringBoard tree via baguette when a system service, permission prompt, or cross-app view is in front. Simulator only.\n\n--agent emits a ranked 40-element view that puts focused + actionable elements first and drops frame to save tokens. Combine with --with-frame to keep coordinates.\n"
+	case "ui find":
+		return `Usage: mav ui find "<what you want to tap>" [--include-system]
+
+Resolves one element on the current screen from a description in your own words. Replaces ` + "`mav ui tree | grep`" + `, not your judgement.
+
+It reads the tree WITHOUT the 80-node cap ` + "`mav ui tree`" + ` prints under, so it can see elements that command does not show.
+
+Prints an ok line then a single JSON document. resolved_by is the first field and says what to do next:
+  literal  the goal is that element's own text. No model, no key, no network needed.
+  model    jev chose it and every veto let it through.
+  none     find is not answering with an element. reason says whether it could not ask
+           (no_key, no_network, ci_refused) or asked and is not sure (abstained,
+           veto_destructive, veto_not_a_candidate). Fall back to ` + "`mav ui tree`" + `.
+
+find never returns an element it is unsure of, and never returns one that destroys
+something unless your own words asked for that. The exit code is 0 whenever find could
+answer at all, resolved_by=none included; it carries no answers.
+
+The key comes from MAV_JEV_API_KEY, then the system keychain (service mav-jev), then
+~/.config/bitomule/mav/config.json. Set one with ` + "`mav jev set-key < key.txt`" + `.
+Refuses to consult a model when CI is set.
+`
 	case "ui tap":
 		return `Usage:
   mav ui tap --id ID [--verify] [--prefer-driver auto|<driver-id>]
@@ -2153,6 +2178,8 @@ func (c CLI) dispatchUICommand(ctx context.Context, opts GlobalOptions, cfg Conf
 	switch args[0] {
 	case "tree":
 		return c.uiTree(ctx, opts, cfg, args[1:])
+	case "find":
+		return c.uiFind(ctx, opts, cfg, args[1:])
 	case "orientation":
 		return c.uiOrientation(ctx, opts, cfg, args[1:])
 	case "tap":
@@ -2262,7 +2289,7 @@ func (c CLI) uiTree(ctx context.Context, opts GlobalOptions, cfg Config, args []
 		agents := AgentTree(state.Elements, AgentTreeOptions{WithFrame: withFrame})
 		return writeAgentElementLines(c.Stdout, agents)
 	}
-	return writeElementLines(c.Stdout, state.Elements)
+	return writeElementLines(c.Stdout, state.All)
 }
 
 type uiTreeState struct {
@@ -2270,7 +2297,12 @@ type uiTreeState struct {
 	ScreenSource string
 	Driver       string
 	Elements     []Element
-	Nodes        int
+	// All is the extraction before the 80-element cap. It exists so the
+	// printed list can say how much of itself is missing: `nodes=135` on the
+	// ok line beside 80 node lines is the whole hole, and reading it requires
+	// noticing that two numbers in one output disagree.
+	All   []Element
+	Nodes int
 }
 
 // observeUITree extracts the framework-neutral view of `raw` and
@@ -2282,10 +2314,12 @@ type uiTreeState struct {
 // thread it conditionally; it's reserved for any future driver-
 // specific observation tweaks.
 func (c CLI) observeUITree(cfg Config, raw, treeDriver string, _persist bool) uiTreeState {
+	all := ExtractElementsRaw(raw)
 	state := uiTreeState{
 		Driver:   treeDriver,
 		Screen:   "unknown",
-		Elements: ExtractElements(raw),
+		Elements: Compact(all),
+		All:      all,
 		Nodes:    countTreeNodes(raw),
 	}
 	if id, _, ok := explicitScreenIdentity(state.Elements); ok {
@@ -3103,7 +3137,11 @@ func (c CLI) writeFastPathResult(ctx context.Context, cfg Config, args []string,
 	case "agent":
 		return writeAgentElementLines(c.Stdout, AgentTree(elements, AgentTreeOptions{}))
 	case "tree":
-		return writeElementLines(c.Stdout, Compact(elements))
+		// Compact caps at 80 and writeElementLines warns above 80, so handing
+		// it the already-capped list made its `node_more` line unreachable: on
+		// a 202-node screen more than half went missing without a word. The
+		// full list goes in, the printer still prints 80, and now it says so.
+		return writeElementLines(c.Stdout, elements)
 	case "delta":
 		run, _ := c.resolveRun("")
 		previous := loadFastPathTree(run)
@@ -6239,7 +6277,9 @@ func writeElementLines(w io.Writer, elements []Element) error {
 	const maxNodes = 80
 	for i, el := range elements {
 		if i >= maxNodes {
-			_, err := fmt.Fprintf(w, "node_more remaining=%d\n", len(elements)-maxNodes)
+			_, err := fmt.Fprintf(w, "node_more remaining=%d next=%s\n",
+				len(elements)-maxNodes,
+				quoteIfNeeded(`mav ui find "<what you want to tap>" sees the elements this list does not show`))
 			return err
 		}
 		fields := map[string]string{
