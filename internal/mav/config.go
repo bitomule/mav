@@ -371,6 +371,10 @@ func loadConfig(root, profileOverride string, skipProfile bool) (Config, error) 
 			return Config{}, err
 		}
 	}
+	// MAV_TARGET_KIND, when set, REPLACES the target wholesale: the three
+	// companion variables are assigned even when empty, so a matrix child
+	// handed only a kind starts from a clean target instead of inheriting a
+	// pin out of the config file. That is deliberate and stays.
 	if kind := os.Getenv("MAV_TARGET_KIND"); kind != "" {
 		cfg.TargetKind = kind
 		cfg.SimulatorUDID = os.Getenv("MAV_TARGET_UDID")
@@ -379,6 +383,39 @@ func loadConfig(root, profileOverride string, skipProfile bool) (Config, error) 
 		if kind == "device" {
 			cfg.DeviceUDID = os.Getenv("MAV_TARGET_UDID")
 			cfg.DeviceName = os.Getenv("MAV_TARGET_NAME")
+		}
+	} else {
+		// Without a kind there is no "replace the target" intent to honour,
+		// so each variable overlays on its own onto the kind the config
+		// already resolved to, and an empty one changes nothing.
+		//
+		// Missing through v0.19.2: the whole overlay hung off
+		// MAV_TARGET_KIND being non-empty, so MAV_TARGET_UDID on its own
+		// did nothing, while SKILL.md documented these four as pinning the
+		// target and beating both a config pin and target_command. Measured
+		// in a repo with target_command configured, `MAV_TARGET_UDID=... mav
+		// ui tree` drove the UDID target_command returned instead -- another
+		// agent's simulator, with nothing on the ok line saying so.
+		if udid := os.Getenv("MAV_TARGET_UDID"); udid != "" {
+			if cfg.TargetKind == "device" {
+				cfg.DeviceUDID = udid
+			} else {
+				cfg.SimulatorUDID = udid
+			}
+		}
+		// The name and the runtime overlay but do not pin: neither resolves
+		// to a UDID anywhere in mav, with or without a kind, so whatever
+		// does resolve one (target_command, the booted fallback) overwrites
+		// them rather than being skipped. See envNamesTarget in target.go.
+		if name := os.Getenv("MAV_TARGET_NAME"); name != "" {
+			if cfg.TargetKind == "device" {
+				cfg.DeviceName = name
+			} else {
+				cfg.SimulatorName = name
+			}
+		}
+		if runtime := os.Getenv("MAV_TARGET_RUNTIME"); runtime != "" {
+			cfg.SimulatorRuntime = runtime
 		}
 	}
 	// At the end on purpose: the target_kind can come from the file, from a

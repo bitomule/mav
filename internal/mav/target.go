@@ -373,7 +373,7 @@ func (c CLI) resolveConfigTarget(cfg *Config) (string, error) {
 		cfg.TargetSource = deviceTargetSource()
 		return "", nil
 	}
-	if os.Getenv("MAV_TARGET_KIND") != "" {
+	if envNamesTarget() {
 		cfg.TargetSource = targetSourceEnv
 		return "", nil
 	}
@@ -419,10 +419,29 @@ func (c CLI) resolveConfigTarget(cfg *Config) (string, error) {
 // those variables on its children, and a reader of the child's output
 // otherwise cannot tell a matrix leg from a repo-wide pin.
 func deviceTargetSource() string {
-	if os.Getenv("MAV_TARGET_KIND") != "" {
+	if envNamesTarget() {
 		return targetSourceEnv
 	}
 	return targetSourceConfig
+}
+
+// envNamesTarget reports whether the environment names a target at all --
+// a kind, a UDID or a name. It is what separates target_source=env from
+// target_source=config, and it deliberately reads all three rather than
+// MAV_TARGET_KIND alone: LoadConfig applies MAV_TARGET_UDID without a kind
+// too, so keying the label off the kind would report a UDID that came from
+// the environment as if it had been pinned in .mav/config.yaml. The UDID
+// would be right and its provenance wrong, which is the one thing
+// target_source exists to prevent.
+//
+// MAV_TARGET_NAME and MAV_TARGET_RUNTIME are not in the list on purpose:
+// neither resolves to a UDID anywhere in mav, with or without a kind, so
+// counting either as a pin would short-circuit target_command and the
+// booted-simulator fallback below and leave the caller with nothing to
+// dispatch against. A name that selects a simulator on its own is a gap,
+// not part of this fix.
+func envNamesTarget() bool {
+	return os.Getenv("MAV_TARGET_KIND") != "" || os.Getenv("MAV_TARGET_UDID") != ""
 }
 
 // resolveConfigTargetCommand runs target_command (cases 3/4 of the

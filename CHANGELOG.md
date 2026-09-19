@@ -1,5 +1,77 @@
 # Changelog
 
+## v0.19.3
+
+### The target override that was documented and did nothing
+
+`MAV_TARGET_UDID` on its own did not pin anything. The whole environment
+overlay hung off `MAV_TARGET_KIND` being set, so the three companion
+variables were only read when a kind was set beside them — an undocumented
+dependency between two variables the docs describe as independent. SKILL.md
+has said since v0.18 that these "pin the target, beating both a config pin
+and `target_command`".
+
+Measured on the released 0.19.2 and on this fix, in a project with
+`target_command` configured, reading `mav doctor`:
+
+| What is set | 0.19.2 | v0.19.3 |
+| --- | --- | --- |
+| nothing | `target_source=target_command udid=CMD-AAAA-1111` | unchanged |
+| `MAV_TARGET_UDID=ENV-BBBB-2222` | `target_source=target_command udid=CMD-AAAA-1111` | `target_source=env udid=ENV-BBBB-2222` |
+| `MAV_TARGET_KIND` + `MAV_TARGET_UDID` | `target_source=env udid=ENV-BBBB-2222` | unchanged |
+| `simulator_udid` pinned, nothing exported | `target_source=config udid=PIN-CCCC-3333` | unchanged |
+| `simulator_udid` pinned + `MAV_TARGET_UDID` | `target_source=config udid=PIN-CCCC-3333` | `target_source=env udid=ENV-BBBB-2222` |
+
+The consequence on a machine where several agents lease slots was not an
+error message: the command ran, reported `ok`, and drove the simulator
+`target_command` had returned — someone else's.
+
+**Both halves of the resolution were wrong, and fixing only the first would
+have been worse than fixing neither.** `resolveConfigTarget` decided the
+`target_source` label by re-reading `MAV_TARGET_KIND` too, so applying the
+overlay alone produced the right UDID under `target_source=config` — a
+target from the environment, attributed to a file that never named it, on a
+green line. That field exists precisely so nobody has to compare identifiers
+by hand, so a wrong provenance is the one failure it cannot afford.
+
+`MAV_TARGET_NAME` and `MAV_TARGET_RUNTIME` are now documented for what they
+are: they narrow the reported target but do not select one, because nothing
+in mav resolves a name or a runtime to a UDID. On their own the target still
+comes from a pin, `target_command`, or the booted simulator.
+
+### `--target` outside `mav run` is refused instead of ignored
+
+`--target` is a `mav run` flag and nothing else reads it. Every other command
+accepted it and carried on: `mav ui tree --target udid=30F898A9` inspected
+whatever the config resolved to and printed a clean `ok` for it — a wrong
+answer in the shape of a right one. Any command but `mav run` now fails with
+`code=flag_unsupported`, naming `MAV_TARGET_UDID` as the spelling that works
+everywhere.
+
+This is narrower than the defect behind it: mav has no central flag parser
+and does not reject unknown flags anywhere. Doing that properly needs a table
+of every flag of every command, which is not a patch-release change.
+
+### `selector_ambiguous` now says how to choose
+
+Refusing to tap when a selector matches several elements is correct. Refusing
+without saying what to do next is what stalled four separate agents on the
+same screen in one day: iOS Settings lists "Pantalla y tamaño del texto" four
+times, and the advice on offer — use `--id`, or a longer `--text` — has no
+answer there. A label the screen repeats verbatim has no longer spelling, and
+the cells expose no id.
+
+The refusal now reports how many elements matched and names `--index N`,
+which mav has had all along and which nothing pointed at.
+
+### Remediations stop arriving HTML-escaped
+
+`mav sim select <udid>` is not a command. Every quoted field went
+through `json.Marshal`, which escapes `<`, `>` and `&` for embedding in a web
+page — including the remediation of `ambiguous_booted_simulator`, the
+most-read failure of this release line and one whose whole job is to be typed
+back. Quoting is otherwise unchanged and the output is still valid JSON.
+
 ## v0.19.2
 
 ### The config error v0.19.1 produced and then threw away

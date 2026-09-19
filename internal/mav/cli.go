@@ -146,6 +146,21 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 	if opts.Help {
 		return c.help(opts, strings.Join(rest, " "))
 	}
+	// `--target` belongs to `mav run` and nothing else reads it. Through
+	// v0.19.2 every other command accepted it and ignored it without a
+	// word, so `mav ui tree --target udid=...` inspected whatever simulator
+	// the config resolved to and reported a clean ok line -- the wrong
+	// answer wearing the shape of the right one, which is worse than no
+	// answer. Rejected here rather than per command so a command added
+	// tomorrow inherits it, and the failure names the spelling that does
+	// work everywhere.
+	if rest[0] != "run" && rest[0] != "__worker" && hasTargetFlag(rest[1:]) {
+		return Fail("flag_unsupported", map[string]string{
+			"flag":    "--target",
+			"command": rest[0],
+			"next":    "--target picks matrix targets and only `mav run` reads it; pin this command with MAV_TARGET_UDID=<udid>, or with simulator_udid in .mav/config.yaml",
+		}).Write(c.Stdout)
+	}
 	stopLeaseHeartbeat := c.keepRunLeaseAlive(rest[0])
 	defer stopLeaseHeartbeat()
 	// Attaching happens before dispatch, not inside each command, so the
@@ -2663,7 +2678,7 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		if !isSimpleSemanticSelector(selector) {
 			matched, matchErr := c.resolveSelector(ctx, cfg, selector, prefer)
 			if matchErr != nil {
-				return Fail(matchErr.Error(), selectorDiagnosticFields(selector, matched)).Write(c.Stdout)
+				return selectorFail(selector, matched, matchErr).Write(c.Stdout)
 			}
 			fields["matched_id"] = matched.ID
 			fields["matched_text"] = elementText(matched)
@@ -2715,7 +2730,7 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			// its own, which is correct. But the message is the tool's and
 			// does not say what to do, so the agent is left staring.
 			if strings.Contains(result.Stderr, "must be unique") {
-				tapFields["next"] = "the selector matches more than one element; use --id, or a longer --text that only matches one"
+				tapFields["next"] = "the selector matches more than one element; add --index N to pick one (0-based, in tree order), or use --id, --role, --near-text, or a longer --text -- a label the screen repeats verbatim has no longer spelling, so --index is the answer there"
 			}
 			return Fail("ui_tap_failed", tapFields).Write(c.Stdout)
 		}
@@ -2904,9 +2919,52 @@ func (c CLI) resolveSelector(ctx context.Context, cfg Config, selector Selector,
 		return Element{}, fmt.Errorf("selector_not_found")
 	}
 	if len(matches) > 1 {
-		return matches[0], fmt.Errorf("selector_ambiguous")
+		return matches[0], &ambiguousSelectorError{matches: len(matches)}
 	}
 	return matches[0], nil
+}
+
+// ambiguousSelectorError is "this selector describes several things and mav
+// will not choose for you", carrying how many. It spells its Error() as the
+// bare code on purpose: the call sites pass matchErr.Error() straight to
+// Fail, so the code on the wire is unchanged and only the remediation is
+// new.
+type ambiguousSelectorError struct{ matches int }
+
+func (e *ambiguousSelectorError) Error() string { return "selector_ambiguous" }
+
+// selectorFail is the one shape every "the selector did not resolve to
+// exactly one element" answer takes: the code on the wire, the predicates
+// that were asked for, and -- when the reason is ambiguity -- how many
+// things matched and how to choose between them.
+func selectorFail(selector Selector, matched Element, err error) Output {
+	fields := selectorDiagnosticFields(selector, matched)
+	addSelectorAmbiguousNext(fields, err)
+	return Fail(err.Error(), fields)
+}
+
+// addSelectorAmbiguousNext attaches the way out of selector_ambiguous.
+//
+// Refusing to choose between several matches is right. Refusing without
+// saying what to do next is what stalled four separate agents in one day on
+// the same screen: iOS Settings lists "Pantalla y tamaño del texto" four
+// times, so the advice the axe-side refusal carries -- use --id, or a longer
+// --text -- has no answer there. There is no longer spelling of a label that
+// is identical four times, and the cells expose no id. `--index` has existed
+// the whole time and nothing pointed at it.
+func addSelectorAmbiguousNext(fields map[string]string, err error) {
+	var ambiguous *ambiguousSelectorError
+	if !errors.As(err, &ambiguous) {
+		return
+	}
+	if fields == nil {
+		return
+	}
+	fields["matches"] = strconv.Itoa(ambiguous.matches)
+	if _, ok := fields["next"]; ok {
+		return
+	}
+	fields["next"] = fmt.Sprintf("the selector matches %d elements; add --index N to pick one (0-based, in tree order) after checking mav ui tree, or narrow it with --id, --role or --near-text", ambiguous.matches)
 }
 
 func fastPathArgs(args []string) []string {
@@ -3581,7 +3639,7 @@ func (c CLI) macDoubleTap(ctx context.Context, opts GlobalOptions, cfg Config, a
 		// ID/Text to the driver would silently drop every other predicate.
 		matched, matchErr := c.resolveSelector(ctx, cfg, selector, prefer)
 		if matchErr != nil {
-			return Fail(matchErr.Error(), selectorDiagnosticFields(selector, matched)).Write(c.Stdout)
+			return selectorFail(selector, matched, matchErr).Write(c.Stdout)
 		}
 		mx, my, mw, mh, frameOK := parseElementFrame(matched.Frame)
 		if !frameOK {
@@ -3939,7 +3997,7 @@ func (c CLI) uiToggle(ctx context.Context, opts GlobalOptions, cfg Config, args 
 	prefer, _ := c.normalizePreferDriver(opts.PreferDriver)
 	matched, err := c.resolveSelector(ctx, cfg, selector, prefer)
 	if err != nil {
-		return Fail(err.Error(), selectorDiagnosticFields(selector, matched)).Write(c.Stdout)
+		return selectorFail(selector, matched, err).Write(c.Stdout)
 	}
 	current, known := elementToggleState(matched)
 	if desired != "" && known && (desired == "on") == current {
@@ -8116,6 +8174,21 @@ func flagValue(args []string, name string) string {
 func hasFlag(args []string, name string) bool {
 	for _, arg := range args {
 		if arg == name {
+			return true
+		}
+	}
+	return false
+}
+
+// hasTargetFlag spots `--target` and `--target=...` anywhere in a command's
+// arguments. It is a scan, not a parse: mav has no central flag parser, so a
+// literal `--target` passed as some other flag's VALUE (`mav ui type --text
+// --target`) is read as the flag and refused. That is the one false positive
+// this accepts, and it fails loudly with the reason on screen, which is the
+// trade the silent-acceptance defect was not offering.
+func hasTargetFlag(args []string) bool {
+	for _, arg := range args {
+		if arg == "--target" || strings.HasPrefix(arg, "--target=") {
 			return true
 		}
 	}

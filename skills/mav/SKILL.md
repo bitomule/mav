@@ -775,7 +775,8 @@ MAV sets those for the commands it runs; see "Custom launch recipes" above.
 
 | Variable | Status | What it does |
 | --- | --- | --- |
-| `MAV_TARGET_KIND` / `MAV_TARGET_UDID` / `MAV_TARGET_NAME` / `MAV_TARGET_RUNTIME` | supported | Pin the target, beating both a config pin and `target_command`. `mav run --target ...` sets them on each matrix child. |
+| `MAV_TARGET_KIND` / `MAV_TARGET_UDID` | supported | Pin the target, beating both a config pin and `target_command`. Either works on its own: `MAV_TARGET_UDID=<udid> mav ui tree` pins the simulator with no kind beside it, and the `ok` line reads `target_source=env`. (Through v0.19.2 the whole overlay hung off `MAV_TARGET_KIND`, so a UDID on its own was ignored in silence.) `mav run --target ...` sets them on each matrix child. |
+| `MAV_TARGET_NAME` / `MAV_TARGET_RUNTIME` | supported, partial | Narrow the reported target, but do not select one: nothing in mav resolves a name or a runtime to a UDID. On their own the target still comes from a pin, `target_command`, or the booted simulator. |
 | `MAV_PROFILE` | supported | Selects a platform profile, below `--profile` and above `default_profile`. |
 | `MAV_EXACT_RUN_DIR` | supported, internal | Pins run state to this exact directory instead of allocating one under `.mav/runs/`. `mav run --target ... --target ...` sets it per matrix child so each target gets an unambiguous run dir. Set it yourself only to place a run's state somewhere specific. |
 | `MAV_DRIVERS_DISABLE` | supported, internal | Comma-separated driver ids to suppress. Changes routing, so a stale export makes `mav doctor` disagree with reality. |
@@ -785,9 +786,14 @@ MAV sets those for the commands it runs; see "Custom launch recipes" above.
 ## When `target_command` cannot pick a simulator
 
 If `.mav/config.yaml` sets `target_command`, that is the source of the
-simulator -- unless `--target` / `MAV_TARGET_*` or a pinned `simulator_udid`
-overrides it. A pin wins outright and reports `target_command_ignored` on
-the `ok` line; it is a warning, not a failure.
+simulator -- unless `MAV_TARGET_KIND` / `MAV_TARGET_UDID` or a pinned
+`simulator_udid` overrides it. A pin wins outright and reports
+`target_command_ignored` on the `ok` line; it is a warning, not a failure.
+
+`--target` is a `mav run` flag and only `mav run` reads it. On any other
+command it fails with `code=flag_unsupported` instead of being accepted and
+ignored; to point a single command at one simulator, export
+`MAV_TARGET_UDID`.
 
 Where `target_command` is what should answer and cannot -- it exits
 non-zero, prints nothing, or exceeds `target_command_timeout` (3 minutes by

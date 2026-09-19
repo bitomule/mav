@@ -147,7 +147,7 @@ var TargetCommandTimeoutInvalid = Code{
 var AmbiguousBootedSimulator = Code{
 	ID:          "ambiguous_booted_simulator",
 	Title:       "Several simulators are booted and none was selected",
-	Remediation: "Pick one: `mav sim select <udid>`, or set target_command in .mav/config.yaml (a pool manager such as `simpool lease`), or export MAV_TARGET_KIND=simulator with MAV_TARGET_UDID",
+	Remediation: "Pick one: `mav sim select <udid>`, or set target_command in .mav/config.yaml (a pool manager such as `simpool lease`), or export MAV_TARGET_UDID=<udid> for this command alone",
 }
 
 var FlowLintFailed = Code{
