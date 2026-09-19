@@ -1,7 +1,9 @@
 # La demo de velocidad — diseño y aritmética
 
-Nodo `mav-demo-velocidad`, 19 sep 2026. **No hay demo grabada ni medida tomada.** Esto es el
-diseño, y sobre todo la aritmética que hay que hacer **antes** de grabar nada.
+Nodo `mav-demo-velocidad`, 19 sep 2026. **Medida tomada y vídeo grabado** — §2.5 tiene los
+números y dice dónde están los ficheros. El resto es el diseño, y sobre todo la aritmética
+que hay que hacer **antes** de grabar nada, que es lo que impide montar un vídeo y
+decepcionarse.
 
 La demo es un A/B: **el mismo recorrido en la misma app, dos veces, lado a lado.** El lado
 "antes" es como se hacía —el agente se vuelca el árbol de accesibilidad y elige él—; el lado
@@ -160,6 +162,59 @@ que pierda.
 
 ---
 
+## 2.5. La medida, tomada el 19 sep 2026
+
+Tomada de verdad, no estimada. Slot `iPhone-17-Pro@26.3/slot-2` de simpool, Undolly 4.0.1
+(148) en build de simulador, onboarding ya hecho, app terminada y relanzada antes de cada
+lado. Tres toques por lado: **Configuración → Reiniciar análisis → Atrás.**
+
+| | antes (`ui tree`) | después (`ui find`) |
+|---|---|---|
+| reloj, 3 pasos | **13,8 s** | **15,5 s** |
+| líneas de árbol que lee el agente | **243** | **0** |
+| bytes que entran en su contexto | **31.034** | **2.929** |
+
+**El reloj lo pierde el lado nuevo, por 1,7 s.** Está escrito arriba que podía pasar, y pasa.
+Y hay que decir algo más que lo empeora en nuestra contra: **en el lado "antes" la decisión
+del agente es gratis e instantánea**, porque el guion ya sabe qué elemento tocar. Un agente
+de verdad paga ahí su propia llamada —3,05 s de mediana, medido— tres veces. Sumándolas el
+"antes" se iría a ~23 s, pero **eso es una estimación y se marca como tal**; lo medido es
+13,8 contra 15,5.
+
+Lo que no es estimación y es de dónde sale la historia: **31.034 bytes contra 2.929, diez
+veces menos**, y 243 líneas de árbol que el agente ya no tiene que leer ni entender.
+
+### El desglose de `find`, que es nuevo y es el que explica el reloj
+
+Los tres `find` del recorrido, leídos de su bloque `cost`:
+
+| paso | total | árbol | jev | mav |
+|---|---|---|---|---|
+| abrir ajustes | 1.007 ms | 537 ms | 443 ms | 27 ms |
+| reanalizar | 737 ms | 323 ms | 387 ms | 27 ms |
+| volver | 732 ms | 404 ms | 302 ms | 26 ms |
+
+jev decide en **302–443 ms**, que confirma los 378 ms que se venían citando. **Leer la
+pantalla cuesta lo mismo que decidir**, y el trabajo propio de `mav` son 26–29 ms. Ahí está
+por qué el reloj no se mueve: el viaje a jev no sustituye a leer el árbol, se suma a él.
+
+### Tres cosas que salieron mal y hay que decir
+
+- **`mav ui tap --id home_settings_button` falla**: ese id está en dos elementos a la vez —el
+  grupo y el botón— y `tap` se niega por ambigüedad. El recorrido se hace con `--text` sobre
+  la etiqueta que devuelve `find`.
+- **`mav ui tap --x --y` por idb no hace nada**: devuelve `ok` y la pantalla no cambia, igual
+  que `swipe`. Es el mismo fallo con otra cara.
+- **El vídeo de `simctl io recordVideo` no dura lo que dura la ejecución**: 8,8 s de vídeo
+  para 19 s de reloj en el lado "antes". Así que **estos vídeos no valen para comparar
+  tiempos**, sólo para enseñar que el recorrido funciona. El tiempo está en la tabla.
+
+Y una abstención honesta, en el primer intento: con el objetivo *"que el análisis encuentre
+más duplicados aunque sea menos preciso"*, `find` respondió `resolved_by=none`,
+`verdict=unsure`, delante de un selector de tres opciones (Más resultados / Equilibrado /
+Estricto). Es la guarda funcionando: prefiere no contestar a tocar la opción equivocada. El
+recorrido se rehízo con un objetivo que sí tiene un único elemento correcto.
+
 ## 3. Lo que ya se instrumentó, y lo que sigue sin existir
 
 **Hecho:** `mav ui find` emite un bloque `cost` con `total_ms`, `tree_ms` (leer la pantalla,
@@ -190,3 +245,15 @@ mucho más vistosa. **No para ésta**, por dos razones que no dependen de opini�
 
 `goto` va después, con las dos reglas que su diseño deja cerradas: el criterio de llegada tiene
 que estar **ausente** de la pantalla de partida, y **no hay juez** que decida si ha llegado.
+
+---
+
+## 5. Dónde están los ficheros
+
+`~/Movies/mav-demo-velocidad/`:
+
+- `side-by-side.mp4` — los dos lados a la vez, etiquetados. **No sirve para comparar
+  tiempos** (ver §2.5), sirve para ver el recorrido.
+- `before.mov`, `after.mov` — cada lado por separado, tal como salió del simulador.
+- `before.txt`, `after.txt` — los dos transcritos reales, que son de donde salen los 31.034
+  bytes contra 2.929.
