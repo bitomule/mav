@@ -93,6 +93,25 @@ lo que se quería evitar—, o no se lo cree, y entonces es ruido.
 **Lo que hace falta no es un segundo juez: es quitarle al navegador la capacidad de declarar
 "hecho".** La autocalificación se elimina estructuralmente, no por prompt.
 
+> **Nota para quien lea esto dentro de seis meses: el juez ciego se va a volver a proponer.**
+> Es la idea que sale sola cuando piensas el problema —"pues que lo confirme otra llamada sin
+> contexto"— y por eso queda escrito aquí como **rechazo razonado** y no sólo como un diseño
+> que resultó ser otro. Los dos argumentos que lo matan son independientes, y hay que
+> refutarlos **los dos** para reabrirlo:
+>
+> 1. **La lista de opciones filtra el objetivo por construcción.** No es un problema de cómo
+>    escribas el prompt: el juez tiene que elegir entre algo, y ese algo procede del objetivo
+>    (distractores de paja) o del árbol que está mirando (pregunta trivial). No hay tercera
+>    fuente.
+> 2. **Juez y navegador son el mismo modelo leyendo el mismo árbol.** La ceguera es de prompt,
+>    no de evidencia. Un árbol que engaña —título genérico, pantalla de carga a medio poblar—
+>    los engaña igual a los dos, así que sus errores están correlacionados y no son una segunda
+>    opinión.
+>
+> Y aunque se salvaran los dos, sigue sin haber una acción distinta detrás:
+> `arrived=unverified` con `juez=coincide` o se cree —y entonces es `arrived=true` con un
+> modelo calificándose— o no se cree, y entonces no cambia nada de lo que haría quien llama.
+
 ### La ruta, que es lo más parecido a una URL que tiene iOS
 
 El navegador **nunca termina**. Sólo devuelve un elemento o se abstiene. Quien termina es
