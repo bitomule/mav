@@ -178,6 +178,16 @@ entirely.
      `reason` says whether the screen was judged (`abstained`) or could not be
      (`no_key`, `no_network`, `ci_refused`).
 
+   `find` needs a jev API key, and says on every run which of three places it
+   read one from (`key_source=env|keychain|file`). Set one with
+   **`mav jev set-key < key.txt`** — it reads the key from stdin, never from an
+   argument, so the secret does not land in shell history. `mav jev doctor`
+   says whether there is a key and where it came from, without printing it.
+   With no key, `find` does not go quiet: it answers `resolved_by=none`
+   `reason=no_key` and names the three places it looked. The order is
+   `MAV_JEV_API_KEY`, then the system keychain (service `mav-jev`), then
+   `~/.config/bitomule/mav/config.json`.
+
    Use `mav ui tree` to understand a screen you do not yet have a target on, or
    whenever `find` returns `none`. It prints compact screen metadata followed by
    bounded `node ...` lines with ids, labels, roles, values, enabled state,

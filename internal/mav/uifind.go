@@ -36,6 +36,11 @@ type FindResult struct {
 	// it in its own output.
 	Omitted int    `json:"omitted,omitempty"`
 	Next    string `json:"next,omitempty"`
+	// KeySource names which of the three places the key was read from, on
+	// every run that consulted a model. Printed rather than remembered: the
+	// alternative is depending on recalling what you configured, and that is
+	// what bit us. Never the key itself.
+	KeySource string `json:"key_source,omitempty"`
 }
 
 // How a find resolved.

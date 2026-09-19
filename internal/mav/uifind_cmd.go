@@ -64,6 +64,11 @@ func (c CLI) uiFind(ctx context.Context, opts GlobalOptions, cfg Config, args []
 	if result.Omitted > 0 {
 		fields["omitted"] = strconv.Itoa(result.Omitted)
 	}
+	// On the ok line too, not only in the JSON: this is the line a person
+	// reads, and "which key did that use" is the question that cost us time.
+	if result.KeySource != "" {
+		fields["key_source"] = result.KeySource
+	}
 	if err := c.OK("ui.find", fields).Write(c.Stdout); err != nil {
 		return err
 	}
@@ -115,7 +120,7 @@ func (c CLI) resolveFind(ctx context.Context, elements []Element, goal string) F
 		result.Next = MissingJevKeyNext()
 		return result
 	}
-	_ = source
+	result.KeySource = string(source)
 
 	answer, err := askJevChoice(ctx, key,
 		FindQuestion(goal), RenderFindCandidates(batch), FindOptions(batch))

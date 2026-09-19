@@ -69,39 +69,86 @@ siempre emitiendo dónde se quedó y qué veía, aunque se haya rendido.
 
 ---
 
-## 2. Cómo sabe que ha llegado — la trampa, y cómo se sale de ella
+## 2. Cómo sabe que ha llegado
 
 Si se lo preguntas al mismo modelo que eligió el camino, se está calificando a sí mismo. Y
-`browser-use` no tiene respuesta a esto (§0). Así que:
+`browser-use` no tiene respuesta a esto (§0). La primera versión de esta sección proponía un
+"juez ciego" —una segunda llamada a jev que recibía sólo el árbol final y "¿qué pantalla es
+ésta?", sin el objetivo— y **se ha descartado tras revisarla**. Dos razones, y la segunda es
+la que la mata:
 
-**La llegada la decide código, sobre una pregunta que no es la que se usó para navegar.**
+- **La lista de candidatos filtra el objetivo.** El juez tiene que elegir entre nombres de
+  pantalla, y esos nombres salen de algún sitio. Si se generan a partir del objetivo, los
+  distractores son de paja y el juez acierta siempre sin medir nada. Si se sacan del árbol
+  final, está leyendo el título de la barra de navegación, que `strings.Contains` resuelve
+  gratis.
+- **La ceguera es de prompt, no de evidencia.** El juez y el navegador son el mismo modelo
+  leyendo el mismo árbol. Si el árbol engaña —título genérico, pantalla de carga— los engaña
+  igual a los dos. Son errores correlacionados, no una segunda opinión.
 
-Tres piezas, en orden, y la clave es que **la tercera nunca ve el objetivo del viaje**:
+Y lo decisivo: `arrived=unverified` con `juez=coincide` sólo tiene dos lecturas, y ninguna
+sirve. O quien llama se lo cree, y entonces es `arrived=true` con un modelo calificando —justo
+lo que se quería evitar—, o no se lo cree, y entonces es ruido.
 
-1. **Huella de pantalla estable** (§3). Si la huella no ha cambiado, no se ha llegado a ningún
-   sitio y no hay nada que juzgar. Es código puro, sin modelo.
-2. **Criterio de llegada declarado por quien llama, no por el modelo.** `goto` acepta
-   `--arrived-when "<texto o id que tiene que estar en la pantalla>"`. Cuando se da, la llegada
-   es una comprobación determinista sobre el árbol: ese id o ese texto está, o no está. **Sin
-   modelo, sin ambigüedad, y es el modo recomendado.** Es el equivalente honesto del `assert`
-   que `browser-use` no tiene.
-3. **Y sólo si no se declaró criterio: un juez ciego.** Una segunda llamada a jev que recibe
-   **únicamente** el árbol de la pantalla final y la pregunta *"¿qué pantalla es ésta?"*, en
-   forma de elección entre nombres de pantalla. **No recibe el objetivo, no recibe el camino
-   recorrido, no recibe las decisiones anteriores.** Después, **código** compara su respuesta
-   con el objetivo pedido. El modelo no puede confirmar su propio trabajo porque no sabe cuál
-   era su trabajo.
+**Lo que hace falta no es un segundo juez: es quitarle al navegador la capacidad de declarar
+"hecho".** La autocalificación se elimina estructuralmente, no por prompt.
 
-Eso es lo que evita la autocalificación: no es un segundo modelo revisando al primero —eso es
-lo que hace el juez de `browser-use` y por eso no vale—, es **el mismo modelo respondiendo a
-una pregunta distinta, sin el contexto que sesgaría la respuesta**, y código haciendo la
-comparación.
+### La ruta, que es lo más parecido a una URL que tiene iOS
 
-**Y lo que se emite cuando no hay criterio declarado es `arrived=unverified`, nunca
-`arrived=true`.** Un `goto` sin `--arrived-when` no puede afirmar la llegada, sólo reportarla.
-Es la misma regla que `find`: nunca verde en silencio.
+El navegador **nunca termina**. Sólo devuelve un elemento o se abstiene. Quien termina es
+código, y compara **rutas**, no etiquetas sueltas:
 
----
+```
+ruta = ( pestaña con el trait "selected",
+         último título de navigation bar,
+         título de alert o sheet si hay una encima )
+```
+
+Se calcula por roles y traits del árbol, nunca buscando texto libre en cualquier nodo. Ésa es
+la diferencia que arregla el fallo de abajo.
+
+### Las tres comprobaciones, y la primera existe por un fallo encontrado en revisión
+
+1. **Negación de origen, y esto era un agujero real.** La versión anterior comprobaba si el
+   texto de `--arrived-when` estaba *en el árbol*. Con objetivo `Notificaciones` y la lista de
+   Ajustes delante, **esa palabra ya está en la pantalla de partida**: el bucle declaraba
+   llegada en el paso 0 sin tocar nada. Lo mismo con una barra de pestañas, cuyas etiquetas
+   están en todos los árboles, y con un botón Atrás que lleva el nombre de la pantalla
+   anterior.
+
+   Así que: **el criterio tiene que estar AUSENTE de la ruta inicial.** Si ya está presente al
+   empezar, `goto` **rechaza el comando** —`outcome=ambiguous_criterion`, "ese criterio ya se
+   cumple en la pantalla de origen"— en vez de declarar una llegada que no ocurrió.
+
+2. **Negación de modal.** No hay llegada si hay un `alert` o un `sheet` encima, salvo que el
+   criterio sea precisamente ese modal. Es también lo que detecta al bucle parándose sobre un
+   paywall, y lo hace código leyendo un rol, no un modelo.
+
+3. **Quiescencia.** Dos lecturas separadas unos cientos de milisegundos con la misma huella.
+   Durante un push el árbol contiene nodos de las dos vistas a la vez —el título nuevo ya
+   está y la huella ya cambió—, y una pantalla de esqueleto cambia al poblarse. Sin esto la
+   llegada es real y la pantalla no está lista.
+
+### Lo que sigue sin cubrirse, y se dice en la salida
+
+**Pantallas parametrizadas.** Objetivo "Detalle del pedido 123", el bucle toca la primera fila
+y abre el pedido 456: la huella cambia, el título coincide, todo pasa. Pantalla correcta,
+instancia incorrecta. Por eso `--arrived-when` acepta varios términos y los exige todos:
+
+```
+--arrived-when 'title:"Detalle del pedido" text:"123"'
+```
+
+Sin varios términos ese caso queda abierto, y la salida tiene que decirlo en vez de dejar que
+se descubra.
+
+### Y lo que emite
+
+**Evidencia, no veredicto.** `mav` es un verificador: devuelve lo que vio y quien llama juzga,
+porque quien llama es casi siempre otro agente con más contexto que un jev sin él. Salen la
+ruta inicial, la ruta final, la huella, la lista de toques y si hubo abstención. `arrived` es
+`true` sólo cuando un criterio declarado se cumplió contra la ruta; sin criterio declarado es
+`unverified` y nunca `true`.
 
 ## 3. Cómo detecta que da vueltas
 
@@ -211,8 +258,10 @@ Sale, como `find`, una línea `ok` y un documento JSON:
 ```json
 {
   "arrived": "true | false | unverified",
-  "outcome": "arrived | exhausted | timeout | stuck | looping | no_route | refused | out_of_app",
+  "outcome": "arrived | exhausted | timeout | stuck | looping | no_route | refused | out_of_app | ambiguous_criterion",
   "steps": [ {"tapped": {...}, "fingerprint_before": "...", "fingerprint_after": "...", "changed": true} ],
+  "route_before": {"tab": "...", "nav_title": "...", "modal": null},
+  "route_after":  {"tab": "...", "nav_title": "...", "modal": null},
   "final_screen": {"fingerprint": "...", "candidates": 14},
   "refused_element": null,
   "next": "..."
@@ -234,6 +283,10 @@ Sin esto, `goto` no se da por construido:
    dos toques y está verificado hoy que los taps llegan en este slot.
 2. **Una pantalla a la que no existe camino.** Pedir una pantalla que la app no tiene. **Si el
    bucle "llega" a ésta, está roto**, y este caso se ejecuta *antes* que el primero.
+2b. **Un criterio que ya se cumple en la pantalla de partida.** `--arrived-when "Notificaciones"`
+   estando en la lista de Ajustes, donde esa palabra ya está. Tiene que salir
+   `outcome=ambiguous_criterion` sin dar un solo paso. Es el fallo que encontró la revisión y
+   el que declaraba llegada en el paso 0.
 3. **Una pantalla detrás de un botón destructivo.** Tiene que parar con `outcome=refused` y
    nombrar el elemento. Y el control de ese control: comprobar primero que el botón destructivo
    está de verdad en el árbol, porque hoy una prueba de la guarda pasó por las tres ramas
