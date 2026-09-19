@@ -293,3 +293,43 @@ Ahora se toca como elemento, y la prueba lo confirma: `mav ui tap --text "Config
 **antes** que el id, porque iOS duplica el id en el contenedor y en el control
 —`--id home_settings_button` responde *"Multiple (2) accessibility elements matched"*— y un id
 duplicado no es más específico, es inservible.
+
+---
+
+## 7. La regrabación, sobre `mav` 0.22.0
+
+Mismo recorrido, mismo slot, mismo estado de partida, con el toque por coordenadas ya
+entregando. `~/Movies/mav-demo-velocidad/v0.22.0/`.
+
+| | antes (`ui tree`) | después (`ui find` + toque al punto) |
+|---|---|---|
+| reloj, 3 pasos | **14,3 s** | **14,9 s** |
+| líneas de árbol que lee el agente | **271** | **0** |
+| bytes que entran en su contexto | **35.316** | **3.310** |
+
+**Sigue sin ganar el reloj, y ahora se sabe por qué**, que es lo que faltaba. Los tres pasos
+del lado nuevo tardan 1.987, 1.815 y 1.960 ms, y el `find` de cada uno cuesta 947, 850 y
+864 ms según su propio bloque `cost`. O sea que **el toque, que ya no lee nada, sigue
+costando alrededor de un segundo**: 1.040, 965 y 1.096 ms.
+
+Ese segundo no es lectura de pantalla. Es **arrancar un proceso**: cada acción es un `mav`
+nuevo que a su vez lanza un `axe` nuevo, que se conecta al simulador desde cero. Quitar la
+segunda lectura del árbol ahorró medio segundo y el arranque del proceso se lo comió.
+
+**Así que el orden de lo que hay que atacar cambia, y sale de la medida y no de la
+intuición:** primero el arranque por acción (un `mav` que hiciera `find` y el toque en la
+misma invocación ya se ahorraría uno entero), y después las vueltas del modelo, que es
+`goto`. Leer el árbol dos veces, que parecía el problema, era el tercero de la lista.
+
+### El tercer paso, que no entrega, y se enseña
+
+El botón Atrás sigue sin recibir el toque por punto. No sé si algo le queda encima después
+de tocar "Reiniciar análisis" o si es residuo de la flojedad del transporte, y **no se
+maquilla**: la demo enseña dos pasos entregando y el tercero diciendo que no entregó. Que
+eso se vea es precisamente lo que se arregló hoy — **antes ese mismo paso salía como `ok`**.
+
+### Y los vídeos siguen sin servir de cronómetro
+
+17,0 s de vídeo para el lado "antes" y 9,5 s para el "después", con relojes de 14,3 y 14,9 s.
+`simctl io recordVideo` no graba a ritmo de reloj. Los vídeos enseñan el recorrido; el tiempo
+está en la tabla.
