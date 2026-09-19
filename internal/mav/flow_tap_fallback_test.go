@@ -48,7 +48,7 @@ func TestRunFlowTapRecordsTreeFallbackContext(t *testing.T) {
 	if !strings.Contains(out.String(), "ok cmd=run") {
 		t.Fatalf("flow did not pass: %q", out.String())
 	}
-	if !strings.Contains(strings.Join(runner.commands, "\n"), "idb ui tap 140 220") {
+	if !strings.Contains(strings.Join(runner.commands, "\n"), "-x 140 -y 220") {
 		t.Fatalf("no coordinate tap dispatched: %q", runner.commands)
 	}
 	run, err := LoadRun(root, "")

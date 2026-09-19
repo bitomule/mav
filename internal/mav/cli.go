@@ -2833,7 +2833,16 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		// driver= would change. The prefer is iOS-only: idb provides nothing
 		// on a mac, and hard-preferring it there made the router reject the
 		// healthy mac driver and every coordinate tap die tool_missing.
-		coordPrefer := "idb"
+		// axe, not idb, and this is the fix rather than a preference.
+		//
+		// idb's tap goes out through FBSimulator's tapAt, which drops the
+		// touch and exits 0 regardless: measured 4 of 6 at one point against
+		// 6 of 6 for the same point through AXe's physical touch down/up, on
+		// one slot, from a clean launch each time. The semantic path was
+		// pinned to physical this morning for exactly that reason; the
+		// coordinate path kept the flaky transport only because this line
+		// sent it to idb before the router could pick.
+		coordPrefer := "axe"
 		if targetKind(cfg) == drivers.KindMac {
 			coordPrefer = ""
 		}

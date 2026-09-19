@@ -402,7 +402,7 @@ func TestDoctorReportsCapabilityFallbacks(t *testing.T) {
 	}
 }
 
-func TestCoordinateTapUsesResolvedIDBCapability(t *testing.T) {
+func TestCoordinateTapGoesThroughAxesPhysicalTouch(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
 	cfg.SimulatorUDID = "SIM"
@@ -411,7 +411,7 @@ func TestCoordinateTapUsesResolvedIDBCapability(t *testing.T) {
 	if err := SaveConfig(root, cfg); err != nil {
 		t.Fatal(err)
 	}
-	runner := &sequenceRecordingRunner{tools: map[string]bool{"idb": true}}
+	runner := &sequenceRecordingRunner{tools: map[string]bool{"idb": true, "axe": true}}
 	var out bytes.Buffer
 	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
 	if err := cli.Run(context.Background(), []string{"ui", "tap", "--x", "10", "--y", "20"}); err != nil {
@@ -420,7 +420,7 @@ func TestCoordinateTapUsesResolvedIDBCapability(t *testing.T) {
 	if !strings.Contains(out.String(), "ok cmd=ui.tap") {
 		t.Fatalf("got %q", out.String())
 	}
-	if !strings.Contains(strings.Join(runner.commands, "\n"), "idb ui tap 10 20 --udid SIM") {
+	if !strings.Contains(strings.Join(runner.commands, "\n"), "axe tap --tap-style physical --udid SIM -x 10 -y 20") {
 		t.Fatalf("commands=%v", runner.commands)
 	}
 }
@@ -1932,16 +1932,17 @@ func TestSingleProviderCapabilitiesStayHardcodedAfterPreferDriverRemoval(t *test
 		}
 	})
 
-	t.Run("coord tap still reaches idb", func(t *testing.T) {
-		// Regression guard for the CapCoordTap prefer kept in cli.go: without
-		// it, axe/baguette/idb tie at cost 50 and the ID tie-break would pick
-		// axe instead.
+	t.Run("coord tap reaches axe", func(t *testing.T) {
+		// Regression guard for the CapCoordTap prefer in cli.go. It used to
+		// pin idb; it pins axe now, because idb's tap goes out through
+		// FBSimulator tapAt, measured delivering 4 of 6 against 6 of 6 for
+		// axe's physical touch at the same point.
 		var out bytes.Buffer
 		cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
 		if err := cli.Run(context.Background(), []string{"ui", "tap", "--x", "10", "--y", "10"}); err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(out.String(), "driver=idb") {
+		if !strings.Contains(out.String(), "driver=axe") {
 			t.Fatalf("got %q", out.String())
 		}
 	})

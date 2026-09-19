@@ -44,7 +44,7 @@ func TestUITapFallsBackToTreeWhenSelectorResolutionFails(t *testing.T) {
 			t.Fatalf("missing %q in %q", want, got)
 		}
 	}
-	if !strings.Contains(strings.Join(runner.commands, "\n"), "idb ui tap 140 220") {
+	if !strings.Contains(strings.Join(runner.commands, "\n"), "-x 140 -y 220") {
 		t.Fatalf("no coordinate tap dispatched: %q", runner.commands)
 	}
 }

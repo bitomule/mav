@@ -107,8 +107,8 @@ func TestUITapKeepsSelectorContextWhenCoordinateTapAlsoFails(t *testing.T) {
 				Stderr: "Error: DecodingError.typeMismatch",
 				Err:    os.ErrInvalid,
 			},
-			"idb ui tap 140 220": {
-				Stderr: "idb: no booted simulator",
+			"axe tap --tap-style physical -x 140 -y 220": {
+				Stderr: "axe: no booted simulator",
 				Err:    os.ErrInvalid,
 			},
 		},
