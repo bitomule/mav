@@ -163,12 +163,28 @@ entirely.
    `/tmp/mav/sim-locks/<udid>.json` for simulator runs; if another worktree owns
    a fresh lock, pick a different simulator unless you are sure you own that run
    and pass `--force`.
-5. Prefer `mav ui tree` to understand the current screen. It prints compact
-   screen metadata followed by bounded `node ...` lines with ids, labels, roles,
-   values, enabled state, subroles, titles, pids, focus state, and frames when
-   available.
+5. **When you know what you want to tap, ask for it: `mav ui find "<your own
+   words>"`.** It answers with one element or with nothing, and nothing is a
+   real answer — it means read the tree yourself. Two reasons to reach for it
+   before the tree:
+   - `mav ui tree` prints **at most 80 nodes**. Real screens run past that (an
+     iOS Settings screen measured at 213), and everything past 80 is announced
+     by a single `node_more` line and otherwise not shown. `find` reads the
+     whole extraction, so it can resolve elements the tree does not print.
+   - It replaces `mav ui tree | grep`, **not your judgement**. It never returns
+     an element it is unsure of, and never returns one that destroys something
+     unless your own words asked for that. Read `resolved_by` first: `literal`
+     and `model` carry an element; `none` means fall back to the tree, and
+     `reason` says whether the screen was judged (`abstained`) or could not be
+     (`no_key`, `no_network`, `ci_refused`).
+
+   Use `mav ui tree` to understand a screen you do not yet have a target on, or
+   whenever `find` returns `none`. It prints compact screen metadata followed by
+   bounded `node ...` lines with ids, labels, roles, values, enabled state,
+   subroles, titles, pids, focus state, and frames when available.
    Treat this as the primary structured UI source for agents; do not ask for
-   `--json`. If the simulator accessibility service returns an empty
+   `--json`. Add `--agent` for a ranked 40-element view that puts focused and
+   actionable elements first and drops frames. If the simulator accessibility service returns an empty
    `AXApplication` tree, MAV attempts recovery internally; do not work around it
    with screenshots unless `mav ui tree` fails after recovery. Use
    `mav ui tree --include-system` when inspecting system UI, PHPicker,

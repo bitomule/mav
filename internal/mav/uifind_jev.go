@@ -1,0 +1,98 @@
+package mav
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"os/exec"
+	"strings"
+)
+
+// The bridge to jev. mav is Go and jevi is a Rust binary, so this shells out
+// rather than linking, and it hands jevi the key for that one child process
+// only — nothing is written anywhere and no other process inherits it.
+//
+// --soft is passed on purpose: jevi's own exit codes carry answers (1 for a no,
+// 3 for an unsure), and `find` must not inherit that. Here the exit code says
+// only whether jevi ran; the answer is read out of the JSON.
+
+// jevAnswer is the shape jevi --json returns for a choice question.
+type jevAnswer struct {
+	OK      bool `json:"ok"`
+	Answers map[string]struct {
+		Verdict string `json:"verdict"`
+		Label   string `json:"label"`
+		Type    string `json:"type"`
+	} `json:"answers"`
+	Error string `json:"error"`
+}
+
+// jevChoice is what the caller needs out of a jev round: a verdict, a label,
+// and — separately — whether asking worked at all.
+type jevChoice struct {
+	Verdict string
+	Label   string
+}
+
+// errJevUnavailable means the question was never put. Distinct from an answer
+// of "none", because "I could not ask" and "I looked and I am not sure" are
+// different facts for whoever called.
+var errJevUnavailable = errors.New("jev unavailable")
+
+// askJevChoice puts one choice question to jev over the given text.
+func askJevChoice(ctx context.Context, key, question, text string, options []string) (jevChoice, error) {
+	cmd := exec.CommandContext(ctx, "jevi", "ask",
+		"--options", strings.Join(options, ","),
+		"--json", "--soft", question)
+	cmd.Stdin = strings.NewReader(text)
+	// Inherit the environment, then override the provider key for this child
+	// alone. mav's key is mav's; jevi's own stored key is never relied on.
+	cmd.Env = append(os.Environ(), jevProviderEnvVar+"="+key)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	// The exit code is deliberately not read. jevi answers with it — 1 for a
+	// no, 3 for an unsure — and --soft only softens the codes for "could not
+	// ask" (4, 5), not those two. Treating a non-zero exit as a failure to
+	// reach the model reported every abstention as `no_network`, which is the
+	// one distinction this command is supposed to keep straight. The answer is
+	// in the JSON; whether jevi ran at all is whether the JSON parses.
+	_ = cmd.Run()
+
+	var doc jevAnswer
+	if err := json.Unmarshal(bytes.TrimSpace(stdout.Bytes()), &doc); err != nil {
+		return jevChoice{}, errJevUnavailable
+	}
+	if !doc.OK {
+		return jevChoice{}, errJevUnavailable
+	}
+	answer, ok := doc.Answers["answer"]
+	if !ok {
+		for _, a := range doc.Answers {
+			answer = a
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		return jevChoice{}, errJevUnavailable
+	}
+	return jevChoice{Verdict: answer.Verdict, Label: answer.Label}, nil
+}
+
+// findIsRefusedHere reports the reason find must not consult a model in this
+// environment, or "". CI is the one that matters: a judgement that costs money
+// and varies between runs has no place in a pipeline, and refusing out loud is
+// the difference between that being a guarantee and being a convention.
+func findIsRefusedHere() string {
+	if os.Getenv("CI") != "" {
+		return ReasonCIRefused
+	}
+	if os.Getenv("MAV_FIND_DISABLE") != "" {
+		return ReasonCIRefused
+	}
+	return ""
+}
