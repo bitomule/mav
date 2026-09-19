@@ -27,7 +27,6 @@ type EvidenceStep struct {
 	// persisted an accessibility tree under <runDir>/trees/. Absent on
 	// older evidence steps; readers MUST tolerate empty values.
 	TreePath  string `json:"tree_path,omitempty"`
-	FullPath  string `json:"tree_full_path,omitempty"`
 	DeltaPath string `json:"tree_delta_path,omitempty"`
 	TreeHash  string `json:"tree_hash,omitempty"`
 

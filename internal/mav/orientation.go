@@ -170,7 +170,7 @@ func (c CLI) portraitScreenSize(ctx context.Context, cfg Config, angle int) (scr
 	if err != nil || described.Result.Err != nil {
 		return screenCache{}, false
 	}
-	elements := ExtractElementsRaw(described.Result.Stdout)
+	elements := ExtractElements(described.Result.Stdout)
 	if len(elements) == 0 {
 		return screenCache{}, false
 	}

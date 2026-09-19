@@ -89,7 +89,9 @@ func TestTreeDiffStableOrdering(t *testing.T) {
 
 func TestPersistTreeWritesCompactAndFull(t *testing.T) {
 	dir := t.TempDir()
-	// 90 elements -> compact caps at 80.
+	// 90 elements, and all 90 are written. There used to be two files here
+	// whose only difference was an 80-element cap; the cap is gone and so is
+	// the second file.
 	raw := make([]Element, 0, 90)
 	for i := 0; i < 90; i++ {
 		raw = append(raw, Element{ID: id(i), Label: "L"})
@@ -98,11 +100,8 @@ func TestPersistTreeWritesCompactAndFull(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(got.CompactPath, "step-01_open-app.json") {
-		t.Fatalf("unexpected compact path: %s", got.CompactPath)
-	}
-	if !strings.Contains(got.FullPath, "step-01_open-app.full.json") {
-		t.Fatalf("unexpected full path: %s", got.FullPath)
+	if !strings.Contains(got.TreePath, "step-01_open-app.json") {
+		t.Fatalf("unexpected tree path: %s", got.TreePath)
 	}
 	if got.DeltaPath != "" {
 		t.Fatalf("expected no delta when previous nil, got %s", got.DeltaPath)
@@ -111,9 +110,8 @@ func TestPersistTreeWritesCompactAndFull(t *testing.T) {
 		t.Fatal("expected non-empty hash")
 	}
 
-	// Compact must have 80 entries; full must have 90.
-	verifyLen(t, got.CompactPath, 80)
-	verifyLen(t, got.FullPath, 90)
+	// Every element that was on the screen is in the file.
+	verifyLen(t, got.TreePath, 90)
 }
 
 func TestPersistTreeWritesDeltaWhenPreviousProvided(t *testing.T) {
@@ -139,8 +137,8 @@ func TestPersistTreeWritesDeltaWhenPreviousProvided(t *testing.T) {
 		t.Fatalf("expected b added, got %+v", delta.Added)
 	}
 	// Filename slug must transform "step two" -> "step-two".
-	if !strings.Contains(got.CompactPath, "step-02_step-two.json") {
-		t.Fatalf("unexpected slug: %s", got.CompactPath)
+	if !strings.Contains(got.TreePath, "step-02_step-two.json") {
+		t.Fatalf("unexpected slug: %s", got.TreePath)
 	}
 }
 
@@ -151,7 +149,7 @@ func TestLoadPersistedTreeRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	loaded, err := LoadPersistedTree(got.CompactPath)
+	loaded, err := LoadPersistedTree(got.TreePath)
 	if err != nil {
 		t.Fatal(err)
 	}

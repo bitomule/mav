@@ -6,12 +6,15 @@ import (
 	"testing"
 )
 
-// The hole `mav ui find` was built to fill, locked so it cannot silently
-// reopen. `mav ui tree` prints at most 80 nodes. The line that announces the
-// cut was unreachable, because the list was capped by Compact before it reached
-// the printer that warns above 80 — so `i >= maxNodes` could never be true. On
-// a real iOS Settings screen measured at 213 nodes, 133 of them went missing
-// with nothing in the output saying so.
+// `mav ui tree` used to print at most 80 nodes. The line that announced the
+// cut was unreachable, so the first fix made it fire; this file is what
+// replaced that fix when the cap itself was removed. A warning is what you
+// need when something is missing, and the answer to "elements are missing" is
+// to stop dropping them, not to describe the drop.
+//
+// These assertions are deliberately of the shape "printed == extracted". A cap
+// creeping back in fails the build, where a warning would only print a line
+// into a log nobody reads — which is exactly how the original hole survived.
 
 func manyElements(n int) []Element {
 	out := make([]Element, 0, n)
@@ -21,57 +24,80 @@ func manyElements(n int) []Element {
 	return out
 }
 
-func TestALongListSaysHowMuchOfItselfIsMissing(t *testing.T) {
-	var buf bytes.Buffer
-	if err := writeElementLines(&buf, manyElements(213)); err != nil {
-		t.Fatal(err)
+func countNodeLines(s string) int {
+	n := 0
+	for _, line := range strings.Split(s, "\n") {
+		if strings.HasPrefix(line, "node ") {
+			n++
+		}
 	}
-	out := buf.String()
-	if got := strings.Count(out, "\nnode "); got+1 != 80 {
-		t.Fatalf("expected 80 node lines, got %d", got+1)
-	}
-	if !strings.Contains(out, "node_more remaining=133") {
-		t.Fatalf("a 213-element list was cut to 80 without saying so:\n%s", lastLines(out, 3))
+	return n
+}
+
+func TestEveryElementIsPrintedHoweverManyThereAre(t *testing.T) {
+	// 213 is the real measurement this was found on: an iOS Settings screen,
+	// where 80 printed and 133 disappeared without a word.
+	for _, n := range []int{1, 12, 79, 80, 81, 213, 500} {
+		var buf bytes.Buffer
+		if err := writeElementLines(&buf, manyElements(n)); err != nil {
+			t.Fatal(err)
+		}
+		if got := countNodeLines(buf.String()); got != n {
+			t.Fatalf("gave the printer %d elements and it printed %d", n, got)
+		}
 	}
 }
 
-func TestTheWarningNamesTheCommandThatCanSeeTheRest(t *testing.T) {
-	// A warning that only says "there is more" leaves the reader with no way
-	// to get at it: nothing else in mav prints past the cap.
+func TestTheLastElementOfALongScreenIsVisible(t *testing.T) {
+	// The consequence that mattered, and stated no larger than it is: an
+	// element past the old cap could not be SEEN. `mav ui tap --id` reads the
+	// driver, not this list, so such an element was always tappable by someone
+	// who already knew its id — and the only command that hands out ids is the
+	// one that was hiding them.
 	var buf bytes.Buffer
-	_ = writeElementLines(&buf, manyElements(100))
-	if !strings.Contains(buf.String(), "mav ui find") {
-		t.Fatalf("the truncation warning should point at the command that reads past the cap:\n%s", lastLines(buf.String(), 2))
+	_ = writeElementLines(&buf, manyElements(213))
+	if !strings.Contains(buf.String(), "id=id212") {
+		t.Fatal("the 213th element is not in the output; something is still capping")
 	}
 }
 
-func TestAListThatFitsSaysNothing(t *testing.T) {
+func TestNothingAnnouncesATruncationBecauseNothingTruncates(t *testing.T) {
 	var buf bytes.Buffer
-	_ = writeElementLines(&buf, manyElements(12))
+	_ = writeElementLines(&buf, manyElements(213))
 	if strings.Contains(buf.String(), "node_more") {
-		t.Fatal("a list that fits must not carry a truncation warning")
+		t.Fatal("a truncation marker survived the removal of the truncation")
 	}
 }
 
-func TestObserveKeepsBothTheCappedAndTheWholeList(t *testing.T) {
-	// The capped list is what every other reader of uiTreeState expects; the
-	// whole one exists so the printer can count what it is dropping. Losing
-	// either is how this regresses.
+func TestExtractionKeepsEveryElementItParsed(t *testing.T) {
+	// The other half: the cap used to live in extraction too, so a capless
+	// printer alone would still have shown 80.
+	var b strings.Builder
+	b.WriteString("[")
+	const n = 213
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString(`{"AXIdentifier":"id`)
+		b.WriteString(itoa(i))
+		b.WriteString(`","AXLabel":"Fila `)
+		b.WriteString(itoa(i))
+		b.WriteString(`","role":"button"}`)
+	}
+	b.WriteString("]")
+
+	got := ExtractElements(b.String())
+	if len(got) != n {
+		t.Fatalf("parsed %d elements out of %d in the tree", len(got), n)
+	}
+}
+
+func TestObserveExposesTheWholeScreen(t *testing.T) {
 	raw := `[{"AXLabel":"A","role":"button"},{"AXLabel":"B","role":"button"}]`
 	c := CLI{}
 	state := c.observeUITree(Config{}, raw, "axe", false)
-	if len(state.All) < len(state.Elements) {
-		t.Fatalf("All must be the superset: all=%d elements=%d", len(state.All), len(state.Elements))
+	if len(state.Elements) != 2 {
+		t.Fatalf("expected both elements, got %d", len(state.Elements))
 	}
-	if len(state.All) == 0 {
-		t.Fatal("All was never populated; the printer would show an empty tree")
-	}
-}
-
-func lastLines(s string, n int) string {
-	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
-	if len(lines) > n {
-		lines = lines[len(lines)-n:]
-	}
-	return strings.Join(lines, "\n")
 }

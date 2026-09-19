@@ -2289,7 +2289,7 @@ func (c CLI) uiTree(ctx context.Context, opts GlobalOptions, cfg Config, args []
 		agents := AgentTree(state.Elements, AgentTreeOptions{WithFrame: withFrame})
 		return writeAgentElementLines(c.Stdout, agents)
 	}
-	return writeElementLines(c.Stdout, state.All)
+	return writeElementLines(c.Stdout, state.Elements)
 }
 
 type uiTreeState struct {
@@ -2297,12 +2297,7 @@ type uiTreeState struct {
 	ScreenSource string
 	Driver       string
 	Elements     []Element
-	// All is the extraction before the 80-element cap. It exists so the
-	// printed list can say how much of itself is missing: `nodes=135` on the
-	// ok line beside 80 node lines is the whole hole, and reading it requires
-	// noticing that two numbers in one output disagree.
-	All   []Element
-	Nodes int
+	Nodes        int
 }
 
 // observeUITree extracts the framework-neutral view of `raw` and
@@ -2314,12 +2309,10 @@ type uiTreeState struct {
 // thread it conditionally; it's reserved for any future driver-
 // specific observation tweaks.
 func (c CLI) observeUITree(cfg Config, raw, treeDriver string, _persist bool) uiTreeState {
-	all := ExtractElementsRaw(raw)
 	state := uiTreeState{
 		Driver:   treeDriver,
 		Screen:   "unknown",
-		Elements: Compact(all),
-		All:      all,
+		Elements: ExtractElements(raw),
 		Nodes:    countTreeNodes(raw),
 	}
 	if id, _, ok := explicitScreenIdentity(state.Elements); ok {
@@ -2945,7 +2938,7 @@ func (c CLI) resolveSelector(ctx context.Context, cfg Config, selector Selector,
 	if err != nil || described.Result.Err != nil {
 		return Element{}, fmt.Errorf("tree_failed")
 	}
-	matches, err := MatchElements(ExtractElementsRaw(described.Result.Stdout), selector)
+	matches, err := MatchElements(ExtractElements(described.Result.Stdout), selector)
 	if err != nil {
 		return Element{}, err
 	}
@@ -3072,7 +3065,7 @@ func (c CLI) writeFastPathResult(ctx context.Context, cfg Config, args []string,
 			} else {
 				described, err := c.describeUITree(ctx, cfg, "auto", false)
 				if err == nil && described.Result.Err == nil {
-					elements := ExtractElementsRaw(described.Result.Stdout)
+					elements := ExtractElements(described.Result.Stdout)
 					lastElements = elements
 					if waitStable {
 						hash := hashElements(elements)
@@ -3098,7 +3091,7 @@ func (c CLI) writeFastPathResult(ctx context.Context, cfg Config, args []string,
 				if len(lastElements) > 0 {
 					if run, runErr := c.currentOrNewRun(); runErr == nil {
 						treePath := filepath.Join(run.Dir, "failure-fast-path-tree.json")
-						data, _ := json.MarshalIndent(Compact(lastElements), "", "  ")
+						data, _ := json.MarshalIndent(lastElements, "", "  ")
 						_ = os.WriteFile(treePath, data, 0o644)
 						diagnostics["tree"] = treePath
 					}
@@ -3127,7 +3120,7 @@ func (c CLI) writeFastPathResult(ctx context.Context, cfg Config, args []string,
 	if err != nil || described.Result.Err != nil {
 		return Fail("tree_failed", fields).Write(c.Stdout)
 	}
-	elements := ExtractElementsRaw(described.Result.Stdout)
+	elements := ExtractElements(described.Result.Stdout)
 	fields["observe"] = observe
 	fields["nodes"] = strconv.Itoa(len(elements))
 	if err := c.OK(command, fields).Write(c.Stdout); err != nil {
@@ -3933,7 +3926,7 @@ func (c CLI) targetScreenSize(ctx context.Context, cfg Config) (int, int) {
 	if err != nil || described.Result.Err != nil {
 		return fallbackScreenWidth, fallbackScreenHeight
 	}
-	elements := ExtractElementsRaw(described.Result.Stdout)
+	elements := ExtractElements(described.Result.Stdout)
 	width, height := 0.0, 0.0
 	for _, el := range elements {
 		x, y, w, h, ok := parseElementFrame(el.Frame)
@@ -5425,7 +5418,7 @@ func (c CLI) extractFlowValue(ctx context.Context, step FlowStep) (map[string]st
 	if err != nil || described.Result.Err != nil {
 		return nil, "", fmt.Errorf("tree_failed")
 	}
-	matches, err := MatchElements(ExtractElementsRaw(described.Result.Stdout), flowStepSelector(step))
+	matches, err := MatchElements(ExtractElements(described.Result.Stdout), flowStepSelector(step))
 	if err != nil {
 		return nil, "", err
 	}
@@ -5510,7 +5503,7 @@ func (c CLI) executeFlowAfter(ctx context.Context, run RunState, after *FlowAfte
 		if err != nil || described.Result.Err != nil {
 			return fields, fmt.Errorf("tree_failed")
 		}
-		elements := ExtractElementsRaw(described.Result.Stdout)
+		elements := ExtractElements(described.Result.Stdout)
 		fields["observe"] = after.Observe
 		fields["nodes"] = strconv.Itoa(len(elements))
 		if after.Observe == "delta" {
@@ -5596,7 +5589,7 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 		if err != nil || described.Result.Err != nil {
 			return map[string]string{"driver": prefer}, fmt.Errorf("tree_failed")
 		}
-		elements := ExtractElementsRaw(described.Result.Stdout)
+		elements := ExtractElements(described.Result.Stdout)
 		selector := flowStepSelector(step)
 		if !selector.IsZero() {
 			elements, err = MatchElements(elements, selector)
@@ -6273,15 +6266,13 @@ func commandOutputErr(err error, out, code string) error {
 	return nil
 }
 
+// writeElementLines prints every element it is given. It does not cap, and
+// there is no longer a `node_more` line, because a warning is what you need
+// when something is missing and nothing is missing any more. What guards
+// against a cap creeping back is a test asserting printed == extracted, which
+// fails the build rather than printing a line nobody reads.
 func writeElementLines(w io.Writer, elements []Element) error {
-	const maxNodes = 80
 	for i, el := range elements {
-		if i >= maxNodes {
-			_, err := fmt.Fprintf(w, "node_more remaining=%d next=%s\n",
-				len(elements)-maxNodes,
-				quoteIfNeeded(`mav ui find "<what you want to tap>" sees the elements this list does not show`))
-			return err
-		}
 		fields := map[string]string{
 			"index":   strconv.Itoa(i + 1),
 			"id":      el.ID,
@@ -6599,7 +6590,7 @@ func attachStepTree(ctx context.Context, c CLI, cfg Config, run RunState, step *
 	if err != nil || described.Result.Err != nil || described.Result.Stdout == "" {
 		return
 	}
-	raw := ExtractElementsRaw(described.Result.Stdout)
+	raw := ExtractElements(described.Result.Stdout)
 	if len(raw) == 0 {
 		return
 	}
@@ -6608,8 +6599,7 @@ func attachStepTree(ctx context.Context, c CLI, cfg Config, run RunState, step *
 	if err != nil {
 		return
 	}
-	step.TreePath = persisted.CompactPath
-	step.FullPath = persisted.FullPath
+	step.TreePath = persisted.TreePath
 	step.DeltaPath = persisted.DeltaPath
 	step.TreeHash = persisted.Hash
 }
@@ -6894,7 +6884,7 @@ func (c CLI) evaluateSingleConditionWithPrefer(ctx context.Context, condition Fl
 	if result.Err != nil {
 		return false, fmt.Errorf("tree_failed")
 	}
-	elements := ExtractElementsRaw(result.Stdout)
+	elements := ExtractElements(result.Stdout)
 	if condition.Stable {
 		first := hashElements(elements)
 		time.Sleep(200 * time.Millisecond)
@@ -6902,7 +6892,7 @@ func (c CLI) evaluateSingleConditionWithPrefer(ctx context.Context, condition Fl
 		if secondErr != nil || secondTree.Result.Err != nil {
 			return false, fmt.Errorf("tree_failed")
 		}
-		return first != "" && first == hashElements(ExtractElementsRaw(secondTree.Result.Stdout)), nil
+		return first != "" && first == hashElements(ExtractElements(secondTree.Result.Stdout)), nil
 	}
 	return flowConditionMatchesElements(elements, condition), nil
 }
@@ -6929,7 +6919,7 @@ func (c CLI) assertFlowCount(ctx context.Context, step FlowStep, prefer string) 
 	if err != nil || described.Result.Err != nil {
 		return nil, fmt.Errorf("tree_failed")
 	}
-	matches, err := MatchElements(ExtractElementsRaw(described.Result.Stdout), flowStepSelector(step))
+	matches, err := MatchElements(ExtractElements(described.Result.Stdout), flowStepSelector(step))
 	if err != nil {
 		return nil, err
 	}

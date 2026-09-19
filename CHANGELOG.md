@@ -1,5 +1,54 @@
 # Changelog
 
+## Unreleased
+
+### The 80-node cap on `mav ui tree` is gone
+
+v0.20.0 made the truncation announce itself. That was the wrong half of the fix:
+a warning is what you need when something is missing, and the answer to
+"elements are missing" is to stop dropping them. So the cap is removed, not
+described.
+
+**Measured on a real screen** rather than estimated — iOS Settings → General, the
+released v0.20.0 binary against this one:
+
+| | node lines | bytes | bytes/node |
+| --- | --- | --- | --- |
+| v0.20.0, capped | 80 | 8,868 | 110 |
+| now | 177 | 19,819 | 111 |
+
+So a dense screen roughly doubles. That is the cost, it is stated rather than
+guessed, and it is the reason the `mav ui find` advisory now fires on every tree
+instead of above a threshold: the two decisions hold each other up.
+
+**What the cap broke was visibility, not reachability, and the difference is
+worth stating exactly.** `mav ui tap --id` queries the driver, not the printed
+list, so an element past the cap was always tappable *by someone who already
+knew its id*. Nobody did — the only command that hands out ids is the one that
+was hiding them. An earlier draft of this entry claimed taps failed; a control
+run on a real screen showed the same tap failing identically in both builds, for
+ambiguity rather than for the cap, so the claim is corrected here rather than
+left standing.
+
+The compact/full split in persisted evidence goes with it: the two files
+differed only by the cap, so with the cap gone they were byte-identical. There
+is one tree file per step now, and `tree_full_path` is gone from the evidence
+record.
+
+There is no `node_more` line any more either. What guards against a cap creeping
+back is a test asserting *printed == extracted*, which fails the build rather
+than printing a line nobody reads — which is precisely how the original hole
+survived.
+
+### The `mav ui find` advisory fires on every tree
+
+The size gate is gone. It stayed quiet under 40 nodes on the reasoning that
+reading a dozen elements is cheaper than asking anything — true about one call,
+and wrong about an advisory: one that appears on some screens and not others is
+one nobody learns, and the agent cannot tell which kind of screen it is going to
+get before it asks. The availability gate stays: with no key there is nothing to
+recommend.
+
 ## v0.20.0
 
 ### `mav ui find`, and a tree that stops hiding half a screen
