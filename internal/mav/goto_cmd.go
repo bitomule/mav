@@ -1,0 +1,360 @@
+package mav
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// gotoDefaultTimeout bounds the whole run, alongside the step budget. Both,
+// because a loop can burn its steps in two seconds or spend ninety on one.
+const gotoDefaultTimeout = 90 * time.Second
+
+func (c CLI) gotoScreen(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
+	goal := strings.TrimSpace(strings.Join(gotoPositional(args), " "))
+	if goal == "" {
+		return Fail("goto_goal_missing", map[string]string{
+			"usage": `mav goto "the camera settings screen" [--arrived-when 'title:"Cámara"']`,
+		}).Write(c.Stdout)
+	}
+
+	// Same refusal as find, and for the same reason one step louder: a loop
+	// that spends money and presses buttons has no place in a pipeline.
+	if reason := findIsRefusedHere(); reason != "" {
+		return c.writeGotoResult(GotoResult{
+			Arrived: "unverified", Outcome: GotoCIRefused, Goal: goal,
+			Next: "goto does not drive a screen in CI",
+		}, map[string]string{})
+	}
+
+	criterion := ParseArrivalCriterion(flagValue(args, "--arrived-when"))
+	maxSteps := gotoMaxSteps
+	if raw := flagValue(args, "--max-steps"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 && n <= gotoMaxSteps {
+			maxSteps = n
+		}
+	}
+	timeout := gotoDefaultTimeout
+	if raw := flagValue(args, "--timeout"); raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil && d > 0 && d <= gotoDefaultTimeout {
+			timeout = d
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	result, err := c.runGotoLoop(ctx, cfg, opts, goal, criterion, maxSteps)
+	if err != nil {
+		return err
+	}
+	return c.writeGotoResult(result, map[string]string{
+		"steps": strconv.Itoa(len(result.Steps)),
+	})
+}
+
+func (c CLI) runGotoLoop(ctx context.Context, cfg Config, opts GlobalOptions,
+	goal string, criterion ArrivalCriterion, maxSteps int) (GotoResult, error) {
+
+	result := GotoResult{Arrived: "false", Goal: goal}
+
+	elements, err := c.gotoReadScreen(ctx, cfg, opts)
+	if err != nil {
+		return result, err
+	}
+	route := ExtractRoute(elements)
+	result.RouteInitial = route
+	result.RouteFinal = route
+
+	// The check that exists because a real bug hid here: if the criterion
+	// already holds where we are standing, the loop would declare victory at
+	// step zero without tapping anything. Refuse instead of arriving.
+	if !criterion.IsZero() && criterion.MatchesRoute(route, elements) {
+		result.Outcome = GotoAmbiguousCriterion
+		result.Arrived = "unverified"
+		result.Next = "that criterion already holds on the screen you are on; name the destination in a way that does not match where you start"
+		return result, nil
+	}
+
+	seen := NewSeenRoutes()
+	seen.Visit(screenFingerprint(elements))
+	unchanged, abstentions := 0, 0
+
+	for step := 0; step < maxSteps; step++ {
+		if ctx.Err() != nil {
+			result.Outcome = GotoTimeout
+			result.Next = "ran out of time; the route it reached is in route_final"
+			return c.finishGoto(result, criterion, elements), nil
+		}
+
+		// A modal on top is not a screen you navigate through, and tapping
+		// blindly under one is how a loop dismisses something that mattered.
+		if route.Modal != "" && !criterion.MatchesRoute(route, elements) {
+			result.Outcome = GotoRefused
+			result.Next = "a modal is on top (" + route.Modal + "); goto does not tap under one"
+			return c.finishGoto(result, criterion, elements), nil
+		}
+
+		found := c.resolveGotoStep(ctx, elements, goal)
+		if found.Element == nil {
+			abstentions++
+			if abstentions >= gotoMaxAbstentions {
+				result.Outcome = GotoNoRoute
+				result.Next = "nothing on this screen clearly leads to the goal (" + found.Reason + "); read `mav ui tree`"
+				return c.finishGoto(result, criterion, elements), nil
+			}
+			continue
+		}
+		abstentions = 0
+
+		// Stricter than find's, with no escape hatch: in goto nobody reads
+		// anything between the decision and the finger.
+		if GotoRefusesDestructive(found.Element) {
+			el := *found.Element
+			result.Refused = &el
+			result.Outcome = GotoRefused
+			result.Next = "the way forward goes through something that destroys data; that is a decision for a person"
+			return c.finishGoto(result, criterion, elements), nil
+		}
+
+		x, y, ok := TapPoint(*found.Element)
+		if !ok {
+			result.Outcome = GotoNoRoute
+			result.Next = "the chosen element has no frame to tap"
+			return c.finishGoto(result, criterion, elements), nil
+		}
+
+		before := screenFingerprint(elements)
+		record := GotoStep{
+			Tapped: found.Element, ResolvedBy: found.ResolvedBy, RouteBefore: route,
+		}
+		if err := c.gotoTap(ctx, cfg, opts, x, y); err != nil {
+			return result, err
+		}
+
+		elements, err = c.gotoReadScreen(ctx, cfg, opts)
+		if err != nil {
+			return result, err
+		}
+		route = ExtractRoute(elements)
+		record.RouteAfter = route
+		record.Changed = screenFingerprint(elements) != before
+		result.Steps = append(result.Steps, record)
+		result.RouteFinal = route
+
+		if !record.Changed {
+			unchanged++
+			if unchanged >= gotoMaxUnchanged {
+				result.Outcome = GotoStuck
+				result.Next = "two taps in a row changed nothing; the screen is not responding to them"
+				return c.finishGoto(result, criterion, elements), nil
+			}
+			continue
+		}
+		unchanged = 0
+
+		if seen.Visit(screenFingerprint(elements)) {
+			result.Outcome = GotoLooping
+			result.Next = "came back to a screen it had already been on"
+			return c.finishGoto(result, criterion, elements), nil
+		}
+
+		// The one place quiescence is worth its read: a criterion that matches
+		// a half-drawn screen would report arrival at somewhere that is not
+		// finished being itself. Confirmed on a settled screen or not at all.
+		if !criterion.IsZero() && criterion.MatchesRoute(route, elements) {
+			settled, settleErr := c.gotoSettle(ctx, cfg, opts)
+			if settleErr != nil {
+				return result, settleErr
+			}
+			elements = settled
+			route = ExtractRoute(elements)
+			result.RouteFinal = route
+			if criterion.MatchesRoute(route, elements) {
+				result.Outcome = GotoArrived
+				result.Arrived = "true"
+				return result, nil
+			}
+		}
+	}
+
+	result.Outcome = GotoExhausted
+	result.Next = "ran out of steps; the route it reached is in route_final"
+	return c.finishGoto(result, criterion, elements), nil
+}
+
+// finishGoto settles what `arrived` says on any path that is not a clean
+// arrival. With no declared criterion goto cannot assert arrival at all, so it
+// says unverified and never true: the caller has the context to judge, and this
+// loop deliberately has no second model to ask.
+func (c CLI) finishGoto(result GotoResult, criterion ArrivalCriterion, elements []Element) GotoResult {
+	if criterion.IsZero() {
+		result.Arrived = "unverified"
+		if result.Next != "" {
+			result.Next += ". No --arrived-when was given, so arrival cannot be confirmed either way"
+		}
+	}
+	return result
+}
+
+// gotoSettle waits for the screen to stop moving, and it is deliberately NOT
+// used on every step.
+//
+// Quiescence costs a second read: during a push the tree holds nodes from both
+// views at once and a skeleton screen changes as it populates, so two reads
+// that agree is the only way to know the screen has stopped. Paying that on
+// every step hands back exactly the saving this command exists for — measured,
+// one tap through goto came out 28% SLOWER than today's path, because two
+// settle reads replaced the one read a selector tap costs.
+//
+// So the loop reads once per step and settles only where a half-drawn screen
+// could actually mislead someone: immediately before declaring arrival. A
+// mid-transition read on an intermediate step costs nothing, because the next
+// step reads again anyway and corrects it.
+func (c CLI) gotoSettle(ctx context.Context, cfg Config, opts GlobalOptions) ([]Element, error) {
+	var last []Element
+	for i := 0; i < gotoSettleThreshold+2; i++ {
+		elements, err := c.gotoReadScreen(ctx, cfg, opts)
+		if err != nil {
+			return nil, err
+		}
+		if last != nil && screenFingerprint(last) == screenFingerprint(elements) {
+			return elements, nil
+		}
+		last = elements
+		select {
+		case <-ctx.Done():
+			return last, nil
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+	return last, nil
+}
+
+func (c CLI) gotoReadScreen(ctx context.Context, cfg Config, opts GlobalOptions) ([]Element, error) {
+	prefer, err := c.normalizePreferDriver(opts.PreferDriver)
+	if err != nil {
+		prefer = "auto"
+	}
+	described, err := c.describeUITree(ctx, cfg, prefer, false)
+	if err != nil {
+		return nil, Fail("goto_tree_failed", map[string]string{"detail": err.Error()}).Write(c.Stdout)
+	}
+	if described.Result.Err != nil {
+		return nil, Fail("goto_tree_failed", map[string]string{"stderr": firstLine(described.Result.Stderr)}).Write(c.Stdout)
+	}
+	return ExtractElements(described.Result.Stdout), nil
+}
+
+// gotoTap taps the point goto already resolved. Coordinates, not a selector:
+// a selector tap re-reads the tree, which is the read this command exists to
+// avoid.
+func (c CLI) gotoTap(ctx context.Context, cfg Config, opts GlobalOptions, x, y int) error {
+	var sink strings.Builder
+	inner := c
+	inner.Stdout = &sink
+	return inner.uiTap(ctx, opts, cfg, []string{"--x", strconv.Itoa(x), "--y", strconv.Itoa(y)})
+}
+
+func (c CLI) writeGotoResult(result GotoResult, extra map[string]string) error {
+	fields := map[string]string{
+		"arrived": result.Arrived,
+		"outcome": result.Outcome,
+	}
+	if !result.RouteFinal.IsZero() {
+		fields["route"] = result.RouteFinal.String()
+	}
+	for k, v := range extra {
+		fields[k] = v
+	}
+	if err := c.OK("goto", fields).Write(c.Stdout); err != nil {
+		return err
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(c.Stdout, "goto json=%s\n", quoteIfNeeded(string(data)))
+	return err
+}
+
+// gotoPositional drops flags and the values of the ones that take a value.
+func gotoPositional(args []string) []string {
+	valued := map[string]bool{"--arrived-when": true, "--max-steps": true, "--timeout": true}
+	out := make([]string, 0, len(args))
+	skip := false
+	for _, a := range args {
+		if skip {
+			skip = false
+			continue
+		}
+		if strings.HasPrefix(a, "--") {
+			skip = valued[a] && !strings.Contains(a, "=")
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// gotoCommand loads the config and the target the way `mav ui` does, then runs
+// the loop. It is its own top-level command rather than a `ui` verb because it
+// drives the screen over many steps instead of performing one action.
+func (c CLI) gotoCommand(ctx context.Context, opts GlobalOptions, args []string) error {
+	cfg, err := LoadConfig(c.Root)
+	if err != nil {
+		return c.failConfig(err)
+	}
+	c.resolveConfigTools(&cfg)
+	if _, err := c.resolveConfigTarget(&cfg); err != nil {
+		return c.failTargetCommand(err)
+	}
+	return c.gotoScreen(ctx, opts, cfg, args)
+}
+
+// resolveGotoStep is resolveFind with the loop's own question. Everything else
+// is shared on purpose — the candidate filter, the abstention rule, the veto
+// that can only remove a yes — because those were measured for find and none of
+// the measurements depend on the wording. What changes is only what is asked.
+func (c CLI) resolveGotoStep(ctx context.Context, elements []Element, goal string) FindResult {
+	candidates := FindCandidates(elements)
+	batch, omitted := FindBatch(candidates)
+	result := FindResult{
+		ResolvedBy: ResolvedByNone, Goal: goal,
+		Candidates: len(candidates), Omitted: omitted,
+	}
+	if len(candidates) == 0 {
+		result.Reason = ReasonNoCandidates
+		return result
+	}
+	key, source, ok := ResolveJevKey()
+	if !ok {
+		result.Reason = ReasonNoKey
+		result.Next = MissingJevKeyNext()
+		return result
+	}
+	result.KeySource = string(source)
+
+	answer, err := askJevChoice(ctx, key,
+		GotoStepQuestion(goal), RenderFindCandidates(batch), FindOptions(batch))
+	if err != nil {
+		result.Reason = ReasonNoNetwork
+		return result
+	}
+	result.Verdict = answer.Verdict
+	chosen, reason := InterpretFindAnswer(answer.Verdict, answer.Label, batch)
+	if reason != "" {
+		result.Reason = reason
+		return result
+	}
+	if veto := VetoChoice(chosen, goal, batch); veto != "" {
+		result.Reason = veto
+		return result
+	}
+	result.ResolvedBy = ResolvedByModel
+	result.Element = chosen
+	return result
+}

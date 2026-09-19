@@ -101,10 +101,24 @@ const (
 const findCandidateCap = 120
 
 // FindCandidates picks the elements that could plausibly be the answer:
-// actionable, and carrying some text to be described by. Order is the tree's
-// own, which is deterministic, so two runs on one screen send the same batch.
+// actionable, carrying some text to be described by, and each row only once.
+// Order is the tree's own, which is deterministic, so two runs on one screen
+// send the same batch.
+//
+// The de-duplication is not tidiness, it is correctness, and it was found by a
+// loop that refused to move. iOS renders a list row as TWO accessibility
+// elements — a container button and an inner one — with the same label, role
+// and id. Sent as two options they read as two indistinguishable candidates, so
+// a model told "answer none if two or more are equally plausible" abstains on
+// every row of every list. Measured: `mav goto` stopped with no_route on a
+// destination that was one visible tap away, and the literal path abstained on
+// every label of Settings > General because none was unique.
+//
+// They are not two candidates. They are one row the tree mentions twice, and
+// tapping either does the same thing.
 func FindCandidates(elements []Element) []Element {
 	out := make([]Element, 0, len(elements))
+	seen := make(map[string]bool, len(elements))
 	for _, el := range elements {
 		if !isActionable(el) {
 			continue
@@ -112,6 +126,11 @@ func FindCandidates(elements []Element) []Element {
 		if findElementText(el) == "" {
 			continue
 		}
+		key := el.ID + "\x1f" + el.Label + "\x1f" + el.Role + "\x1f" + el.Value
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 		out = append(out, el)
 	}
 	return out
