@@ -599,7 +599,15 @@ func normalizeHelpTopic(topic string) string {
 
 func (c CLI) doctor(ctx context.Context, opts GlobalOptions) error {
 	_ = opts
-	cfg, _ := LoadConfig(c.Root)
+	// The config error is kept, not discarded. doctor still produces the
+	// whole diagnosis on a config it could not load -- that is what it is
+	// for -- but it stops calling it `ok`. Discarding the error here was
+	// how a config with an unrecognised key produced `ok cmd=doctor ...
+	// launch_recipe=missing` and no udid: every field said the project was
+	// unconfigured, the status line said everything was fine, and the one
+	// line that explained the contradiction had been thrown away. See
+	// doctorConfigFail below for how it comes out.
+	cfg, cfgErr := LoadConfig(c.Root)
 	if cfg.Root == "" {
 		cfg = DefaultConfig(c.Root)
 	}
@@ -694,7 +702,47 @@ func (c CLI) doctor(ctx context.Context, opts GlobalOptions) error {
 			}
 		}
 	}
+	// A config that is absent is not a config that is broken. `mav doctor`
+	// before `mav setup` is the documented first command in a fresh
+	// checkout -- it is how you find out which tools you are missing -- so
+	// no file at all stays a clean `ok`. A file that exists and could not
+	// be understood is the opposite situation and gets a `fail`.
+	if cfgErr != nil && !configMissing(cfgErr) {
+		return c.doctorConfigFail(cfgErr, fields)
+	}
 	return c.OK("doctor", fields).Write(c.Stdout)
+}
+
+// doctorConfigFail emits the full diagnosis under a `fail` status carrying
+// the load error's own code.
+//
+// The two halves are both deliberate. doctor keeps printing the driver
+// matrix, the tool list and the rest even though the config is unreadable:
+// it is the command you reach for BECAUSE something is broken, and
+// withholding the diagnosis at that moment is the opposite of its job. But
+// it cannot call the result `ok` -- with an unloadable config every other
+// field describes a project mav does not actually know, and the pairing of
+// `ok` with `launch_recipe=missing` is precisely the contradiction that let
+// a misspelt key survive a release. Its caller keeps a missing config file
+// out of here entirely, so `mav doctor` in a directory that was never set
+// up reads exactly as it always did.
+func (c CLI) doctorConfigFail(err error, fields map[string]string) error {
+	var cfgErr *ConfigError
+	if !errors.As(err, &cfgErr) {
+		fields["config_error"] = err.Error()
+		return Fail("config_invalid", fields).Write(c.Stdout)
+	}
+	merged := map[string]string{}
+	for key, value := range fields {
+		merged[key] = value
+	}
+	// The config's own fields win: `next` from a load error says how to fix
+	// the file, and that is the next step, not the tool install doctor
+	// would otherwise suggest.
+	for key, value := range cfgErr.Fields {
+		merged[key] = value
+	}
+	return Fail(cfgErr.Code, merged).Write(c.Stdout)
 }
 
 func addDoctorMatrixFields(fields map[string]string, caps Capabilities) {
@@ -1153,7 +1201,7 @@ func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 	case "select":
 		cfg, err := LoadConfig(c.Root)
 		if err != nil {
-			return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
+			return c.failConfig(err)
 		}
 		c.resolveConfigTools(&cfg)
 		// Deliberately no target resolution here. Pinning simulator_udid is
@@ -1196,7 +1244,7 @@ func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 	case "boot":
 		cfg, err := LoadConfig(c.Root)
 		if err != nil {
-			return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
+			return c.failConfig(err)
 		}
 		c.resolveConfigTools(&cfg)
 		if _, err := c.resolveConfigTarget(&cfg); err != nil {
@@ -1260,7 +1308,7 @@ func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 func (c CLI) simTarget(feature string, next string) (drivers.Target, error) {
 	cfg, err := LoadConfig(c.Root)
 	if err != nil {
-		return drivers.Target{}, Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
+		return drivers.Target{}, c.failConfig(err)
 	}
 	c.resolveConfigTools(&cfg)
 	if _, err := c.resolveConfigTarget(&cfg); err != nil {
@@ -1604,7 +1652,7 @@ func (c CLI) device(ctx context.Context, opts GlobalOptions, args []string) erro
 	case "select":
 		cfg, err := LoadConfig(c.Root)
 		if err != nil {
-			return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
+			return c.failConfig(err)
 		}
 		udid := flagValue(args[1:], "--udid")
 		name := flagValue(args[1:], "--name")
@@ -1634,7 +1682,7 @@ func (c CLI) device(ctx context.Context, opts GlobalOptions, args []string) erro
 func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error {
 	cfg, err := LoadConfig(c.Root)
 	if err != nil {
-		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
+		return c.failConfig(err)
 	}
 	// Before applyOpenTargetOverrides, which boots a simulator and persists
 	// the target selection to .mav/config.yaml: a command that is going to be
@@ -1822,7 +1870,7 @@ func (c CLI) timeControl(ctx context.Context, opts GlobalOptions, args []string)
 	}
 	cfg, err := LoadConfig(c.Root)
 	if err != nil {
-		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
+		return c.failConfig(err)
 	}
 	if _, err := c.resolveConfigTarget(&cfg); err != nil {
 		return c.failTargetCommand(err)
@@ -2062,7 +2110,7 @@ func (c CLI) ui(ctx context.Context, opts GlobalOptions, args []string) error {
 	}
 	cfg, err := LoadConfig(c.Root)
 	if err != nil {
-		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
+		return c.failConfig(err)
 	}
 	c.resolveConfigTools(&cfg)
 	if _, err := c.resolveConfigTarget(&cfg); err != nil {
@@ -4444,7 +4492,7 @@ func (c CLI) clipboard(ctx context.Context, opts GlobalOptions, args []string) e
 func (c CLI) capture(ctx context.Context, opts GlobalOptions, args []string) error {
 	cfg, err := LoadConfig(c.Root)
 	if err != nil {
-		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
+		return c.failConfig(err)
 	}
 	c.resolveConfigTools(&cfg)
 	if _, err := c.resolveConfigTarget(&cfg); err != nil {
@@ -6392,7 +6440,7 @@ func (c CLI) cleanupFailedFlow(ctx context.Context, run RunState, fields map[str
 func (c CLI) captureEvidenceStep(ctx context.Context, run RunState, name, note string) (map[string]string, error) {
 	cfg, err := LoadConfig(c.Root)
 	if err != nil {
-		return nil, fmt.Errorf("config_not_found")
+		return nil, err
 	}
 	c.resolveConfigTools(&cfg)
 	if _, err := c.resolveConfigTarget(&cfg); err != nil {
@@ -6587,7 +6635,7 @@ func (c CLI) execFlowShell(ctx context.Context, run RunState, index int, params 
 func (c CLI) execFlowShellOutput(ctx context.Context, run RunState, index int, params map[string]string) (map[string]string, string, error) {
 	cfg, err := LoadConfig(c.Root)
 	if err != nil {
-		return nil, "", fmt.Errorf("config_not_found")
+		return nil, "", err
 	}
 	if !cfg.AllowShell {
 		return map[string]string{"next": "set allow_shell: true in .mav/config.yaml for trusted project-local flows"}, "", fmt.Errorf("shell_not_allowed")
@@ -6734,7 +6782,7 @@ func (c CLI) evaluateSingleConditionWithPrefer(ctx context.Context, condition Fl
 	}
 	cfg, err := LoadConfig(c.Root)
 	if err != nil {
-		return false, fmt.Errorf("config_not_found")
+		return false, err
 	}
 	c.resolveConfigTools(&cfg)
 	if _, err := c.resolveConfigTarget(&cfg); err != nil {
@@ -6822,7 +6870,7 @@ func (c CLI) screenshotChangedFrom(ctx context.Context, name string) (bool, erro
 	}
 	cfg, err := LoadConfig(c.Root)
 	if err != nil {
-		return false, fmt.Errorf("config_not_found")
+		return false, err
 	}
 	c.resolveConfigTools(&cfg)
 	if _, err := c.resolveConfigTarget(&cfg); err != nil {
@@ -7032,7 +7080,7 @@ func stopProbeLogs(runner Runner, run RunState) {
 func (c CLI) crashes(ctx context.Context, opts GlobalOptions, args []string) error {
 	cfg, err := LoadConfig(c.Root)
 	if err != nil {
-		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
+		return c.failConfig(err)
 	}
 	c.resolveConfigTools(&cfg)
 	if _, err := c.resolveConfigTarget(&cfg); err != nil {
@@ -7114,7 +7162,7 @@ func (c CLI) crashes(ctx context.Context, opts GlobalOptions, args []string) err
 func (c CLI) crashesFromDiagnosticReports(idbError string) error {
 	cfg, err := LoadConfig(c.Root)
 	if err != nil {
-		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
+		return c.failConfig(err)
 	}
 	// crashes() already resolved its own cfg before calling here, but this
 	// reloads a fresh copy straight off disk -- re-resolve it too, or
@@ -7235,7 +7283,7 @@ func (c CLI) evidenceReport(opts GlobalOptions, args []string) error {
 func (c CLI) evidenceStart(ctx context.Context, opts GlobalOptions, args []string) error {
 	cfg, err := LoadConfig(c.Root)
 	if err != nil {
-		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
+		return c.failConfig(err)
 	}
 	c.resolveConfigTools(&cfg)
 	if _, err := c.resolveConfigTarget(&cfg); err != nil {
@@ -7294,7 +7342,7 @@ func (c CLI) evidenceStart(ctx context.Context, opts GlobalOptions, args []strin
 func (c CLI) evidenceStep(ctx context.Context, opts GlobalOptions, args []string) error {
 	cfg, err := LoadConfig(c.Root)
 	if err != nil {
-		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
+		return c.failConfig(err)
 	}
 	c.resolveConfigTools(&cfg)
 	if _, err := c.resolveConfigTarget(&cfg); err != nil {

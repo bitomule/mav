@@ -36,7 +36,7 @@ func (c CLI) network(ctx context.Context, opts GlobalOptions, args []string) err
 func (c CLI) networkStart(ctx context.Context, _ GlobalOptions, args []string) error {
 	cfg, err := LoadConfig(c.Root)
 	if err != nil {
-		return Fail("config_not_found", map[string]string{"next": "mav setup"}).Write(c.Stdout)
+		return c.failConfig(err)
 	}
 	run, err := c.resolveRun(flagValue(args, "--run"))
 	if err != nil {

@@ -1,5 +1,46 @@
 # Changelog
 
+## v0.19.2
+
+### The config error v0.19.1 produced and then threw away
+
+v0.19.1 made an unrecognised key in `.mav/config.yaml` fail the load. **Not
+one line of output ever said so**, which is worse than the silence it
+replaced.
+
+Measured on the released 0.19.1, same machine, same version, the only
+difference being the file:
+
+| Command | Config with a legacy `tools:` section | Same file without it |
+| --- | --- | --- |
+| `mav doctor` | `ok ... launch_recipe=missing`, no `udid` | `ok ... launch_recipe=ok`, `udid=…` |
+| `mav ui tree` | `fail code=config_not_found next="mav setup"` | `ok` |
+
+Two separate swallows:
+
+- **Every command flattened any load error into `config_not_found next="mav
+  setup"`.** That was already wrong for a bad profile or an invalid
+  `target_kind`, and here it named the opposite of the problem — the file
+  was there and one key from correct — while pointing at the command that
+  rewrites it. Each reason now reports its own code:
+  `config_unknown_key`, `profile_unknown_key`, `profile_not_found`,
+  `target_kind_invalid`, `vm_unsupported_target`. `config_not_found` now
+  means the file really is absent.
+- **`mav doctor` discarded the error outright and answered `ok`.** With an
+  unloadable config every field it printed described a project mav did not
+  know — no launch recipe, no bundle id, no `target_command` to ask the pool
+  for a slot — and the status line said everything was fine. doctor still
+  prints the whole diagnosis, because that is what it is for, but now under
+  `fail code=<the load error>`.
+
+The one case that stays `ok`: **no config file at all.** Running `mav
+doctor` before `mav setup` is how you find out which tools you are missing,
+and an absent config is not a broken one.
+
+With a config carrying `tools:`, `mav doctor`, `mav ui tree` and `mav open`
+now all exit non-zero with `code=config_unknown_key key=tools`. There is no
+longer any way to get an `ok` out of that file.
+
 ## v0.19.1
 
 Two defects with the same shape: **mav acted on something that was not what

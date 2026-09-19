@@ -205,11 +205,49 @@ func rejectUnknownProfileKeys(data []byte) error {
 	for name, fields := range doc.Profiles {
 		for key := range fields {
 			if !knownProfileKeys[key] {
-				return fmt.Errorf("profile_unknown_key profile=%s key=%s", name, key)
+				return configErr("profile_unknown_key", map[string]string{"profile": name, "key": key})
 			}
 		}
 	}
 	return nil
+}
+
+// ConfigError is a reason .mav/config.yaml could not be loaded, carrying
+// the structured code and fields the CLI has to print rather than a
+// sentence to be re-parsed.
+//
+// It exists because every caller used to flatten any load error into
+// `fail code=config_not_found next="mav setup"`. That was already wrong for
+// a bad profile or an invalid target_kind, and it became the whole defect
+// once an unrecognised key started failing the load: a config that WAS
+// there, and was one line from correct, reported as a config that was not
+// there, with a remediation (`mav setup`) that rewrites the file rather
+// than naming the key. The error had the answer in it; the caller threw it
+// away, so `config_unknown_key` never reached a single line of output.
+type ConfigError struct {
+	Code   string
+	Fields map[string]string
+}
+
+// Error renders "code key=value ..." so a ConfigError that escapes through
+// a plain `error` still names its code first, matching this package's
+// convention that an error's text begins with its code.
+func (e *ConfigError) Error() string {
+	keys := make([]string, 0, len(e.Fields))
+	for key := range e.Fields {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys)+1)
+	parts = append(parts, e.Code)
+	for _, key := range keys {
+		parts = append(parts, key+"="+e.Fields[key])
+	}
+	return strings.Join(parts, " ")
+}
+
+func configErr(code string, fields map[string]string) error {
+	return &ConfigError{Code: code, Fields: fields}
 }
 
 // knownConfigKeys is the set of top-level keys .mav/config.yaml accepts,
@@ -268,15 +306,19 @@ func rejectUnknownConfigKeys(data []byte) error {
 		valid = append(valid, key)
 	}
 	sort.Strings(valid)
-	return fmt.Errorf("config_unknown_key key=%s path=%s known=%s (next: fix or remove the key in .mav/config.yaml; an unrecognised key is ignored, which looks exactly like configuration that had no effect)",
-		strings.Join(unknown, ","), ConfigFile, strings.Join(valid, ","))
+	return configErr("config_unknown_key", map[string]string{
+		"key":   strings.Join(unknown, ","),
+		"path":  ConfigFile,
+		"known": strings.Join(valid, ","),
+		"next":  "fix or remove the key in .mav/config.yaml; an unrecognised key is ignored, which looks exactly like configuration that had no effect",
+	})
 }
 
 func loadConfig(root, profileOverride string, skipProfile bool) (Config, error) {
 	path := filepath.Join(root, ConfigFile)
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return Config{}, fmt.Errorf("config_not_found path=%s run=mav_setup", path)
+		return Config{}, configErr("config_not_found", map[string]string{"path": path, "next": "mav setup"})
 	}
 	cfg := DefaultConfig(root)
 	var raw configYAML
@@ -371,7 +413,7 @@ func applyProfile(cfg *Config, override string) error {
 	}
 	profile, ok := cfg.Profiles[name]
 	if !ok {
-		return fmt.Errorf("profile_not_found name=%s available=%s", name, strings.Join(profileNames(*cfg), ","))
+		return configErr("profile_not_found", map[string]string{"name": name, "available": strings.Join(profileNames(*cfg), ",")})
 	}
 	cfg.ActiveProfile = name
 	overlayString(&cfg.TargetKind, profile.TargetKind)
@@ -1187,7 +1229,7 @@ func validateTargetKind(kind string) error {
 	case "simulator", "device", "macos":
 		return nil
 	default:
-		return fmt.Errorf("target_kind_invalid value=%s valid=simulator,device,macos", kind)
+		return configErr("target_kind_invalid", map[string]string{"value": kind, "valid": "simulator,device,macos"})
 	}
 }
 
@@ -1201,7 +1243,7 @@ func validateVM(cfg Config) error {
 		return nil
 	}
 	if targetKind(cfg) != drivers.KindMac {
-		return fmt.Errorf("vm_unsupported_target target_kind=%s valid=macos", targetKindLabel(targetKind(cfg)))
+		return configErr("vm_unsupported_target", map[string]string{"target_kind": targetKindLabel(targetKind(cfg)), "valid": "macos"})
 	}
 	return nil
 }

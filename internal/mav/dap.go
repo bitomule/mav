@@ -483,7 +483,7 @@ func (c CLI) debug(ctx context.Context, opts GlobalOptions, args []string) error
 	}
 	cfg, err := LoadConfig(c.Root)
 	if err != nil {
-		return Fail("config_not_found", nil).Write(c.Stdout)
+		return c.failConfig(err)
 	}
 	if targetKind(cfg) != drivers.KindSim {
 		return Fail("debug_unsupported_on_device", nil).Write(c.Stdout)

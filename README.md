@@ -1103,6 +1103,23 @@ The one key this removes from existing configs is the legacy `tools:`
 section. Tool detection has been a run-time probe for several releases and
 that section has had no effect since; delete it.
 
+Every reason a load can fail reports its own code -- `config_unknown_key`,
+`profile_unknown_key`, `profile_not_found`, `target_kind_invalid`,
+`vm_unsupported_target` -- and `config_not_found` is reserved for a file
+that genuinely is not there. They used to be flattened into
+`config_not_found next="mav setup"`, which named the wrong problem and
+pointed at a command that rewrites the file you were one key away from
+fixing.
+
+`mav doctor` is the one command that treats the two differently. No config
+file at all is not a broken config -- running `mav doctor` before
+`mav setup` is how you find out which tools you are missing -- so that
+stays a clean `ok`. A file that exists and could not be understood gets the
+full diagnosis under a `fail` line carrying the load error's code: with an
+unloadable config every other field describes a project mav does not
+actually know, and `ok` beside `launch_recipe=missing` is the contradiction
+that let a misspelt key survive a release.
+
 ### Knowing which target you just used
 
 Every command that acts on a simulator or device reports `udid` (and
