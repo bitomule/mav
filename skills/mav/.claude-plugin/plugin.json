@@ -1,0 +1,11 @@
+{
+  "name": "mav",
+  "version": "1.0.0",
+  "description": "The MAV skill, plus one hook that tells an agent when the call it just made had a cheaper form.",
+  "author": {
+    "name": "David Collado"
+  },
+  "repository": "https://github.com/bitomule/mav",
+  "license": "MIT",
+  "hooks": "./hooks/hooks.json"
+}

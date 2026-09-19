@@ -1,5 +1,57 @@
 # Changelog
 
+## Unreleased
+
+### A hook that says "that had a cheaper form", because saying it in the docs did not work
+
+A model reads "prefer X" in a skill, repeats it back, and issues the expensive
+call anyway: comprehension is not compliance. Measured over **782 real agent
+tool calls across 51 sessions**, a cheaper form that was documented, free and
+already available was taken **6.9% of the time**, and almost every session that
+did take it had the flag written into its task text rather than having read the
+documentation.
+
+So the skill now ships one hook, delivered by the same `mav install-skills` that
+installs the skill: `skills/mav/hooks/cheaper-way.sh`, wired through a new
+`skills/mav/.claude-plugin/plugin.json`. It runs after a Bash call and says one
+sentence when the call had a cheaper form that was not used.
+
+One rule today, and the design is a table so the second costs a line:
+
+| You ran | It says so when | Because |
+| --- | --- | --- |
+| `jevi ask "<question>"` without `-f` | always | jevi's own help says the positional form is "for a one-off from a terminal. Use `-f` for anything you run twice", and an agent's questions are always run twice |
+
+**There is deliberately no rule for `mav ui tree`.** An earlier draft had one,
+pointing at `mav ui tree --agent`; that flag was then rejected as the form to
+recommend. It caps the screen at **40 elements with no flag to raise the cap**,
+and it **ranks after capping**, so its ordering cannot rescue an element that
+already fell outside the 40 — on a real 202-node screen that is more than half
+the screen gone. With no cheaper form of a tree to point at, the hook has
+nothing to say about one, and a test asserts it stays silent on `mav ui tree`
+however large the tree is.
+
+**It says it every time, and keeps no state.** No counter, no per-session file,
+nothing that can go stale. An earlier draft said it twice and then every tenth
+call, out of a worry about noise; that was the wrong worry. If a cheap documented
+form exists and the expensive one is used, that is a mistake, and a mistake does
+not stop being one on the third repetition. Being stateless is the bonus: there is
+nothing left in the script that can be wrong about what happened earlier.
+
+What it deliberately cannot do, each for a reason we have already paid for:
+
+- **It never blocks and never rewrites.** It is on `PostToolUse`, which can do
+  neither, and that is why it is there. A mechanism that can rewrite a command
+  will eventually rewrite it into a cheaper form that quietly drops data the
+  caller needed; a sentence cannot.
+- **It emits no `permissionDecision`, "allow" included** — that would
+  auto-approve the call and walk past the user's own ask/deny rules. A test
+  asserts its absence rather than trusting review.
+- **`timeout: 2`, explicit.** The default hook timeout is 600 seconds; on a hook
+  that runs after every Bash call that is ten minutes of a wedged session. It
+  exits 0 on every path, uses no network, and runs no `mav`, no VCS command and
+  no build.
+
 ## v0.19.3
 
 ### The target override that was documented and did nothing
