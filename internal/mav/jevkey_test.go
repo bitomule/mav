@@ -92,6 +92,14 @@ func TestTheMissingKeyMessageNamesAllThreePlacesAndWhatToType(t *testing.T) {
 }
 
 func TestAFindWithNoKeySaysSoAndWhereItLooked(t *testing.T) {
+	// The refusal to consult a model in CI comes BEFORE the key is looked up,
+	// which is correct — there is no point resolving a credential you have
+	// already decided not to use — and it means this test ran green locally
+	// and red on Actions, where CI is set. Clearing it here is not working
+	// around the refusal: TestFindRefusesToConsultAModelInCI asserts it
+	// directly, and this test is about the other branch.
+	t.Setenv("CI", "")
+	t.Setenv("MAV_FIND_DISABLE", "")
 	t.Setenv(jevKeyEnvVar, "")
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	if _, _, ok := ResolveJevKey(); ok {
