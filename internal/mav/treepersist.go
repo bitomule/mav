@@ -16,14 +16,19 @@ const TreesDir = "trees"
 // PersistedTree is the metadata PersistTree returns to its caller so the
 // evidence step record can reference it.
 type PersistedTree struct {
-	CompactPath string // <runDir>/trees/step-NN_<name>.json (capped, agent-facing)
-	FullPath    string // <runDir>/trees/step-NN_<name>.full.json (uncapped, debug)
-	DeltaPath   string // <runDir>/trees/step-NN_<name>.delta.json — empty when previous == nil
-	Hash        string // sha256 hex of the compact JSON; populates EvidenceStep.TreeHash
+	TreePath  string // <runDir>/trees/step-NN_<name>.json — every element on the screen
+	DeltaPath string // <runDir>/trees/step-NN_<name>.delta.json — empty when previous == nil
+	Hash      string // sha256 hex of the tree JSON; populates EvidenceStep.TreeHash
 }
 
-// PersistTree writes the compact and full snapshots of a tree under
-// <runDir>/trees/, optionally also writing a delta vs `previous`.
+// PersistTree writes the tree snapshot under <runDir>/trees/, optionally also
+// writing a delta vs `previous`.
+//
+// There used to be two files here, `.json` and `.full.json`, and the only
+// difference between them was the 80-element cap: the first was what agents
+// read and the second was what the screen actually contained. With the cap
+// gone they were byte-identical, so there is one file, and it is the whole
+// screen.
 //
 // Naming uses the step index zero-padded to 2 digits plus a slug derived
 // from name (alphanumerics + dashes). The leading index keeps the directory
@@ -37,34 +42,23 @@ func PersistTree(runDir string, stepIdx int, name string, raw []Element, previou
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return PersistedTree{}, fmt.Errorf("mkdir trees: %w", err)
 	}
-	compact := Compact(raw)
-
-	compactJSON, err := json.MarshalIndent(compact, "", "  ")
+	treeJSON, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
-		return PersistedTree{}, fmt.Errorf("marshal compact: %w", err)
-	}
-	fullJSON, err := json.MarshalIndent(raw, "", "  ")
-	if err != nil {
-		return PersistedTree{}, fmt.Errorf("marshal full: %w", err)
+		return PersistedTree{}, fmt.Errorf("marshal tree: %w", err)
 	}
 
 	slug := stepSlug(name)
 	prefix := fmt.Sprintf("step-%02d_%s", stepIdx, slug)
-	compactPath := filepath.Join(dir, prefix+".json")
-	fullPath := filepath.Join(dir, prefix+".full.json")
+	treePath := filepath.Join(dir, prefix+".json")
 
-	if err := os.WriteFile(compactPath, compactJSON, 0o644); err != nil {
-		return PersistedTree{}, fmt.Errorf("write compact: %w", err)
-	}
-	if err := os.WriteFile(fullPath, fullJSON, 0o644); err != nil {
-		return PersistedTree{}, fmt.Errorf("write full: %w", err)
+	if err := os.WriteFile(treePath, treeJSON, 0o644); err != nil {
+		return PersistedTree{}, fmt.Errorf("write tree: %w", err)
 	}
 
-	sum := sha256.Sum256(compactJSON)
+	sum := sha256.Sum256(treeJSON)
 	out := PersistedTree{
-		CompactPath: compactPath,
-		FullPath:    fullPath,
-		Hash:        hex.EncodeToString(sum[:]),
+		TreePath: treePath,
+		Hash:     hex.EncodeToString(sum[:]),
 	}
 
 	if previous != nil {

@@ -28,20 +28,23 @@ type Element struct {
 	Depth    int    `json:"depth,omitempty"`
 }
 
-// ExtractElements parses an AX tree (axe JSON or any structure that
-// walkAX understands) and returns a flat, de-duplicated list of
-// Elements. Bounded at 80 to keep output tractable for downstream
-// callers; the same cap drove `compactElements` historically.
+// ExtractElements parses an AX tree (axe JSON or any structure that walkAX
+// understands) and returns a flat, de-duplicated list of every element on the
+// screen.
+//
+// There is no cap, and there is no second "raw" variant to reach for when you
+// want the whole thing, because a screen you can only half see is not a screen
+// you can drive. The 80-element bound that used to live here was applied before
+// printing and announced nowhere reachable: on a real iOS Settings screen it
+// printed 80 of 177 elements in silence.
+//
+// What it broke was visibility, not reachability — measured, not assumed.
+// `mav ui tap --id` queries the driver rather than the printed list, so an
+// element past the cap could still be tapped BY SOMEONE WHO ALREADY KNEW ITS
+// id. Nobody did: the only command that hands you ids is this one, and it was
+// not showing them. That is the hole, and stating it the other way round
+// (claiming taps failed) would be a bigger claim than the evidence supports.
 func ExtractElements(rawTree string) []Element {
-	return Compact(ExtractElementsRaw(rawTree))
-}
-
-// ExtractElementsRaw parses an AX tree and returns the de-duplicated flat
-// list WITHOUT the 80-element cap. Used by evidence persistence so the
-// `*.full.json` fixture stays complete; downstream tooling (agents, the
-// HTML report) still consumes the compact (capped) variant from
-// ExtractElements / Compact.
-func ExtractElementsRaw(rawTree string) []Element {
 	var parsed any
 	if err := json.Unmarshal([]byte(rawTree), &parsed); err != nil {
 		return nil
@@ -50,17 +53,6 @@ func ExtractElementsRaw(rawTree string) []Element {
 	walkAX(parsed, &out, 0)
 	return dedupElements(out)
 }
-
-// Compact applies the 80-element cap on top of an already-dedup'd slice.
-// Exported so PersistTree can re-cap a raw extraction without re-parsing.
-func Compact(elements []Element) []Element {
-	if len(elements) <= treeCompactCap {
-		return elements
-	}
-	return elements[:treeCompactCap]
-}
-
-const treeCompactCap = 80
 
 // walkAX is the recursive visitor over the parsed AX value. Accepts
 // either lists (multi-root) or maps (single node with optional
@@ -144,16 +136,7 @@ func boolStringField(node map[string]any, keys ...string) string {
 	return ""
 }
 
-// compactElements de-duplicates Elements by their full attribute
-// tuple and caps the result at 80 entries. The cap is historical;
-// it prevents the `mav ui tree` output from drowning agents on
-// list-heavy screens.
-func compactElements(elements []Element) []Element {
-	return Compact(dedupElements(elements))
-}
-
-// dedupElements removes duplicates and empty elements but does NOT cap.
-// Used by ExtractElementsRaw so persistence can keep the full set.
+// dedupElements removes duplicates and empty elements.
 func dedupElements(elements []Element) []Element {
 	seen := map[string]bool{}
 	out := []Element{}

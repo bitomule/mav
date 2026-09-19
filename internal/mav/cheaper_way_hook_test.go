@@ -119,17 +119,10 @@ func TestCheaperWayHookStaysQuiet(t *testing.T) {
 		command string
 		stdout  string
 	}{
-		// `mav ui tree` has a rule again, and it is NOT the one that was
-		// removed. That one pointed at `mav ui tree --agent`, which was
-		// rejected: it caps the screen at 40 with no flag to raise the cap
-		// and it ranks AFTER capping, so its ordering cannot rescue an
-		// element that already fell outside the 40. The rule now points at
-		// `mav ui find`, which reads the uncapped extraction. What stays
-		// silent is a SMALL tree: with a dozen elements, reading them is
-		// cheaper than asking anything, and advice that costs more than it
-		// saves is worse than none.
-		{"a tree small enough to just read", "mav ui tree", nodeLines(12)},
-		{"a tree just under the gate", "mav ui tree", nodeLines(39)},
+		// The only tree case that stays silent is one already using find.
+		// There is no size gate: an advisory that appears on some screens and
+		// not others is one nobody learns, and the agent cannot tell which
+		// kind of screen it is about to get before it asks.
 		{"already using the cheap form", `mav ui tree && mav ui find "the save button"`, nodeLines(60)},
 		// Not our business.
 		{"unrelated command", "ls -la", nodeLines(60)},
@@ -180,26 +173,15 @@ func TestCheaperWayHookNudgesALargeTreeTowardsFind(t *testing.T) {
 	}
 }
 
-func TestATruncatedTreeSaysSoRatherThanJustRecommending(t *testing.T) {
-	// The truncated case is the one with teeth: elements were not shown at
-	// all, so this is not a cheaper way, it is the only way to see them.
-	stdout := nodeLines(80) + "node_more remaining=133\n"
-	got := nudgeFrom(t, runHook(t, "s-trunc", "mav ui tree", stdout, withKey(t)...))
-	if !strings.Contains(got, "cut") {
-		t.Fatalf("a truncated tree should be named as truncated, got %q", got)
-	}
-	if !strings.Contains(got, "mav ui find") {
-		t.Fatalf("expected a nudge pointing at find, got %q", got)
-	}
-}
-
-func TestATruncatedTreeSpeaksEvenBelowTheSizeGate(t *testing.T) {
-	// A truncation marker means elements are missing whatever the printed
-	// count says, so it overrides the 40-node gate rather than being filtered
-	// by it.
-	stdout := nodeLines(5) + "node_more remaining=200\n"
-	if got := nudgeFrom(t, runHook(t, "s-trunc-small", "mav ui tree", stdout, withKey(t)...)); got == "" {
-		t.Fatal("a truncation marker must speak regardless of how many lines printed")
+func TestTheFindRuleSpeaksOnEveryTreeHoweverSmall(t *testing.T) {
+	// The rule David asked for: always, not above a threshold. A one-element
+	// screen gets the same sentence as a 500-element one, because an advisory
+	// that only sometimes appears is one nobody learns.
+	for _, n := range []int{1, 12, 39, 40, 213, 500} {
+		got := nudgeFrom(t, runHook(t, "s-every", "mav ui tree", nodeLines(n), withKey(t)...))
+		if !strings.Contains(got, "mav ui find") {
+			t.Fatalf("a %d-node tree got no nudge: %q", n, got)
+		}
 	}
 }
 

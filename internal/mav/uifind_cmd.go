@@ -49,7 +49,7 @@ func (c CLI) uiFind(ctx context.Context, opts GlobalOptions, cfg Config, args []
 
 	// Raw, not Compact: the 80-element cap is the hole this command exists to
 	// fill, so find must not read through it.
-	elements := ExtractElementsRaw(described.Result.Stdout)
+	elements := ExtractElements(described.Result.Stdout)
 	result := c.resolveFind(ctx, elements, goal)
 
 	fields := map[string]string{

@@ -50,7 +50,7 @@ func TestAmbiguousSelectorSaysHowToChooseBetweenTheMatches(t *testing.T) {
 // The way out the message now points at has to actually work, or the
 // remediation is just a nicer dead end.
 func TestIndexPicksOneOfSeveralIdenticalMatches(t *testing.T) {
-	elements := ExtractElementsRaw(fourIdenticalRowsTree)
+	elements := ExtractElements(fourIdenticalRowsTree)
 	selector := Selector{Text: "Pantalla y tamaño del texto", Role: "cell"}
 
 	all, err := MatchElements(elements, selector)
