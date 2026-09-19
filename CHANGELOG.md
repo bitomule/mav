@@ -21,7 +21,14 @@ Two rules today, and the design is a table so the third costs a line:
 | You ran | It says so when | Because |
 | --- | --- | --- |
 | `mav ui tree` without `--agent` | the tree came back with **more than 40 elements** | below the cap `--agent` saves nothing worth a line |
-| `jevi ask "<question>"` without `-f` | it is the **second** one-off this session | jevi's own help says the positional form is "for a one-off … use `-f` for anything you run twice" |
+| `jevi ask "<question>"` without `-f` | always | jevi's own help says the positional form is "for a one-off from a terminal. Use `-f` for anything you run twice", and an agent's questions are always run twice |
+
+**It says it every time, and keeps no state.** No counter, no per-session file,
+nothing that can go stale. An earlier draft said it twice and then every tenth
+call, out of a worry about noise; that was the wrong worry. If a cheap documented
+form exists and the expensive one is used, that is a mistake, and a mistake does
+not stop being one on the third repetition. Being stateless is the bonus: there is
+nothing left in the script that can be wrong about what happened earlier.
 
 What it deliberately cannot do, each for a reason we have already paid for:
 
@@ -37,12 +44,9 @@ What it deliberately cannot do, each for a reason we have already paid for:
   that runs after every Bash call that is ten minutes of a wedged session. It
   exits 0 on every path, uses no network, and runs no `mav`, no `git` and no
   build.
-- **It says it at most three times, then every tenth.** Once is lost to
-  compaction in a long session; 782 times is noise an agent learns to skip.
-
-Verified end to end in a real Claude Code session, not only in unit tests: with a
-60-element tree the agent received and quoted the sentence; with `--agent` it
-received nothing.
+Verified end to end in a real Claude Code session, not only in unit tests: three
+consecutive bare trees of 60 elements produced three reminders (`COUNT=3`), and
+two calls with `--agent` produced none (`COUNT=0`).
 
 ## v0.19.3
 

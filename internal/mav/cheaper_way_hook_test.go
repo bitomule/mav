@@ -123,9 +123,6 @@ func TestCheaperWayHookStaysQuiet(t *testing.T) {
 		// Not our business.
 		{"unrelated command", "ls -la", nodeLines(60)},
 		{"another mav command", "mav ui tap --id foo", nodeLines(60)},
-		// A first one-off jevi question is exactly what the positional form
-		// is for; only the second is worth a word.
-		{"first one-off jevi ask", `jevi ask "is this a bug?"`, ""},
 		// Already using a question set.
 		{"jevi with question set", "jevi ask -f triage", ""},
 	}
@@ -138,28 +135,50 @@ func TestCheaperWayHookStaysQuiet(t *testing.T) {
 	}
 }
 
-func TestCheaperWayHookNudgesSecondOneOffJeviAsk(t *testing.T) {
-	// The counter is per session, so both calls must share a TMPDIR. runHook
-	// gives each call its own, which is right for every other test here and
-	// wrong for this one: drive the script directly instead.
+func TestCheaperWayHookNudgesInlineJeviAsk(t *testing.T) {
+	got := nudgeFrom(t, runHook(t, "s-jevi", `jevi ask "is this a bug?"`, ""))
+	if !strings.Contains(got, "-f") {
+		t.Fatalf("expected a nudge pointing at a question set, got %q", got)
+	}
+}
+
+// The hook says it every time: there is no counter, and the same call repeated
+// gets the same answer. This is the assertion that keeps someone from
+// reintroducing a rate limit as a "noise" fix — the noise is the expensive call,
+// not the sentence about it.
+func TestCheaperWayHookSaysItEveryTime(t *testing.T) {
+	// One shared TMPDIR across all five calls, so any state the script kept
+	// would be visible to the later ones.
 	tmp := t.TempDir()
-	ask := func() string {
-		payload := `{"session_id":"s-jevi","tool_name":"Bash","tool_input":{"command":"jevi ask \"is this a bug?\""},"tool_response":{"stdout":""}}`
+	payload, err := json.Marshal(map[string]any{
+		"session_id":    "s-repeat",
+		"tool_name":     "Bash",
+		"tool_input":    map[string]string{"command": "mav ui tree"},
+		"tool_response": map[string]any{"stdout": nodeLines(60)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var first string
+	for i := 1; i <= 5; i++ {
 		cmd := exec.Command("/bin/sh", hookPath(t))
-		cmd.Stdin = strings.NewReader(payload)
+		cmd.Stdin = strings.NewReader(string(payload))
 		cmd.Env = append(os.Environ(), "TMPDIR="+tmp)
 		out, err := cmd.Output()
 		if err != nil {
-			t.Fatalf("hook exited non-zero: %v", err)
+			t.Fatalf("call %d exited non-zero: %v", i, err)
 		}
-		return string(out)
-	}
-	if out := ask(); strings.TrimSpace(out) != "" {
-		t.Fatalf("first one-off should be silent, got %q", out)
-	}
-	got := nudgeFrom(t, ask())
-	if !strings.Contains(got, "-f") {
-		t.Fatalf("expected the second one-off to point at a question set, got %q", got)
+		got := nudgeFrom(t, string(out))
+		if got == "" {
+			t.Fatalf("call %d stayed quiet; the hook must say it every time", i)
+		}
+		if i == 1 {
+			first = got
+			continue
+		}
+		if got != first {
+			t.Fatalf("call %d said something different: %q vs %q", i, got, first)
+		}
 	}
 }
 

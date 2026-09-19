@@ -28,6 +28,9 @@
 #     and no build. A hook that hangs is worse than no hook, and the default
 #     hook timeout is 600 seconds — ten minutes of a wedged session per call.
 #     hooks.json pins this one to 2.
+#   - It keeps no state: no counter, no per-session file, nothing that can go
+#     stale or disagree with itself. See the note above `rules` for why the
+#     rate limit it used to have was the wrong idea.
 #
 # ADDING A RULE
 #
@@ -49,45 +52,21 @@ field() { printf '%s' "$PAYLOAD" | jq -r "$1 // empty" 2>/dev/null; }
 CMD="$(field '.tool_input.command')"
 [ -n "$CMD" ] || exit 0
 
-# `occurrences <id>` returns how many times this rule has matched in this
-# session, this one included. The counter lives in a temp directory and its
-# failure is silent on purpose: a lost counter costs one extra reminder, and
-# there is no failure here worth interrupting an agent's work for.
-SESSION="$(field '.session_id')"
-[ -n "$SESSION" ] || SESSION="unknown"
-STATE="${TMPDIR:-/tmp}/mav-cheaper-way/$SESSION"
-
-occurrences() {
-	_dir="$STATE"
-	_file="$_dir/$1"
-	mkdir -p "$_dir" 2>/dev/null || { printf '1\n'; return; }
-	_n=0
-	[ -f "$_file" ] && _n="$(cat "$_file" 2>/dev/null)"
-	case "$_n" in
-	'' | *[!0-9]*) _n=0 ;;
-	esac
-	_n=$((_n + 1))
-	printf '%s\n' "$_n" >"$_file" 2>/dev/null || :
-	printf '%s\n' "$_n"
-}
-
-# Saying it once is too easy to miss — a long session compacts, and the line
-# goes with it. Saying it 782 times is noise the agent learns to skip. So: the
-# first two occurrences, then every tenth.
-worth_saying() {
-	case "$1" in
-	1 | 2) return 0 ;;
-	esac
-	[ $(($1 % 10)) -eq 0 ]
-}
-
 # --- rules -------------------------------------------------------------------
-
-# Every rule answers three questions in this order, and returns 1 as soon as one
-# of them says no: did this command match, was the cheap form already used, and
-# did the expensive form actually cost anything on THIS call. That last question
-# is what keeps the hook quiet on the calls where the cheap form would not have
-# helped, and it is different for each rule.
+#
+# It says it EVERY time, and it keeps no state at all — no counter, no per-session
+# file, nothing to go stale or to disagree with itself. An earlier version said it
+# twice and then every tenth call, out of a worry about being noisy. That was the
+# wrong worry: if a cheap documented form exists and the expensive one is used,
+# that is a mistake, and a mistake does not stop being one on the third
+# repetition. Being stateless is the bonus — there is now nothing here that can
+# be wrong about what happened earlier in the session.
+#
+# Each rule answers two questions and returns 1 as soon as one says no: did this
+# command match without the cheap form, and did the expensive form actually cost
+# anything on THIS call. The second question is not a rate limit — it is what
+# stops the hook talking about a call where the cheap form would have saved
+# nothing — and it is allowed to differ per rule, or to be absent.
 
 rule_mav_ui_tree() {
 	case "$CMD" in
@@ -119,13 +98,11 @@ rule_jevi_ask_oneoff() {
 	*" -f "* | *--questions*) return 1 ;;
 	esac
 
-	# The cost gate here is not output size but repetition, because that is
-	# what jevi's own help says: the positional question is "for a one-off
-	# from a terminal. Use -f for anything you run twice". So the first
-	# one-off is correct and says nothing; the second is the tell.
-	[ "$(occurrences jevi-ask-oneoff-seen)" -ge 2 ] || return 1
-
-	NUDGE="That is the second one-off \`jevi ask\` in this session. A question set (\`jevi ask -f <set>\`) sends the same question without re-typing it, keeps the wording stable between runs so the answers stay comparable, and is what jevi's own help points you to for anything you run twice."
+	# No cost gate: an inline question is already the expensive form of
+	# itself. jevi's own help says the positional question is "for a one-off
+	# from a terminal. Use -f for anything you run twice", and anything an
+	# agent runs is something it will run again.
+	NUDGE="A question set (\`jevi ask -f <set>\`) sends the same question without re-typing it and keeps the wording stable between runs, so the answers stay comparable — jevi's own help points you to it for anything you run twice, and an agent's questions are always run twice. The inline form is for a one-off at a terminal."
 	return 0
 }
 
@@ -137,7 +114,6 @@ for rule in $rules; do
 	NUDGE=''
 	"$rule" || continue
 	[ -n "$NUDGE" ] || continue
-	worth_saying "$(occurrences "$rule")" || continue
 	jq -n --arg ctx "$NUDGE" \
 		'{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: $ctx}}' \
 		2>/dev/null || :
