@@ -1195,8 +1195,17 @@ Precedence, most to least specific:
 
 1. An explicit `--target` on `mav run` (and the `MAV_TARGET_KIND` /
    `MAV_TARGET_UDID` / `MAV_TARGET_NAME` / `MAV_TARGET_RUNTIME` env vars it
-   sets on matrix children).
+   sets on matrix children). `--target` belongs to `mav run` and nothing
+   else reads it: every other command refuses it with
+   `code=flag_unsupported` rather than accepting it and ignoring it, which
+   is what `mav ui tree --target ...` did through v0.19.2.
 2. `MAV_TARGET_KIND` / `MAV_TARGET_UDID` set directly in the environment.
+   Either one is enough on its own: `MAV_TARGET_UDID` with no
+   `MAV_TARGET_KIND` beside it pins the simulator just the same, and the
+   `ok` line says `target_source=env`. Through v0.19.2 it did nothing at
+   all. `MAV_TARGET_NAME` and `MAV_TARGET_RUNTIME` narrow a target but do
+   not select one — nothing in mav resolves either to a UDID — so on their
+   own they leave the choice to cases 3 to 5.
 3. `simulator_udid` pinned in `.mav/config.yaml` (`mav sim select`).
 4. `target_command`.
 5. The booted simulator -- **only when exactly one is booted**. Reached only

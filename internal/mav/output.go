@@ -1,6 +1,7 @@
 package mav
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -82,8 +83,28 @@ func quoteIfNeeded(value string) string {
 		return `""`
 	}
 	if strings.ContainsAny(value, " \t\n\"") {
+		return jsonQuote(value)
+	}
+	return value
+}
+
+// jsonQuote is json.Marshal without its HTML escaping.
+//
+// json.Marshal escapes the three HTML-significant characters as <,
+// > and &, which is right for a string about to be embedded in a
+// web page and wrong for every line mav prints. The cost is not cosmetic:
+// the remediation of ambiguous_booted_simulator, the most-read failure of
+// the v0.19 line, told its reader to run `mav sim select <udid>`
+// -- not a command -- in a field whose whole job is to be typed back.
+// Quoting is otherwise unchanged and the result is still a valid JSON
+// string.
+func jsonQuote(value string) string {
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
 		b, _ := json.Marshal(value)
 		return string(b)
 	}
-	return value
+	return strings.TrimRight(buf.String(), "\n")
 }
