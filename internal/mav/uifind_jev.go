@@ -26,14 +26,20 @@ type jevAnswer struct {
 		Label   string `json:"label"`
 		Type    string `json:"type"`
 	} `json:"answers"`
-	Error string `json:"error"`
+	// LatencyMS is jev's own measurement of the round trip it made. Read
+	// rather than re-measured here: timing the subprocess would fold jev's
+	// start-up into the model's time and attribute to the network something
+	// that is ours.
+	LatencyMS int64  `json:"latency_ms"`
+	Error     string `json:"error"`
 }
 
 // jevChoice is what the caller needs out of a jev round: a verdict, a label,
-// and — separately — whether asking worked at all.
+// what the round trip took, and — separately — whether asking worked at all.
 type jevChoice struct {
-	Verdict string
-	Label   string
+	Verdict   string
+	Label     string
+	LatencyMS int64
 }
 
 // errJevUnavailable means the question was never put. Distinct from an answer
@@ -80,7 +86,11 @@ func askJevChoice(ctx context.Context, key, question, text string, options []str
 	if !ok {
 		return jevChoice{}, errJevUnavailable
 	}
-	return jevChoice{Verdict: answer.Verdict, Label: answer.Label}, nil
+	return jevChoice{
+		Verdict:   answer.Verdict,
+		Label:     answer.Label,
+		LatencyMS: doc.LatencyMS,
+	}, nil
 }
 
 // findIsRefusedHere reports the reason find must not consult a model in this

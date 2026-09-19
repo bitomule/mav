@@ -47,7 +47,7 @@ func TestRotatedTapRejectsARotationThatLandsOffScreen(t *testing.T) {
 		t.Fatalf("the unapplied rotation was not surfaced: %q", got)
 	}
 	joined := strings.Join(runner.commands, "\n")
-	if !strings.Contains(joined, "idb ui tap 200 700") {
+	if !strings.Contains(joined, "-x 200 -y 700") {
 		t.Fatalf("the tap was not dispatched at its original coordinates: %q", runner.commands)
 	}
 	if strings.Contains(joined, "-298") {
@@ -86,7 +86,7 @@ func TestScreenCacheFromAnotherAngleIsReprobed(t *testing.T) {
 	if !strings.Contains(got, "rotation_unavailable=90") {
 		t.Fatalf("the mismatch was not surfaced: %q", got)
 	}
-	if !strings.Contains(joined, "idb ui tap 200 700") {
+	if !strings.Contains(joined, "-x 200 -y 700") {
 		t.Fatalf("the tap was not dispatched at its original coordinates: %q", runner.commands)
 	}
 	data, err := os.ReadFile(filepath.Join(root, MavDir, "screens", udid+".json"))
@@ -264,7 +264,7 @@ func TestUITapDispatchesRawUnderA180Rotation(t *testing.T) {
 		t.Fatalf("the unapplied 180 was not surfaced: %q", got)
 	}
 	joined := strings.Join(runner.commands, "\n")
-	if !strings.Contains(joined, "idb ui tap 150 300") {
+	if !strings.Contains(joined, "-x 150 -y 300") {
 		t.Fatalf("the tap was not dispatched at its original coordinates: %q", runner.commands)
 	}
 	if strings.Contains(joined, "describe-ui") {
@@ -298,7 +298,7 @@ func TestVerifiedTapCatchesAStaleSameAngleCacheHit(t *testing.T) {
 		t.Fatalf("the contradicted rotation was not surfaced: %q", got)
 	}
 	joined := strings.Join(runner.commands, "\n")
-	if !strings.Contains(joined, "idb ui tap 200 300") {
+	if !strings.Contains(joined, "-x 200 -y 300") {
 		t.Fatalf("the tap was not dispatched at its original coordinates: %q", runner.commands)
 	}
 	if strings.Contains(joined, "tap 102 200") {

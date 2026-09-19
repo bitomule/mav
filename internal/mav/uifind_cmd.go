@@ -7,6 +7,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // uiFind is `mav ui find "<what you want to tap>"`.
@@ -33,7 +34,9 @@ func (c CLI) uiFind(ctx context.Context, opts GlobalOptions, cfg Config, args []
 	if err != nil {
 		return Fail("prefer_driver_invalid", map[string]string{"usage": c.preferDriverUsage()}).Write(c.Stdout)
 	}
+	treeStarted := time.Now()
 	described, err := c.describeUITree(ctx, cfg, prefer, hasFlag(args, "--include-system"))
+	treeMS := time.Since(treeStarted).Milliseconds()
 	if err != nil {
 		return c.writeUITreeToolError(cfg, err)
 	}
@@ -51,12 +54,21 @@ func (c CLI) uiFind(ctx context.Context, opts GlobalOptions, cfg Config, args []
 	// fill, so find must not read through it.
 	elements := ExtractElements(described.Result.Stdout)
 	result := c.resolveFind(ctx, elements, goal)
+	// Reading the screen is part of what the answer cost, and on a real
+	// simulator it is most of it. Left out, total_ms would flatter find by
+	// hiding the expensive half.
+	result.Cost.TreeMS = treeMS
+	result.Cost.TotalMS += treeMS
 
 	fields := map[string]string{
 		"driver":      described.Driver,
 		"nodes":       strconv.Itoa(len(elements)),
 		"resolved_by": result.ResolvedBy,
 		"candidates":  strconv.Itoa(result.Candidates),
+		// Two of the four on the human line: the one a person asks about, and
+		// the one that says whether the wait was the model or us.
+		"total_ms": strconv.FormatInt(result.Cost.TotalMS, 10),
+		"model_ms": strconv.FormatInt(result.Cost.ModelMS, 10),
 	}
 	if result.Reason != "" {
 		fields["reason"] = result.Reason
@@ -78,7 +90,27 @@ func (c CLI) uiFind(ctx context.Context, opts GlobalOptions, cfg Config, args []
 // resolveFind is the decision, with no I/O of its own beyond the one call to
 // jev. Split from uiFind so the whole ladder is reachable from a test without a
 // simulator.
+//
+// The timing lives out here rather than inside decideFind because decideFind
+// returns from a dozen places and a cost filled in at each of them is a cost
+// that will be forgotten at the thirteenth.
 func (c CLI) resolveFind(ctx context.Context, elements []Element, goal string) FindResult {
+	started := time.Now()
+	result := c.decideFind(ctx, elements, goal)
+	result.Cost.TotalMS = time.Since(started).Milliseconds()
+	// What is left once the provider's round trip is taken out is ours.
+	result.Cost.LocalMS = result.Cost.TotalMS - result.Cost.ModelMS
+	if result.Cost.LocalMS < 0 {
+		// jev timed its own call and mav timed the process around it, so two
+		// clocks are being subtracted. They agree to well within a
+		// millisecond in practice; clamping means the arithmetic of the three
+		// parts never reads as nonsense on the day they do not.
+		result.Cost.LocalMS = 0
+	}
+	return result
+}
+
+func (c CLI) decideFind(ctx context.Context, elements []Element, goal string) FindResult {
 	candidates := FindCandidates(elements)
 	batch, omitted := FindBatch(candidates)
 
@@ -129,6 +161,11 @@ func (c CLI) resolveFind(ctx context.Context, elements []Element, goal string) F
 		result.Next = "jev could not be asked. The screen was not judged; read `mav ui tree`"
 		return result
 	}
+
+	// Recorded before the answer is judged: what the round trip cost is true
+	// whether the answer survives the vetoes or not, and the vetoed runs are
+	// exactly the ones worth knowing the price of.
+	result.Cost.ModelMS = answer.LatencyMS
 
 	result.Verdict = answer.Verdict
 	chosen, reason := InterpretFindAnswer(answer.Verdict, answer.Label, batch)

@@ -109,13 +109,19 @@ func (d *Driver) Tap(ctx context.Context, target drivers.Target, spec drivers.Ta
 	} else if spec.Selector.Text != "" {
 		args = append(args, "--label", spec.Selector.Text)
 	} else {
-		return drivers.TapResult{}, errors.New("axe: tap requires id or text selector")
+		// A point, and it goes out with the same style for the same reason:
+		// measured 4 of 6 with AXe's default (tapAt) against 6 of 6 with
+		// physical touch, same point, same slot, same clean launch each
+		// time. The selector path above has been pinned to physical since
+		// the morning; the coordinate path never reached AXe at all because
+		// the router preferred idb for it, so it kept the flaky transport.
+		args = append(args, "-x", strconv.Itoa(spec.X), "-y", strconv.Itoa(spec.Y))
 	}
 	res := d.exec.Run(ctx, "axe", args...)
 	if res.Err != nil {
 		return drivers.TapResult{}, errors.New(firstLine(res.Stderr))
 	}
-	return drivers.TapResult{MatchedID: spec.Selector.ID, MatchedText: spec.Selector.Text}, nil
+	return drivers.TapResult{MatchedID: spec.Selector.ID, MatchedText: spec.Selector.Text, X: spec.X, Y: spec.Y}, nil
 }
 func (d *Driver) Tree(ctx context.Context, target drivers.Target, _ drivers.TreeSpec) (drivers.TreeResult, error) {
 	res := d.exec.Run(ctx, "axe", targetArgs(target, "describe-ui")...)

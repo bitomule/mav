@@ -157,7 +157,7 @@ func TestUITapRotatesCoordinatesIntoTheHIDSpace(t *testing.T) {
 			t.Fatalf("missing %q in %q", want, got)
 		}
 	}
-	if !strings.Contains(strings.Join(runner.commands, "\n"), "idb ui tap 200 249") {
+	if !strings.Contains(strings.Join(runner.commands, "\n"), "-x 200 -y 249") {
 		t.Fatalf("the tap was dispatched unrotated: %q", runner.commands)
 	}
 }
@@ -178,7 +178,7 @@ func TestUITapRotatesLandscapeRightTheOtherWay(t *testing.T) {
 			t.Fatalf("missing %q in %q", want, got)
 		}
 	}
-	if !strings.Contains(strings.Join(runner.commands, "\n"), "idb ui tap 330 624") {
+	if !strings.Contains(strings.Join(runner.commands, "\n"), "-x 330 -y 624") {
 		t.Fatalf("the tap was dispatched unrotated: %q", runner.commands)
 	}
 }
@@ -196,7 +196,7 @@ func TestUITapLeavesPortraitCoordinatesAndTheTreeAlone(t *testing.T) {
 	if strings.Contains(got, "rotation=") || strings.Contains(got, "hid_x=") {
 		t.Fatalf("an unrotated tap reported a rotation: %q", got)
 	}
-	if !strings.Contains(strings.Join(runner.commands, "\n"), "idb ui tap 301 460") {
+	if !strings.Contains(strings.Join(runner.commands, "\n"), "-x 301 -y 460") {
 		t.Fatalf("the tap moved on an unrotated simulator: %q", runner.commands)
 	}
 	if strings.Contains(strings.Join(runner.commands, "\n"), "describe-ui") {
@@ -317,7 +317,7 @@ func TestUITapSkipsRotationWhenTreeShapeContradictsTheAngle(t *testing.T) {
 	if !strings.Contains(got, "rotation_unavailable=90") {
 		t.Fatalf("the mismatch was not surfaced: %q", got)
 	}
-	if !strings.Contains(strings.Join(runner.commands, "\n"), "idb ui tap 200 700") {
+	if !strings.Contains(strings.Join(runner.commands, "\n"), "-x 200 -y 700") {
 		t.Fatalf("the tap was not dispatched at its original coordinates: %q", runner.commands)
 	}
 	if _, err := os.Stat(filepath.Join(root, MavDir, "screens", udid+".json")); !os.IsNotExist(err) {

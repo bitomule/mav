@@ -178,6 +178,14 @@ entirely.
      `reason` says whether the screen was judged (`abstained`) or could not be
      (`no_key`, `no_network`, `ci_refused`).
 
+   Every run also prints what it cost, in a `cost` block: `total_ms`,
+   `tree_ms` (reading the screen, usually most of it), `model_ms` (the
+   provider round trip, as jev measured it — `0` when no model was asked) and
+   `local_ms` (what is left: candidates, rendering, the vetoes). No token
+   counts: `find` asks jev, not a large model, so what it spends is not where
+   the saving is — the saving is the tree you no longer paste into your own
+   context.
+
    `find` needs a jev API key, and says on every run which of three places it
    read one from (`key_source=env|keychain|file`). Set one with
    **`mav jev set-key < key.txt`** — it reads the key from stdin, never from an
@@ -206,7 +214,15 @@ entirely.
    insufficient or visual evidence is needed. Captures are unique by default
    under `.mav/runs/<run-id>/captures/`, and `--name` gives the client and report
    a stable, readable proof point such as `largest-videos-after-pinch`.
-7. Use `mav ui tap/type/erase/hideKeyboard/swipe/longPress/wait/scrollUntil`
+7. **Prefer a selector tap over a coordinate tap, and do not read `ok` as
+   "it tapped".** `ui tap --x --y` and `ui swipe` report `delivered=unconfirmed`
+   because the driver accepting a gesture has been measured to mean nothing:
+   on iOS 26.3 simulator slots a coordinate tap prints success and the tree is
+   identical either side, while a tap by `--text` on the same element in the
+   same second works. Add `--verify` when the answer matters; it costs a tree
+   read and returns `verified=changed|unchanged`.
+
+   Use `mav ui tap/type/erase/hideKeyboard/swipe/longPress/wait/scrollUntil`
    for manual exploration. Prefer accessibility identifiers first (`--id`).
    `mav ui erase --focused` clears a focused field: baguette on simulator, and on
    macOS the driver sets the field to the empty value, which does not depend on
