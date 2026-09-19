@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.22.0
 
 ### A coordinate tap and a swipe no longer imply they were delivered
 
