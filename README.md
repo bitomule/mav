@@ -421,6 +421,15 @@ This runs:
 npx skills add bitomule/mav --skill mav --global --yes
 ```
 
+That also installs one hook, because the skill directory carries a
+`.claude-plugin/plugin.json`. In Claude Code the hook runs after a Bash call and
+says so when the same thing had a cheaper form the agent did not use — today
+that means a full `mav ui tree` over 40 elements, when `mav ui tree --agent`
+would have returned the same screen ranked, and a second one-off `jevi ask`
+where a question set would do. It **never blocks a call, never rewrites one and
+never decides a permission**; it prints one sentence and exits. To drop it,
+delete `hooks/` from the installed skill, or disable the `mav` plugin.
+
 Build from source:
 
 ```bash

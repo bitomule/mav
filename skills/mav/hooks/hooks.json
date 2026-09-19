@@ -1,0 +1,17 @@
+{
+  "description": "After a Bash call, says so when the same thing had a cheaper form the agent did not use. Never blocks, never rewrites, never decides a permission.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/cheaper-way.sh",
+            "timeout": 2
+          }
+        ]
+      }
+    ]
+  }
+}

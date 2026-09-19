@@ -1,5 +1,49 @@
 # Changelog
 
+## Unreleased
+
+### A hook that says "that had a cheaper form", because saying it in the docs did not work
+
+`mav ui tree --agent` has existed for a while, costs nothing extra and saves the
+tokens. Measured over **782 real `mav ui tree` calls across 51 agent sessions**:
+it was used **54 times, 6.9%**, by 7 sessions of 51. Of those 7, **six used it on
+their first or second call because the flag was written into their task text.
+None of them got there from the skill.** Documentation was not the lever — a
+model reads "prefer X", repeats it back, and issues the expensive call anyway.
+
+So the skill now ships one hook, delivered by the same `mav install-skills` that
+installs the skill: `skills/mav/hooks/cheaper-way.sh`, wired through a new
+`skills/mav/.claude-plugin/plugin.json`. It runs after a Bash call and says one
+sentence when the call had a cheaper form that was not used.
+
+Two rules today, and the design is a table so the third costs a line:
+
+| You ran | It says so when | Because |
+| --- | --- | --- |
+| `mav ui tree` without `--agent` | the tree came back with **more than 40 elements** | below the cap `--agent` saves nothing worth a line |
+| `jevi ask "<question>"` without `-f` | it is the **second** one-off this session | jevi's own help says the positional form is "for a one-off … use `-f` for anything you run twice" |
+
+What it deliberately cannot do, each for a reason we have already paid for:
+
+- **It never blocks and never rewrites.** It is on `PostToolUse`, which can do
+  neither. Rewriting `mav ui tree` to `--agent` was considered and rejected:
+  `--agent` caps the screen at 40 elements, so a silent rewrite is a silent
+  truncation, and the full tree is what makes `--id` selectors work. Optimising
+  the small case is not worth risking the main one.
+- **It emits no `permissionDecision`, "allow" included** — that would
+  auto-approve the call and walk past the user's own ask/deny rules. A test
+  asserts its absence rather than trusting review.
+- **`timeout: 2`, explicit.** The default hook timeout is 600 seconds; on a hook
+  that runs after every Bash call that is ten minutes of a wedged session. It
+  exits 0 on every path, uses no network, and runs no `mav`, no `git` and no
+  build.
+- **It says it at most three times, then every tenth.** Once is lost to
+  compaction in a long session; 782 times is noise an agent learns to skip.
+
+Verified end to end in a real Claude Code session, not only in unit tests: with a
+60-element tree the agent received and quoted the sentence; with `--agent` it
+received nothing.
+
 ## v0.19.3
 
 ### The target override that was documented and did nothing
