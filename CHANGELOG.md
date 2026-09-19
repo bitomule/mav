@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.20.0
 
 ### `mav ui find`, and a tree that stops hiding half a screen
 
