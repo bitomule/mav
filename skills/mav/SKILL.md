@@ -163,21 +163,10 @@ entirely.
    `/tmp/mav/sim-locks/<udid>.json` for simulator runs; if another worktree owns
    a fresh lock, pick a different simulator unless you are sure you own that run
    and pass `--force`.
-5. **Read the screen with `mav ui tree --agent`, not with `mav ui tree`.**
-   `--agent` is the form for agents, and it is not just a smaller tree — it is a
-   more useful one. It ranks the screen (focused element first, then what you
-   can actually tap or type into), caps it at 40 nodes, and marks each one
-   `actionable`, which the full tree never tells you. It drops `frame` to save
-   tokens; add `--with-frame` when you need coordinates. The ids it returns
-   work with `mav ui tap --id` exactly like the full tree's.
-
-   Reach for the bare `mav ui tree` only when `--agent` was not enough — the
-   element you want is outside the ranked 40, or you need every frame on screen.
-   That is the exception, not the starting point.
-
-   Both print compact screen metadata followed by bounded `node ...` lines with
-   ids, labels, roles, values, enabled state, subroles, titles, pids, focus
-   state, and frames when available.
+5. Prefer `mav ui tree` to understand the current screen. It prints compact
+   screen metadata followed by bounded `node ...` lines with ids, labels, roles,
+   values, enabled state, subroles, titles, pids, focus state, and frames when
+   available.
    Treat this as the primary structured UI source for agents; do not ask for
    `--json`. If the simulator accessibility service returns an empty
    `AXApplication` tree, MAV attempts recovery internally; do not work around it
