@@ -35,7 +35,7 @@ func hookPath(t *testing.T) string {
 // runHook feeds one payload to the hook and returns its stdout. A non-zero exit
 // is a failure in itself: the hook must never report an error to Claude Code,
 // because the only thing that can come of it is an interrupted agent.
-func runHook(t *testing.T, session, command, stdout string) string {
+func runHook(t *testing.T, session, command, stdout string, extraEnv ...string) string {
 	t.Helper()
 	payload, err := json.Marshal(map[string]any{
 		"session_id":    session,
@@ -49,11 +49,31 @@ func runHook(t *testing.T, session, command, stdout string) string {
 	cmd := exec.Command("/bin/sh", hookPath(t))
 	cmd.Stdin = strings.NewReader(string(payload))
 	cmd.Env = append(os.Environ(), "TMPDIR="+t.TempDir())
+	cmd.Env = append(cmd.Env, extraEnv...)
 	out, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("hook exited non-zero for %q: %v", command, err)
 	}
 	return string(out)
+}
+
+// withKey and withoutKey pin the find rule's availability gate, which otherwise
+// reads real machine state. The gate asks whether a key EXISTS in any of three
+// places; the environment variable is the one a test can set, and pointing
+// XDG_CONFIG_HOME at an empty directory removes the file. The keychain is the
+// one place a test cannot control, so withoutKey skips on a machine that has an
+// entry rather than asserting something that is not true there.
+func withKey(t *testing.T) []string {
+	t.Helper()
+	return []string{"MAV_JEV_API_KEY=not-a-real-key", "XDG_CONFIG_HOME=" + t.TempDir()}
+}
+
+func withoutKey(t *testing.T) []string {
+	t.Helper()
+	if exec.Command("/usr/bin/security", "find-generic-password", "-s", "mav-jev").Run() == nil {
+		t.Skip("this machine has a mav-jev keychain entry, so the no-key branch cannot be exercised here")
+	}
+	return []string{"MAV_JEV_API_KEY=", "XDG_CONFIG_HOME=" + t.TempDir()}
 }
 
 // nodeLines fakes n lines of `mav ui tree` output. Only the `node ` prefix
@@ -99,15 +119,18 @@ func TestCheaperWayHookStaysQuiet(t *testing.T) {
 		command string
 		stdout  string
 	}{
-		// `mav ui tree` is deliberately NOT a rule any more, and these two
-		// cases are the guard on that. The rule it used to have pointed at
-		// `mav ui tree --agent`, which was then rejected: it caps the screen
-		// at 40 elements with no flag to raise the cap, and it ranks AFTER
-		// capping, so its ordering cannot rescue an element that already
-		// fell outside the 40. There is no cheaper form of a tree left to
-		// recommend, so the hook has nothing to say about one.
-		{"bare ui tree, however large", "mav ui tree", nodeLines(60)},
-		{"ui tree with the rejected flag", "mav ui tree --agent", nodeLines(60)},
+		// `mav ui tree` has a rule again, and it is NOT the one that was
+		// removed. That one pointed at `mav ui tree --agent`, which was
+		// rejected: it caps the screen at 40 with no flag to raise the cap
+		// and it ranks AFTER capping, so its ordering cannot rescue an
+		// element that already fell outside the 40. The rule now points at
+		// `mav ui find`, which reads the uncapped extraction. What stays
+		// silent is a SMALL tree: with a dozen elements, reading them is
+		// cheaper than asking anything, and advice that costs more than it
+		// saves is worse than none.
+		{"a tree small enough to just read", "mav ui tree", nodeLines(12)},
+		{"a tree just under the gate", "mav ui tree", nodeLines(39)},
+		{"already using the cheap form", `mav ui tree && mav ui find "the save button"`, nodeLines(60)},
 		// Not our business.
 		{"unrelated command", "ls -la", nodeLines(60)},
 		{"another mav command", "mav ui tap --id foo", nodeLines(60)},
@@ -116,7 +139,12 @@ func TestCheaperWayHookStaysQuiet(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if out := runHook(t, "s-"+tc.name, tc.command, tc.stdout); strings.TrimSpace(out) != "" {
+			// With a key present, so silence here proves the cost gate and
+			// not the availability gate. Without this the tree cases would
+			// pass on any machine that simply has no key, which is the
+			// wrong reason and would hide a broken cost gate.
+			out := runHook(t, "s-"+tc.name, tc.command, tc.stdout, withKey(t)...)
+			if strings.TrimSpace(out) != "" {
 				t.Fatalf("expected silence, got %q", out)
 			}
 		})
@@ -134,6 +162,74 @@ func TestCheaperWayHookNudgesInlineJeviAsk(t *testing.T) {
 // gets the same answer. This is the assertion that keeps someone from
 // reintroducing a rate limit as a "noise" fix — the noise is the expensive call,
 // not the sentence about it.
+// The find rule, and its two gates. The gates are the whole reason a rule about
+// `mav ui tree` is safe to have at all: the previous one was removed for
+// pointing at a form we do not recommend, and a rule that fires when the advice
+// cannot be followed is the same mistake wearing a different hat.
+
+func TestCheaperWayHookNudgesALargeTreeTowardsFind(t *testing.T) {
+	got := nudgeFrom(t, runHook(t, "s-tree", "mav ui tree", nodeLines(60), withKey(t)...))
+	if !strings.Contains(got, "mav ui find") {
+		t.Fatalf("expected a nudge pointing at find, got %q", got)
+	}
+	// The sentence has to carry the limit as well as the recommendation:
+	// "replaces the grep, not your judgement" is the line that keeps an agent
+	// from treating find as an oracle.
+	if !strings.Contains(got, "not your judgement") {
+		t.Fatalf("the nudge must say what find does NOT replace, got %q", got)
+	}
+}
+
+func TestATruncatedTreeSaysSoRatherThanJustRecommending(t *testing.T) {
+	// The truncated case is the one with teeth: elements were not shown at
+	// all, so this is not a cheaper way, it is the only way to see them.
+	stdout := nodeLines(80) + "node_more remaining=133\n"
+	got := nudgeFrom(t, runHook(t, "s-trunc", "mav ui tree", stdout, withKey(t)...))
+	if !strings.Contains(got, "cut") {
+		t.Fatalf("a truncated tree should be named as truncated, got %q", got)
+	}
+	if !strings.Contains(got, "mav ui find") {
+		t.Fatalf("expected a nudge pointing at find, got %q", got)
+	}
+}
+
+func TestATruncatedTreeSpeaksEvenBelowTheSizeGate(t *testing.T) {
+	// A truncation marker means elements are missing whatever the printed
+	// count says, so it overrides the 40-node gate rather than being filtered
+	// by it.
+	stdout := nodeLines(5) + "node_more remaining=200\n"
+	if got := nudgeFrom(t, runHook(t, "s-trunc-small", "mav ui tree", stdout, withKey(t)...)); got == "" {
+		t.Fatal("a truncation marker must speak regardless of how many lines printed")
+	}
+}
+
+func TestTheFindRuleSaysNothingWithoutAKey(t *testing.T) {
+	// Without a key find answers resolved_by=none, so recommending it is
+	// noise. This is the gate that makes the rule honest.
+	env := withoutKey(t)
+	if out := runHook(t, "s-nokey", "mav ui tree", nodeLines(120), env...); strings.TrimSpace(out) != "" {
+		t.Fatalf("expected silence with no key available, got %q", out)
+	}
+}
+
+// The control for the test above: it must be capable of failing. If the only
+// reason the no-key case is silent were that the hook never speaks about trees,
+// the assertion would prove nothing — so the same payload with a key must talk.
+func TestTheNoKeyControlWouldSeeAFailure(t *testing.T) {
+	if got := nudgeFrom(t, runHook(t, "s-ctl", "mav ui tree", nodeLines(120), withKey(t)...)); got == "" {
+		t.Fatal("the same payload with a key must produce a nudge, or the no-key assertion is vacuous")
+	}
+}
+
+func TestTheFindRuleNeverEmitsAPermissionDecision(t *testing.T) {
+	// Not even to allow: a permissionDecision walks straight past the user's
+	// own ask and deny rules, and this hook exists to advise, never to decide.
+	out := runHook(t, "s-perm", "mav ui tree", nodeLines(120), withKey(t)...)
+	if strings.Contains(out, "permissionDecision") {
+		t.Fatalf("the hook must never emit a permission decision: %q", out)
+	}
+}
+
 func TestCheaperWayHookSaysItEveryTime(t *testing.T) {
 	// One shared TMPDIR across all five calls, so any state the script kept
 	// would be visible to the later ones.

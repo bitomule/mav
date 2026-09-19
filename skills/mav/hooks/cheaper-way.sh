@@ -81,7 +81,53 @@ rule_jevi_ask_oneoff() {
 	return 0
 }
 
-rules='rule_jevi_ask_oneoff'
+rule_mav_tree_without_find() {
+	case "$CMD" in
+	*"mav ui tree"*) ;;
+	*) return 1 ;;
+	esac
+
+	# Already doing it the cheap way. A command that reaches for find at all is
+	# not the one this is aimed at, even when it also dumps a tree.
+	case "$CMD" in
+	*"mav ui find"*) return 1 ;;
+	esac
+
+	STDOUT="$(field '.tool_response.stdout')"
+	NODES="$(printf '%s\n' "$STDOUT" | grep -c '^node ' 2>/dev/null)" || NODES=0
+	TRUNCATED=0
+	case "$STDOUT" in
+	*node_more*) TRUNCATED=1 ;;
+	esac
+
+	# The cost gate, and it is the whole reason this rule is safe to have. With
+	# a dozen elements, reading the tree is cheaper than asking anything, and
+	# saying otherwise would be advice that costs more than it saves. 40 is
+	# half the print cap and the same size as the --agent view.
+	if [ "$TRUNCATED" -eq 0 ] && [ "${NODES:-0}" -lt 40 ]; then
+		return 1
+	fi
+
+	# The availability gate. Without a key, find answers resolved_by=none and
+	# the advice is noise, so the advice is not given. Checked by asking
+	# whether a key EXISTS, never by reading one and never over the network:
+	# the environment variable, then the keychain entry queried without -w so
+	# no secret is fetched, then the config file's presence on disk.
+	if [ -z "${MAV_JEV_API_KEY:-}" ] &&
+		! /usr/bin/security find-generic-password -s mav-jev >/dev/null 2>&1 &&
+		[ ! -f "${XDG_CONFIG_HOME:-$HOME/.config}/bitomule/mav/config.json" ]; then
+		return 1
+	fi
+
+	if [ "$TRUNCATED" -eq 1 ]; then
+		NUDGE="That tree was cut: \`mav ui tree\` prints 80 nodes and this screen has more, so elements you may need were not shown at all. \`mav ui find \"<what you want to tap>\"\` reads the uncapped extraction and can resolve them. It replaces \`mav ui tree | grep\`, not your judgement — it returns one element or resolved_by=none, and none means read the tree yourself."
+	else
+		NUDGE="\`mav ui find \"<what you want to tap>\"\` resolves one element from a description in your own words, so you do not filter ${NODES} nodes by hand. It replaces \`mav ui tree | grep\`, not your judgement: it never returns an element it is unsure of, and resolved_by=none means fall back to the tree you were going to read anyway."
+	fi
+	return 0
+}
+
+rules='rule_jevi_ask_oneoff rule_mav_tree_without_find'
 
 # --- emit --------------------------------------------------------------------
 
