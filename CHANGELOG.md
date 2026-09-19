@@ -1,5 +1,65 @@
 # Changelog
 
+## Unreleased
+
+### `mav goto` — navigate to a screen in one call
+
+Reads the screen, asks which element gets it closer, taps the point it already
+resolved, reads again. Until it arrives or gives up.
+
+**Measured on a real simulator**, Settings → General → Idioma y región, two
+steps: **7,336 and 7,540 ms against 9,733 and 9,225** for today's
+agent+tree+`tap --text`, arriving correctly both times. About **22% faster**,
+and that comparison *excludes* the agent's own model turn per step, which
+today's path needs and goto does not.
+
+**At one step goto is slower** (5,012 vs 4,474 ms) and that is stated rather
+than buried: the saving is per additional step, because goto reads the screen
+once per step where the old path reads it twice — once for the agent and once
+inside the selector tap.
+
+Arrival is decided by **code**, against the screen's **route** — navigation
+title, selected tab, any modal on top — and never by searching free text
+anywhere in the tree. `--arrived-when` takes `title:"…"` and `text:"…"` terms,
+all required, so a parameterised screen is expressible. A criterion that
+**already holds on the screen you start from is refused** rather than reported
+as instant arrival. With no criterion it reports `arrived=unverified`, never
+true: there is no second model asked to confirm its own work.
+
+It never taps anything destructive, with **no escape hatch** — unlike
+`mav ui find`, because nobody reads anything between the decision and the
+finger. It stops on arrival, 12 steps, 90s, two taps that changed nothing, a
+screen already visited, two abstentions in a row, a modal on top, or a
+destructive element in the way. The outcome says which, and the output is
+evidence — every step, both routes — not a verdict.
+
+### A row the tree mentions twice is one candidate
+
+A real defect in `mav ui find`, found by the loop refusing to move. iOS renders
+a list row as **two** accessibility elements — a container button and an inner
+one — with the same label, role and id. Settings → General carries
+`Idioma y región` four times and has **not one unique label on the whole
+screen**.
+
+Sent to the model as separate options they read as indistinguishable, so the
+instruction to decline when two candidates are equally plausible declined on
+**every row of every list**. And find's literal path — the one that needs no
+key and no network — could never resolve anything there.
+
+They are one row the tree mentions twice. Candidates are now de-duplicated by
+identity, with a test that two genuinely different rows sharing a label stay
+two.
+
+### The cheaper-way hook suggests `goto` for chained navigation
+
+One more rule, and deliberately narrower than the `find` one. find is worth
+suggesting on any tree because it always buys context; goto only wins from the
+second step, so nudging a single tap towards it would be advice that makes
+things slower. The rule fires on two or more navigation commands issued in one
+line, which is the only chain a stateless hook can see — and staying stateless
+is worth more than catching every chain, because a per-session counter would be
+wrong after a compaction and would nag on every tap.
+
 ## v0.22.0
 
 ### A coordinate tap and a swipe no longer imply they were delivered
