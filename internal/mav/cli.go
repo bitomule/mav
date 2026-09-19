@@ -193,6 +193,8 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 		return c.ui(ctx, opts, rest[1:])
 	case "jev":
 		return c.jev(ctx, opts, rest[1:])
+	case "goto":
+		return c.gotoCommand(ctx, opts, rest[1:])
 	case "capture":
 		return c.capture(ctx, opts, rest[1:])
 	case "app":
@@ -494,6 +496,23 @@ Selects a physical iOS device and switches target_kind to device.
   mav ui wait --text TEXT [--timeout 5s]
   mav ui wait --value VALUE [--timeout 5s]
   mav ui scrollUntil --id ID [--direction up] [--max-swipes 5]
+`
+	case "goto":
+		return `Usage: mav goto "<the screen you want>" [--arrived-when '<criteria>'] [--max-steps 12] [--timeout 90s]
+
+Navigates to a screen on its own: reads the screen, decides what to tap to get closer, taps it, reads again.
+
+It taps the point it already resolved rather than a selector, which is where the time comes from: a selector tap re-reads the tree (277ms by coordinates against 1,480ms by text, measured).
+
+--arrived-when is the only way goto can assert arrival, and it is checked by code against the screen's ROUTE — the navigation title, the selected tab, any modal on top — never against free text anywhere in the tree. Terms are ` + "`title:\"...\"`" + ` and ` + "`text:\"...\"`" + `, all required:
+  mav goto "the language screen" --arrived-when 'title:"Idioma y región"'
+  mav goto "order 123" --arrived-when 'title:"Order detail" text:"123"'
+
+A criterion that ALREADY holds on the screen you start from is refused (ambiguous_criterion) rather than reported as instant arrival. Without --arrived-when, goto reports arrived=unverified and never true: there is no second model asked to confirm its own work.
+
+It never taps anything destructive, with no escape hatch — unlike ` + "`mav ui find`" + `, because nobody reads anything between the decision and the finger. It stops on: arrival, 12 steps, 90s, two taps that changed nothing, a screen it has already visited, two abstentions in a row, a modal on top, or a destructive element in the way. The outcome says which, and the output is evidence — every step, both routes — not a verdict.
+
+Refuses to run when CI is set.
 `
 	case "capture":
 		return "Usage: mav capture [--name NAME] [--run RUN_ID]\n"
