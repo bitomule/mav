@@ -345,11 +345,13 @@ func (c CLI) resolveGotoStep(ctx context.Context, elements []Element, goal strin
 		return result
 	}
 	result.Verdict = answer.Verdict
-	chosen, reason := InterpretFindAnswer(answer.Verdict, answer.Label, batch)
+	chosen, reason := InterpretGotoAnswer(answer.Label, batch)
 	if reason != "" {
 		result.Reason = reason
 		return result
 	}
+	// The veto is unchanged and still the only thing that can overrule the
+	// model, still only ever able to remove a yes.
 	if veto := VetoChoice(chosen, goal, batch); veto != "" {
 		result.Reason = veto
 		return result

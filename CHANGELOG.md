@@ -1,5 +1,70 @@
 # Changelog
 
+## Unreleased
+
+### `mav goto` arrives, and every tap is 157ms cheaper
+
+Two fixes from profiling a real goto step end to end, and three measured dead
+ends recorded so nobody pays to rediscover them.
+
+**goto now arrives.** It was stopping with `no_route` on screens whose
+destination was plainly there — Settings → General → Información, one visible
+tap away. The row was in the tree AND among the candidates sent to the model
+(proven by `mav ui find "Información"` resolving `resolved_by=literal` on that
+same screen), so neither scrolling nor the candidate filter was to blame.
+
+The model was picking the RIGHT element and jevi was marking the answer
+`unsure`, because its confidence sat at 0.37 — under jevi's own default cut.
+mav read the verdict, so a correct answer was discarded. That is mav inheriting
+someone else's numeric threshold, which is precisely what it is not supposed to
+have.
+
+Measured on one ten-row screen, eight goals whose answer was on it and twelve
+whose answer was not:
+
+| | picks the right row | declines when it should |
+| --- | --- | --- |
+| reading the verdict | 4/8 | 10/12 |
+| reading the label | **8/8** | 9/12 |
+
+The verdict cost half the correct answers and bought almost nothing: two of the
+three wrong picks carried `verdict: yes` anyway. So **goto reads the choice**,
+and the abstention still lives where the model can express it — `none` is an
+option, chosen 9 times in 12 when nothing fitted. **`find` keeps reading the
+verdict**: its caller taps what it returns with no loop underneath to catch a
+wrong lead.
+
+**Every tap is 157ms faster** (1,003 → 846 ms, 7/7 still delivered).
+`resolveCapabilities` was 310ms of a 1,194ms tap, and 192ms of that was a
+single `idb --version`: idb is a Python tool, starting it costs 116ms, and
+every mav command paid it to produce a hint read in exactly two places — a
+coordinate tap that has already failed for want of a driver, and `mav doctor`.
+Both now ask for it themselves.
+
+### Three dead ends, with the numbers that closed them
+
+So they are not re-attempted. `axe` costs ~615ms of fixed session setup per
+invocation and only ~139ms per gesture (measured through its own batch mode:
+one tap 755ms, two 894, three 1,276). That block is about 65% of a goto step,
+so it was worth attacking three ways:
+
+- **Swapping to idb.** Faster at both and wrong at both: `idb ui tap` is 117ms
+  against axe's 601 but **delivered 0/5**, and `idb ui describe-all` is 186ms
+  against 462 but returns **13 nodes where axe returns 124**. mav's router
+  already overrides `--prefer-driver idb` for coordinate taps, correctly.
+- **Configuring axe to skip the setup.** `describe-ui` has no such option, and
+  the tap's `--pre-delay`/`--post-delay` are already effectively zero: 821ms
+  with defaults against 817ms with both set to 0. The cost is work, not sleep.
+- **Fusing the read and the tap into one axe session.** `axe batch` takes
+  gestures only; `describe-ui` is not a valid step.
+
+What that leaves is a persistent axe session, and it is now established by
+measurement rather than assumed.
+
+Also measured and negative: jev's latency does not depend on how many
+candidates it is given — 358ms at 3 candidates, 414ms at 12, 387ms at 20. There
+is nothing to win by sending fewer.
+
 ## v0.23.0
 
 ### `mav goto` — navigate to a screen in one call

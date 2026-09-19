@@ -683,6 +683,12 @@ func (c CLI) doctor(ctx context.Context, opts GlobalOptions) error {
 		targetWarn = targetCommandWarnText(err)
 	}
 	caps := c.resolveCapabilities(ctx, cfg)
+	// doctor is the one command whose whole job is diagnosis, so it pays for
+	// the idb probe that every other command used to pay for and almost never
+	// read. 116ms here is the point of running doctor; 116ms on a tap was not.
+	if caps.Tools["idb"] {
+		caps.IDBIssue, caps.IDBNext = c.ResolveIDBIssue(ctx)
+	}
 	tools := caps.Tools
 	fields := caps.fields()
 	// Which target this diagnosis is ABOUT, resolved through the same
@@ -2164,6 +2170,7 @@ func probeLogPredicate(cfg Config) string {
 // bootedSimulatorCacheTTL) between two `mav ui` calls has no earlier warning
 // -- dispatchWithStaleTargetRetry is what recovers from it here, once,
 // after the fact.
+
 func (c CLI) ui(ctx context.Context, opts GlobalOptions, args []string) error {
 	if len(args) == 0 {
 		return Fail("ui_command_missing", map[string]string{"usage": "mav ui tree|orientation|tap|doubleTap|type|erase|hideKeyboard|swipe|drag|dragPath|toggle|press|longPress|pinch|rotate|twoFingerPan|actions|wait|scrollUntil"}).Write(c.Stdout)
@@ -2838,8 +2845,11 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			fields := tapToolMissingFields(cfg)
 			if targetKind(cfg) != drivers.KindMac {
 				fields = map[string]string{"tool": "idb"}
-				if caps.IDBNext != "" {
-					fields["next"] = caps.IDBNext
+				// Asked for here rather than on every command: this is the
+				// only tap path that prints it, and it only runs when the
+				// tap has already failed for want of a driver.
+				if _, next := c.ResolveIDBIssue(ctx); next != "" {
+					fields["next"] = next
 				}
 			}
 			return Fail("tool_missing", c.withFallbackFields(fields)).Write(c.Stdout)
