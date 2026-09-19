@@ -2734,6 +2734,26 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			fields["matched_id"] = matched.ID
 			fields["matched_text"] = elementText(matched)
 			fields["role"] = matched.Role
+			// A resolved element is tapped as an element whenever it can be,
+			// and only falls back to its centre point when it cannot.
+			//
+			// This used to go straight to coordinates, which reads as the
+			// obvious thing and is measured not to work: on a simpool slot
+			// (iPhone 17 Pro / iOS 26.3) `axe tap -x 364 -y 84` reports
+			// success and the tree is identical either side, while
+			// `axe tap --label Configuración` — which prints that it
+			// resolved to *the same point*, (364.0, 84.0) — actually taps.
+			// So every advanced selector (--index, --role, --near-text) was
+			// silently doing nothing on a simulator while answering ok.
+			if id, label, ok := elementTapHandle(matched); ok {
+				handleArgs := onlyFastPathArgs(args)
+				if id != "" {
+					handleArgs = append(handleArgs, "--id", id)
+				} else {
+					handleArgs = append(handleArgs, "--text", label)
+				}
+				return c.uiTap(ctx, opts, cfg, handleArgs)
+			}
 			mx, my, mw, mh, ok := parseElementFrame(matched.Frame)
 			if !ok {
 				return Fail("selector_frame_missing", selectorDiagnosticFields(selector, matched)).Write(c.Stdout)
@@ -2958,6 +2978,30 @@ func (c CLI) tapSelectorViaTree(ctx context.Context, opts GlobalOptions, cfg Con
 	}
 	return c.withTapFallback(fallback).uiTap(ctx, opts, cfg, append(onlyFastPathArgs(args),
 		"--x", strconv.Itoa(int(mx+mw/2)), "--y", strconv.Itoa(int(my+mh/2))))
+}
+
+// elementTapHandle is the name an already-resolved element can be tapped by,
+// or ok=false when it has none and only its centre point is left.
+//
+// Label before id, which is the opposite of what reads right, and the order
+// is measured rather than reasoned: iOS mirrors a row's id onto its container
+// and its control, so `--id home_settings_button` comes back
+// "Multiple (2) accessibility elements matched" and is refused, while
+// `--text Configuración` taps it. An id that is duplicated is not more
+// specific, it is unusable.
+//
+// Neither is guaranteed unique — a list repeats its labels too — and that is
+// fine here: an ambiguous selector fails loudly and lands in the existing tree
+// fallback, which is a better outcome than a point tap that reports success
+// and does nothing.
+func elementTapHandle(el Element) (id, label string, ok bool) {
+	if strings.TrimSpace(el.Label) != "" {
+		return "", el.Label, true
+	}
+	if strings.TrimSpace(el.ID) != "" {
+		return el.ID, "", true
+	}
+	return "", "", false
 }
 
 func isSimpleSemanticSelector(selector Selector) bool {

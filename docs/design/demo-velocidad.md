@@ -257,3 +257,39 @@ que estar **ausente** de la pantalla de partida, y **no hay juez** que decida si
 - `before.mov`, `after.mov` — cada lado por separado, tal como salió del simulador.
 - `before.txt`, `after.txt` — los dos transcritos reales, que son de donde salen los 31.034
   bytes contra 2.929.
+
+---
+
+## 6. El toque por coordenadas: qué está descartado, con qué medida
+
+Escrito para que nadie repita estas pruebas. Todo el 19 sep 2026, slots de simpool
+`iPhone-17-Pro@26.3` (slot-2 y slot-5), Undolly 4.0.1, control por **huella de identidad**
+(id, label, role, ordenado; sin `frame` ni `value`), nunca por número de nodos.
+
+| transporte | resultado | lo que dijo |
+|---|---|---|
+| `idb ui tap X Y` (crudo) | no entrega | no conecta con su companion |
+| `idb ui tap` (lanzado por `mav`) | **no entrega** | sale 0, `mav` decía `ok` |
+| `axe tap -x -y` | **no entrega** | `✓ Tap at (364.0, 84.0) completed successfully` |
+| `baguette tap --x --y --width --height` | **no entrega** | sale 0, resuelve sus símbolos HID |
+| `axe tap --label` | **entrega** | `✓ Tap at resolved tap point at (364.0, 84.0)` |
+
+**Los tres transportes por punto fallan y el de elemento funciona, sobre el mismo punto.** La
+última fila es la que descarta las explicaciones fáciles: axe dice que ha resuelto la etiqueta
+**a (364.0, 84.0)**, exactamente el punto que la segunda fila no entrega. Así que no es la
+coordenada, no es el espacio de puntos contra píxeles, y no es que el simulador esté sordo.
+Tampoco es que falte calentar la pantalla: cada prueba lee el árbol justo antes del toque.
+
+Lo que queda por mirar, y no me ha dado tiempo: qué hace `axe` **distinto** en su ruta de
+elemento —si es una acción de accesibilidad y no un evento HID, o si apunta a otra ventana o
+a otro display—, porque ahí está la diferencia y probablemente el arreglo.
+
+**Lo que sí se arregló con esto:** un selector avanzado (`--text` con `--role`, `--index`,
+`--near-text`) se convertía en un punto y por tanto **no tocaba nada mientras respondía `ok`**.
+Ahora se toca como elemento, y la prueba lo confirma: `mav ui tap --text "Configuración"
+--role button` pasó de `UNCHANGED` a entregar, con `driver=axe`.
+
+**Y el orden dentro de esa corrección también es medido, no razonado:** se prueba la etiqueta
+**antes** que el id, porque iOS duplica el id en el contenedor y en el control
+—`--id home_settings_button` responde *"Multiple (2) accessibility elements matched"*— y un id
+duplicado no es más específico, es inservible.
