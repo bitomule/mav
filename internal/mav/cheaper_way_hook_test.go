@@ -93,33 +93,21 @@ func nudgeFrom(t *testing.T, out string) string {
 	return parsed.HookSpecificOutput.AdditionalContext
 }
 
-func TestCheaperWayHookNudgesBareUITreeOnlyWhenItCost(t *testing.T) {
-	// A tree big enough that --agent's ranked 40 would have been cheaper.
-	got := nudgeFrom(t, runHook(t, "s-big", "mav ui tree", nodeLines(60)))
-	if !strings.Contains(got, "--agent") {
-		t.Fatalf("expected a nudge naming --agent, got %q", got)
-	}
-	if !strings.Contains(got, "60 elements") {
-		t.Fatalf("expected the nudge to carry the measured size, got %q", got)
-	}
-	// It has to keep pointing at the ids, or an agent reads it as "use the
-	// short one" and loses the selector path that the tree exists for.
-	if !strings.Contains(got, "--id") {
-		t.Fatalf("expected the nudge to say ids survive --agent, got %q", got)
-	}
-}
-
 func TestCheaperWayHookStaysQuiet(t *testing.T) {
 	cases := []struct {
 		name    string
 		command string
 		stdout  string
 	}{
-		// Already doing it the cheap way.
-		{"agent flag already used", "mav ui tree --agent", nodeLines(60)},
-		// Small screen: --agent's cap of 40 would have saved nothing worth
-		// a line, so saying it would be pure noise.
-		{"tree too small to matter", "mav ui tree", nodeLines(10)},
+		// `mav ui tree` is deliberately NOT a rule any more, and these two
+		// cases are the guard on that. The rule it used to have pointed at
+		// `mav ui tree --agent`, which was then rejected: it caps the screen
+		// at 40 elements with no flag to raise the cap, and it ranks AFTER
+		// capping, so its ordering cannot rescue an element that already
+		// fell outside the 40. There is no cheaper form of a tree left to
+		// recommend, so the hook has nothing to say about one.
+		{"bare ui tree, however large", "mav ui tree", nodeLines(60)},
+		{"ui tree with the rejected flag", "mav ui tree --agent", nodeLines(60)},
 		// Not our business.
 		{"unrelated command", "ls -la", nodeLines(60)},
 		{"another mav command", "mav ui tap --id foo", nodeLines(60)},
@@ -153,8 +141,8 @@ func TestCheaperWayHookSaysItEveryTime(t *testing.T) {
 	payload, err := json.Marshal(map[string]any{
 		"session_id":    "s-repeat",
 		"tool_name":     "Bash",
-		"tool_input":    map[string]string{"command": "mav ui tree"},
-		"tool_response": map[string]any{"stdout": nodeLines(60)},
+		"tool_input":    map[string]string{"command": `jevi ask "is this a bug?"`},
+		"tool_response": map[string]any{"stdout": ""},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -193,9 +181,9 @@ func TestCheaperWayHookSurvivesGarbage(t *testing.T) {
 		`{"tool_name":"Bash"}`,
 		`{"tool_name":"Bash","tool_input":{}}`,
 		`{"tool_name":"Read","tool_input":{"file_path":"/tmp/x"}}`,
-		`{"tool_name":"Bash","tool_input":{"command":"mav ui tree"}}`,
-		`{"tool_name":"Bash","tool_input":{"command":"mav ui tree"},"tool_response":null}`,
-		`{"tool_name":"Bash","tool_input":{"command":"mav ui tree"},"tool_response":{"stdout":null}}`,
+		`{"tool_name":"Bash","tool_input":{"command":"jevi ask -f triage"}}`,
+		`{"tool_name":"Bash","tool_input":{"command":"jevi ask -f triage"},"tool_response":null}`,
+		`{"tool_name":"Bash","tool_input":{"command":"jevi ask -f triage"},"tool_response":{"stdout":null}}`,
 	} {
 		cmd := exec.Command("/bin/sh", hookPath(t))
 		cmd.Stdin = strings.NewReader(payload)
@@ -206,6 +194,30 @@ func TestCheaperWayHookSurvivesGarbage(t *testing.T) {
 		}
 		if strings.TrimSpace(string(out)) != "" {
 			t.Fatalf("hook spoke on %q: %q", payload, out)
+		}
+	}
+}
+
+// A matching command with no `tool_response` at all is not garbage — the
+// surviving rule never reads one — so the hook has to speak, and speak valid
+// JSON. This is the half of the payload handling the silence test above cannot
+// cover, and it is where an absent or null field would blow up if the script
+// stopped defaulting it.
+func TestCheaperWayHookSpeaksWithoutAToolResponse(t *testing.T) {
+	for _, payload := range []string{
+		`{"tool_name":"Bash","tool_input":{"command":"jevi ask \"q\""}}`,
+		`{"tool_name":"Bash","tool_input":{"command":"jevi ask \"q\""},"tool_response":null}`,
+		`{"tool_name":"Bash","tool_input":{"command":"jevi ask \"q\""},"tool_response":{"stdout":null}}`,
+	} {
+		cmd := exec.Command("/bin/sh", hookPath(t))
+		cmd.Stdin = strings.NewReader(payload)
+		cmd.Env = append(os.Environ(), "TMPDIR="+t.TempDir())
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("hook exited non-zero on %q: %v", payload, err)
+		}
+		if got := nudgeFrom(t, string(out)); !strings.Contains(got, "-f") {
+			t.Fatalf("expected the question-set nudge on %q, got %q", payload, got)
 		}
 	}
 }

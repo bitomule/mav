@@ -4,24 +4,32 @@
 
 ### A hook that says "that had a cheaper form", because saying it in the docs did not work
 
-`mav ui tree --agent` has existed for a while, costs nothing extra and saves the
-tokens. Measured over **782 real `mav ui tree` calls across 51 agent sessions**:
-it was used **54 times, 6.9%**, by 7 sessions of 51. Of those 7, **six used it on
-their first or second call because the flag was written into their task text.
-None of them got there from the skill.** Documentation was not the lever — a
-model reads "prefer X", repeats it back, and issues the expensive call anyway.
+A model reads "prefer X" in a skill, repeats it back, and issues the expensive
+call anyway: comprehension is not compliance. Measured over **782 real agent
+tool calls across 51 sessions**, a cheaper form that was documented, free and
+already available was taken **6.9% of the time**, and almost every session that
+did take it had the flag written into its task text rather than having read the
+documentation.
 
 So the skill now ships one hook, delivered by the same `mav install-skills` that
 installs the skill: `skills/mav/hooks/cheaper-way.sh`, wired through a new
 `skills/mav/.claude-plugin/plugin.json`. It runs after a Bash call and says one
 sentence when the call had a cheaper form that was not used.
 
-Two rules today, and the design is a table so the third costs a line:
+One rule today, and the design is a table so the second costs a line:
 
 | You ran | It says so when | Because |
 | --- | --- | --- |
-| `mav ui tree` without `--agent` | the tree came back with **more than 40 elements** | below the cap `--agent` saves nothing worth a line |
 | `jevi ask "<question>"` without `-f` | always | jevi's own help says the positional form is "for a one-off from a terminal. Use `-f` for anything you run twice", and an agent's questions are always run twice |
+
+**There is deliberately no rule for `mav ui tree`.** An earlier draft had one,
+pointing at `mav ui tree --agent`; that flag was then rejected as the form to
+recommend. It caps the screen at **40 elements with no flag to raise the cap**,
+and it **ranks after capping**, so its ordering cannot rescue an element that
+already fell outside the 40 — on a real 202-node screen that is more than half
+the screen gone. With no cheaper form of a tree to point at, the hook has
+nothing to say about one, and a test asserts it stays silent on `mav ui tree`
+however large the tree is.
 
 **It says it every time, and keeps no state.** No counter, no per-session file,
 nothing that can go stale. An earlier draft said it twice and then every tenth
@@ -33,20 +41,16 @@ nothing left in the script that can be wrong about what happened earlier.
 What it deliberately cannot do, each for a reason we have already paid for:
 
 - **It never blocks and never rewrites.** It is on `PostToolUse`, which can do
-  neither. Rewriting `mav ui tree` to `--agent` was considered and rejected:
-  `--agent` caps the screen at 40 elements, so a silent rewrite is a silent
-  truncation, and the full tree is what makes `--id` selectors work. Optimising
-  the small case is not worth risking the main one.
+  neither, and that is why it is there. A mechanism that can rewrite a command
+  will eventually rewrite it into a cheaper form that quietly drops data the
+  caller needed; a sentence cannot.
 - **It emits no `permissionDecision`, "allow" included** — that would
   auto-approve the call and walk past the user's own ask/deny rules. A test
   asserts its absence rather than trusting review.
 - **`timeout: 2`, explicit.** The default hook timeout is 600 seconds; on a hook
   that runs after every Bash call that is ten minutes of a wedged session. It
-  exits 0 on every path, uses no network, and runs no `mav`, no `git` and no
-  build.
-Verified end to end in a real Claude Code session, not only in unit tests: three
-consecutive bare trees of 60 elements produced three reminders (`COUNT=3`), and
-two calls with `--agent` produced none (`COUNT=0`).
+  exits 0 on every path, uses no network, and runs no `mav`, no VCS command and
+  no build.
 
 ## v0.19.3
 

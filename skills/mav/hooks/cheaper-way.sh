@@ -4,30 +4,26 @@
 #
 # WHY THIS IS NOT A DOCUMENTATION PROBLEM
 #
-# Measured over 782 real `mav ui tree` calls in 51 agent sessions: `mav ui tree
-# --agent` already exists, already costs nothing extra and already saves the
-# tokens, and it was used 54 times — 6.9%, by 7 sessions of 51. Of those 7, six
-# used it on their first or second call because the flag was written into their
-# task text. None of them got there from the skill, which at the time never
-# mentioned the flag in 940 lines. A model reads "prefer X", repeats it back,
-# and issues the expensive call anyway: comprehension is not compliance.
+# A model reads "prefer X" in a skill, repeats it back, and issues the expensive
+# call anyway: comprehension is not compliance. Measured over 782 real agent
+# tool calls in 51 sessions, a documented cheaper form was taken 6.9% of the
+# time, and almost every session that took it had the flag written into its task
+# text rather than having read the documentation.
 #
 # So this runs after the call, when the cost is a fact rather than a warning.
 #
 # WHAT IT WILL NOT DO, AND WHY EACH ONE IS A RULE
 #
 #   - It never blocks and never rewrites. PostToolUse cannot do either, and that
-#     is the point of putting it here rather than on PreToolUse: the full tree is
-#     what makes `--id` selectors work, so a mechanism that can truncate or
-#     redirect it risks the 99% to optimise the 1%. Silently rewriting
-#     `mav ui tree` to `--agent` would also cap the screen at 40 elements, which
-#     is the truncation bug we have already paid for once.
+#     is the point of putting it here rather than on PreToolUse. A mechanism
+#     that can rewrite a command will eventually rewrite it into a cheaper form
+#     that quietly drops data the caller needed; a sentence cannot.
 #   - It emits no `permissionDecision`, not even "allow": that auto-approves and
 #     walks straight past the user's own ask/deny rules.
-#   - It exits 0 on every path, touches no network, and runs no `mav`, no `git`
-#     and no build. A hook that hangs is worse than no hook, and the default
-#     hook timeout is 600 seconds — ten minutes of a wedged session per call.
-#     hooks.json pins this one to 2.
+#   - It exits 0 on every path, touches no network, and runs no `mav`, no VCS
+#     command and no build. A hook that hangs is worse than no hook, and the
+#     default hook timeout is 600 seconds — ten minutes of a wedged session per
+#     call. hooks.json pins this one to 2.
 #   - It keeps no state: no counter, no per-session file, nothing that can go
 #     stale or disagree with itself. See the note above `rules` for why the
 #     rate limit it used to have was the wrong idea.
@@ -68,27 +64,6 @@ CMD="$(field '.tool_input.command')"
 # stops the hook talking about a call where the cheap form would have saved
 # nothing — and it is allowed to differ per rule, or to be absent.
 
-rule_mav_ui_tree() {
-	case "$CMD" in
-	*"mav ui tree"*) ;;
-	*) return 1 ;;
-	esac
-	case "$CMD" in
-	*--agent*) return 1 ;;
-	esac
-
-	# The cost gate: `--agent` ranks and caps at 40, so below that it saves
-	# nothing worth a line. Count what the full tree actually returned.
-	nodes="$(field '.tool_response.stdout' | grep -c '^node ' 2>/dev/null)"
-	case "$nodes" in
-	'' | *[!0-9]*) return 1 ;;
-	esac
-	[ "$nodes" -gt 40 ] || return 1
-
-	NUDGE="That tree returned $nodes elements. \`mav ui tree --agent\` returns the same screen ranked with focused and actionable elements first, each line marked actionable=true|false, and it keeps the ids \`mav ui tap --id\` needs. Use it to read a screen and decide what to touch; keep the bare tree for when you need every element or the frames."
-	return 0
-}
-
 rule_jevi_ask_oneoff() {
 	case "$CMD" in
 	*"jevi ask"*) ;;
@@ -106,7 +81,7 @@ rule_jevi_ask_oneoff() {
 	return 0
 }
 
-rules='rule_mav_ui_tree rule_jevi_ask_oneoff'
+rules='rule_jevi_ask_oneoff'
 
 # --- emit --------------------------------------------------------------------
 
