@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.25.1
 
 ### `goto` no longer says it failed while standing on the destination
 
