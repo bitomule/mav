@@ -498,7 +498,7 @@ Selects a physical iOS device and switches target_kind to device.
   mav ui scrollUntil --id ID [--direction up] [--max-swipes 5]
 `
 	case "goto":
-		return `Usage: mav goto "<the screen you want>" [--arrived-when '<criteria>'] [--max-steps 12] [--timeout 90s]
+		return `Usage: mav goto "<the screen you want>" [--arrived-when '<criteria>'] [--dismiss-permission '<button label>'] [--max-steps 12] [--timeout 90s]
 
 Navigates to a screen on its own: reads the screen, decides what to tap to get closer, taps it, reads again.
 
@@ -510,7 +510,11 @@ It taps the point it already resolved rather than a selector, which is where the
 
 A criterion that ALREADY holds on the screen you start from is refused (ambiguous_criterion) rather than reported as instant arrival. Without --arrived-when, goto reports arrived=unverified and never true: there is no second model asked to confirm its own work.
 
-It never taps anything destructive, with no escape hatch — unlike ` + "`mav ui find`" + `, because nobody reads anything between the decision and the finger. It stops on: arrival, 12 steps, 90s, two taps that changed nothing, a screen it has already visited, two abstentions in a row, a modal on top, or a destructive element in the way. The outcome says which, and the output is evidence — every step, both routes — not a verdict.
+It never taps anything destructive, with no escape hatch — unlike ` + "`mav ui find`" + `, because nobody reads anything between the decision and the finger.
+
+--dismiss-permission names the ONE button goto may press on a permission alert, and you name it because goto cannot work it out. Measured on a real three-option alert ("Permitir una vez" / "Permitir al usarse la app" / "No permitir"): two of the three grant, the one that does not was last, and there was no kTCCService marker anywhere on it. A rule guessing by position or by marker grants the permission when it guesses wrong. Naming the button is an instruction rather than a heuristic, and an instruction cannot guess wrong.
+
+It fails closed: if that exact label is not on the modal, goto stops as it always did. Matching folds case and accents and nothing else — no prefix, no substring, no nearest match — and a label naming something destructive is refused even when you declared it. Every dismissal is reported as dismissed_permission and dismissed_action, and at most 3 per run. It stops on: arrival, 12 steps, 90s, two taps that changed nothing, a screen it has already visited, two abstentions in a row, a modal on top, or a destructive element in the way. The outcome says which, and the output is evidence — every step, both routes — not a verdict.
 
 Refuses to run when CI is set.
 `

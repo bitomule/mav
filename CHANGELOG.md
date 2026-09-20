@@ -1,5 +1,54 @@
 # Changelog
 
+## Unreleased
+
+### `goto --dismiss-permission`: one door through the modal guard, and the caller holds the key
+
+Some routes cannot avoid a permission alert. Boxy asks for speech recognition on
+the way in, and `simctl privacy` has **no service for speech** — measured,
+`revoke all` on the bundle does not suppress it — so "deny it beforehand and
+change nothing" does not exist there.
+
+goto still stops at every modal. What this adds is one button it may press, and
+**you name it**, because goto cannot work it out. Two detectors were proposed
+and both were measured against a real **three-option** alert:
+
+```
+role=sheet   "¿Permitir que la app Mapas use tu ubicación?"
+role=button  "Permitir una vez"
+role=button  "Permitir al usarse la app"
+role=button  "No permitir"            <- grants nothing, and it is LAST
+```
+
+- **`kTCCService*` in the tree: zero markers on that alert**, in the app tree
+  and in the system tree. It identifies some alerts and silently misses others,
+  and the ones it misses are the multi-option ones.
+- **Position**: the non-granting option was last here and first elsewhere. Two
+  of these three buttons grant, so a rule that guesses wrong **grants the
+  permission**, and one sample is not enough to bet a permission on.
+
+Matching the button text is language-dependent and worse than it sounds: the
+same alert came back in Spanish from an app launched in English, because the app
+resolved its InfoPlist strings to `es.lproj`. goto cannot read the label — but
+the person running it can. **Declaring it is an instruction, not a heuristic,
+and an instruction cannot guess wrong.**
+
+It **fails closed**. If that exact label is not on the modal, goto stops exactly
+as before. Matching folds case and accents and nothing else — no prefix, no
+substring, no nearest match — because a near-miss on a permission alert is a
+granted permission. A declared label naming something destructive is refused
+even though you asked for it, which is the one place goto overrules you: `find`
+would return it, since its caller reads the answer before anything is tapped,
+and goto has nobody between the decision and the finger.
+
+Every dismissal is reported (`dismissed_permission`, `dismissed_action`), at
+most three per run, and answering a dialog does not consume a navigation step.
+
+Verified against that real alert, controls first: with no flag, with a label in
+the wrong language, and with a substring of a *granting* button, goto refused
+all three and touched nothing. With `--dismiss-permission "No permitir"` it
+pressed that button and carried on.
+
 ## v0.24.0
 
 ### Ready for jevi 0.3.0, which stops classifying a choice
