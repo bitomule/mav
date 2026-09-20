@@ -101,10 +101,24 @@ const (
 const findCandidateCap = 120
 
 // FindCandidates picks the elements that could plausibly be the answer:
-// actionable, and carrying some text to be described by. Order is the tree's
-// own, which is deterministic, so two runs on one screen send the same batch.
+// actionable, carrying some text to be described by, and each row only once.
+// Order is the tree's own, which is deterministic, so two runs on one screen
+// send the same batch.
+//
+// The de-duplication is not tidiness, it is correctness, and it was found by a
+// loop that refused to move. iOS renders a list row as TWO accessibility
+// elements — a container button and an inner one — with the same label, role
+// and id. Sent as two options they read as two indistinguishable candidates, so
+// a model told "answer none if two or more are equally plausible" abstains on
+// every row of every list. Measured: `mav goto` stopped with no_route on a
+// destination that was one visible tap away, and the literal path abstained on
+// every label of Settings > General because none was unique.
+//
+// They are not two candidates. They are one row the tree mentions twice, and
+// tapping either does the same thing.
 func FindCandidates(elements []Element) []Element {
 	out := make([]Element, 0, len(elements))
+	seen := make(map[string]bool, len(elements))
 	for _, el := range elements {
 		if !isActionable(el) {
 			continue
@@ -112,6 +126,11 @@ func FindCandidates(elements []Element) []Element {
 		if findElementText(el) == "" {
 			continue
 		}
+		key := el.ID + "\x1f" + el.Label + "\x1f" + el.Role + "\x1f" + el.Value
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 		out = append(out, el)
 	}
 	return out
@@ -352,8 +371,22 @@ func FindQuestion(goal string) string {
 }
 
 // FindOptions is the option list for the question: every candidate index, plus
-// the abstention. `none` is an option and not only an inferred silence, so the
-// model has somewhere to put a refusal.
+// the abstention.
+//
+// DO NOT REMOVE `none` FROM THIS LIST. It looks like tidying and it is the only
+// thing holding the whole guard up.
+//
+// The service does not abstain on its own — measured, and not only by us: given
+// four options where none fitted, it picked one anyway 3 times out of 3, with
+// low confidence. There is no silence to fall back on and no score to read: the
+// refusal exists because it is on the menu. Take `none` off and every screen
+// with nothing relevant on it returns a confident wrong element, and nobody
+// will connect that to this line.
+//
+// It is also the half of the abstention that survives upstream changes. mav
+// declines on two independent signals — the verdict and the label — and jevi
+// 0.3.0 stopped attaching a confidence-derived verdict to a choice, which left
+// the first one inert. This is the one still doing the work.
 func FindOptions(batch []Element) []string {
 	out := make([]string, 0, len(batch)+1)
 	for i := range batch {
@@ -367,7 +400,27 @@ func FindOptions(batch []Element) []string {
 // numeric is read — confidence is deliberately not a parameter of this function,
 // because correct picks score from 0.76 and wrong ones reach 0.88.
 func InterpretFindAnswer(verdict, label string, batch []Element) (*Element, string) {
-	if verdict != "yes" {
+	// An ABSENT verdict is not a refusal, and this is the line that stops find
+	// breaking on the day jevi is fixed.
+	//
+	// jevi currently attaches a verdict to a `choice` answer, derived from a
+	// confidence cut of its own — that is the defect that made goto discard
+	// correct answers, and it has been reported upstream rather than patched
+	// here. When jevi stops attaching it, a choice will arrive with a label
+	// and no verdict. Reading that as "not yes" would make find abstain on
+	// every single answer, silently, and the tool would look broken for a
+	// reason nobody would connect to a jevi release.
+	//
+	// So: a verdict that says `yes` is accepted, one that says anything else
+	// is a refusal, and no verdict at all means jevi is not classifying, so
+	// the choice stands on its own. Nothing loosens today — jevi does attach
+	// one — and nothing breaks the day it does not.
+	//
+	// find keeps requiring the verdict while it is there, unlike goto, which
+	// reads only the choice. That is deliberate and measured: goto's caller
+	// has a loop underneath that catches a wrong lead in one step, and find's
+	// caller taps what it is handed.
+	if verdict != "" && verdict != "yes" {
 		return nil, ReasonAbstained
 	}
 	label = strings.TrimSpace(strings.ToLower(label))

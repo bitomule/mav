@@ -1,5 +1,233 @@
 # Changelog
 
+## v0.25.1
+
+### `goto` no longer says it failed while standing on the destination
+
+It walked two steps into Boxy, landed on the box contents, and reported
+`arrived=false outcome=no_route`. The heading `label="Test Category 2: 1000"
+role=heading` was on screen afterwards, and both a `title:` and a `text:`
+criterion naming exactly that came back denied.
+
+The cause was an asymmetry in the loop, not anything about matching. Arrival was
+tested on the **one** read taken right after a tap, and the loop settles only
+when that read already matches — so a screen that finished drawing a moment
+later was missed, and nothing ever looked again. The loop went round, found
+nothing left to tap, abstained twice and reported `no_route` while standing on
+the destination.
+
+The loop already refuses to declare **arrival** on a half-drawn screen. It now
+equally refuses to declare **failure** on one: before any unhappy outcome is
+returned, the same criterion is re-asked against a settled read. Re-asking the
+same question is what keeps this from being leniency — a criterion that does not
+hold still does not hold.
+
+Ablation on the real route, four runs each:
+
+| | reached the destination | of those, reported false |
+| --- | --- | --- |
+| v0.25.0 | 3/4 | **3** |
+| now | 3/4 | **0** |
+
+And the control on the other side, which matters more than the fix: the run that
+genuinely did not arrive (one step, destination absent) still reports
+`arrived=false` on both builds, and so does a destination that does not exist at
+all. A fix that made everything arrive would be worse than the defect.
+
+## v0.25.0
+
+### `goto --dismiss-permission`: one door through the modal guard, and the caller holds the key
+
+Some routes cannot avoid a permission alert. Boxy asks for speech recognition on
+the way in, and `simctl privacy` has **no service for speech** — measured,
+`revoke all` on the bundle does not suppress it — so "deny it beforehand and
+change nothing" does not exist there.
+
+goto still stops at every modal. What this adds is one button it may press, and
+**you name it**, because goto cannot work it out. Two detectors were proposed
+and both were measured against a real **three-option** alert:
+
+```
+role=sheet   "¿Permitir que la app Mapas use tu ubicación?"
+role=button  "Permitir una vez"
+role=button  "Permitir al usarse la app"
+role=button  "No permitir"            <- grants nothing, and it is LAST
+```
+
+- **`kTCCService*` in the tree: zero markers on that alert**, in the app tree
+  and in the system tree. It identifies some alerts and silently misses others,
+  and the ones it misses are the multi-option ones.
+- **Position**: the non-granting option was last here and first elsewhere. Two
+  of these three buttons grant, so a rule that guesses wrong **grants the
+  permission**, and one sample is not enough to bet a permission on.
+
+Matching the button text is language-dependent and worse than it sounds: the
+same alert came back in Spanish from an app launched in English, because the app
+resolved its InfoPlist strings to `es.lproj`. goto cannot read the label — but
+the person running it can. **Declaring it is an instruction, not a heuristic,
+and an instruction cannot guess wrong.**
+
+It **fails closed**. If that exact label is not on the modal, goto stops exactly
+as before. Matching folds case and accents and nothing else — no prefix, no
+substring, no nearest match — because a near-miss on a permission alert is a
+granted permission. A declared label naming something destructive is refused
+even though you asked for it, which is the one place goto overrules you: `find`
+would return it, since its caller reads the answer before anything is tapped,
+and goto has nobody between the decision and the finger.
+
+Every dismissal is reported (`dismissed_permission`, `dismissed_action`), at
+most three per run, and answering a dialog does not consume a navigation step.
+
+Verified against that real alert, controls first: with no flag, with a label in
+the wrong language, and with a substring of a *granting* button, goto refused
+all three and touched nothing. With `--dismiss-permission "No permitir"` it
+pressed that button and carried on.
+
+## v0.24.0
+
+### Ready for jevi 0.3.0, which stops classifying a choice
+
+jevi no longer attaches a confidence-derived verdict to a `choice` answer —
+the upstream fix for the defect that made goto discard correct picks. mav needed
+nothing for it, and that is worth saying precisely rather than gratefully:
+`find` declines on **two** independent signals, the verdict and the label, and
+only the first goes inert. The one that was actually catching abstentions is
+still there.
+
+`find` now also treats an ABSENT verdict as "not classified" rather than as a
+refusal, so it keeps working against both jevi versions instead of silently
+abstaining on every answer the day the new one lands. A verdict that says `no`
+or `unsure` is still a refusal; a test asserts both halves.
+
+And the load-bearing part is now documented where someone would delete it: the
+service **never abstains on its own**. Given four options where none fitted it
+picked one anyway, 3 times out of 3, with low confidence. The abstention exists
+only because `none` is on the menu. Removing it looks like tidying and turns
+every irrelevant screen into a confident wrong answer.
+
+### `mav goto` arrives, and every tap is 157ms cheaper
+
+Two fixes from profiling a real goto step end to end, and three measured dead
+ends recorded so nobody pays to rediscover them.
+
+**goto now arrives.** It was stopping with `no_route` on screens whose
+destination was plainly there — Settings → General → Información, one visible
+tap away. The row was in the tree AND among the candidates sent to the model
+(proven by `mav ui find "Información"` resolving `resolved_by=literal` on that
+same screen), so neither scrolling nor the candidate filter was to blame.
+
+The model was picking the RIGHT element and jevi was marking the answer
+`unsure`, because its confidence sat at 0.37 — under jevi's own default cut.
+mav read the verdict, so a correct answer was discarded. That is mav inheriting
+someone else's numeric threshold, which is precisely what it is not supposed to
+have.
+
+Measured on one ten-row screen, eight goals whose answer was on it and twelve
+whose answer was not:
+
+| | picks the right row | declines when it should |
+| --- | --- | --- |
+| reading the verdict | 4/8 | 10/12 |
+| reading the label | **8/8** | 9/12 |
+
+The verdict cost half the correct answers and bought almost nothing: two of the
+three wrong picks carried `verdict: yes` anyway. So **goto reads the choice**,
+and the abstention still lives where the model can express it — `none` is an
+option, chosen 9 times in 12 when nothing fitted. **`find` keeps reading the
+verdict**: its caller taps what it returns with no loop underneath to catch a
+wrong lead.
+
+**Every tap is 157ms faster** (1,003 → 846 ms, 7/7 still delivered).
+`resolveCapabilities` was 310ms of a 1,194ms tap, and 192ms of that was a
+single `idb --version`: idb is a Python tool, starting it costs 116ms, and
+every mav command paid it to produce a hint read in exactly two places — a
+coordinate tap that has already failed for want of a driver, and `mav doctor`.
+Both now ask for it themselves.
+
+### Three dead ends, with the numbers that closed them
+
+So they are not re-attempted. `axe` costs ~615ms of fixed session setup per
+invocation and only ~139ms per gesture (measured through its own batch mode:
+one tap 755ms, two 894, three 1,276). That block is about 65% of a goto step,
+so it was worth attacking three ways:
+
+- **Swapping to idb.** Faster at both and wrong at both: `idb ui tap` is 117ms
+  against axe's 601 but **delivered 0/5**, and `idb ui describe-all` is 186ms
+  against 462 but returns **13 nodes where axe returns 124**. mav's router
+  already overrides `--prefer-driver idb` for coordinate taps, correctly.
+- **Configuring axe to skip the setup.** `describe-ui` has no such option, and
+  the tap's `--pre-delay`/`--post-delay` are already effectively zero: 821ms
+  with defaults against 817ms with both set to 0. The cost is work, not sleep.
+- **Fusing the read and the tap into one axe session.** `axe batch` takes
+  gestures only; `describe-ui` is not a valid step.
+
+What that leaves is a persistent axe session, and it is now established by
+measurement rather than assumed.
+
+Also measured and negative: jev's latency does not depend on how many
+candidates it is given — 358ms at 3 candidates, 414ms at 12, 387ms at 20. There
+is nothing to win by sending fewer.
+
+## v0.23.0
+
+### `mav goto` — navigate to a screen in one call
+
+Reads the screen, asks which element gets it closer, taps the point it already
+resolved, reads again. Until it arrives or gives up.
+
+**Measured on a real simulator**, Settings → General → Idioma y región, two
+steps: **7,336 and 7,540 ms against 9,733 and 9,225** for today's
+agent+tree+`tap --text`, arriving correctly both times. About **22% faster**,
+and that comparison *excludes* the agent's own model turn per step, which
+today's path needs and goto does not.
+
+**At one step goto is slower** (5,012 vs 4,474 ms) and that is stated rather
+than buried: the saving is per additional step, because goto reads the screen
+once per step where the old path reads it twice — once for the agent and once
+inside the selector tap.
+
+Arrival is decided by **code**, against the screen's **route** — navigation
+title, selected tab, any modal on top — and never by searching free text
+anywhere in the tree. `--arrived-when` takes `title:"…"` and `text:"…"` terms,
+all required, so a parameterised screen is expressible. A criterion that
+**already holds on the screen you start from is refused** rather than reported
+as instant arrival. With no criterion it reports `arrived=unverified`, never
+true: there is no second model asked to confirm its own work.
+
+It never taps anything destructive, with **no escape hatch** — unlike
+`mav ui find`, because nobody reads anything between the decision and the
+finger. It stops on arrival, 12 steps, 90s, two taps that changed nothing, a
+screen already visited, two abstentions in a row, a modal on top, or a
+destructive element in the way. The outcome says which, and the output is
+evidence — every step, both routes — not a verdict.
+
+### A row the tree mentions twice is one candidate
+
+A real defect in `mav ui find`, found by the loop refusing to move. iOS renders
+a list row as **two** accessibility elements — a container button and an inner
+one — with the same label, role and id. Settings → General carries
+`Idioma y región` four times and has **not one unique label on the whole
+screen**.
+
+Sent to the model as separate options they read as indistinguishable, so the
+instruction to decline when two candidates are equally plausible declined on
+**every row of every list**. And find's literal path — the one that needs no
+key and no network — could never resolve anything there.
+
+They are one row the tree mentions twice. Candidates are now de-duplicated by
+identity, with a test that two genuinely different rows sharing a label stay
+two.
+
+### The cheaper-way hook suggests `goto` for chained navigation
+
+One more rule, and deliberately narrower than the `find` one. find is worth
+suggesting on any tree because it always buys context; goto only wins from the
+second step, so nudging a single tap towards it would be advice that makes
+things slower. The rule fires on two or more navigation commands issued in one
+line, which is the only chain a stateless hook can see — and staying stateless
+is worth more than catching every chain, because a per-session counter would be
+wrong after a compaction and would nag on every tap.
+
 ## v0.22.0
 
 ### A coordinate tap and a swipe no longer imply they were delivered

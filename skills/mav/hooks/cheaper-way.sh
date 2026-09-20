@@ -115,7 +115,46 @@ rule_mav_tree_without_find() {
 	return 0
 }
 
-rules='rule_jevi_ask_oneoff rule_mav_tree_without_find'
+rule_chained_taps_without_goto() {
+	# `goto` is NOT like `find`, and the difference decides when this speaks.
+	# find is worth suggesting on any tree, because it always buys context.
+	# goto only wins from the SECOND step: measured, one tap through goto is
+	# 5,012ms against 4,474ms for today's path, and two taps are 7,336ms
+	# against 9,733ms. Suggesting it for a single tap would be advice that
+	# makes things slower.
+	#
+	# So the signal has to be chained navigation, and this hook keeps no state
+	# by design — no counter, nothing that can go stale. The one chain it CAN
+	# see without state is a chain inside one command line: two or more taps
+	# issued together. That is narrow, and narrow is the right side to err on
+	# here: the alternative is a stateful "how many taps this session" that
+	# would be wrong after a compaction and would nag on every single tap.
+	case "$CMD" in
+	*"mav ui tap"* | *"mav ui swipe"*) ;;
+	*) return 1 ;;
+	esac
+	case "$CMD" in
+	*"mav goto"*) return 1 ;;
+	esac
+
+	# Count the navigation commands on this line. One is not a chain.
+	TAPS=$(printf '%s\n' "$CMD" | grep -o 'mav ui tap\|mav ui swipe' | wc -l | tr -d ' ')
+	[ "${TAPS:-0}" -ge 2 ] || return 1
+
+	# Same availability gate as the find rule: with no key there is nothing to
+	# recommend, and it is answered by asking whether a key EXISTS, never by
+	# reading one and never over the network.
+	if [ -z "${MAV_JEV_API_KEY:-}" ] &&
+		! /usr/bin/security find-generic-password -s mav-jev >/dev/null 2>&1 &&
+		[ ! -f "${XDG_CONFIG_HOME:-$HOME/.config}/bitomule/mav/config.json" ]; then
+		return 1
+	fi
+
+	NUDGE="You chained ${TAPS} navigation steps. \`mav goto \"<the screen you want>\" --arrived-when 'title:\"<its title>\"'\` does the whole walk in one call — measured at 7.3s against 9.7s for two steps done this way, and that gap widens with each extra step because goto reads the screen once per step where this path reads it twice. It refuses to tap anything destructive and reports arrived=unverified rather than true when you give it no --arrived-when. For a SINGLE tap, keep doing what you are doing: goto is slower over one step."
+	return 0
+}
+
+rules='rule_jevi_ask_oneoff rule_mav_tree_without_find rule_chained_taps_without_goto'
 
 # --- emit --------------------------------------------------------------------
 

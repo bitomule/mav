@@ -331,7 +331,177 @@ de descubrirlo.
 
 ---
 
-## 7. El objetivo tiene que resolver en TODAS las pantallas del camino
+## 10. Dónde se va el tiempo, y por qué no se puede bajar más con `axe`
+
+Medido el 20 sep 2026 en `iPhone-17-Pro@26.3` de simpool, `mav` 0.23.0 + esta rama.
+**Esta sección incluye una corrección a una medida mía anterior**, porque la primera versión
+recomendaba construir algo que no habría servido.
+
+### Un paso, sin huecos
+
+```
+un paso de goto ≈ 2.025 ms
+
+  leer la pantalla       630 ms   31%    de los cuales mav:   7 ms
+  jev decidiendo         550 ms   27%
+  el toque               845 ms   42%    de los cuales mav:  94 ms
+```
+
+`mav` pone **101 ms de 2.025**. Todo lo demás es `axe` y el modelo.
+
+### Lo arreglado
+
+**−157 ms en cada toque** (1.003 → 846, 7/7 entregando). `resolveCapabilities` costaba 310 ms
+y **192 eran un `idb --version`** — `idb` es Python, arrancarlo son 116 ms, y lo pagaba cada
+comando para una pista que se lee sólo cuando un tap ya falló y en `doctor`. Ahora es perezosa.
+
+### La corrección: la sesión persistente no serviría
+
+Medí que `axe` tenía ~615 ms fijos de sesión y ~139 ms por gesto, usando su modo de lote, y
+concluí que mantener una sesión viva bajaría un paso a ~700 ms. **Estaba mal, y el fallo era el
+de siempre: medí gestos que no entregaban.**
+
+`axe batch` usa por defecto `tapAt` de FBSimulator, la ruta débil — un lote de tres toques
+respondió *"Batch completed successfully"* y **la pantalla no cambió ni una vez**.
+
+Rehecho con `--tap-style physical` y comprobando la huella en cada tirada:
+
+| toques en un lote | tiempo (sin las esperas) | cambió la pantalla | marginal por toque |
+|---|---|---|---|
+| 2 | 1.868 ms | 3/3 | — |
+| 4 | 3.685 ms | 3/3 | ~908 ms |
+| 6 | 5.252 ms | 3/3 | ~784 ms |
+
+**El coste es por gesto, no por sesión.** No hay nada que amortizar y una sesión persistente
+ahorraría cero.
+
+Y la otra vía tampoco existe: **`axe batch --stdin` no es streaming.** Acumula las líneas y las
+ejecuta al cerrar la entrada — escribí un toque, esperé tres segundos, la pantalla quieta. Para
+un bucle que mira entre toque y toque es inservible por construcción.
+
+### Todos los drivers, no sólo dos
+
+`mav` registra `axe`, `simctl`, `idb`, `baguette`, `network`, `simtime` y cuatro de macOS. Sólo
+tres pueden tocar la interfaz de un simulador:
+
+| driver | leer | tocar | veredicto |
+|---|---|---|---|
+| **axe** | 462–630 ms, 124–177 nodos | 845 ms, **5/5 entregados** | el único viable |
+| **idb** | 186 ms, **13 nodos** | 117 ms, **0/5 entregados** | más rápido y equivocado en las dos |
+| **baguette** | 1.080 ms, 18 nodos (árbol del *sistema*) | resuelve a `axe` igual | no aplica |
+
+`simctl` instala y lanza, `network` y `simtime` no son de interfaz, y los cuatro de macOS no
+pueden dirigirse a un simulador. **Pregunta cerrada.**
+
+### Y `axe` no se puede configurar para que cueste menos
+
+`describe-ui` sólo acepta `--udid` y `--point`; no hay nada que saltarse. Y los retardos del
+tap **ya son cero**: 821 ms con los valores por defecto contra 817 poniendo `--pre-delay 0
+--post-delay 0`. **El coste es trabajo, no espera.**
+
+Bajar de aquí es pedirle a `axe` un modo servidor. No se parchea desde `mav` ni se forkea.
+
+### Un aviso de método que me engañó dos veces
+
+**Cualquier medida de un gesto tiene que comprobar que entregó**, y cualquier comparación de
+drivers tiene que ir **a través de `mav`**. Un `axe tap -x -y` pelado y un `axe batch` por
+defecto caen los dos en `tapAt`; `mav` elige el touch físico. Midiendo los binarios directamente
+obtuve **0/5 en los dos drivers** y una división 615/139 que no existía.
+
+### Y jev: la latencia no depende del número de candidatos
+
+358 ms con 3, 414 con 12, 387 con 20. **No hay nada que ganar mandando menos candidatos.**
+
+### Una optimización probada y revertida, para que nadie la repita
+
+La idea parecía buena: al confirmar la llegada el bucle **ya tiene** un árbol recién leído, y
+`gotoSettle` volvía a leer dos veces más para compararlas entre sí. Pasarle el que ya tiene
+debería ahorrar una lectura entera, ~630 ms.
+
+**Medido, va peor.** Cinco tiradas de Ajustes → General, misma pantalla, misma máquina:
+
+```
+dos lecturas de asentamiento   mediana 4.569 ms   [4521, 4566, 4568, 4625, 4798]
+una lectura  (reusando)        mediana 4.838 ms   [4633, 4773, 4837, 4993, 5281]
+```
+
+Dos razones, y la segunda es la que la mata: para comparar hacía falta una espera **antes** de
+la primera lectura en vez de después, así que se añadía un retardo fijo; y el árbol leído justo
+tras el toque **todavía difiere** del siguiente lo bastante a menudo como para que haga falta
+la segunda lectura de todas formas. O sea que se pagaba la espera y no se ahorraba la lectura.
+
+Revertido. La versión con dos lecturas de asentamiento es la que se queda.
+
+---
+
+## 11. Por qué `goto` abre la caja equivocada, y dos cosas que cuestan una tarde
+
+Medido el 20 sep 2026 sobre Boxy con sus mocks, `mav` 0.25.1.
+
+### La causa, aislada tras refutar tres hipótesis
+
+David pidió que `mav goto "los contenidos de la primera categoría, primera caja"` llegue. Hoy
+navega dos saltos y llega al contenido de **una** caja, pero no a la primera. Cuatro hipótesis,
+tres refutadas con medida:
+
+- **¿El ordinal no se entiende?** No. Sobre una lista de categorías: *"the first category"* 4/4,
+  *"the second category"* 4/4 —o sea que **distingue**, no elige siempre la opción 1—,
+  *"la primera categoría"* 4/4, y *"the third category"* devuelve `none` 4/4 porque no existe.
+  **La numeración de la lista de candidatos ya lleva la posición y el modelo la lee.**
+- **¿El orden del árbol no es el de pantalla?** No, en este caso: medidos los `frame` de las
+  filas, el orden del árbol y el de pantalla **coinciden**.
+- **¿Los identificadores pelados?** No. Con números pelados el ordinal acierta 4/4 igual que con
+  `id=box_0`. Los identificadores arreglan el objetivo **descriptivo** (§ anterior), no el
+  **ordinal**. Son dos problemas distintos y sólo uno lo cura la app.
+- **¿El idioma?** Tampoco. La pantalla sale en castellano aunque se lance con `--language en`
+  —defecto de Boxy— pero preguntando *"la primera caja"* **también se abstiene**. Las cuatro
+  redacciones, en los dos idiomas, dan `none`.
+
+**Lo que sí es la causa, aislado en una sola variable:**
+
+```
+la misma lista, mismo idioma, misma todo, cambiando SÓLO cuántas cajas hay
+
+  UNA fila de número pelado    "the first box" 0/4      "la primera caja" 0/4
+  DOS filas de número pelado   "the first box" 4/4      "la primera caja" 4/4
+```
+
+**Una fila que pone `1000` y nada más no se lee como "una caja".** Dos filas iguales se leen como
+una **serie del mismo tipo de cosa**, y entonces "la primera" significa algo. Con una sola no hay
+serie, no hay tipo, y no hay nada que ordenar.
+
+Eso unifica lo de la sección anterior: **el modelo necesita algo en la fila que diga qué clase de
+cosa es**, y puede sacarlo de tres sitios — un identificador (`id=box_0`), la palabra en la
+etiqueta (`label="Box 1000"`), **o tener hermanas de la misma forma**. Lo tercero es gratis y
+aparece solo cuando la lista tiene más de un elemento, que es por lo que este fallo **se esconde
+en cuanto hay datos de verdad**.
+
+**Consecuencia para quien mida:** una pantalla con un solo elemento de una lista es el peor caso,
+no el más sencillo. Un banco de pruebas con una caja por categoría prueba lo contrario de lo que
+parece.
+
+### Dos cosas que cuestan una tarde a quien venga después
+
+**1. La alerta de permiso SUSTITUYE el árbol entero.** Cuando está delante, `mav ui tree` devuelve
+**sólo sus dos botones** y nada de la app. Es distinto de una hoja modal normal —la de bienvenida
+de Boxy deja el árbol de debajo visible— y la consecuencia es que **una alerta superviviente de
+una tirada anterior deja cualquier recorrido vacío**: `goto` no encuentra ruta, no encuentra
+candidatos, y parece que la app esté rota. Límpiala antes de medir o de grabar:
+
+```
+xcrun simctl privacy <udid> reset all <bundle>    # antes de lanzar
+# y aun así, mira el árbol y despacha lo que haya quedado
+```
+
+Me costó dos medidas enteras descubrirlo, las dos dando resultados vacíos que interpreté como
+fallos de navegación.
+
+**2. Boxy recuerda que el asistente ya se vio**, así que el recorrido del asistente existe **una
+vez por instalación** y hace falta `mav open --clear-state` antes de cada toma.
+
+---
+
+## 12. El objetivo tiene que resolver en TODAS las pantallas del camino
 
 `goto` le pasa **el mismo objetivo a `find` en cada pantalla**, así que una frase sólo sirve
 si resuelve en todos los saltos. Eso hace que **una redacción que suena mejor rinda peor**, y

@@ -193,6 +193,8 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 		return c.ui(ctx, opts, rest[1:])
 	case "jev":
 		return c.jev(ctx, opts, rest[1:])
+	case "goto":
+		return c.gotoCommand(ctx, opts, rest[1:])
 	case "capture":
 		return c.capture(ctx, opts, rest[1:])
 	case "app":
@@ -495,6 +497,27 @@ Selects a physical iOS device and switches target_kind to device.
   mav ui wait --value VALUE [--timeout 5s]
   mav ui scrollUntil --id ID [--direction up] [--max-swipes 5]
 `
+	case "goto":
+		return `Usage: mav goto "<the screen you want>" [--arrived-when '<criteria>'] [--dismiss-permission '<button label>'] [--max-steps 12] [--timeout 90s]
+
+Navigates to a screen on its own: reads the screen, decides what to tap to get closer, taps it, reads again.
+
+It taps the point it already resolved rather than a selector, which is where the time comes from: a selector tap re-reads the tree (277ms by coordinates against 1,480ms by text, measured).
+
+--arrived-when is the only way goto can assert arrival, and it is checked by code against the screen's ROUTE — the navigation title, the selected tab, any modal on top — never against free text anywhere in the tree. Terms are ` + "`title:\"...\"`" + ` and ` + "`text:\"...\"`" + `, all required:
+  mav goto "the language screen" --arrived-when 'title:"Idioma y región"'
+  mav goto "order 123" --arrived-when 'title:"Order detail" text:"123"'
+
+A criterion that ALREADY holds on the screen you start from is refused (ambiguous_criterion) rather than reported as instant arrival. Without --arrived-when, goto reports arrived=unverified and never true: there is no second model asked to confirm its own work.
+
+It never taps anything destructive, with no escape hatch — unlike ` + "`mav ui find`" + `, because nobody reads anything between the decision and the finger.
+
+--dismiss-permission names the ONE button goto may press on a permission alert, and you name it because goto cannot work it out. Measured on a real three-option alert ("Permitir una vez" / "Permitir al usarse la app" / "No permitir"): two of the three grant, the one that does not was last, and there was no kTCCService marker anywhere on it. A rule guessing by position or by marker grants the permission when it guesses wrong. Naming the button is an instruction rather than a heuristic, and an instruction cannot guess wrong.
+
+It fails closed: if that exact label is not on the modal, goto stops as it always did. Matching folds case and accents and nothing else — no prefix, no substring, no nearest match — and a label naming something destructive is refused even when you declared it. Every dismissal is reported as dismissed_permission and dismissed_action, and at most 3 per run. It stops on: arrival, 12 steps, 90s, two taps that changed nothing, a screen it has already visited, two abstentions in a row, a modal on top, or a destructive element in the way. The outcome says which, and the output is evidence — every step, both routes — not a verdict.
+
+Refuses to run when CI is set.
+`
 	case "capture":
 		return "Usage: mav capture [--name NAME] [--run RUN_ID]\n"
 	case "ui tree":
@@ -664,6 +687,12 @@ func (c CLI) doctor(ctx context.Context, opts GlobalOptions) error {
 		targetWarn = targetCommandWarnText(err)
 	}
 	caps := c.resolveCapabilities(ctx, cfg)
+	// doctor is the one command whose whole job is diagnosis, so it pays for
+	// the idb probe that every other command used to pay for and almost never
+	// read. 116ms here is the point of running doctor; 116ms on a tap was not.
+	if caps.Tools["idb"] {
+		caps.IDBIssue, caps.IDBNext = c.ResolveIDBIssue(ctx)
+	}
 	tools := caps.Tools
 	fields := caps.fields()
 	// Which target this diagnosis is ABOUT, resolved through the same
@@ -2145,6 +2174,7 @@ func probeLogPredicate(cfg Config) string {
 // bootedSimulatorCacheTTL) between two `mav ui` calls has no earlier warning
 // -- dispatchWithStaleTargetRetry is what recovers from it here, once,
 // after the fact.
+
 func (c CLI) ui(ctx context.Context, opts GlobalOptions, args []string) error {
 	if len(args) == 0 {
 		return Fail("ui_command_missing", map[string]string{"usage": "mav ui tree|orientation|tap|doubleTap|type|erase|hideKeyboard|swipe|drag|dragPath|toggle|press|longPress|pinch|rotate|twoFingerPan|actions|wait|scrollUntil"}).Write(c.Stdout)
@@ -2819,8 +2849,11 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			fields := tapToolMissingFields(cfg)
 			if targetKind(cfg) != drivers.KindMac {
 				fields = map[string]string{"tool": "idb"}
-				if caps.IDBNext != "" {
-					fields["next"] = caps.IDBNext
+				// Asked for here rather than on every command: this is the
+				// only tap path that prints it, and it only runs when the
+				// tap has already failed for want of a driver.
+				if _, next := c.ResolveIDBIssue(ctx); next != "" {
+					fields["next"] = next
 				}
 			}
 			return Fail("tool_missing", c.withFallbackFields(fields)).Write(c.Stdout)
