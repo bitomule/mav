@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.24.0
 
 ### Ready for jevi 0.3.0, which stops classifying a choice
 
