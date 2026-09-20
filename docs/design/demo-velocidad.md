@@ -293,3 +293,95 @@ Ahora se toca como elemento, y la prueba lo confirma: `mav ui tap --text "Config
 **antes** que el id, porque iOS duplica el id en el contenedor y en el control
 —`--id home_settings_button` responde *"Multiple (2) accessibility elements matched"*— y un id
 duplicado no es más específico, es inservible.
+
+---
+
+## 7. La regrabación, sobre `mav` 0.22.0
+
+Mismo recorrido, mismo slot, mismo estado de partida, con el toque por coordenadas ya
+entregando. `~/Movies/mav-demo-velocidad/v0.22.0/`.
+
+| | antes (`ui tree`) | después (`ui find` + toque al punto) |
+|---|---|---|
+| reloj, 3 pasos | **14,3 s** | **14,9 s** |
+| líneas de árbol que lee el agente | **271** | **0** |
+| bytes que entran en su contexto | **35.316** | **3.310** |
+
+**Sigue sin ganar el reloj, y ahora se sabe por qué**, que es lo que faltaba. Los tres pasos
+del lado nuevo tardan 1.987, 1.815 y 1.960 ms, y el `find` de cada uno cuesta 947, 850 y
+864 ms según su propio bloque `cost`. O sea que **el toque, que ya no lee nada, sigue
+costando alrededor de un segundo**: 1.040, 965 y 1.096 ms.
+
+Ese segundo no es lectura de pantalla. Es **arrancar un proceso**: cada acción es un `mav`
+nuevo que a su vez lanza un `axe` nuevo, que se conecta al simulador desde cero. Quitar la
+segunda lectura del árbol ahorró medio segundo y el arranque del proceso se lo comió.
+
+**Así que el orden de lo que hay que atacar cambia, y sale de la medida y no de la
+intuición:** primero el arranque por acción (un `mav` que hiciera `find` y el toque en la
+misma invocación ya se ahorraría uno entero), y después las vueltas del modelo, que es
+`goto`. Leer el árbol dos veces, que parecía el problema, era el tercero de la lista.
+
+### El tercer paso, que no entrega, y se enseña
+
+El botón Atrás sigue sin recibir el toque por punto. No sé si algo le queda encima después
+de tocar "Reiniciar análisis" o si es residuo de la flojedad del transporte, y **no se
+maquilla**: la demo enseña dos pasos entregando y el tercero diciendo que no entregó. Que
+eso se vea es precisamente lo que se arregló hoy — **antes ese mismo paso salía como `ok`**.
+
+### Y los vídeos siguen sin servir de cronómetro
+
+17,0 s de vídeo para el lado "antes" y 9,5 s para el "después", con relojes de 14,3 y 14,9 s.
+`simctl io recordVideo` no graba a ritmo de reloj. Los vídeos enseñan el recorrido; el tiempo
+está en la tabla.
+
+---
+
+## 8. El segundo por acción: de dónde sale, y por qué mantener la conexión abierta no lo arregla
+
+Medido el 19 sep 2026, slot `iPhone-17-Pro@26.3`, acciones consecutivas contra el mismo slot
+ya arrancado.
+
+### Qué cuesta cada cosa
+
+| | tiempos |
+|---|---|
+| `mav --version` (arranque del binario, sin simulador) | 26, 26, 34 ms |
+| `axe tap` crudo, cinco seguidas | 922, 816, 851, 880, 844 ms |
+| `mav ui tap --x --y`, cinco seguidas | 1021, 992, 990, 972, 971 ms |
+| `axe describe-ui` (una lectura, de referencia) | 467, 434, 434 ms |
+
+**La quinta acción cuesta lo mismo que la primera.** No se reaprovecha nada entre
+invocaciones, eso está confirmado. Y de los ~990 ms de un toque por `mav`, **`mav` pone 26**:
+el resto es `axe`.
+
+### Pero el coste no es adjuntarse, y esto es lo que cambia la conclusión
+
+`axe` ya trae la pieza que haría falta: **`axe batch` ejecuta varios pasos "using one
+simulator/HID session"**, con caché del árbol por lote (`--ax-cache perBatch`). O sea que la
+conexión reutilizada se puede medir hoy, sin construir nada:
+
+| | total | por toque |
+|---|---|---|
+| cinco toques, cinco invocaciones | **4.147 ms** | 829 ms |
+| los mismos cinco toques en un solo lote | **3.554 ms** | **711 ms** |
+| un toque en un lote de uno (el adjuntado, solo) | 838 ms | — |
+
+**Reutilizar la sesión ahorra unos 120 ms por acción, no 850.** Un lote de cinco sigue
+costando 3,5 s. Así que el segundo no se va en conectarse: **se va dentro del gesto**, en
+trabajo por paso que `axe` hace igual tenga la sesión abierta o no.
+
+**Conclusión, y va en contra de lo que yo mismo dije hace una hora:** que `mav` mantenga su
+propia conexión viva entre comandos es **una mejora del 12-15%**, no la palanca grande. Y
+tendría el coste de un proceso persistente que alguien dejará abierto —ya nos comen la máquina
+los `idb_companion` huérfanos— para ahorrar 120 ms por acción. **No compensa.**
+
+Lo que sí compensa, con estos números delante:
+
+1. **Menos acciones.** Si tres pasos cuestan ~700 ms cada uno hagas lo que hagas, el ahorro
+   está en no darlos. Eso es `goto`, y son las vueltas del modelo grande (3,05 s por pantalla)
+   las que de verdad pesan.
+2. **`axe batch` para secuencias ya conocidas.** No como demonio, sino donde `mav` ya sabe de
+   antemano los pasos —un flujo YAML— porque ahí los 120 ms por paso son gratis de recoger.
+3. **Y nada de un demonio propio.** El prior art que lo sugería (`sim-use` y sus ~300 ms por
+   vuelta "gracias a un demonio por dispositivo") es una afirmación de README sin banco de
+   pruebas detrás, y lo que se mide aquí dice que el init no es donde está el dinero.

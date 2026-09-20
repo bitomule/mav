@@ -498,3 +498,29 @@ fallos de navegación.
 
 **2. Boxy recuerda que el asistente ya se vio**, así que el recorrido del asistente existe **una
 vez por instalación** y hace falta `mav open --clear-state` antes de cada toma.
+
+---
+
+## 12. El objetivo tiene que resolver en TODAS las pantallas del camino
+
+`goto` le pasa **el mismo objetivo a `find` en cada pantalla**, así que una frase sólo sirve
+si resuelve en todos los saltos. Eso hace que **una redacción que suena mejor rinda peor**, y
+está medido, 3 tiradas por celda, sobre las dos pantallas de un recorrido de dos saltos en
+Boxy (lista de categorías → lista de cajas):
+
+| objetivo | en la lista de categorías | en la lista de cajas |
+|---|---|---|
+| `"the box inside Test Category 2"` | **3/3** | **0/3** |
+| `"the box inside this category"` | **0/3** | **3/3** |
+| `"open the box in Test Category 2"` | **3/3** | **0/3** |
+
+Ninguna de las tres aguanta el recorrido entero, y las dos que nombran la categoría
+fallan **de la misma manera**: resuelven donde hay que tocar la categoría y se abstienen
+donde hay que tocar la caja, que es la pantalla cuyo título ya es el nombre de la categoría. la que nombra la categoría resuelve arriba y
+se abstiene abajo, y la que dice "esta categoría" hace justo lo contrario. Por eso tres tomas
+seguidas de la demo murieron en `steps=1` con `no_route`, y por eso **escribir el objetivo no
+es cosmética: es la variable que decide si el bucle llega**.
+
+Lo que queda abierto, y no está medido: si la solución es un objetivo por paso, una
+reformulación por pantalla, o que `find` reciba también dónde está el bucle además de adónde
+va.
