@@ -380,3 +380,56 @@ func GotoStepQuestion(goal string) string {
 		"and looks for itself, whereas a caller that gets the wrong number taps the wrong " +
 		"thing and walks further away. Do not guess."
 }
+
+// InterpretGotoAnswer reads the model's CHOICE, where find reads its VERDICT,
+// and the difference is measured rather than preferred.
+//
+// The failure that forced this: `mav goto` would not arrive. Profiling the
+// abstention showed the model picking the RIGHT element and jevi marking the
+// answer `unsure` because its confidence sat at 0.37, under jevi's own default
+// cut. mav read the verdict, so a correct answer was thrown away. That is not
+// mav applying a numeric threshold — it is mav inheriting someone else's.
+//
+// Measured on one screen of ten rows, eight goals whose answer was on it and
+// twelve whose answer was not:
+//
+//	                     picks the right row   declines when it should
+//	reading the verdict        4/8                    10/12
+//	reading the label          8/8                     9/12
+//
+// The verdict costs half the correct answers and buys almost nothing, because
+// two of the three wrong picks carried `verdict: yes` anyway — it was not the
+// guard it was believed to be.
+//
+// What still guards this is NOT a number, and that matters: `none` is an option
+// the model can choose, and it chose it 9 times out of 12 when nothing fitted.
+// The abstention lives in the choice, which is where the model can express it,
+// rather than in a confidence score that no cut separates.
+//
+// And the three it did pick were all reasonable LEADS — "Batería" for ordering
+// a battery, "Cámara" for opening the camera — which is exactly what goto's
+// question asks for. In goto a wrong lead costs one step and is caught by the
+// route not matching, by loop detection, or by the step budget; it can never be
+// reported as arrival, because arrival is decided by code against the route.
+//
+// find keeps reading the verdict. Its caller taps what it returns with no loop
+// underneath to catch a wrong lead, so the stricter reading stays where the
+// consequence is stricter.
+func InterpretGotoAnswer(label string, batch []Element) (*Element, string) {
+	label = strings.TrimSpace(strings.ToLower(label))
+	if label == "" || label == "none" {
+		return nil, ReasonAbstained
+	}
+	idx := 0
+	for _, r := range label {
+		if r < '0' || r > '9' {
+			return nil, ReasonNotACandidate
+		}
+		idx = idx*10 + int(r-'0')
+	}
+	if idx < 1 || idx > len(batch) {
+		return nil, ReasonNotACandidate
+	}
+	el := batch[idx-1]
+	return &el, ""
+}

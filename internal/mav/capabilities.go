@@ -92,11 +92,21 @@ func (c CLI) resolveCapabilities(ctx context.Context, cfg Config) Capabilities {
 		caps.CoordinateTapDriver = "idb"
 		caps.DeviceFallback = true
 		caps.DeviceFallbackDriver = "idb"
-		status := c.Runner.Run(ctx, "idb", "--version")
-		if status.Err != nil && idbPythonUnsupported(status.Stdout+"\n"+status.Stderr) {
-			caps.IDBIssue = "fb-idb does not support the active Python version"
-			caps.IDBNext = "pipx install --python python3.12 fb-idb"
-		}
+		// The `idb --version` probe that used to run here is gone from this
+		// path, and the reason is a measurement: idb is a Python tool and
+		// starting it costs 116ms, which every single mav command paid.
+		// Profiled on `mav ui tap --x --y`, resolveCapabilities was 310ms of a
+		// 1,194ms tap and this probe was 192ms of that — a fifth of the
+		// command spent diagnosing a tool the command was about to use
+		// successfully.
+		//
+		// What it produced, IDBIssue and IDBNext, is read in exactly two
+		// places: the `tool_missing` failure when a coordinate tap has no
+		// driver, and `mav doctor`. Both now ask for it when they need it
+		// (ResolveIDBIssue), so the hint is identical and nobody else pays
+		// for it. CoordinateTap itself never depended on the probe — it comes
+		// from idb being on PATH, which is a LookPath and costs 2ms for all
+		// sixteen known tools together.
 	}
 	if tools["baguette"] {
 		caps.Multitouch = true
@@ -260,6 +270,19 @@ func (caps Capabilities) fields() map[string]string {
 		fields["idb_next"] = caps.IDBNext
 	}
 	return fields
+}
+
+// ResolveIDBIssue asks whether idb is broken by the active Python version, and
+// is called only where the answer is about to be printed. Running it eagerly
+// cost every command 116ms for a hint that is read when a tap has ALREADY
+// failed, or when someone runs doctor on purpose.
+func (c CLI) ResolveIDBIssue(ctx context.Context) (issue, next string) {
+	status := c.Runner.Run(ctx, "idb", "--version")
+	if status.Err != nil && idbPythonUnsupported(status.Stdout+"\n"+status.Stderr) {
+		return "fb-idb does not support the active Python version",
+			"pipx install --python python3.12 fb-idb"
+	}
+	return "", ""
 }
 
 func idbPythonUnsupported(text string) bool {
