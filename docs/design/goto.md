@@ -431,3 +431,70 @@ tras el toque **todavía difiere** del siguiente lo bastante a menudo como para 
 la segunda lectura de todas formas. O sea que se pagaba la espera y no se ahorraba la lectura.
 
 Revertido. La versión con dos lecturas de asentamiento es la que se queda.
+
+---
+
+## 11. Por qué `goto` abre la caja equivocada, y dos cosas que cuestan una tarde
+
+Medido el 20 sep 2026 sobre Boxy con sus mocks, `mav` 0.25.1.
+
+### La causa, aislada tras refutar tres hipótesis
+
+David pidió que `mav goto "los contenidos de la primera categoría, primera caja"` llegue. Hoy
+navega dos saltos y llega al contenido de **una** caja, pero no a la primera. Cuatro hipótesis,
+tres refutadas con medida:
+
+- **¿El ordinal no se entiende?** No. Sobre una lista de categorías: *"the first category"* 4/4,
+  *"the second category"* 4/4 —o sea que **distingue**, no elige siempre la opción 1—,
+  *"la primera categoría"* 4/4, y *"the third category"* devuelve `none` 4/4 porque no existe.
+  **La numeración de la lista de candidatos ya lleva la posición y el modelo la lee.**
+- **¿El orden del árbol no es el de pantalla?** No, en este caso: medidos los `frame` de las
+  filas, el orden del árbol y el de pantalla **coinciden**.
+- **¿Los identificadores pelados?** No. Con números pelados el ordinal acierta 4/4 igual que con
+  `id=box_0`. Los identificadores arreglan el objetivo **descriptivo** (§ anterior), no el
+  **ordinal**. Son dos problemas distintos y sólo uno lo cura la app.
+- **¿El idioma?** Tampoco. La pantalla sale en castellano aunque se lance con `--language en`
+  —defecto de Boxy— pero preguntando *"la primera caja"* **también se abstiene**. Las cuatro
+  redacciones, en los dos idiomas, dan `none`.
+
+**Lo que sí es la causa, aislado en una sola variable:**
+
+```
+la misma lista, mismo idioma, misma todo, cambiando SÓLO cuántas cajas hay
+
+  UNA fila de número pelado    "the first box" 0/4      "la primera caja" 0/4
+  DOS filas de número pelado   "the first box" 4/4      "la primera caja" 4/4
+```
+
+**Una fila que pone `1000` y nada más no se lee como "una caja".** Dos filas iguales se leen como
+una **serie del mismo tipo de cosa**, y entonces "la primera" significa algo. Con una sola no hay
+serie, no hay tipo, y no hay nada que ordenar.
+
+Eso unifica lo de la sección anterior: **el modelo necesita algo en la fila que diga qué clase de
+cosa es**, y puede sacarlo de tres sitios — un identificador (`id=box_0`), la palabra en la
+etiqueta (`label="Box 1000"`), **o tener hermanas de la misma forma**. Lo tercero es gratis y
+aparece solo cuando la lista tiene más de un elemento, que es por lo que este fallo **se esconde
+en cuanto hay datos de verdad**.
+
+**Consecuencia para quien mida:** una pantalla con un solo elemento de una lista es el peor caso,
+no el más sencillo. Un banco de pruebas con una caja por categoría prueba lo contrario de lo que
+parece.
+
+### Dos cosas que cuestan una tarde a quien venga después
+
+**1. La alerta de permiso SUSTITUYE el árbol entero.** Cuando está delante, `mav ui tree` devuelve
+**sólo sus dos botones** y nada de la app. Es distinto de una hoja modal normal —la de bienvenida
+de Boxy deja el árbol de debajo visible— y la consecuencia es que **una alerta superviviente de
+una tirada anterior deja cualquier recorrido vacío**: `goto` no encuentra ruta, no encuentra
+candidatos, y parece que la app esté rota. Límpiala antes de medir o de grabar:
+
+```
+xcrun simctl privacy <udid> reset all <bundle>    # antes de lanzar
+# y aun así, mira el árbol y despacha lo que haya quedado
+```
+
+Me costó dos medidas enteras descubrirlo, las dos dando resultados vacíos que interpreté como
+fallos de navegación.
+
+**2. Boxy recuerda que el asistente ya se vio**, así que el recorrido del asistente existe **una
+vez por instalación** y hace falta `mav open --clear-state` antes de cada toma.
