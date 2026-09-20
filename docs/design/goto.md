@@ -600,3 +600,25 @@ medida en contra.
 Lo que **no** hay que volver a medir, porque ya está: los ordinales se entienden (§11), el orden
 del árbol coincide con el de pantalla (§11), los identificadores arreglan el objetivo descriptivo
 y no el ordinal (§11), y una fila sola de número pelado no se lee como una caja (§11).
+
+### Antes del rediseño: mirar `jev-ultrafast`
+
+https://github.com/browser-use/jev-ultrafast — pasado por David, que ha repetido dos veces hoy
+que *"otros han resuelto esto y nosotros estamos siendo incapaces"*. Tiene razón en que merece
+mirarse antes de inventar.
+
+**Tres preguntas y ninguna más**, que son exactamente las que decide el rediseño:
+
+1. **¿Cómo trocean un objetivo de varios pasos?** Es la pregunta central: §12 mide que una frase
+   plana no aguanta el recorrido, y el subobjetivo por pantalla es la vía con evidencia a favor.
+2. **¿Qué le mandan al modelo en cada pantalla?** Nosotros mandamos una lista de candidatos
+   filtrada por nosotros; ellos puede que manden otra cosa, y §11 mide que lo que falla es que la
+   fila no diga qué clase de cosa es.
+3. **¿Ordenan candidatos o eligen uno?** Si ordenan, cómo evitan lo que está medido arriba: que
+   en una pantalla donde el modelo no reconoce la fila, "tocar el primero" toque el botón que
+   **crea** en vez del que abre.
+
+**Y la regla que ya nos costó un error hoy: leer su CÓDIGO, no su README.** Dimos por bueno que
+`browser-use` confirmaba la llegada con código, se contó hacia arriba como cierto, y al leer la
+fuente resultó que su acción de "terminado" devuelve literalmente el valor que le pasó el modelo
+(§0). El error no fue de quien lo leyó: fue de fiarse de la descripción.
