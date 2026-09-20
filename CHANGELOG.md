@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.25.0
 
 ### `goto --dismiss-permission`: one door through the modal guard, and the caller holds the key
 
