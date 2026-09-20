@@ -342,8 +342,11 @@ Boxy (lista de categorías → lista de cajas):
 |---|---|---|
 | `"the box inside Test Category 2"` | **3/3** | **0/3** |
 | `"the box inside this category"` | **0/3** | **3/3** |
+| `"open the box in Test Category 2"` | **3/3** | **0/3** |
 
-Ninguna de las dos aguanta el recorrido entero: la que nombra la categoría resuelve arriba y
+Ninguna de las tres aguanta el recorrido entero, y las dos que nombran la categoría
+fallan **de la misma manera**: resuelven donde hay que tocar la categoría y se abstienen
+donde hay que tocar la caja, que es la pantalla cuyo título ya es el nombre de la categoría. la que nombra la categoría resuelve arriba y
 se abstiene abajo, y la que dice "esta categoría" hace justo lo contrario. Por eso tres tomas
 seguidas de la demo murieron en `steps=1` con `no_route`, y por eso **escribir el objetivo no
 es cosmética: es la variable que decide si el bucle llega**.
