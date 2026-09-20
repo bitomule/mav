@@ -328,3 +328,26 @@ Importa para `goto` más que para nada: una pantalla que no está en los primero
 requiere desplazarse es inalcanzable para el bucle. Se puede construir `goto` sin swipe y sólo
 con taps, pero entonces su alcance es "lo que cabe sin desplazar", y eso hay que decirlo en vez
 de descubrirlo.
+
+---
+
+## 7. El objetivo tiene que resolver en TODAS las pantallas del camino
+
+`goto` le pasa **el mismo objetivo a `find` en cada pantalla**, así que una frase sólo sirve
+si resuelve en todos los saltos. Eso hace que **una redacción que suena mejor rinda peor**, y
+está medido, 3 tiradas por celda, sobre las dos pantallas de un recorrido de dos saltos en
+Boxy (lista de categorías → lista de cajas):
+
+| objetivo | en la lista de categorías | en la lista de cajas |
+|---|---|---|
+| `"the box inside Test Category 2"` | **3/3** | **0/3** |
+| `"the box inside this category"` | **0/3** | **3/3** |
+
+Ninguna de las dos aguanta el recorrido entero: la que nombra la categoría resuelve arriba y
+se abstiene abajo, y la que dice "esta categoría" hace justo lo contrario. Por eso tres tomas
+seguidas de la demo murieron en `steps=1` con `no_route`, y por eso **escribir el objetivo no
+es cosmética: es la variable que decide si el bucle llega**.
+
+Lo que queda abierto, y no está medido: si la solución es un objetivo por paso, una
+reformulación por pantalla, o que `find` reciba también dónde está el bucle además de adónde
+va.
