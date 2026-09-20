@@ -411,3 +411,23 @@ obtuve **0/5 en los dos drivers** y una división 615/139 que no existía.
 ### Y jev: la latencia no depende del número de candidatos
 
 358 ms con 3, 414 con 12, 387 con 20. **No hay nada que ganar mandando menos candidatos.**
+
+### Una optimización probada y revertida, para que nadie la repita
+
+La idea parecía buena: al confirmar la llegada el bucle **ya tiene** un árbol recién leído, y
+`gotoSettle` volvía a leer dos veces más para compararlas entre sí. Pasarle el que ya tiene
+debería ahorrar una lectura entera, ~630 ms.
+
+**Medido, va peor.** Cinco tiradas de Ajustes → General, misma pantalla, misma máquina:
+
+```
+dos lecturas de asentamiento   mediana 4.569 ms   [4521, 4566, 4568, 4625, 4798]
+una lectura  (reusando)        mediana 4.838 ms   [4633, 4773, 4837, 4993, 5281]
+```
+
+Dos razones, y la segunda es la que la mata: para comparar hacía falta una espera **antes** de
+la primera lectura en vez de después, así que se añadía un retardo fijo; y el árbol leído justo
+tras el toque **todavía difiere** del siguiente lo bastante a menudo como para que haga falta
+la segunda lectura de todas formas. O sea que se pagaba la espera y no se ahorraba la lectura.
+
+Revertido. La versión con dos lecturas de asentamiento es la que se queda.
