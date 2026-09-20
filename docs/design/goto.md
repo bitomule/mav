@@ -524,3 +524,79 @@ es cosmética: es la variable que decide si el bucle llega**.
 Lo que queda abierto, y no está medido: si la solución es un objetivo por paso, una
 reformulación por pantalla, o que `find` reciba también dónde está el bucle además de adónde
 va.
+
+---
+
+## 13. La forma de decidir cada paso: lo que hace hoy, lo que se pidió, y dónde me quedé
+
+Escrito el 20 sep 2026 con el presupuesto semanal agotándose, **para que quien siga no repita
+las medidas**. Aquí no hay código nuevo: hay lo que decide hoy, leído del propio código, y tres
+medidas sobre la forma que se pidió.
+
+### Cómo decide hoy cada paso, con el código delante
+
+`resolveGotoStep` en `internal/mav/goto_cmd.go`, y **no llama a `find`** —tiene su propia
+pregunta, `GotoStepQuestion`— pero **la forma sí es la que se criticó**:
+
+1. filtra candidatos (accionables, con texto, deduplicados por identidad),
+2. hace **una** llamada a jev con **el objetivo entero, sin cambiar, en cada pantalla**,
+3. recibe **una sola elección** (`--options`, una etiqueta) y la toca,
+4. si la elección no es un candidato o es destructiva, el veto la quita.
+
+**Lo que se señaló como el error es el punto 2, y es correcto**: el objetivo completo viaja a
+todas las pantallas. La tabla que lo demuestra está en §12: `"the box inside Test Category 2"`
+acierta 3/3 arriba y **0/3 abajo**, y `"the box inside this category"` hace exactamente lo
+contrario. **La que ancla arriba desancla abajo.** Ninguna redacción arregla eso porque no es un
+problema de palabras.
+
+### La forma pedida: ordenar por probabilidad y tocar la primera
+
+**jevi no tiene ranking.** `--options` devuelve **una** etiqueta; `--levels` puntúa niveles, no
+ordena opciones. Así que un ranking sólo se puede construir **por eliminación**: preguntar,
+quitar la elegida, volver a preguntar.
+
+Medido sobre la pantalla que hoy falla —una caja de número pelado entre cromo en castellano:
+
+```
+objetivo                                   ranking por eliminación        ¿aparece la caja?
+"the contents of the box in this category"  none                          no
+"box contents"                              none                          no
+"the box"                                   3 (Agregar Caja) > none       no
+```
+
+**Y ahí está el aviso que importa: en esa pantalla, "tocar la primera" tocaría `Agregar Caja`**
+—el botón que **crea** una caja— en vez de abrir la que ya existe. Eso es **peor que abstenerse**:
+crea datos. La forma de ranking no es mala en general, pero **en una pantalla donde el modelo no
+reconoce la fila, ordenar no fabrica conocimiento: sólo obliga a actuar sobre la mejor de las
+opciones equivocadas.**
+
+Por eso, si se construye, **`none` tiene que seguir siendo una opción del ranking y cortar**, no
+sólo el último puesto de una lista que se recorre igual.
+
+### Lo que sí está medido que funciona: un subobjetivo por pantalla
+
+De la misma tabla de §12, leída al revés: **por separado, las dos piezas ya funcionan hoy.**
+La lista de categorías resuelve 3/3 con un objetivo que nombra la categoría, y la lista de cajas
+resuelve 3/3 con uno que nombra la caja **sin** nombrar la categoría. Lo que no funciona es
+pedir las dos cosas a la vez con una frase plana.
+
+Eso coincide con la pista de que el objetivo lleve dentro la estructura del recorrido —categoría,
+luego caja— y **es la vía con evidencia a favor**, mientras que el ranking tiene, de momento, una
+medida en contra.
+
+### Dónde me quedé exactamente
+
+**No construido**, y en este orden lo haría quien siga:
+
+1. **Partir el objetivo en subobjetivos por pantalla** antes de navegar, no en cada paso: una
+   llamada previa que, leyendo la pantalla de partida, devuelva la secuencia ("primero la
+   categoría X, luego la caja Y"). Respeta el no-negociable porque el modelo **propone con el
+   contexto de salida** y no califica su propio viaje al final.
+2. **Consumir un subobjetivo por pantalla**, avanzando cuando la huella cambia.
+3. **El ranking por eliminación como respaldo dentro de una pantalla**, no como forma principal,
+   y cortando en `none` — nunca por un corte de confianza, que sigue sin separar nada (aciertos
+   desde 0,62 y fallos hasta 0,88).
+
+Lo que **no** hay que volver a medir, porque ya está: los ordinales se entienden (§11), el orden
+del árbol coincide con el de pantalla (§11), los identificadores arreglan el objetivo descriptivo
+y no el ordinal (§11), y una fila sola de número pelado no se lee como una caja (§11).
