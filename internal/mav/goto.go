@@ -247,7 +247,11 @@ type GotoResult struct {
 	RouteFinal   Route      `json:"route_final"`
 	Steps        []GotoStep `json:"steps"`
 	Refused      *Element   `json:"refused_element,omitempty"`
-	Next         string     `json:"next,omitempty"`
+	// Dismissed records every permission alert this run answered, and with
+	// which button. A loop that presses system dialogs has to be auditable
+	// afterwards or it is doing it in silence.
+	Dismissed []PermissionDismissal `json:"dismissed_permissions,omitempty"`
+	Next      string                `json:"next,omitempty"`
 }
 
 // SeenRoutes tracks where the loop has already been, so going in circles is
@@ -432,4 +436,82 @@ func InterpretGotoAnswer(label string, batch []Element) (*Element, string) {
 	}
 	el := batch[idx-1]
 	return &el, ""
+}
+
+// --- Dismissing a permission alert, and only when told exactly how ------------
+//
+// goto stops at any modal, because a loop that taps buttons on its own can
+// grant a permission or accept something that cannot be taken back. That guard
+// is unchanged. What this adds is one narrow door, and the caller holds the key.
+//
+// The door exists because some routes cannot avoid an alert: Boxy asks for
+// speech recognition on the way in, and `simctl privacy` has no service for
+// speech — measured, `revoke all` on the bundle does not suppress it — so
+// "deny it beforehand and change nothing" is not available there.
+//
+// WHY THE CALLER HAS TO NAME THE BUTTON, rather than goto working it out.
+// Two detectors were proposed and measured, and both fail on the case that
+// matters — a permission alert with THREE options, where two of them grant:
+//
+//	role=sheet   "¿Permitir que la app Mapas use tu ubicación?"
+//	role=button  "Permitir una vez"
+//	role=button  "Permitir al usarse la app"
+//	role=button  "No permitir"            <- the one that grants nothing, LAST
+//
+//   - `kTCCService*` in the tree: ZERO markers on that alert, in the app tree
+//     and in the system tree. It identifies some alerts and silently misses
+//     others, and the ones it misses are the multi-option ones.
+//   - position: the non-granting option was last here and first elsewhere. A
+//     rule that guesses wrong on a three-button alert GRANTS the permission,
+//     and one sample is not enough to bet a permission on.
+//
+// Matching button text is language-dependent, and worse than it sounds: the
+// same alert came back in Spanish from an app launched in English, because the
+// app resolved its InfoPlist strings to es.lproj. So goto cannot read the label
+// either — but the person running it knows what it says. Declaring it is an
+// instruction, not a heuristic: an instruction cannot guess wrong.
+//
+// And it FAILS CLOSED. If the declared label is not on the modal, goto stops
+// exactly as before rather than trying something else. With two of three
+// buttons granting, the quiet failure is the one that grants.
+
+// PermissionDismissal is what the caller authorised, and what was done with it.
+type PermissionDismissal struct {
+	Modal  string `json:"modal"`
+	Action string `json:"action"`
+}
+
+// gotoMaxDismissals bounds how many alerts one run may dismiss. An app that
+// asks again after every tap would otherwise let the loop spend its whole
+// budget answering dialogs, which is a different failure from the one the
+// budget is for.
+const gotoMaxDismissals = 3
+
+// FindDismissButton returns the button on this screen whose label is the one
+// the caller declared, or nil. Matching folds case and accents, like every
+// other label comparison here, and nothing else: no prefix, no substring, no
+// nearest match. A near-miss on a permission alert is a granted permission.
+//
+// It refuses a declared label that names something destructive even though the
+// caller asked for it, which is the one place goto overrules an explicit
+// instruction. `find` would return it — its caller reads the answer before
+// anything is tapped — and goto has nobody between the decision and the finger.
+func FindDismissButton(elements []Element, declared string) *Element {
+	want := normalizeForMatch(declared)
+	if want == "" || IsDestructive(declared) {
+		return nil
+	}
+	for i := range elements {
+		if !strings.Contains(strings.ToLower(elements[i].Role), "button") {
+			continue
+		}
+		if normalizeForMatch(elements[i].Label) != want {
+			continue
+		}
+		if IsDestructive(findElementText(elements[i])) {
+			return nil
+		}
+		return &elements[i]
+	}
+	return nil
 }

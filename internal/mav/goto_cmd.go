@@ -47,7 +47,8 @@ func (c CLI) gotoScreen(ctx context.Context, opts GlobalOptions, cfg Config, arg
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	result, err := c.runGotoLoop(ctx, cfg, opts, goal, criterion, maxSteps)
+	dismiss := flagValue(args, "--dismiss-permission")
+	result, err := c.runGotoLoop(ctx, cfg, opts, goal, criterion, maxSteps, dismiss)
 	if err != nil {
 		return err
 	}
@@ -57,7 +58,7 @@ func (c CLI) gotoScreen(ctx context.Context, opts GlobalOptions, cfg Config, arg
 }
 
 func (c CLI) runGotoLoop(ctx context.Context, cfg Config, opts GlobalOptions,
-	goal string, criterion ArrivalCriterion, maxSteps int) (GotoResult, error) {
+	goal string, criterion ArrivalCriterion, maxSteps int, dismiss string) (GotoResult, error) {
 
 	result := GotoResult{Arrived: "false", Goal: goal}
 
@@ -92,10 +93,41 @@ func (c CLI) runGotoLoop(ctx context.Context, cfg Config, opts GlobalOptions,
 
 		// A modal on top is not a screen you navigate through, and tapping
 		// blindly under one is how a loop dismisses something that mattered.
+		//
+		// The one exception is a button the CALLER named, and it fails closed:
+		// if that exact label is not here, this stops like it always did. With
+		// a three-option permission alert where two options grant, the quiet
+		// failure is the one that grants.
 		if route.Modal != "" && !criterion.MatchesRoute(route, elements) {
-			result.Outcome = GotoRefused
-			result.Next = "a modal is on top (" + route.Modal + "); goto does not tap under one"
-			return c.finishGoto(result, criterion, elements), nil
+			btn := FindDismissButton(elements, dismiss)
+			if btn == nil || len(result.Dismissed) >= gotoMaxDismissals {
+				result.Outcome = GotoRefused
+				result.Next = "a modal is on top (" + route.Modal + "); goto does not tap under one. " +
+					"Name the button that grants nothing with --dismiss-permission to let it through"
+				return c.finishGoto(result, criterion, elements), nil
+			}
+			x, y, ok := TapPoint(*btn)
+			if !ok {
+				result.Outcome = GotoRefused
+				result.Next = "the declared dismiss button has no frame to tap"
+				return c.finishGoto(result, criterion, elements), nil
+			}
+			if err := c.gotoTap(ctx, cfg, opts, x, y); err != nil {
+				return result, err
+			}
+			result.Dismissed = append(result.Dismissed, PermissionDismissal{
+				Modal: route.Modal, Action: btn.Label,
+			})
+			elements, err = c.gotoReadScreen(ctx, cfg, opts)
+			if err != nil {
+				return result, err
+			}
+			route = ExtractRoute(elements)
+			result.RouteFinal = route
+			// Answering a dialog is not progress towards the goal, so it does
+			// not consume a step and cannot be mistaken for one in the record.
+			step--
+			continue
 		}
 
 		found := c.resolveGotoStep(ctx, elements, goal)
@@ -267,6 +299,10 @@ func (c CLI) writeGotoResult(result GotoResult, extra map[string]string) error {
 	if !result.RouteFinal.IsZero() {
 		fields["route"] = result.RouteFinal.String()
 	}
+	for _, d := range result.Dismissed {
+		fields["dismissed_permission"] = d.Modal
+		fields["dismissed_action"] = d.Action
+	}
 	for k, v := range extra {
 		fields[k] = v
 	}
@@ -283,7 +319,8 @@ func (c CLI) writeGotoResult(result GotoResult, extra map[string]string) error {
 
 // gotoPositional drops flags and the values of the ones that take a value.
 func gotoPositional(args []string) []string {
-	valued := map[string]bool{"--arrived-when": true, "--max-steps": true, "--timeout": true}
+	valued := map[string]bool{"--arrived-when": true, "--max-steps": true,
+		"--timeout": true, "--dismiss-permission": true}
 	out := make([]string, 0, len(args))
 	skip := false
 	for _, a := range args {
