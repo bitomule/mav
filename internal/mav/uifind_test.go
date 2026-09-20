@@ -85,8 +85,17 @@ func TestControlBAConfidentButUnsureVerdictIsAnAbstention(t *testing.T) {
 	// The measurement this encodes: correct picks score from 0.76 and wrong
 	// ones reach 0.88, so no number separates them. The verdict does. Nothing
 	// in this path reads a probability — the function takes no such argument.
+	//
+	// The empty string used to be in this list and has been moved out
+	// deliberately, not edited away to make a change pass. A verdict of `no`
+	// or `unsure` is the model declining, which is the whole mechanism. No
+	// verdict at all is something else: jevi not classifying the answer, which
+	// is what a fixed jevi will do for a `choice`. Reading the second as the
+	// first would make find abstain on every answer the day that lands, and
+	// nobody would connect it to a jevi release. See
+	// TestFindKeepsWorkingWhenJeviStopsClassifying for the other half.
 	batch := FindCandidates(settingsScreen())
-	for _, verdict := range []string{"unsure", "no", ""} {
+	for _, verdict := range []string{"unsure", "no"} {
 		el, reason := InterpretFindAnswer(verdict, "2", batch)
 		if el != nil {
 			t.Fatalf("verdict %q returned an element: %+v", verdict, el)

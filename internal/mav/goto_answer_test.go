@@ -80,3 +80,46 @@ func TestReadingTheChoiceCannotProduceAnArrival(t *testing.T) {
 		t.Fatal("no criterion must never match, whatever the model chose")
 	}
 }
+
+// What happens to all of this when jevi is fixed.
+//
+// The defect is jevi attaching a confidence-derived verdict to a `choice`
+// answer. goto reads only the choice, so a jevi that stops attaching one
+// changes nothing for it. find still reads the verdict while it exists — and
+// that is the half that could have broken silently, because "no verdict" read
+// as "not yes" would make find abstain on every answer, for a reason nobody
+// would connect to a jevi release.
+
+func TestFindKeepsWorkingWhenJeviStopsClassifying(t *testing.T) {
+	batch := FindCandidates(tenRowScreen())
+	el, reason := InterpretFindAnswer("", "3", batch)
+	if el == nil {
+		t.Fatalf("a choice with no verdict must stand on its own, got reason=%s", reason)
+	}
+	if el.ID != "CAMERA" {
+		t.Fatalf("wrong element: %+v", el)
+	}
+}
+
+func TestFindStillRefusesAVerdictThatSaysNo(t *testing.T) {
+	// The control: accepting an ABSENT verdict must not accept a NEGATIVE one.
+	// Without this the change above would be a silent loosening of find.
+	batch := FindCandidates(tenRowScreen())
+	for _, verdict := range []string{"no", "unsure"} {
+		if el, _ := InterpretFindAnswer(verdict, "3", batch); el != nil {
+			t.Fatalf("verdict %q was accepted: find must still refuse it today", verdict)
+		}
+	}
+}
+
+func TestGotoIsUnaffectedByTheJeviChangeEitherWay(t *testing.T) {
+	// goto never reads the verdict, so both shapes resolve identically. This
+	// is the assertion that says the workaround is not a workaround: reading
+	// the choice is correct before and after the upstream fix, and there is
+	// nothing here to delete when jevi lands.
+	batch := FindCandidates(tenRowScreen())
+	chosen, _ := InterpretGotoAnswer("3", batch)
+	if chosen == nil || chosen.ID != "CAMERA" {
+		t.Fatal("goto should resolve the choice regardless of any verdict")
+	}
+}

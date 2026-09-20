@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Ready for jevi 0.3.0, which stops classifying a choice
+
+jevi no longer attaches a confidence-derived verdict to a `choice` answer —
+the upstream fix for the defect that made goto discard correct picks. mav needed
+nothing for it, and that is worth saying precisely rather than gratefully:
+`find` declines on **two** independent signals, the verdict and the label, and
+only the first goes inert. The one that was actually catching abstentions is
+still there.
+
+`find` now also treats an ABSENT verdict as "not classified" rather than as a
+refusal, so it keeps working against both jevi versions instead of silently
+abstaining on every answer the day the new one lands. A verdict that says `no`
+or `unsure` is still a refusal; a test asserts both halves.
+
+And the load-bearing part is now documented where someone would delete it: the
+service **never abstains on its own**. Given four options where none fitted it
+picked one anyway, 3 times out of 3, with low confidence. The abstention exists
+only because `none` is on the menu. Removing it looks like tidying and turns
+every irrelevant screen into a confident wrong answer.
+
 ### `mav goto` arrives, and every tap is 157ms cheaper
 
 Two fixes from profiling a real goto step end to end, and three measured dead
