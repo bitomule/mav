@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased
+
+### `goto` no longer says it failed while standing on the destination
+
+It walked two steps into Boxy, landed on the box contents, and reported
+`arrived=false outcome=no_route`. The heading `label="Test Category 2: 1000"
+role=heading` was on screen afterwards, and both a `title:` and a `text:`
+criterion naming exactly that came back denied.
+
+The cause was an asymmetry in the loop, not anything about matching. Arrival was
+tested on the **one** read taken right after a tap, and the loop settles only
+when that read already matches — so a screen that finished drawing a moment
+later was missed, and nothing ever looked again. The loop went round, found
+nothing left to tap, abstained twice and reported `no_route` while standing on
+the destination.
+
+The loop already refuses to declare **arrival** on a half-drawn screen. It now
+equally refuses to declare **failure** on one: before any unhappy outcome is
+returned, the same criterion is re-asked against a settled read. Re-asking the
+same question is what keeps this from being leniency — a criterion that does not
+hold still does not hold.
+
+Ablation on the real route, four runs each:
+
+| | reached the destination | of those, reported false |
+| --- | --- | --- |
+| v0.25.0 | 3/4 | **3** |
+| now | 3/4 | **0** |
+
+And the control on the other side, which matters more than the fix: the run that
+genuinely did not arrive (one step, destination absent) still reports
+`arrived=false` on both builds, and so does a destination that does not exist at
+all. A fix that made everything arrive would be worse than the defect.
+
 ## v0.25.0
 
 ### `goto --dismiss-permission`: one door through the modal guard, and the caller holds the key
