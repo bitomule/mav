@@ -88,7 +88,7 @@ func (c CLI) runGotoLoop(ctx context.Context, cfg Config, opts GlobalOptions,
 		if ctx.Err() != nil {
 			result.Outcome = GotoTimeout
 			result.Next = "ran out of time; the route it reached is in route_final"
-			return c.finishGoto(result, criterion, elements), nil
+			return c.finishGoto(ctx, cfg, opts, result, criterion, elements), nil
 		}
 
 		// A modal on top is not a screen you navigate through, and tapping
@@ -104,13 +104,13 @@ func (c CLI) runGotoLoop(ctx context.Context, cfg Config, opts GlobalOptions,
 				result.Outcome = GotoRefused
 				result.Next = "a modal is on top (" + route.Modal + "); goto does not tap under one. " +
 					"Name the button that grants nothing with --dismiss-permission to let it through"
-				return c.finishGoto(result, criterion, elements), nil
+				return c.finishGoto(ctx, cfg, opts, result, criterion, elements), nil
 			}
 			x, y, ok := TapPoint(*btn)
 			if !ok {
 				result.Outcome = GotoRefused
 				result.Next = "the declared dismiss button has no frame to tap"
-				return c.finishGoto(result, criterion, elements), nil
+				return c.finishGoto(ctx, cfg, opts, result, criterion, elements), nil
 			}
 			if err := c.gotoTap(ctx, cfg, opts, x, y); err != nil {
 				return result, err
@@ -136,7 +136,7 @@ func (c CLI) runGotoLoop(ctx context.Context, cfg Config, opts GlobalOptions,
 			if abstentions >= gotoMaxAbstentions {
 				result.Outcome = GotoNoRoute
 				result.Next = "nothing on this screen clearly leads to the goal (" + found.Reason + "); read `mav ui tree`"
-				return c.finishGoto(result, criterion, elements), nil
+				return c.finishGoto(ctx, cfg, opts, result, criterion, elements), nil
 			}
 			continue
 		}
@@ -149,14 +149,14 @@ func (c CLI) runGotoLoop(ctx context.Context, cfg Config, opts GlobalOptions,
 			result.Refused = &el
 			result.Outcome = GotoRefused
 			result.Next = "the way forward goes through something that destroys data; that is a decision for a person"
-			return c.finishGoto(result, criterion, elements), nil
+			return c.finishGoto(ctx, cfg, opts, result, criterion, elements), nil
 		}
 
 		x, y, ok := TapPoint(*found.Element)
 		if !ok {
 			result.Outcome = GotoNoRoute
 			result.Next = "the chosen element has no frame to tap"
-			return c.finishGoto(result, criterion, elements), nil
+			return c.finishGoto(ctx, cfg, opts, result, criterion, elements), nil
 		}
 
 		before := screenFingerprint(elements)
@@ -182,7 +182,7 @@ func (c CLI) runGotoLoop(ctx context.Context, cfg Config, opts GlobalOptions,
 			if unchanged >= gotoMaxUnchanged {
 				result.Outcome = GotoStuck
 				result.Next = "two taps in a row changed nothing; the screen is not responding to them"
-				return c.finishGoto(result, criterion, elements), nil
+				return c.finishGoto(ctx, cfg, opts, result, criterion, elements), nil
 			}
 			continue
 		}
@@ -191,7 +191,7 @@ func (c CLI) runGotoLoop(ctx context.Context, cfg Config, opts GlobalOptions,
 		if seen.Visit(screenFingerprint(elements)) {
 			result.Outcome = GotoLooping
 			result.Next = "came back to a screen it had already been on"
-			return c.finishGoto(result, criterion, elements), nil
+			return c.finishGoto(ctx, cfg, opts, result, criterion, elements), nil
 		}
 
 		// The one place quiescence is worth its read: a criterion that matches
@@ -215,19 +215,51 @@ func (c CLI) runGotoLoop(ctx context.Context, cfg Config, opts GlobalOptions,
 
 	result.Outcome = GotoExhausted
 	result.Next = "ran out of steps; the route it reached is in route_final"
-	return c.finishGoto(result, criterion, elements), nil
+	return c.finishGoto(ctx, cfg, opts, result, criterion, elements), nil
 }
 
-// finishGoto settles what `arrived` says on any path that is not a clean
-// arrival. With no declared criterion goto cannot assert arrival at all, so it
-// says unverified and never true: the caller has the context to judge, and this
-// loop deliberately has no second model to ask.
-func (c CLI) finishGoto(result GotoResult, criterion ArrivalCriterion, elements []Element) GotoResult {
+// finishGoto is the last thing every unhappy path goes through, and it LOOKS
+// ONE MORE TIME before accepting that the run did not arrive.
+//
+// That second look is the fix for a measured defect: goto walked two steps into
+// Boxy, landed on the destination — `label="Test Category 2: 1000" role=heading`
+// was on screen afterwards — and reported arrived=false, with both a title: and
+// a text: criterion naming exactly that.
+//
+// The cause was an asymmetry in the loop rather than anything about matching.
+// Arrival was tested on the ONE read taken right after a tap, and the loop
+// settles only when that read already matches. A screen that finishes drawing a
+// moment later was therefore missed, and nothing ever looked again: the loop
+// went round, found nothing left to tap, abstained twice and reported no_route
+// while standing on the destination.
+//
+// So the symmetry is restored. The loop already refuses to declare arrival on a
+// half-drawn screen; it now equally refuses to declare failure on one. The
+// check is the same criterion against a settled read, so it cannot turn a
+// journey that did not arrive into one that did — there is no new leniency
+// here, only a second look at the same question.
+func (c CLI) finishGoto(ctx context.Context, cfg Config, opts GlobalOptions,
+	result GotoResult, criterion ArrivalCriterion, elements []Element) GotoResult {
+
 	if criterion.IsZero() {
 		result.Arrived = "unverified"
 		if result.Next != "" {
 			result.Next += ". No --arrived-when was given, so arrival cannot be confirmed either way"
 		}
+		return result
+	}
+
+	settled, err := c.gotoSettle(ctx, cfg, opts)
+	if err != nil || settled == nil {
+		settled = elements
+	}
+	route := ExtractRoute(settled)
+	result.RouteFinal = route
+	if criterion.MatchesRoute(route, settled) {
+		result.Outcome = GotoArrived
+		result.Arrived = "true"
+		result.Next = ""
+		return result
 	}
 	return result
 }
