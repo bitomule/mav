@@ -1,5 +1,168 @@
 # Changelog
 
+## v0.28.0
+
+### `goto` says it arrived without being told what to expect
+
+`--arrived-when` still works and still wins when you write it. What changes is
+that you no longer have to. Naming the destination up front was the part that
+broke the promise: if you already know the screen's exact title, much of the
+point of asking in your own words has gone.
+
+An earlier attempt asked the model, before setting off, what the destination
+would be called. It scored 0/10, and correctly — the candidate names come only
+from the starting screen, and on this route the destination is not on it. It was
+being asked to guess a name it could not see.
+
+So the criterion is not guessed before the walk; it is chosen after it. `goto`
+records every screen it actually stood on, and when the walk is over it lists
+them — each by its title, or by mav's own `screen=` identity when it has none,
+with some of the text it showed — **alphabetically, with no step numbers and no
+marker of where it ended** — and asks which one is the destination, with `none`
+on the menu. Code, which alone knows which of them was the last, derives arrival:
+`true` only when the pick IS where it stopped and is not where it started.
+
+The blindness is structural rather than a matter of prompt. The model cannot
+identify the endpoint in an alphabetical menu, so it cannot flatter the run by
+picking it, and it is never asked whether it arrived — it is asked to choose
+among places, which is a different question from grading its own trip.
+
+Measured on Boxy with eight named boxes, ten runs a lane, no `--arrived-when`
+anywhere:
+
+| | result |
+|---|---|
+| false arrivals | **0 of 30** |
+| confirms a real arrival | **9 of 10** (0/10 before) |
+| cost | **one model call, 324 ms**, only when there is something to answer |
+
+That last row is the gate the earlier attempt could not have: nothing moved,
+fewer than two distinct screens, or a final screen with no name are all decidable
+in code before anything is spent.
+
+The ablation: a goal whose destination does not exist ends on the very screen the
+first lane confirms, with the same three-entry menu — only the goal differs — and
+answers `none` 10/10, `arrived=unverified` 10/10.
+
+A names-only menu measured 0/10, which is worth knowing: "the FIRST category,
+FIRST box" is positional, and a name does not say which is first.
+
+### One sentence was costing `goto` a fifth of its choices
+
+On a three-category screen, asked for the first category, `find` picked the right
+one 40 times out of 40 and `goto` managed 29 to 34. Same model, same screen, same
+nine candidates. The difference was the sentence that names the goal:
+
+```
+- "Someone is trying to reach: " + goal
++ "A user described where they want to get to as: " + goal
+```
+
+Now 40/40, and the loss travels with the sentence: put `goto`'s phrasing into
+`find`'s question and `find` drops to 35/40.
+
+The obvious suspect was wrong. `goto`'s clause offering "the element that LEADS
+towards it" is untouched — it exists because without it `goto` stopped at the
+Settings root when the goal was inside General, and it is not what was costing
+anything.
+
+Four controls, forty runs each, reading raw `axe` JSON on live screens: the
+broken cell 40/40, the multi-step case the LEADS clause protects still 40/40, the
+direct case still 40/40, and four absent goals still abstaining 40/40. End to end
+12/12 before and after.
+
+Also measured: the untrusted-text preamble was costing about 8 hits in 40 under
+the old wording. Under the new one it costs nothing, so the defence stays without
+a trade.
+
+## Unreleased
+
+### `goto` reads the goal as a description again, and stops losing the first of three
+
+On Boxy's category grid — Moving Boxes top-left, Test Category 1 to its right,
+Test Category 2 below — the goal `la primera categoría` came back as **Test
+Category 1**, the row that merely has a 1 in its name. `mav ui find` never made
+that mistake on the same screen with the same candidates. Only the wording
+differed.
+
+The suspicion was `goto`'s LEADS clause — the one that lets it answer with a row
+that is not the destination but leads to it. It measured innocent. What carried
+the loss was the single sentence that names the goal: `Someone is trying to
+reach: X` invites X to be read as the name of a destination, and one row on that
+screen is named "1". `A user described where they want to get to as: X` marks X
+as the user's own words, and "primera" is then read as a position.
+
+Measured 21 sep off the raw `axe describe-ui` JSON of two live Boxy screens,
+iPhone 17 Pro / iOS 26.3 from a simpool slot, load 3.1–6.4, 40 runs a cell, with
+hits, misses and abstentions counted separately:
+
+| cell | right answer | before | after |
+|---|---|---|---|
+| first category, on the grid | the row that IS it | 29–34 hits / 6–10 misses | **40 hits / 0 misses** |
+| box contents, from the grid | the row that LEADS (destination two taps away) | 40 hits | **40 hits** |
+| box contents, from the box list | the row that IS it | 40 hits | **40 hits** |
+| four goals absent from the screen | `none` | 40 abstentions each | **40 abstentions each** |
+
+End to end, `mav goto "los contenidos de la primera categoría, primera caja"`
+arrives **12/12** before and after, tap canary green on every run.
+
+Nothing else moved: same candidate extraction, same `none` on the option list,
+same answer reading, same veto. No confidence threshold, no second model, no
+filtering of candidates by text.
+
+### `goto` knows it arrived without you telling it the destination's name first
+
+Measured on Boxy with eight named boxes, iPhone 17 Pro / iOS 26.3 from a simpool
+slot, load 4.1–6.4 throughout, tap canary green. Ten runs a lane, no
+`--arrived-when` anywhere.
+
+| lane | goal | `arrived=true` | **arrived on the WRONG screen** |
+|---|---|---|---|
+| reaches it | contents of the first category's first box | **9/10** | **0/10** |
+| does not (returns to the start) | Dropbox sync settings | 0/10 | **0/10** |
+| does not, and **ends on the other lane's destination** | change history of the first box | 0/10 | **0/10** |
+
+The tenth run of the first lane had not arrived — `goto` opened a different
+category and stopped on `Vista de cajas vacia` — so that is **9 of the 9 runs
+that got there**, which is what a hand-written `--arrived-when` scores.
+
+**What it does.** Arrival is still decided by code comparing routes. What is new
+is where the criterion comes from when you did not write one: at the END of the
+walk, `goto` lists every distinct screen it actually stood on — each by its title
+or, for a screen without one, by its internal screen name, followed by some of
+the text it showed — **alphabetically, with no step numbers and no marker of
+where it ended** — and asks which of them is the destination, with `none` on the
+menu. Code, which alone knows which one was the last, decides.
+
+**It is never asked whether it arrived**, and it cannot tell which entry the
+answer would be. Choosing between screens it observed is not grading its own
+work. And it is monotone: a pick that is not where the run stopped stays
+`unverified`, never `false`, so this can only ever turn an unverified into a
+true.
+
+**It does not charge for saying nothing.** The question is skipped when nothing
+moved, when fewer than two distinct screens were seen, or when the screen it
+stopped on has neither a title nor a screen identity — all decidable in code
+before a penny is spent. One call, 324 ms median, only where there is something
+to answer.
+
+The third lane is the ablation that matters: it ends on the **same screen with
+the same three-entry menu** as the lane that confirms, and only the goal differs.
+`none`, ten times out of ten.
+
+New in the output: `criterion_source=observed`, `criterion_observed`, and
+`observed_screens` — the menu the destination was named out of, so a pick is
+readable next to what it was picked from. A criterion nobody wrote is never
+printed as one you wrote, and an explicit `--arrived-when` always wins.
+
+### `--arrived-when` takes `screen:"..."`
+
+`mav`'s own screen identity — the `screen=` that `mav ui tree` already prints —
+is now part of a route and can be named as an arrival criterion, compared whole
+rather than as a substring. It exists because a Spanish-locale SwiftUI app mostly
+has no navigation-bar headings: on Boxy neither the category grid nor the box
+list has one, and without this there was nothing to call them.
+
 ## v0.27.0
 
 ### `goto` arrives, and now it says so

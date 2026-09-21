@@ -80,6 +80,19 @@ func TestTheLoopAsksAWiderQuestionThanFind(t *testing.T) {
 	if contains(q, "could equally be it") {
 		t.Fatal("the clause that abstained on every duplicated row is back")
 	}
+	// The goal is named as something a USER DESCRIBED, not as a destination
+	// somebody is trying to reach. That single sentence is what the 40-run
+	// table in GotoStepQuestion's comment moved: with "Someone is trying to
+	// reach", "la primera categoría" on Boxy's grid came back as the row
+	// literally named "Test Category 1" 6 to 11 times in 40; with this line it
+	// is the first category 40 times in 40, and the multi-step cell the LEADS
+	// clause protects stays at 40/40 either way.
+	if !contains(q, "A user described where they want to get to as:") {
+		t.Fatalf("the step question must name the goal as the user's own description:\n%s", q)
+	}
+	if contains(q, "Someone is trying to reach") {
+		t.Fatal("the naming line measured to lose the first-category cell is back")
+	}
 }
 
 func contains(haystack, needle string) bool {

@@ -514,8 +514,17 @@ It taps the point it already resolved rather than a selector, because a selector
 --arrived-when is the only way goto can assert arrival, and it is checked by code against the screen's ROUTE — the navigation title, the selected tab, any modal on top — never against free text anywhere in the tree. Terms are ` + "`title:\"...\"`" + ` and ` + "`text:\"...\"`" + `, all required:
   mav goto "the language screen" --arrived-when 'title:"Idioma y región"'
   mav goto "order 123" --arrived-when 'title:"Order detail" text:"123"'
+  mav goto "the box list" --arrived-when 'screen:"boxes-view"'
 
-A criterion that ALREADY holds on the screen you start from is refused (ambiguous_criterion) rather than reported as instant arrival. Without --arrived-when, goto reports arrived=unverified and never true: there is no second model asked to confirm its own work.
+A criterion that ALREADY holds on the screen you start from is refused (ambiguous_criterion) rather than reported as instant arrival.
+
+Without --arrived-when, goto names the destination out of the screens it ACTUALLY STOOD ON. When the walk is over it lists every distinct screen it saw — each by its title or, for a screen with no title, by its internal screen name, followed by some of the text on it — alphabetically, with no order and no marker of where it ended, and asks which of them is the destination, with "none" on the menu. Code, which alone knows which of them was the last, decides: the pick confirms arrival only when it IS the screen goto stopped on and is not the screen it started from. A pick that is neither stays unverified, so naming can only ever turn an unverified into a true, never a false.
+
+It is never asked whether it arrived, and it cannot tell which entry the answer would be. Choosing between screens it observed is not grading its own work.
+
+The question is skipped when there is nothing to answer: no --arrived-when but nothing moved, fewer than two distinct screens seen, or the screen it stopped on has neither a title nor a screen identity. The output carries criterion_source=observed, criterion_observed and observed_screens, so a criterion nobody wrote is never presented as one you wrote.
+
+An explicit --arrived-when always wins over an observed one. --arrived-when also takes screen:"..." — mav's own screen identity, compared whole, which is how a screen with no navigation-bar title is named.
 
 It never taps anything destructive, with no escape hatch — unlike ` + "`mav ui find`" + `, because nobody reads anything between the decision and the finger.
 
