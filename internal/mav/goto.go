@@ -288,12 +288,21 @@ const (
 // verdict: the caller has more context than this loop and should be able to
 // judge the path for itself.
 type GotoStep struct {
-	Tapped      *Element `json:"tapped,omitempty"`
-	ResolvedBy  string   `json:"resolved_by,omitempty"`
-	Reason      string   `json:"reason,omitempty"`
-	RouteBefore Route    `json:"route_before"`
-	RouteAfter  Route    `json:"route_after"`
-	Changed     bool     `json:"changed"`
+	Tapped *Element `json:"tapped,omitempty"`
+	// Operation says what was done to Tapped. Empty means the tap this loop
+	// has always done; `type` means characters went into it. Recorded because
+	// a run that WROTE somewhere has to be auditable afterwards as something
+	// other than a run that pressed something.
+	Operation string `json:"operation,omitempty"`
+	// InputKey is the declared NAME whose value was typed — never the value.
+	// What was typed is in the caller's own command line; repeating it in the
+	// record would put it in logs the caller did not choose to put it in.
+	InputKey    string `json:"input_key,omitempty"`
+	ResolvedBy  string `json:"resolved_by,omitempty"`
+	Reason      string `json:"reason,omitempty"`
+	RouteBefore Route  `json:"route_before"`
+	RouteAfter  Route  `json:"route_after"`
+	Changed     bool   `json:"changed"`
 }
 
 // GotoResult is the whole run.

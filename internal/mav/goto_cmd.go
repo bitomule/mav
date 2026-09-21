@@ -18,7 +18,7 @@ func (c CLI) gotoScreen(ctx context.Context, opts GlobalOptions, cfg Config, arg
 	goal := strings.TrimSpace(strings.Join(gotoPositional(args), " "))
 	if goal == "" {
 		return Fail("goto_goal_missing", map[string]string{
-			"usage": `mav goto "the camera settings screen" [--arrived-when 'title:"Cámara"']`,
+			"usage": `mav goto "the camera settings screen" [--arrived-when 'title:"Cámara"'] [--input name="Test Category"]`,
 		}).Write(c.Stdout)
 	}
 
@@ -50,7 +50,8 @@ func (c CLI) gotoScreen(ctx context.Context, opts GlobalOptions, cfg Config, arg
 	defer cancel()
 
 	dismiss := flagValue(args, "--dismiss-permission")
-	result, err := c.runGotoLoop(ctx, cfg, opts, goal, criterion, maxSteps, dismiss)
+	inputs := ParseGotoInputs(args)
+	result, err := c.runGotoLoop(ctx, cfg, opts, goal, criterion, maxSteps, dismiss, inputs)
 	if err != nil {
 		return err
 	}
@@ -60,7 +61,8 @@ func (c CLI) gotoScreen(ctx context.Context, opts GlobalOptions, cfg Config, arg
 }
 
 func (c CLI) runGotoLoop(ctx context.Context, cfg Config, opts GlobalOptions,
-	goal string, criterion ArrivalCriterion, maxSteps int, dismiss string) (GotoResult, error) {
+	goal string, criterion ArrivalCriterion, maxSteps int, dismiss string,
+	inputs map[string]string) (GotoResult, error) {
 
 	result := GotoResult{Arrived: "false", Goal: goal, CriterionSource: CriterionNone}
 	if !criterion.IsZero() {
@@ -137,7 +139,16 @@ func (c CLI) runGotoLoop(ctx context.Context, cfg Config, opts GlobalOptions,
 			continue
 		}
 
-		found := c.resolveGotoStep(ctx, elements, goal)
+		// With nothing declared to type, this is byte for byte the call it
+		// always was: one head, `--options`, and the typing operation never
+		// reaches the model at all. The action space is what a caller opts
+		// into by declaring a value, not a new default.
+		found, operation, inputKey := FindResult{}, ActionTap, ""
+		if len(inputs) > 0 {
+			found, operation, inputKey = c.resolveGotoAction(ctx, elements, goal, inputs)
+		} else {
+			found = c.resolveGotoStep(ctx, elements, goal)
+		}
 		if found.Element == nil {
 			abstentions++
 			if abstentions >= gotoMaxAbstentions {
@@ -180,7 +191,25 @@ func (c CLI) runGotoLoop(ctx context.Context, cfg Config, opts GlobalOptions,
 		record := GotoStep{
 			Tapped: found.Element, ResolvedBy: found.ResolvedBy, RouteBefore: route,
 		}
-		if err := c.gotoTap(ctx, cfg, opts, x, y); err != nil {
+		if operation == ActionType {
+			// The one place a value is read, and it is read out of what the
+			// CALLER declared, keyed by a name only the caller could have
+			// written. A key the model invented cannot reach this map —
+			// ResolveActionSpace has already refused anything that is not a
+			// declared name — so a miss here is a bug in mav, not an answer,
+			// and it stops rather than typing something else.
+			text, ok := ActionSpaceText(ActionChoice{Operation: ActionType, InputKey: inputKey}, inputs)
+			if !ok {
+				result.Outcome = GotoNoRoute
+				result.Next = "the chosen input name is not one that was declared; nothing was typed"
+				return c.finishGoto(ctx, cfg, opts, result, criterion, elements), nil
+			}
+			record.Operation = ActionType
+			record.InputKey = inputKey
+			if err := c.gotoTypeText(ctx, cfg, opts, x, y, text); err != nil {
+				return result, err
+			}
+		} else if err := c.gotoTap(ctx, cfg, opts, x, y); err != nil {
 			return result, err
 		}
 
@@ -414,6 +443,27 @@ func (c CLI) gotoTap(ctx context.Context, cfg Config, opts GlobalOptions, x, y i
 	return inner.uiTap(ctx, opts, cfg, []string{"--x", strconv.Itoa(x), "--y", strconv.Itoa(y)})
 }
 
+// gotoTypeText focuses the field goto already resolved and types the caller's
+// own characters into it.
+//
+// Two steps because typing on iOS is two steps: the keyboard goes to whatever
+// has focus, so a type with nothing focused types into the last thing that was.
+// The tap is the same coordinate tap the rest of the loop uses, for the same
+// reason — the point is already resolved and a selector tap would re-read the
+// tree.
+//
+// The text reaching this function came out of the caller's own map, keyed by a
+// name the caller wrote. Nothing the model emitted travels here.
+func (c CLI) gotoTypeText(ctx context.Context, cfg Config, opts GlobalOptions, x, y int, text string) error {
+	if err := c.gotoTap(ctx, cfg, opts, x, y); err != nil {
+		return err
+	}
+	var sink strings.Builder
+	inner := c
+	inner.Stdout = &sink
+	return inner.uiType(ctx, opts, cfg, []string{text})
+}
+
 func (c CLI) writeGotoResult(result GotoResult, extra map[string]string) error {
 	fields := map[string]string{
 		"arrived": result.Arrived,
@@ -460,7 +510,7 @@ func gotoMoved(steps []GotoStep) bool {
 // gotoPositional drops flags and the values of the ones that take a value.
 func gotoPositional(args []string) []string {
 	valued := map[string]bool{"--arrived-when": true, "--max-steps": true,
-		"--timeout": true, "--dismiss-permission": true}
+		"--timeout": true, "--dismiss-permission": true, "--input": true}
 	out := make([]string, 0, len(args))
 	skip := false
 	for _, a := range args {
@@ -490,6 +540,68 @@ func (c CLI) gotoCommand(ctx context.Context, opts GlobalOptions, args []string)
 		return c.failTargetCommand(err)
 	}
 	return c.gotoScreen(ctx, opts, cfg, args)
+}
+
+// resolveGotoAction is resolveGotoStep when the caller declared something to
+// type. It asks the OPERATION and the TARGET in one round trip and discards the
+// heads the chosen operation does not use — the shape both clients written
+// against this endpoint use, measured in actionspace_control_test.go not to
+// cost the tap choice anything (production and this at 40/40 on two clean cells,
+// on the old base and on today's).
+//
+// It returns the same FindResult the tap path returns, plus what to do with the
+// element and, for a type, WHICH DECLARED NAME. Never the characters: those are
+// fetched from the caller's own map at the point of typing and nowhere else.
+func (c CLI) resolveGotoAction(ctx context.Context, elements []Element, goal string,
+	inputs map[string]string) (FindResult, string, string) {
+
+	candidates := FindCandidates(elements)
+	batch, omitted := FindBatch(candidates)
+	result := FindResult{
+		ResolvedBy: ResolvedByNone, Goal: goal,
+		Candidates: len(candidates), Omitted: omitted,
+	}
+	if len(candidates) == 0 {
+		result.Reason = ReasonNoCandidates
+		return result, ActionNone, ""
+	}
+	key, source, ok := ResolveJevKey()
+	if !ok {
+		result.Reason = ReasonNoKey
+		result.Next = MissingJevKeyNext()
+		return result, ActionNone, ""
+	}
+	result.KeySource = string(source)
+
+	choice, err := ResolveActionSpace(ctx, key, ActionSpace{
+		Goal: goal, Batch: batch, InputKeys: flowInputKeys(inputs),
+	})
+	if err != nil {
+		if errors.Is(err, errJevTooOld) {
+			result.Reason = ReasonJevTooOld
+			result.Next = err.Error()
+			return result, ActionNone, ""
+		}
+		result.Reason = ReasonNoNetwork
+		return result, ActionNone, ""
+	}
+	if choice.Element == nil {
+		result.Reason = choice.Reason
+		if result.Reason == "" {
+			result.Reason = ReasonAbstained
+		}
+		return result, ActionNone, ""
+	}
+	// The veto is the tap path's, unchanged, and it applies whatever the
+	// operation turns out to be. A field that destroys something when you type
+	// into it is not safer to touch than a button that does.
+	if veto := VetoChoice(choice.Element, goal, batch); veto != "" {
+		result.Reason = veto
+		return result, ActionNone, ""
+	}
+	result.ResolvedBy = ResolvedByModel
+	result.Element = choice.Element
+	return result, choice.Operation, choice.InputKey
 }
 
 // resolveGotoStep is resolveFind with the loop's own question. Everything else
