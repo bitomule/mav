@@ -474,7 +474,30 @@ func (c CLI) gotoSettle(ctx context.Context, cfg Config, opts GlobalOptions) ([]
 	return last, nil
 }
 
+// gotoReadScreen always reads. Never the cache, and this is the one caller for
+// which that is not an optimisation to weigh but a correctness rule.
+//
+// The tree cache is armed for the length of a `mav run`, and a flow step
+// invalidates it on the way in and on the way out. That is exactly right for
+// every other step, which reads, acts, and hands the screen to the next step.
+// goto is the one step that taps and re-reads MANY times inside itself, and
+// nothing between its own tap and its own next read dirties the cache -- so
+// every read after the first was served the screen as it looked before the
+// first tap.
+//
+// Measured, because it cost a whole 20-run batch: on Boxy the loop tapped the
+// button that opens the create-category sheet, was handed back the pre-tap
+// grid, recorded changed=false, tapped again, was handed the same tree again,
+// and reported outcome=stuck with the sheet plainly open on screen. 0/20, every
+// run identical. The same goal outside a flow works, because outside a flow
+// there is no cache to be served by.
+//
+// gotoSettle was broken the same way and worse: it decides a screen has
+// finished drawing by reading it twice and comparing, and two reads of one
+// cache entry are equal by construction, so it declared every screen settled
+// immediately.
 func (c CLI) gotoReadScreen(ctx context.Context, cfg Config, opts GlobalOptions) ([]Element, error) {
+	c.trees.invalidate()
 	prefer, err := c.normalizePreferDriver(opts.PreferDriver)
 	if err != nil {
 		prefer = "auto"
