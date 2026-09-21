@@ -240,8 +240,9 @@ entirely.
    simulator every coordinate gesture — `tap`, `doubleTap`, `swipe`,
    `longPress`, `pinch`, `twoFingerPan`, `drag`, `dragPath` — rotates them
    into the touch surface's own space for you (90/270 only; an upside-down
-   tree cannot be told apart from an app that never flipped, so 180
-   dispatches raw with `rotation_unavailable=180`). Do **not** pre-rotate
+   tree cannot be told apart from an app that never flipped, so a 180 window
+   angle is ignored outright and the gesture goes out exactly as a portrait
+   one — no `rotation_unavailable`, nothing for you to compensate). Do **not** pre-rotate
    them yourself, that compensates twice. The result line carries
    `rotation=` plus the dispatched `hid_x`/`hid_y`, or `hid_start`/`hid_end`
    for a swipe's two endpoints.

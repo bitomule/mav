@@ -238,8 +238,8 @@ func TestUISwipeDispatchesBothEndpointsRawWhenOnlyOneRotates(t *testing.T) {
 // portrait-locked app that never flipped: both report h > w. Mirroring the
 // point for an app still rendering plain portrait sends the tap to the
 // diagonally opposite corner, in bounds, stamped rotation=180 -- silently
-// wrong. Until something stronger than the shape can prove the flip, 180
-// dispatches raw and says so.
+// wrong. So MAV never applies one, which is what makes carrying it any
+// further pointless: see windowRotation.
 const flippedPreferencesDump = `{
     DevicePreferences =     {
         "FFFFFFFF-0000-0000-0000-000000000006" =         {
@@ -249,6 +249,12 @@ const flippedPreferencesDump = `{
     };
 }`
 
+// A 180 window angle changes nothing about the point MAV dispatches, so it
+// must change nothing about the line MAV prints either. Stamping
+// rotation_unavailable=180 on a tap that went out exactly where the caller
+// asked reads as "your coordinate may be in the wrong space" and sends them
+// off to re-derive a coordinate that was already correct. Revert
+// windowRotation's 180 case and this test fails on the phantom field.
 func TestUITapDispatchesRawUnderA180Rotation(t *testing.T) {
 	const udid = "FFFFFFFF-0000-0000-0000-000000000006"
 	portraitTree := `[{"AXLabel":"App","type":"Application","AXFrame":"{{0, 0}, {402, 874}}"}]`
@@ -260,8 +266,8 @@ func TestUITapDispatchesRawUnderA180Rotation(t *testing.T) {
 	if strings.Contains(got, "rotation=") || strings.Contains(got, "hid_x=") {
 		t.Fatalf("a 180 rotation was reported as applied: %q", got)
 	}
-	if !strings.Contains(got, "rotation_unavailable=180") {
-		t.Fatalf("the unapplied 180 was not surfaced: %q", got)
+	if strings.Contains(got, "rotation_unavailable") {
+		t.Fatalf("a 180 that changed no coordinate was still surfaced as a rotation: %q", got)
 	}
 	joined := strings.Join(runner.commands, "\n")
 	if !strings.Contains(joined, "-x 150 -y 300") {

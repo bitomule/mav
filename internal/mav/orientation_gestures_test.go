@@ -81,14 +81,14 @@ func TestRotatedLongPressRoutesAwayFromAxe(t *testing.T) {
 	}
 }
 
-// A rotation can be DETECTED without being APPLIED -- a 180 window angle is
-// the case hidPoint refuses to guess on, so hid.Rotation stays 0 even though
-// hid.Detected is 180. Gating the axe exclusion on hid.Rotation != 0 (the old
-// condition) left this case routed straight into axe, which cannot serve a
-// coordinate tap under any rotation; revert uiLongPress's unconditional
-// routerWithout("axe") and this test fails with axe's selector error instead
-// of a raw dispatch through baguette.
-func TestLongPressDetectedButUnappliedStillRoutesAwayFromAxe(t *testing.T) {
+// A long press is dispatched away from AXe on every simulator, rotated or
+// not, so the only thing a 180 window angle can still change here is the
+// result line -- and it must not. MAV never applies a 180 (hidPoint would
+// have to guess a flip the tree cannot prove), so the press went out at the
+// caller's own coordinates and saying "rotation_unavailable" about it names
+// a problem that does not exist. Revert windowRotation's 180 case and this
+// test fails on the phantom field.
+func TestLongPressUnderA180ReportsNoRotation(t *testing.T) {
 	const udid = "FFFFFFFF-0000-0000-0000-000000000006"
 	portraitTree := `[{"AXLabel":"App","type":"Application","AXFrame":"{{0, 0}, {402, 874}}"}]`
 	cli, runner, out, _ := rotationCLI(t, udid, flippedPreferencesDump, portraitTree)
@@ -97,8 +97,8 @@ func TestLongPressDetectedButUnappliedStillRoutesAwayFromAxe(t *testing.T) {
 		t.Fatalf("err=%v out=%s", err, out.String())
 	}
 	got := out.String()
-	if !strings.Contains(got, "rotation_unavailable=180") {
-		t.Fatalf("the unapplied 180 was not surfaced: %q", got)
+	if strings.Contains(got, "rotation_unavailable") {
+		t.Fatalf("a 180 that changed no coordinate was still surfaced as a rotation: %q", got)
 	}
 	joined := strings.Join(runner.commands, "\n")
 	if strings.Contains(joined, "axe tap") {
@@ -208,6 +208,38 @@ func TestRotatedSwipeRoutesAwayFromAxe(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(runner.commands, "\n"), "axe swipe") {
 		t.Fatalf("axe was asked to swipe on a rotated simulator: %q", runner.commands)
+	}
+}
+
+// The reroute above is for the angles AXe actually refuses. 180 is not one
+// of them: measured on 2026-09-21 against a headless simpool iPhone 17 Pro
+// (iOS 26.3) whose DevicePreferences entry reads
+// SimulatorWindowRotationAngle = "-180", `axe swipe` ran and scrolled the
+// screen. That stale preference describes a Simulator.app window a headless
+// boot never had -- the slot is upright in its own screenshot -- and nothing
+// clears it, so trusting it dropped every direction swipe on that slot off
+// AXe and onto baguette and told the caller the gesture had gone sideways.
+// Revert windowRotation's 180 case and this test fails twice over: the
+// result line carries rotation_rerouted=axe, and no `axe swipe` ever runs.
+func TestDirectionSwipeUnderA180StaysOnAxe(t *testing.T) {
+	const udid = "FFFFFFFF-0000-0000-0000-000000000006"
+	portraitTree := `[{"AXLabel":"App","type":"Application","AXFrame":"{{0, 0}, {402, 874}}"}]`
+	cli, runner, out, _ := rotationCLI(t, udid, flippedPreferencesDump, portraitTree)
+	if err := cli.Run(context.Background(), []string{"ui", "swipe", "--direction", "up"}); err != nil {
+		t.Fatalf("err=%v out=%s", err, out.String())
+	}
+	got := out.String()
+	if !strings.Contains(got, "driver=axe") {
+		t.Fatalf("a 180 window angle still took the swipe off axe: %q", got)
+	}
+	for _, phantom := range []string{"rotation_unavailable", "rotation_rerouted"} {
+		if strings.Contains(got, phantom) {
+			t.Fatalf("a 180 that changed no coordinate reported %s: %q", phantom, got)
+		}
+	}
+	if !strings.Contains(strings.Join(runner.commands, "\n"),
+		"axe swipe --start-x 220 --start-y 760 --end-x 220 --end-y 260") {
+		t.Fatalf("the direction defaults were not dispatched through axe: %q", runner.commands)
 	}
 }
 

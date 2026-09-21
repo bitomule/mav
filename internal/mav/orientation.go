@@ -291,16 +291,12 @@ func (c CLI) hidPoint(ctx context.Context, cfg Config, x, y int) hidResult {
 	if reading.Angle == 0 {
 		return hidResult{X: x, Y: y}
 	}
-	// At 180 the tree root is portrait-shaped (h > w) whether the app really
-	// flipped upside-down or is portrait-locked and never moved, so the
-	// shape check that makes 90/270 safe proves nothing here — and most apps
-	// (and SpringBoard on every home-button-less iPhone) never rotate to
-	// upside-down at all, in which case mirroring the point sends the tap to
-	// the diagonally opposite corner. Short-circuited before the probe
-	// because there is no answer the tree could give that would change it.
-	if reading.Angle == 180 {
-		return hidResult{X: x, Y: y, Detected: reading.Angle, Source: reading.Source}
-	}
+	// 180 never arrives here: an upside-down tree is portrait-shaped exactly
+	// like an app that refused to flip, so there is no observation that
+	// tells them apart and mirroring the point would send the tap to the
+	// diagonally opposite corner. windowRotation drops it at the source
+	// rather than letting it travel this far only to be dispatched raw with
+	// a rotation_unavailable nobody can act on.
 	screen, ok := c.portraitScreenSize(ctx, cfg, reading.Angle)
 	if !ok {
 		// Without the screen size there is no correct rotation to apply.
