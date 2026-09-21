@@ -54,44 +54,85 @@ import (
 // this comment did, turns the table upside down and makes a broken base read
 // as a healthy one.
 //
-// WHAT IT SAID, 21 sep, mav 0.27.0, jevi 0.4.0, typesafe/jev-1.13, six batches
-// of 10 alternating, load average 3.7-5.0 throughout, screen fingerprint
-// 3a7a749a… over 9 candidates on every batch (that capture; the arms now read
-// the raw axe capture of the same screen, whose nine candidates differ only in
-// the per-launch uuids):
+// WHAT IT SAYS, and read the second table, not the first.
+//
+// THE FIRST TABLE IS VOID AND IS KEPT ONLY SO NOBODY RE-DERIVES IT. Six
+// batches of 10 on the goal "la primera categoría", raw axe capture of the
+// live three-category screen:
 //
 //	                                     right   wrong   abstained
 //	production, one head, --options      11/60   48/60      1/60
 //	action space, two heads               7/60   53/60      0/60
 //	action space, four heads             11/60   49/60      0/60
 //
-// Wrong is `Test Category 1` in every single case, in all three arms. Not one
-// run of the 180 picked anything else on this screen.
+// Every one of those 180 failures was the same element, `Test Category 1`, in
+// all three arms — which is the tell, and none of us read it at the time. That
+// cell is poisoned: a row literally named `Test Category 1` binds to the
+// ordinal in the goal, so all three arms lose to one failure mode and the
+// differences between them are noise. The numbers say nothing about whether
+// extra heads cost anything. They were published as if they did; they do not.
+//
+// THE SECOND TABLE IS THE ANSWER. 21 sep, mav 0.27.0, jevi 0.4.0,
+// typesafe/jev-1.13, same screen, same capture (fingerprint dd2ebfa0…, 9
+// candidates), same arms, same alternation. The ONLY thing changed is the goal
+// string. Two cells with no ordinal in them, batches of 20 — three batches on
+// the first cell and two on the second, each batch alternating the arms:
+//
+//	                                        right   wrong   abstained
+//	"…the Moving Boxes category, first box"
+//	  production, goto question (1 head)     60/60    0        0
+//	  action space, two heads                60/60    0        0
+//	  action space, four heads               60/60    0        0
+//	"the category where I keep the things for the house move"
+//	  production, goto question (1 head)     40/40    0        0
+//	  action space, two heads                40/40    0        0
+//	  action space, four heads               40/40    0        0
+//
+// Zero variance, zero disagreement, 300 runs of the three arms. THE EXTRA
+// HEADS DO NOT COST THE TAP CHOICE ANYTHING ON THIS SCREEN. Both cells sit at the ceiling, which is
+// the honest limit of this result: a ceiling cannot detect a small
+// degradation, and the second cell was added precisely because the first
+// contains the answer's own label. Neither cell separates the arms, because
+// nothing separates them.
+//
+// The positive control that makes the table readable is production itself:
+// 100/100 across the clean cells against 11/60 on the poisoned one, same
+// screen, same arms, same day. The cell was the whole difference.
+//
+// The find reference arm rode along in every batch and did exactly what its
+// own documentation says it should: 20/20 `Moving Boxes` on the second cell,
+// and 20/20 ABSTENTIONS on the first. That is not a failure — the first cell
+// asks for "the contents of … , first box" and there is no box on this screen,
+// so find, which only answers "which element IS the thing", correctly declines
+// while goto, which also accepts "the element that LEADS towards it", correctly
+// taps the category. It is the cleanest demonstration on record of why goto
+// needs a different question, and it came free.
+//
+// ONE MORE THING THE TWO TABLES TOGETHER SAY, and it is not in the ordinal
+// write-up: the collision is WIDER FOR GOTO'S QUESTION THAN FOR FIND'S. The
+// bench that characterised it found "la primera categoría" scoring 20/20 with
+// the numbered names in place — that is FIND's question. goto's question, same
+// phrase, same screen, same capture, scores 3/40 (TestWhatBreaksTheControlCell
+// below). So the Spanish ordinal is clean for find and poisoned for goto.
+// Anyone reaching for "Spanish is unaffected" needs to say which question.
 //
 // TWO THINGS COME OUT OF THAT, and the first is bigger than this branch.
 //
-//  1. PRODUCTION IS ALREADY WRONG 80% OF THE TIME ON THIS CELL, and
-//     TestWhatBreaksTheControlCell below says why: it is GOTO'S QUESTION.
-//     `mav ui find`, asked the identical phrase about the identical screen,
-//     is right 40/40. It is not the fixture, not the screen, and not the
-//     short goal on its own.
-//  2. THE CONTROL IS THEREFORE INCONCLUSIVE, NOT PASSED. Four heads (11/60)
-//     against one head (11/60) is the same number. Two heads (7/60) is lower
-//     than production, and two heads is not a hypothetical — it is what
-//     the loop sends whenever the caller declared no inputs, which is every
-//     ordinary goto today. On the numbers here that arm cannot be called
-//     harmless. Nobody should wire the tap path to this on the strength of
-//     this table; what the table does establish is that the extra heads are
-//     not the catastrophic shape change that structured records and an
-//     `instructions` object were (~10/10 wrong), which is what was feared.
-//
-// A seventh batch was run after the arms were repointed at the raw axe capture
-// rather than the printed one, to check that the repoint changed nothing:
-// 1/10, 0/10, 2/10 — the same regime as the six above.
+// WHAT STILL HOLDS FROM THE POISONED BATCH: on that cell goto's question is
+// wrong ~90% of the time while find's is right 40/40, measured side by side in
+// TestWhatBreaksTheControlCell below. That is a real defect and it is in the
+// bench's fixture names as much as in the question — but it is about ordinals
+// and row labels, not about how many heads a request carries.
 //
 // The `type` path is a different matter: it is measured separately below and
 // it is 10/10, on a screen where tapping was never an answer at all.
-const actionSpaceControlRuns = 10
+const actionSpaceControlRuns = 20
+
+// actionSpaceWriteRuns is the write cell's own count, left where it was. The
+// control cell was widened to 20; widening the write measurement in the same
+// batch would have been a second change at once, which is the mistake this
+// whole thread is about.
+const actionSpaceWriteRuns = 10
 
 // actionSpaceControlAnswer is the label of the correct pick on the control
 // cell. By label, never by id: the category uuids are regenerated on every
@@ -107,7 +148,29 @@ func TestActionSpaceControl(t *testing.T) {
 		t.Skip("no jev key")
 	}
 
-	const goal = "la primera categoría"
+	// TWO CELLS, BOTH FREE OF AN ORDINAL, and the goal string is the only thing
+	// that changed from the batch recorded above — same screen, same capture,
+	// same arms, same alternation, same path.
+	//
+	// Why it changed: every one of the 180 failures in that batch was the same
+	// element, `Test Category 1`, in all three arms. A cell where every arm
+	// loses to a single failure mode compresses the differences between the
+	// arms into noise, whatever the cause of that failure mode is.
+	//
+	// The second cell exists because the first one turned out to sit at the
+	// ceiling: it contains the answer's own label, so nothing has to be
+	// inferred and every arm scores perfectly, which cannot detect a small
+	// degradation. The second names nothing on screen and has to infer that
+	// house-move things live in `Moving Boxes`.
+	for _, goal := range []string{
+		"the contents of the Moving Boxes category, first box",
+		"the category where I keep the things for the house move",
+	} {
+		t.Run(goal, func(t *testing.T) { runActionSpaceControlCell(t, key, goal) })
+	}
+}
+
+func runActionSpaceControlCell(t *testing.T, key, goal string) {
 	// Down the live read path — raw axe JSON through ExtractElements, exactly
 	// what find gets from the driver — so that "you measured a file, not a
 	// screen" is not an available objection to any number below. The printed
@@ -123,6 +186,15 @@ func TestActionSpaceControl(t *testing.T) {
 	production := &armTally{}
 	tapOnlySpace := &armTally{}
 	fullSpace := &armTally{}
+	// THE POSITIVE CONTROL, and a control needs one. Every arm above asks
+	// GOTO's question, and goto's question has no established mark on a clean
+	// cell — the 40/40 everyone quotes is FIND's. So find's question rides
+	// along in the same batch, on the same screen, with the same goal: if it
+	// does not come back at its known mark, the cell is carrying something and
+	// nothing else in the table may be read.
+	reference := &armTally{}
+	cli := CLI{}
+	live := loadRawAXEFixture(t, fixtureCategoriesThreeAXE)
 	inputs := []string{"color", "nombre"}
 
 	for run := 0; run < actionSpaceControlRuns; run++ {
@@ -145,12 +217,16 @@ func TestActionSpaceControl(t *testing.T) {
 			t.Fatalf("full action space could not ask: %v", err)
 		}
 		fullSpace.record(choice.Element, choice.Reason)
+
+		found := cli.resolveFind(t.Context(), live, goal)
+		reference.record(found.Element, found.Reason)
 	}
 
-	t.Logf("%-28s %-22s %s", "arm", "right/wrong/abstained", "what came back")
-	t.Logf("%-28s %s", "production (1 head)", production)
-	t.Logf("%-28s %s", "action space (2 heads)", tapOnlySpace)
-	t.Logf("%-28s %s", "action space (4 heads)", fullSpace)
+	t.Logf("%-34s %-22s %s", "arm", "right/wrong/abstained", "what came back")
+	t.Logf("%-34s %s", "production, goto question (1 head)", production)
+	t.Logf("%-34s %s", "action space (2 heads)", tapOnlySpace)
+	t.Logf("%-34s %s", "action space (4 heads)", fullSpace)
+	t.Logf("%-34s %s", "reference: find question", reference)
 }
 
 // armTally keeps the three outcomes apart. A pick that is not the declared
@@ -229,7 +305,7 @@ func TestActionSpaceCanWrite(t *testing.T) {
 	t.Logf("screen fingerprint %s over %d candidates", screenFingerprint(batch), len(batch))
 
 	picks := map[string]int{}
-	for run := 0; run < actionSpaceControlRuns; run++ {
+	for run := 0; run < actionSpaceWriteRuns; run++ {
 		choice, err := ResolveActionSpace(t.Context(), key, ActionSpace{
 			Goal: goal, Batch: batch, InputKeys: flowInputKeys(inputs),
 		})
@@ -349,8 +425,10 @@ func describeActionPick(el *Element, reason string) string {
 
 func formatPicks(picks map[string]int) string {
 	keys := make([]string, 0, len(picks))
-	for key := range picks {
+	total := 0
+	for key, n := range picks {
 		keys = append(keys, key)
+		total += n
 	}
 	sort.Slice(keys, func(i, j int) bool {
 		if picks[keys[i]] != picks[keys[j]] {
@@ -360,7 +438,7 @@ func formatPicks(picks map[string]int) string {
 	})
 	parts := make([]string, 0, len(keys))
 	for _, key := range keys {
-		parts = append(parts, fmt.Sprintf("%d/%d %s", picks[key], actionSpaceControlRuns, key))
+		parts = append(parts, fmt.Sprintf("%d/%d %s", picks[key], total, key))
 	}
 	return strings.Join(parts, "  ")
 }
