@@ -1852,9 +1852,16 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	// just probe-logs -- not a full `stop` of the run -- so this doesn't
 	// tear down the video recording, worker, or sim-lock that
 	// evidence.start / other earlier steps may have set up for this run.
-	if hasBoundRun {
-		stopProbeLogs(c.Runner, run)
-	}
+	//
+	// Unconditional, and it used to be guarded by hasBoundRun against what
+	// the paragraph above already said. The path that guard missed is
+	// `mav open --no-relaunch`, which has no bound run and REUSES the
+	// current one: nothing supersedes it, so every invocation stacked
+	// another live `log stream` on the same run. Measured at one extra
+	// process per open, and they were only reaped when the lease was
+	// released. On a fresh run there is nothing recorded yet, so this is a
+	// no-op there.
+	stopProbeLogs(c.Runner, run)
 	probeLogPID, probeLogErr := c.startProbeLogs(ctx, cfg, run)
 	if probeLogErr != nil {
 		appendFile(run.LogsPath, "mav probe log capture failed: "+probeLogErr.Error()+"\n")
