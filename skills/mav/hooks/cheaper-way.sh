@@ -150,7 +150,7 @@ rule_chained_taps_without_goto() {
 		return 1
 	fi
 
-	NUDGE="You chained ${TAPS} navigation steps. \`mav goto \"<the screen you want>\" --arrived-when 'title:\"<its title>\"'\` does the whole walk in one call — measured at 7.3s against 9.7s for two steps done this way, and that gap widens with each extra step because goto reads the screen once per step where this path reads it twice. It refuses to tap anything destructive and reports arrived=unverified rather than true when you give it no --arrived-when. For a SINGLE tap, keep doing what you are doing: goto is slower over one step."
+	NUDGE="You chained ${TAPS} navigation steps. \`mav goto \"<the screen you want>\" --arrived-when 'title:\"<its title>\"'\` does the whole walk in one call — measured at 7.3s against 9.7s for two steps done this way, and that gap widens with each extra step because goto reads the screen once per step where this path reads it twice. It refuses to tap anything destructive. With no --arrived-when it deduces a criterion at step zero and says so (criterion_source=inferred); when it cannot, it reports arrived=unverified rather than true. Measured on a two-hop route whose destination is named by something not visible at the start, it declined 10 times out of 10 — write --arrived-when when you need a verdict. For a SINGLE tap, keep doing what you are doing: goto is slower over one step."
 	return 0
 }
 

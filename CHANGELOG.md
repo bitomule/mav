@@ -2,6 +2,53 @@
 
 ## v0.26.0
 
+### `goto` deduces its own arrival criterion — and says so, and on the route that asked for it it declines
+
+Without `--arrived-when`, `goto` used to answer `arrived=unverified` and nothing else.
+It now asks the model **one question, at step zero, from the starting screen, before a
+single tap**: what will the destination screen's title be called? The answer builds the
+**same** `title:` criterion the flag builds, and from there nothing changes — arrival is
+still code comparing routes.
+
+The model never judges whether it arrived. Handing it the before and after is a judge
+with errors correlated with the loop's own, and that stays rejected. What makes this
+different is that it proposes what to look for while it has nothing invested in the
+answer, and is never asked about its own journey. An explicit `--arrived-when` always
+wins, the deduced criterion goes through the same starting-screen guard, and the output
+carries `criterion_source=inferred` plus `criterion_inferred`, so a criterion the machine
+wrote is never presented as one you wrote.
+
+**Measured, Boxy with 8 named boxes, iPhone 17 Pro / iOS 26.3, same goal both lanes:**
+
+| lane | criterion deduced | `arrived=true` | arrived on the WRONG screen |
+|---|---|---|---|
+| deduced, 10 runs | **0/10** | **0/10** | **0/10** |
+| `--arrived-when` by hand, 10 runs | written | **9/10** | 0/10 |
+
+The model answered `none` ten times out of ten. It did not deduce badly — it did not
+deduce. The dangerous failure this was built to avoid, a false `arrived=true` halfway
+along, **never happened once**, and that is the number that had to hold.
+
+Why it came out inert: the candidate names come only from the **starting** screen. The
+destination is titled `Moving Boxes: Office cables` and "Office cables" is not on the
+category grid, so the only overlapping name was `Moving Boxes` — and declining it was the
+correct answer to the question as asked. Meanwhile `route_final` was the destination in
+all 10 runs: `goto` got there every time and reported `unverified`.
+
+So it earns its place where the destination's name is visible before you start, and it is
+honest — never worse than the `unverified` it replaces — but writing `--arrived-when`
+remains the way to get a verdict on a route whose destination is named by something you
+have not seen yet. The design note (`docs/design/goto.md` §13) carries the full numbers,
+including why re-asking later in the journey is not the fix.
+
+### Two abstentions in a row no longer mean the same thing as never starting
+
+`outcome=no_route` covered both "there was no way to begin" and "I walked the route and
+this screen leads nowhere further". The second is what the destination looks like from the
+inside, and reporting it with the same label is what made `goto` look broken while
+standing exactly where it was sent. It is now `outcome=dead_end`. All 10 deduced-criterion
+runs above came back `dead_end`, not `no_route` — correct on both counts.
+
 ### A flow can say what it wants in words, and it beats `goto` on the clock
 
 `goto` already arrives. The thing it could not do is arrive *predictably*: it hands
