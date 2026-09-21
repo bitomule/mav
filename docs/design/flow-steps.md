@@ -552,3 +552,94 @@ código, por cambio de huella, y los dos cortan a los tres pasos sin cambio.
 O sea que el `--arrived-when` de `goto` no tiene arte previo que copiar y va por delante de
 los dos. El flujo escrito hereda ese contrato tal cual: sin criterio, `arrived=unverified`,
 nunca una afirmación.
+
+## 9. `goto` dentro del flujo: el criterio obligatorio y `unverified` como fallo
+
+Construido y medido el 21 sep 2026 sobre Boxy, `iPhone 17 Pro` / iOS 26.3 desde el slot-5 de
+simpool. Carga 2,1–4,5 (load1) y 3,2–4,1 (load5) de principio a fin. Canario de toque —md5 de
+la huella ordenada de `(id,label,role)` antes y después de un toque conocido— verde antes de
+la tirada 1 y después de la 10 en las dos tandas. Ningún `F81D81A1`.
+
+### Las dos cintas de seguridad
+
+**El criterio de llegada es obligatorio dentro de un flujo**, y su ausencia es un error de
+carga, o sea de lint, no una sorpresa a tres pantallas de distancia.
+
+**`arrived=unverified` FALLA el paso.** Fuera de un flujo `unverified` es una respuesta
+honesta: el comando dice que no puede confirmar y quien lo lee decide. Dentro de un flujo es
+una premisa sin comprobar sobre la que van a actuar los pasos siguientes, y un flujo que
+sigue adelante sobre una llegada falsa toca donde no toca. Un flujo que falla es molesto; uno
+que hace cosas raras en la app de alguien es otra cosa.
+
+### La llegada deducida es real, y está medida
+
+Sin `--arrived-when`, en vivo:
+
+```
+mav goto "create a category called Test Category"
+ok cmd=goto arrived=true criterion_observed="title:\"Create Category\"" criterion_source=observed outcome=arrived route="screen=categories-view title=Create Category" steps=3
+```
+
+Leído el árbol justo después, sin tocar nada: las categorías son las tres del fixture
+—`Moving Boxes`, `Test Category 1`, `Test Category 2`—, **no hay ninguna con la etiqueta
+exacta `Test Category`**, y `categoryNameTextField` sigue con su marcador
+`value="Category name"`. Los tres pasos tocaron **el mismo botón de la barra**, y el 2 y el 3
+con `changed:false`.
+
+O sea: abrió la hoja y llamó a eso haber creado la categoría. **`goto` sabe comprobar que ha
+llegado a un SITIO, no que ha hecho una COSA.** Con criterio obligatorio esa ruta no se toma
+nunca dentro de un flujo.
+
+### Por qué el `goto` del flujo va a la hoja y no a la rejilla
+
+La app arranca en la rejilla, y `goto` rechaza por diseño un criterio que ya se cumple en la
+pantalla de partida —sería cantar victoria en el paso cero sin tocar nada—. Un `goto` a la
+rejilla desde la rejilla devuelve `arrived=unverified`, que dentro de un flujo falla. Así que
+el destino es la hoja, que además es justo el trayecto donde la llegada deducida mintió.
+
+### El caché de árbol servía a `goto` su propia pantalla de antes del toque
+
+**Primera tanda: 0/20.** Las veinte idénticas, `outcome=stuck`,
+`next="two taps in a row changed nothing"`, `route=screen=categories-view` sin título — con
+la hoja abierta en pantalla al terminar.
+
+La causa no era el flujo ni la redacción. El caché de árbol se arma durante todo un `mav run`
+y no para un `mav goto` suelto. Un paso de flujo lo ensucia al entrar y al salir, que es lo
+correcto para todos los demás: leen, actúan y entregan la pantalla al siguiente. `goto` es el
+paso que **toca y relee muchas veces dentro de sí mismo**, y entre su propio toque y su
+propia siguiente lectura no había nada que ensuciara el caché. Cada lectura después de la
+primera recibía la pantalla de antes del primer toque.
+
+Esto también explica la divergencia que parecía de matching: con `criterion_source=observed`
+`goto` veía `title=Create Category` y con `explicit` no lo veía nunca. Misma app, misma
+pantalla, distinto estado de caché.
+
+`gotoSettle` estaba roto igual y peor: decide que una pantalla ha dejado de moverse
+leyéndola dos veces y comparando, y dos lecturas de una entrada de caché son iguales por
+construcción. Declaraba asentada cualquier pantalla al instante, incluida la medio dibujada
+que es lo único que existe para descartar.
+
+Arreglo: las lecturas de `goto` son siempre lecturas. Ablación hecha — los dos tests de
+regresión fallan quitando la invalidación y pasan poniéndola.
+
+### La tasa
+
+| tanda | acierto | fallo honesto | escritura falsa |
+|---|---|---|---|
+| antes del arreglo del caché | 0/20 | 20/20 | 0 |
+| después | **19/20** | 1/20 | **0** |
+
+Mismo listón que el flujo **sin** `goto` con los tres pasos declarados, que va 19/20 con cero
+escrituras falsas.
+
+Acierto comprobado **leyendo el árbol**, nunca por el código de salida: existe un nodo
+`category_<UUID>` con la etiqueta **exactamente** `Test Category`, y las categorías tras cada
+acierto son `Moving Boxes`, `Test Category`, `Test Category 1`, `Test Category 2`.
+
+El único fallo, la tirada 9, murió en el **paso 3** —el toque que confirma— con `tap_failed`
+a 1,2 s, con el teclado todavía en pantalla y `Create` ya habilitado. El árbol lo clasifica
+como fallo honesto y no como escritura falsa: `categoryNameTextField` tenía
+`value="Test Category"`, el campo de búsqueda seguía en `value=Search`, y no se creó nada. Es
+un flake del toque con el teclado levantado, no un problema de `goto` ni de escritura.
+
+**Cero escrituras falsas en las 40 tiradas de las dos tandas.**
