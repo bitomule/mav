@@ -119,7 +119,8 @@ El navegador **nunca termina**. Sólo devuelve un elemento o se abstiene. Quien 
 código, y compara **rutas**, no etiquetas sueltas:
 
 ```
-ruta = ( pestaña con el trait "selected",
+ruta = ( identidad de pantalla (el `screen=` que ya calcula `mav ui tree`),
+         pestaña con el trait "selected",
          último título de navigation bar,
          título de alert o sheet si hay una encima )
 ```
@@ -167,9 +168,11 @@ se descubra.
 **Evidencia, no veredicto.** `mav` es un verificador: devuelve lo que vio y quien llama juzga,
 porque quien llama es casi siempre otro agente con más contexto que un jev sin él. Salen la
 ruta inicial, la ruta final, la huella, la lista de toques y si hubo abstención. `arrived` es
-`true` sólo cuando un criterio declarado se cumplió contra la ruta; sin criterio declarado es
-`unverified` y nunca `true`. La salida dice además **de dónde salió el criterio**
-(`criterion_source`), para que quien lea el JSON no tenga que acordarse de qué se pasó.
+`true` sólo cuando **un criterio se cumplió contra la ruta**, lo haya escrito quien llama o lo
+haya elegido `goto` al terminar entre las pantallas que pisó (§13); sin criterio, `unverified` y
+nunca `true`. La salida dice además **de dónde salió el criterio** (`criterion_source`) y, si lo
+eligió la máquina, cuál fue (`criterion_observed`) y de qué menú (`observed_screens`): un criterio
+que nadie escribió presentado como escrito por una persona es justo lo que no queremos.
 
 ### Y una etiqueta que mentía: `no_route` contra `dead_end`
 
@@ -569,3 +572,121 @@ es cosmética: es la variable que decide si el bucle llega**.
 Lo que queda abierto, y no está medido: si la solución es un objetivo por paso, una
 reformulación por pantalla, o que `find` reciba también dónde está el bucle además de adónde
 va.
+
+---
+
+## 13. El criterio de llegada se elige **al llegar**, entre las pantallas pisadas
+
+Medido el 21 sep 2026 sobre Boxy con 8 cajas con nombre, `iPhone 17 Pro` / iOS 26.3 desde un
+slot de simpool. Carga 4,09–6,35 de principio a fin de las tres tandas, canario de toque
+(md5 de la huella ordenada de `(id,label,role)` antes y después de un toque conocido) verde
+en las dos ejecuciones del banco.
+
+### El diseño en dos frases
+
+Cuando el recorrido termina, `goto` lista **todas las pantallas distintas en las que estuvo de
+verdad** —cada una por su título, o por su identidad de pantalla si no tiene título, seguida de
+parte del texto que mostraba—, **en orden alfabético, sin números de paso y sin marca de dónde
+acabó**, y pregunta cuál de ellas es el destino, con `none` en el menú. **El código**, que es el
+único que sabe cuál de ellas fue la última, deriva la llegada: el elegido confirma llegada
+**sólo si es la pantalla en la que paró** y no es la de partida.
+
+### Por qué esto NO es el juez ciego rechazado en §2
+
+§2 deja dos argumentos y dice que hay que refutar **los dos**. Van los dos:
+
+1. **"La lista de candidatos sale del objetivo (distractores de paja) o del árbol que está
+   mirando (pregunta trivial). No hay tercera fuente."** La hay, y es ésta: **las pantallas que
+   el recorrido produjo**. No sale del objetivo, así que los distractores no son de paja — cada
+   uno es una pantalla en la que **este mismo modelo decidió entrar** creyendo que llevaba al
+   objetivo, que es el distractor más duro que hay. Y no es trivial: la pantalla de partida y
+   todas las intermedias están en la lista **en igualdad de condiciones** con la última, y
+   ninguna búsqueda de texto las separa.
+2. **"La ceguera es de prompt, no de evidencia."** Aquí es **estructural**. El menú va ordenado
+   alfabéticamente, sin índices, sin cronología y sin ninguna marca de dónde terminó el
+   recorrido. El modelo **no puede saber cuál es el final**, así que no puede dar por bueno su
+   propio viaje aunque quisiera: está nombrando un destino entre pantallas, no calificando un
+   trayecto.
+
+Y el tercer reproche de §2 —"detrás no hay una acción distinta"— tampoco se sostiene: detrás hay
+`arrived=true` o `unverified` decidido por código, y un `--arrived-when` reutilizable impreso
+para fijarlo la próxima vez.
+
+**Dónde está la frontera, dicha entera:** prohibido preguntarle *"¿has llegado?"* o *"¿funcionó
+lo que acabas de hacer?"*. Permitido que **elija entre estados concretos observados**, con `none`
+en el menú, y que **el código** derive la llegada de esa elección. Elegir no es calificarse.
+
+**Y es MONÓTONO por construcción.** Un elegido que no es donde paró se reporta `unverified`,
+nunca `false`. La única transición que esta función puede provocar es `unverified → true`, así
+que el único fallo que hay que medir es un `true` sobre la pantalla equivocada.
+
+### Los tres números
+
+Objetivo del carril que llega: `"los contenidos de la primera categoría, primera caja"`.
+Sin `--arrived-when` en ninguna tirada.
+
+| carril | objetivo | 10 tiradas | `arrived=true` | **llegada en la pantalla equivocada** |
+|---|---|---|---|---|
+| llega | contenidos de la primera caja | pisa 3 pantallas | **9/10** | **0/10** |
+| no llega (vuelve al inicio) | ajustes de sincronización con Dropbox | acaba en `categories-view` | 0/10 | **0/10** |
+| **no llega (acaba EN el destino del otro carril)** | historial de cambios de la primera caja | acaba en `Moving Boxes: Office cables` | 0/10 | **0/10** |
+
+1. **Cero llegadas falsas, 30/30.** El tercer carril es la ablación que vale: **acaba en la misma
+   pantalla y con el mismo menú de 3 entradas que el carril que confirma**, y lo único que cambia
+   es el objetivo. El modelo contestó `none` las diez veces. Misma pantalla, mismo menú, objetivo
+   distinto → `true` en un carril y `unverified` en el otro.
+2. **9/10 confirma la llegada de verdad**, contra 0/10 de hoy sin criterio y contra 0/10 de la
+   deducción en el paso cero (#110). La tirada que no confirmó **no había llegado**: `goto` abrió
+   otra categoría y paró en `title="Vista de cajas vacia"`, con menú de 2 y `unverified`. O sea
+   **9 de 9 sobre las tiradas que llegaron**, que es lo mismo que sacó el `--arrived-when` escrito
+   a mano.
+3. **Una llamada al modelo, 324 ms de mediana** (5 muestras sobre el menú real), y sólo donde se
+   puede contestar. Las puertas son **decidibles en código antes de gastar nada**: sin
+   `--arrived-when` pero sin haberse movido, menos de dos pantallas distintas, o una pantalla
+   final sin título ni identidad. Eso es lo que la #110 no podía hacer: allí la pregunta *era*
+   "¿alguno de estos nombres titula el destino?", y no hay forma de saberlo antes de preguntarla.
+
+### Por qué falló el intento anterior, y qué cambió de verdad
+
+La #110 preguntaba **en el paso cero, desde la partida**, qué nombre iba a llevar el destino. Sacó
+**0/10**: el modelo contestó `none` diez veces **y era la respuesta correcta**, porque los nombres
+candidatos salían sólo de la pantalla de partida y *"Office cables"* no está en la rejilla de
+categorías. Se le pidió adivinar un nombre que no podía ver.
+
+Aquí el nombre no se adivina: **se lee de la pantalla cuando ya se está en ella**.
+
+**Y una segunda vez casi se repite el mismo error.** La primera versión de esto ofrecía el menú
+**sólo con los nombres** de las pantallas: `boxes-view`, `categories-view`,
+`Moving Boxes: Office cables`. Medido, **0/10**, `none` las diez veces — otra vez la respuesta
+correcta, porque *"los contenidos de la **primera** categoría, **primera** caja"* es un objetivo
+**posicional** y en un menú de nombres no hay nada que diga que Moving Boxes es la primera
+categoría ni Office cables la primera caja. Ese ordinal **estaba en las pantallas y se había
+observado**; ocultarlo era pedirle otra vez que tendiera un puente sobre información que nunca
+se le dio. Por eso cada entrada del menú lleva ahora **parte del texto de su pantalla, en el orden
+del árbol** — que es de arriba abajo, que es donde vive "la primera". Con eso: 9/10 y 10/10.
+
+Los identificadores de accesibilidad **no** entran en esa descripción, a diferencia del resto del
+fichero: están escritos para código, metían `_TtGC7SwiftUI32NavigationStackHosting` delante del
+modelo y, peor, los uuid de categoría de Boxy, **que se regeneran en cada lanzamiento**. Una línea
+de menú que cambia entre dos tiradas idénticas no describe una pantalla.
+
+### `screen:` en `--arrived-when`, y por qué hizo falta
+
+En la Boxy en español **ni la rejilla de categorías ni la lista de cajas tienen `heading`**: su
+`Route.Title` está vacío. Un menú sólo de títulos en ese recorrido tiene **una entrada** —el
+destino—, y un menú de una entrada es un sí/no sobre la pantalla en la que paró, que es
+exactamente la autocalificación que todo esto evita. Así que `Route` pasa a llevar también la
+**identidad de pantalla** que `mav ui tree` ya calculaba (`screen=categories-view`), y
+`--arrived-when` acepta `screen:"..."`, comparado **entero** porque una identidad no es un nombre.
+Con eso el menú de ese recorrido tiene tres entradas y ninguna pantalla se queda sin poder
+nombrarse.
+
+### Lo que sigue sin cubrirse
+
+- **Una pantalla sin título y sin identidad** no se puede ofrecer ni comprobar, y la pregunta se
+  salta entera. Es honesto: ofrecer una respuesta que nada puede verificar es peor que ofrecer
+  menos respuestas.
+- **Pantallas parametrizadas** siguen abiertas igual que con `--arrived-when` de un solo término:
+  si el título del pedido 456 coincide con el del 123, esto no los separa. Para eso están los
+  varios términos.
+- Medido sobre **una** app. Los 30/30 de cero llegadas falsas son de Boxy, no del mundo.
