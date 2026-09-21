@@ -5835,7 +5835,10 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 		err := c.withStdout(&out).uiDoubleTap(ctx, GlobalOptions{PreferDriver: prefer}, cfg, args)
 		return copyParams(step.Params), commandOutputErr(err, out.String(), "double_tap_failed")
 	case "type":
-		text := step.Params["text"]
+		text, textFields, textErr := c.resolveFlowStepText(ctx, step)
+		if textErr != nil {
+			return textFields, textErr
+		}
 		var out bytes.Buffer
 		// Only an explicit selector targets a tap before typing; the legacy
 		// params fallback would resurrect "text" (the content to type) as a
@@ -5847,6 +5850,12 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 		}
 		err := c.withStdout(&out).uiType(ctx, GlobalOptions{PreferDriver: prefer}, cfg, args)
 		fields := map[string]string{"chars": strconv.Itoa(len(text))}
+		// Which input was used, and whether a model named it. The value
+		// itself never goes on the record: it is the flow author's, and a
+		// step record is read by whoever reads the run.
+		for key, value := range textFields {
+			fields[key] = value
+		}
 		if prefer != "" {
 			fields["driver"] = prefer
 		}
