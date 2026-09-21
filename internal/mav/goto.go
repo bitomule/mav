@@ -107,6 +107,26 @@ func (a ArrivalCriterion) IsZero() bool {
 	return len(a.Titles) == 0 && len(a.Texts) == 0
 }
 
+// Where the criterion came from. Reported on every run, because a criterion a
+// person wrote and one nobody wrote are not the same evidence, and today the
+// output says which without the caller having to remember what it passed.
+const (
+	CriterionExplicit = "explicit"
+	CriterionNone     = "none"
+)
+
+// String writes the criterion back in the same syntax --arrived-when takes.
+func (a ArrivalCriterion) String() string {
+	parts := make([]string, 0, len(a.Titles)+len(a.Texts))
+	for _, t := range a.Titles {
+		parts = append(parts, `title:"`+t+`"`)
+	}
+	for _, t := range a.Texts {
+		parts = append(parts, `text:"`+t+`"`)
+	}
+	return strings.Join(parts, " ")
+}
+
 // ParseArrivalCriterion reads `title:"..."` and `text:"..."` terms. A bare word
 // with no prefix is a title, because that is what people mean when they name a
 // screen, and guessing the other way round would silently match a row label.
@@ -203,12 +223,20 @@ func treeContainsText(elements []Element, want string) bool {
 // reported: a loop that stops without saying where it stopped is the failure
 // this whole command is built around.
 const (
-	GotoArrived            = "arrived"
-	GotoExhausted          = "exhausted"
-	GotoTimeout            = "timeout"
-	GotoStuck              = "stuck"
-	GotoLooping            = "looping"
-	GotoNoRoute            = "no_route"
+	GotoArrived   = "arrived"
+	GotoExhausted = "exhausted"
+	GotoTimeout   = "timeout"
+	GotoStuck     = "stuck"
+	GotoLooping   = "looping"
+	GotoNoRoute   = "no_route"
+	// GotoDeadEnd is "I walked the route and there is nothing here that leads
+	// any further", which used to be reported as no_route — the same label as
+	// "there was no way to start". They are different facts: one is a command
+	// that never moved, the other is a command that navigated and then ran out
+	// of onward moves, which on a screen that IS the destination is not a
+	// failure at all. Reporting both as no_route is what made goto look broken
+	// while standing where it was asked to go.
+	GotoDeadEnd            = "dead_end"
 	GotoRefused            = "refused"
 	GotoOutOfApp           = "out_of_app"
 	GotoAmbiguousCriterion = "ambiguous_criterion"
@@ -246,7 +274,13 @@ type GotoResult struct {
 	RouteInitial Route      `json:"route_initial"`
 	RouteFinal   Route      `json:"route_final"`
 	Steps        []GotoStep `json:"steps"`
-	Refused      *Element   `json:"refused_element,omitempty"`
+	// CriterionSource says who wrote the criterion arrival was judged against:
+	// "explicit" when the caller passed --arrived-when, "none" when there is
+	// none and arrival cannot be asserted either way. Criterion prints it back
+	// in the syntax the flag takes.
+	CriterionSource string   `json:"criterion_source"`
+	Criterion       string   `json:"criterion,omitempty"`
+	Refused         *Element `json:"refused_element,omitempty"`
 	// Dismissed records every permission alert this run answered, and with
 	// which button. A loop that presses system dialogs has to be auditable
 	// afterwards or it is doing it in silence.
