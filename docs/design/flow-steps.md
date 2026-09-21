@@ -258,7 +258,51 @@ Dos cosas que decide cualquiera que toque esto:
 De `jev-ultrafast`, y cuesta cero: la elección se borra del estado **antes** de mover un
 dedo, para que un reintento no pueda tocar dos veces.
 
-### 1.4 No escribas un sustantivo desnudo en un paso
+### 1.4 `find` devuelve cosas que no son lo pedido, y son TRES celdas, no una
+
+> **AMPLIADA EL 21 SEP.** Esta sección documentaba un solo caso —el campo de búsqueda— y
+> el defecto es tres veces más grande. Y hay una confusión de lectura debajo que hay que
+> deshacer primero, porque si no, dos medidas nuestras parecen contradecirse.
+
+**El banco de ablación no mide aciertos: mide RESOLUCIONES.** `TestAblationTable` cuenta
+cuántas veces `find` devuelve *algún* elemento y cuántas se abstiene, e imprime **qué**
+eligió. Nunca compara contra una respuesta correcta. Así que un "5/5" de esa tabla —y los
+"3/3" de `goto.md` §12, que salen del mismo sitio— significa **"resolvió 5 de 5"**, no
+**"acertó 5 de 5"**. Se leyeron como aciertos, y eso fue una interpretación, no una medida.
+
+Deshecha la confusión, las tres celdas malas de la **lista de categorías** son:
+
+| frase | qué devuelve | ¿es un fallo? |
+|---|---|---|
+| `"la primera caja"` | el **campo de búsqueda** | **Sí, siempre.** No hay ninguna caja en esa pantalla y un campo de texto no es una caja para nadie. |
+| `"the box inside Test Category 2"` | el botón `Test Category 2`, 10/10 | **Para `find` sí, para `goto` no.** |
+| `"open the box in Test Category 2"` | el botón `Test Category 2`, 10/10 | Igual que la anterior. |
+
+**Y esa última columna es lo importante**, porque las dos últimas celdas son un fallo y un
+acierto *a la vez*, según quién pregunte:
+
+- `FindQuestion` pregunta **cuál ES** lo descrito. Una categoría no es una caja, así que
+  `find` debería **abstenerse** y no lo hace. Es un fallo suyo.
+- `GotoStepQuestion` acepta además **cuál LLEVA** hacia ello. Tocar la categoría es el
+  camino correcto hacia la caja de dentro, así que para `goto` es la respuesta buena.
+
+Las dos comparten el mismo camino de candidatos y el mismo modelo, y **difieren sólo en la
+pregunta** — que es exactamente lo que se midió en `goto.md` §12. O sea que no hay
+contradicción entre nuestras medidas: hay una tabla que cuenta resoluciones y dos comandos
+con criterios de acierto opuestos en las mismas celdas.
+
+**Consecuencia práctica, y es la que vale:** `find` es más flojo de lo que la tabla sugiere.
+De las cuatro frases probadas sobre la lista de categorías, **tres devuelven algo que no es
+lo pedido**. Quien escriba un paso `find` no debe suponer que una abstención le protege: en
+esta pantalla no se abstiene casi nunca.
+
+**Lo que NO lo arregla**, y ya son cinco cosas medidas, dos de ellas por dos nodos
+distintos con dos bancos distintos: filtrar por texto, un corte de confianza, recortar por
+`role`, redactar el prompt en contra, y **mandar cada opción con su registro estructurado
+en vez de con su número** — esto último medido a 30 tiradas, 0/30 hoy y 1/30 con el mejor
+brazo, o sea que sólo cambia unos fallos por otros.
+
+### No escribas un sustantivo desnudo en un paso
 
 Medido el 21 sep, y es lo único que hay que saber para escribir un paso que funcione.
 
