@@ -60,6 +60,12 @@ func askJevChoice(ctx context.Context, key, question, text string, options []str
 	// The floor is checked here and nowhere else: this is the one path that
 	// spawns jevi, and it costs one `jevi --version` per PROCESS rather than per
 	// call. jevversion.go says why that distinction is load-bearing.
+	//
+	// "Nowhere else" is now enforced rather than asserted. It stopped being
+	// true once already, in silence, when a branch added a second call site
+	// that skipped the floor —
+	// TestEveryPathThatSpawnsJeviChecksTheVersionFloor fails if that happens
+	// again.
 	if err := checkJevVersion(ctx); err != nil {
 		return jevChoice{}, fmt.Errorf("%w: %s", errJevTooOld, err)
 	}
