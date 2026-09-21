@@ -213,14 +213,46 @@ func resolveRotation(runner Runner, root, udid string) rotationReading {
 		if liveAngle != 0 && declared.WindowAngle != nil && liveAngle != *declared.WindowAngle {
 			clearDeclaredOrientation(root, udid)
 			clearScreenCache(root, udid)
-			return rotationReading{Angle: liveAngle, Source: orientationSourceWindow}
+			return windowRotation(liveAngle)
 		}
 		return rotationReading{Angle: declared.Rotation, Source: orientationSourceDeclared}
 	}
-	if angle := simulatorRotationAngle(runner, udid); angle != 0 {
-		return rotationReading{Angle: angle, Source: orientationSourceWindow}
+	return windowRotation(simulatorRotationAngle(runner, udid))
+}
+
+// windowRotation turns a Simulator.app window angle into a reading MAV will
+// act on, and 180 is not one of them.
+//
+// Two measurements say so. First, MAV already refuses to use it: hidPoint
+// will not mirror a point at 180 (an upside-down tree is portrait-shaped
+// exactly like an app that refused to flip, so there is no observation that
+// tells them apart), and rotatedDirectionSwipe fails for the same reason. A
+// 180 that reaches the gesture path can therefore change nothing about the
+// coordinates -- it only ever reroutes the gesture off AXe and stamps
+// `rotation_unavailable=180` onto a drag that was dispatched exactly as a
+// portrait one. The advice that rides with it ("pass --start-x/--start-y
+// read from `mav ui tree`") leads nowhere: those coordinates come back
+// through hidPoint and are dispatched raw too.
+//
+// Second, the reroute's premise is false at 180. It exists because AXe 1.7+
+// refuses coordinate gestures on a rotated simulator whose orientation
+// SimulatorKit will not report -- but measured on 2026-09-21 against a
+// headless simpool iPhone 17 Pro (iOS 26.3) whose DevicePreferences entry
+// reads SimulatorWindowRotationAngle = "-180", `axe tap` and `axe swipe`
+// both succeeded and both moved the screen. AXe refuses at 90 and 270, not
+// here.
+//
+// And the window angle is the one source that goes stale invisibly: it
+// describes a Simulator.app window, which a headless boot does not have. The
+// simpool slot above is upright in its own screenshot while the host
+// preference has said PortraitUpsideDown since some earlier session, and
+// nothing ever clears it -- so every swipe on that slot was being rerouted
+// and mislabelled for a window that does not exist.
+func windowRotation(angle int) rotationReading {
+	if angle == 0 || angle == 180 {
+		return rotationReading{}
 	}
-	return rotationReading{}
+	return rotationReading{Angle: angle, Source: orientationSourceWindow}
 }
 
 // orientationValueUsage renders the accepted values for an error line.
