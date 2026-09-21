@@ -15,5 +15,9 @@
 # tanda) y un aserto sobre él reporta fallos sobre navegación correcta.
 name: boxy_primera_categoria_primera_caja
 steps:
-  - tap: { where: { find: "la primera categoría" } }
-  - tap: { where: { find: "la primera caja" } }
+  - tap:
+      where:
+        find: la primera categoría
+  - tap:
+      where:
+        find: la primera caja
