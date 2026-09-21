@@ -61,6 +61,29 @@ La diferencia con lo que proponía §13 —una llamada previa que **el modelo** 
 subobjetivos— es que aquí el modelo no interviene en la ruta en ningún momento. Una llamada
 menos, y un sitio menos donde equivocarse.
 
+### Y por qué una frase plana sí llega, que es el argumento entero
+
+Parecía que el 10/10 tumbaba §12. No la tumba: **la explica**, y de paso dice por qué este
+diseño es el correcto.
+
+Remedido el 21 sep, 80 tiradas, 4 frases × 2 pantallas × los dos comandos: la frase que
+llega 10/10 —*"los contenidos de la primera categoría, primera caja"*— **no es ninguna de
+las de la tabla de §12**. Lleva **un ancla por pantalla, y en orden**: *"la primera
+categoría"* resuelve en la lista de categorías y *"primera caja"* resuelve 5/5 en la de
+cajas. Las tres frases de §12 anclan en **una sola** pantalla cada una, y por eso ninguna
+aguanta los dos saltos.
+
+O sea que la regla de §12 se sostiene entera, y lo que aprendemos es la forma de cumplirla:
+
+> **Enumerar la ruta dentro de la frase es el flujo con pasos escritos comprimido en una
+> línea.**
+
+Eso es el argumento de este documento dicho con datos en vez de con opinión. Lo que `goto`
+consigue cuando el objetivo enumera la ruta, un flujo escrito lo consigue **siempre**, sin
+depender de que quien escriba la frase acierte a poner un ancla por pantalla y en el orden
+correcto — que es una habilidad que nadie tiene por qué tener y que no está documentada en
+ningún sitio.
+
 La navegación libre (`goto` sin pasos) se queda como investigación.
 
 ### Dos cosas de §11 que decide cualquiera que mida esto
