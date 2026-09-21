@@ -26,7 +26,8 @@ func (c CLI) gotoScreen(ctx context.Context, opts GlobalOptions, cfg Config, arg
 	if reason := findIsRefusedHere(); reason != "" {
 		return c.writeGotoResult(GotoResult{
 			Arrived: "unverified", Outcome: GotoCIRefused, Goal: goal,
-			Next: "goto does not drive a screen in CI",
+			CriterionSource: CriterionNone,
+			Next:            "goto does not drive a screen in CI",
 		}, map[string]string{})
 	}
 
@@ -60,7 +61,11 @@ func (c CLI) gotoScreen(ctx context.Context, opts GlobalOptions, cfg Config, arg
 func (c CLI) runGotoLoop(ctx context.Context, cfg Config, opts GlobalOptions,
 	goal string, criterion ArrivalCriterion, maxSteps int, dismiss string) (GotoResult, error) {
 
-	result := GotoResult{Arrived: "false", Goal: goal}
+	result := GotoResult{Arrived: "false", Goal: goal, CriterionSource: CriterionNone}
+	if !criterion.IsZero() {
+		result.CriterionSource = CriterionExplicit
+		result.Criterion = criterion.String()
+	}
 
 	elements, err := c.gotoReadScreen(ctx, cfg, opts)
 	if err != nil {
@@ -134,8 +139,18 @@ func (c CLI) runGotoLoop(ctx context.Context, cfg Config, opts GlobalOptions,
 		if found.Element == nil {
 			abstentions++
 			if abstentions >= gotoMaxAbstentions {
-				result.Outcome = GotoNoRoute
-				result.Next = "nothing on this screen clearly leads to the goal (" + found.Reason + "); read `mav ui tree`"
+				// Two different facts, and they used to share a label.
+				// Never moved: there was no way to start. Moved and then
+				// ran out of onward moves: the route was walked and this
+				// screen offers nothing further — which is what the
+				// destination looks like from the inside.
+				if gotoMoved(result.Steps) {
+					result.Outcome = GotoDeadEnd
+					result.Next = "walked the route and nothing on this screen leads any further (" + found.Reason + "); route_final is where it stopped"
+				} else {
+					result.Outcome = GotoNoRoute
+					result.Next = "nothing on this screen clearly leads to the goal (" + found.Reason + "); read `mav ui tree`"
+				}
 				return c.finishGoto(ctx, cfg, opts, result, criterion, elements), nil
 			}
 			continue
@@ -328,6 +343,9 @@ func (c CLI) writeGotoResult(result GotoResult, extra map[string]string) error {
 		"arrived": result.Arrived,
 		"outcome": result.Outcome,
 	}
+	if result.CriterionSource != "" {
+		fields["criterion_source"] = result.CriterionSource
+	}
 	if !result.RouteFinal.IsZero() {
 		fields["route"] = result.RouteFinal.String()
 	}
@@ -347,6 +365,16 @@ func (c CLI) writeGotoResult(result GotoResult, extra map[string]string) error {
 	}
 	_, err = fmt.Fprintf(c.Stdout, "goto json=%s\n", quoteIfNeeded(string(data)))
 	return err
+}
+
+// gotoMoved reports whether any tap this run actually changed the screen.
+func gotoMoved(steps []GotoStep) bool {
+	for _, s := range steps {
+		if s.Changed {
+			return true
+		}
+	}
+	return false
 }
 
 // gotoPositional drops flags and the values of the ones that take a value.

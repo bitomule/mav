@@ -40,6 +40,22 @@ reached them; `erase`, `longPress`, `assert` and `scrollUntil` do not accept a
 
 ## v0.26.0
 
+### Two abstentions in a row no longer mean the same thing as never starting
+
+`outcome=no_route` covered both "there was no way to begin" and "I walked the route and
+this screen leads nowhere further". The second is what the destination looks like from the
+inside, and reporting it with the same label is what made `goto` look broken while
+standing exactly where it was sent — measured over six takes of a video, all six
+`no_route`, five of them on the right screen with the right `route_final`.
+
+It is now `outcome=dead_end`, split on a fact the run already recorded and nobody read:
+whether any tap changed the screen. No model opines here — it is `record.Changed`, which
+was already being computed.
+
+Every run now also reports `criterion_source=explicit|none`, and prints the criterion back
+in the syntax `--arrived-when` takes, so whoever reads the JSON does not have to remember
+what was passed in.
+
 ### A flow can say what it wants in words, and it beats `goto` on the clock
 
 `goto` already arrives. The thing it could not do is arrive *predictably*: it hands
