@@ -209,8 +209,8 @@ func TestTheDestructiveGuardHasNoEscapeHatchInGoto(t *testing.T) {
 
 func TestTheTapPointIsTheCentreOfTheElement(t *testing.T) {
 	// goto taps the point it resolved rather than a selector, because a
-	// selector tap re-reads the tree: 277ms by coordinates against 1,480ms by
-	// text, measured, and that read is the whole saving.
+	// selector tap re-reads the tree: 786 ms by coordinates against 899 ms by
+	// label, measured, and that read is the whole saving.
 	el := Element{Frame: "{{16, 571.33333333333326}, {370, 52}}"}
 	x, y, ok := TapPoint(el)
 	if !ok {

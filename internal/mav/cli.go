@@ -509,7 +509,7 @@ Selects a physical iOS device and switches target_kind to device.
 
 Navigates to a screen on its own: reads the screen, decides what to tap to get closer, taps it, reads again.
 
-It taps the point it already resolved rather than a selector, which is where the time comes from: a selector tap re-reads the tree (277ms by coordinates against 1,480ms by text, measured).
+It taps the point it already resolved rather than a selector, because a selector tap re-reads the tree: 786 ms by coordinate against 899 ms by label, measured on iPhone 17 Pro / iOS 26.3, 10 taps each. That is ~113 ms a tap, not the second-and-a-half an older note here claimed.
 
 --arrived-when is the only way goto can assert arrival, and it is checked by code against the screen's ROUTE — the navigation title, the selected tab, any modal on top — never against free text anywhere in the tree. Terms are ` + "`title:\"...\"`" + ` and ` + "`text:\"...\"`" + `, all required:
   mav goto "the language screen" --arrived-when 'title:"Idioma y región"'
@@ -2818,6 +2818,26 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			// resolved to *the same point*, (364.0, 84.0) — actually taps.
 			// So every advanced selector (--index, --role, --near-text) was
 			// silently doing nothing on a simulator while answering ok.
+			// A `find` is the exception, and it is the one case where the
+			// coordinate is both cheaper and better evidenced than the label.
+			//
+			// Cheaper because `--text` hands the label back to axe, which
+			// resolves the selector by reading the screen again -- a read this
+			// call already paid for. Measured on iPhone 17 Pro / iOS 26.3 from
+			// a simpool slot, 10 taps each alternated in one batch, clean
+			// launch before every tap, all 20 navigated: 786 ms by coordinate
+			// against 899 ms by label.
+			//
+			// Better evidenced because a model-resolved find has just asked
+			// the screen what is under this exact point, and been told it is
+			// this element. Nothing else in mav taps a coordinate it has
+			// confirmed that recently.
+			if selector.Find != "" {
+				if x, y, ok := TapPoint(matched); ok {
+					return c.uiTap(ctx, opts, cfg, append(onlyFastPathArgs(args),
+						"--x", strconv.Itoa(x), "--y", strconv.Itoa(y)))
+				}
+			}
 			if id, label, ok := elementTapHandle(matched); ok {
 				handleArgs := onlyFastPathArgs(args)
 				if id != "" {
