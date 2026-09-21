@@ -5860,6 +5860,19 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 		// with no cause and finished green, so a flow that never tapped
 		// anything read exactly like one that did.
 		return fields, commandOutputErr(err, out.String(), "tap_failed")
+	case "verify":
+		cfg, cfgErr := c.mustLoadConfig()
+		if cfgErr != nil {
+			return flowStepTargetFailure(step, cfgErr)
+		}
+		elements, readErr := c.readElementsForFind(ctx, cfg, prefer)
+		if readErr != nil {
+			return map[string]string{"ask": step.Params["ask"]}, readErr
+		}
+		// The verdict is recorded and nothing reads it back. Whether the flow
+		// moved on, and whether it arrived, are decided in code by
+		// screenFingerprint and by the selector - never by asking.
+		return c.runVerifyStep(ctx, elements, step.Params["ask"])
 	case "doubleTap":
 		args := append(selectorCLIArgs(flowStepSelector(step)), flowArgs(step.Params, "--x", "x", "--y", "y", "--duration", "duration")...)
 		var out bytes.Buffer

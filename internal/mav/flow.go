@@ -201,6 +201,7 @@ type flowStepPayload struct {
 	Expression     string          `yaml:"expression"`
 	DirectionDebug string          `yaml:"debugDirection"`
 	Kind           string          `yaml:"kind"`
+	Ask            string          `yaml:"ask"`
 	Kill           bool            `yaml:"kill"`
 	Points         []FlowPathPoint `yaml:"points"`
 	From           *FlowCoordinate `yaml:"from"`
@@ -385,6 +386,7 @@ func parseFlowStepNode(node yaml.Node) (FlowStep, error) {
 	put("expression", payload.Expression)
 	put("debugDirection", payload.DirectionDebug)
 	put("kind", payload.Kind)
+	put("ask", payload.Ask)
 	if payload.From != nil {
 		put("startX", payload.From.X)
 		put("startY", payload.From.Y)
@@ -768,7 +770,7 @@ func isSupportedFlowAction(action string) bool {
 		"sim.appearance", "sim.statusbar.set", "sim.statusbar.clear", "sim.language.set",
 		"time.freeze", "time.travel", "time.scale", "time.status", "time.reset",
 		"debug.attach", "debug.wait", "debug.break", "debug.eval", "debug.step", "debug.detach",
-		"delay", "sleep", "wait", "assert", "assertCount", "waitUntil", "scrollUntil", "capture", "extract",
+		"delay", "sleep", "wait", "assert", "assertCount", "waitUntil", "scrollUntil", "capture", "extract", "verify",
 		"evidence.start", "video.start", "evidence.step", "evidence.stop", "video.stop",
 		"network.start", "network.stop", "network.status",
 		"logs", "exec", "crashes", "report":
