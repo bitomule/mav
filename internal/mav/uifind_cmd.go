@@ -3,6 +3,7 @@ package mav
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -157,6 +158,11 @@ func (c CLI) decideFind(ctx context.Context, elements []Element, goal string) Fi
 	answer, err := askJevChoice(ctx, key,
 		FindQuestion(goal), RenderFindCandidates(batch), FindOptions(batch))
 	if err != nil {
+		if errors.Is(err, errJevTooOld) {
+			result.Reason = ReasonJevTooOld
+			result.Next = err.Error()
+			return result
+		}
 		result.Reason = ReasonNoNetwork
 		result.Next = "jev could not be asked. The screen was not judged; read `mav ui tree`"
 		return result

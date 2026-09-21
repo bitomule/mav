@@ -90,8 +90,13 @@ const (
 // Reasons for a resolved_by=none. The first three are "could not ask"; the
 // rest are "asked, and the answer does not pass".
 const (
-	ReasonNoKey            = "no_key"
-	ReasonNoNetwork        = "no_network"
+	ReasonNoKey     = "no_key"
+	ReasonNoNetwork = "no_network"
+	// ReasonJevTooOld: jevi is installed but predates the answer validation mav
+	// now relies on instead of doing itself. Kept apart from no_network because
+	// the remedy is one command rather than an investigation — "jev could not be
+	// reached" sends someone to look at their network.
+	ReasonJevTooOld        = "jev_too_old"
 	ReasonCIRefused        = "ci_refused"
 	ReasonNoCandidates     = "no_candidates"
 	ReasonAbstained        = "abstained"
@@ -299,29 +304,33 @@ func IsDestructive(text string) bool {
 }
 
 // VetoChoice is the rule the model cannot get around, and the direction matters:
-// it takes a yes away and it has no way to produce one. Both arms exist because
-// both were measured.
+// it takes a yes away and it has no way to produce one.
 //
-//   - not a candidate: asked for something absent from the screen, the model
-//     picked anyway in 13 of 26 runs. An answer naming something that was not in
-//     the batch is discarded rather than looked up.
-//   - destructive: on 29 screens carrying Delete and Sign out, no wrong pick got
-//     past this guard. An element that destroys something is only ever returned
-//     when the caller's own words asked for that.
+// It guards ONE thing now: on 29 screens carrying Delete and Sign out, no wrong
+// pick got past it. An element that destroys something is only ever returned
+// when the caller's own words asked for that. That rule is mav's alone — it is
+// about what this tool is willing to tap, not about whether an answer is well
+// formed — so it lives here and nowhere else.
+//
+// IT USED TO GUARD A SECOND THING AND NO LONGER DOES. Asked for something absent
+// from the screen, the model picked anyway in 13 of 26 runs, so an answer naming
+// something that was not in the batch was discarded rather than looked up. jevi
+// 0.4.0 does that itself, as `off_menu_answer`, and — the part that makes it safe
+// to drop rather than merely redundant — it WITHHOLDS the label instead of
+// returning it with a warning, so a label mav cannot vouch for never arrives.
+// An empty label is already an abstention here, so this arm had become
+// unreachable rather than only duplicated. That was read out of jevi's own
+// source (`decide.rs`), not taken on trust.
+//
+// What makes the removal safe is not that trust either: it is jevMinVersion.
+// mav shells out to whatever `jevi` is on PATH and pins nothing, so without a
+// floor an older binary would quietly reopen the hole with no error anywhere —
+// and "the version without the check" is what everyone had until 0.4.0 shipped.
+// Delete the floor and you have deleted this guard for half the installs.
 //
 // Returns the reason it vetoed, or "" for no veto.
 func VetoChoice(chosen *Element, goal string, candidates []Element) string {
 	if chosen == nil {
-		return ReasonNotACandidate
-	}
-	inBatch := false
-	for i := range candidates {
-		if sameElement(candidates[i], *chosen) {
-			inBatch = true
-			break
-		}
-	}
-	if !inBatch {
 		return ReasonNotACandidate
 	}
 	if IsDestructive(findElementText(*chosen)) && !IsDestructive(goal) {

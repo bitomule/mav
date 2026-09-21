@@ -3,6 +3,7 @@ package mav
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -517,6 +518,11 @@ func (c CLI) resolveGotoStep(ctx context.Context, elements []Element, goal strin
 	answer, err := askJevChoice(ctx, key,
 		GotoStepQuestion(goal), RenderFindCandidates(batch), FindOptions(batch))
 	if err != nil {
+		if errors.Is(err, errJevTooOld) {
+			result.Reason = ReasonJevTooOld
+			result.Next = err.Error()
+			return result
+		}
 		result.Reason = ReasonNoNetwork
 		return result
 	}
