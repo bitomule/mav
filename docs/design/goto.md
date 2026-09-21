@@ -503,10 +503,39 @@ vez por instalación** y hace falta `mav open --clear-state` antes de cada toma.
 
 ## 12. El objetivo tiene que resolver en TODAS las pantallas del camino
 
-`goto` le pasa **el mismo objetivo a `find` en cada pantalla**, así que una frase sólo sirve
-si resuelve en todos los saltos. Eso hace que **una redacción que suena mejor rinda peor**, y
-está medido, 3 tiradas por celda, sobre las dos pantallas de un recorrido de dos saltos en
-Boxy (lista de categorías → lista de cajas):
+> **CORREGIDA EL 21 SEP: la tabla vale, la atribución no.** Esta sección decía que `goto`
+> le pasa el mismo objetivo **a `find`**, y eso dejó de ser cierto en `e5a413e` (20 sep):
+> desde entonces `goto` tiene su propia pregunta y su propia lectura de la respuesta. La
+> tabla de abajo mide **`mav ui find`**, y sobre `find` se reproduce clavada — 5/5 donde
+> dice 3/3 y 0/5 donde dice 0/3, con el cruce incluido, remedida con 5 tiradas por celda.
+>
+> Sobre `goto` coincide en **siete de las ocho celdas**. Diverge en una: con
+> `"the box inside this category"` en la lista de categorías, `find` se abstiene 5/5 y
+> `goto` resuelve 5/5 — **y resuelve mal**, eligiendo `Test Category 1` las cinco veces
+> cuando la caja que persigue la frase está en la 2. `goto` no acierta ahí: adivina un lead
+> equivocado, que es algo que su bucle está hecho para absorber y el llamante de `find` no.
+>
+> **Cuál de las dos diferencias manda: la pregunta, no el veredicto.** `FindQuestion`
+> pregunta *"cuál ES"* y prohíbe adivinar; `GotoStepQuestion` acepta además *"cuál LLEVA"*.
+> El veredicto resultó **inerte**: en las 40 tiradas de `find`, `jevi` devolvió
+> `verdict: "yes"` **40 de 40**, incluidas las 15 abstenciones. La rama `verdict != "yes"`
+> de `InterpretFindAnswer` no se disparó ni una vez — **hoy esa guarda no guarda nada**, y
+> todas las abstenciones fueron el modelo respondiendo `none`. La tabla del comentario de
+> `InterpretGotoAnswer` (veredicto 4/8, etiqueta 8/8) describe un defecto real, pero no es
+> el que se ve en estas pantallas.
+>
+> **Y por qué una frase plana sí llega**, que es lo que parecía contradecir esto: el
+> objetivo que llega 10/10 —*"los contenidos de la primera categoría, primera caja"*— **no
+> es ninguna de estas cuatro**. Lleva **un ancla por pantalla y en orden**: *"la primera
+> categoría"* resuelve en la lista de categorías y *"primera caja"* en la de cajas. Las de
+> la tabla anclan en una sola pantalla cada una. O sea que la regla de esta sección se
+> sostiene entera — lo que cambia es que **enumerar la ruta dentro de la frase es una forma
+> de cumplirla**, y es el flujo con pasos escritos comprimido en una línea.
+
+`goto` le pasaba **el mismo objetivo a `find` en cada pantalla**, así que una frase sólo
+sirve si resuelve en todos los saltos. Eso hace que **una redacción que suena mejor rinda
+peor**, y está medido, 3 tiradas por celda, sobre las dos pantallas de un recorrido de dos
+saltos en Boxy (lista de categorías → lista de cajas):
 
 | objetivo | en la lista de categorías | en la lista de cajas |
 |---|---|---|

@@ -167,8 +167,10 @@ func (c CLI) decideFind(ctx context.Context, elements []Element, goal string) Fi
 	// exactly the ones worth knowing the price of.
 	result.Cost.ModelMS = answer.LatencyMS
 
+	// Reported, never read. It is what jevi said, and printing it is how it
+	// was measured to be `yes` on all 40 answers including the abstentions.
 	result.Verdict = answer.Verdict
-	chosen, reason := InterpretFindAnswer(answer.Verdict, answer.Label, batch)
+	chosen, reason := InterpretFindAnswer(answer.Label, batch)
 	if reason != "" {
 		result.Reason = reason
 		result.Next = findNextFor(reason)

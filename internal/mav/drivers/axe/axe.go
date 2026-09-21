@@ -130,6 +130,20 @@ func (d *Driver) Tree(ctx context.Context, target drivers.Target, _ drivers.Tree
 	}
 	return drivers.TreeResult{JSON: []byte(res.Stdout)}, nil
 }
+
+// TreeAtPoint is `describe-ui --point x,y`, an option AXe already ships. It
+// returns the element under the coordinate and its descendants, as a single
+// JSON object rather than the array a whole-screen read returns; walkAX
+// accepts both.
+func (d *Driver) TreeAtPoint(ctx context.Context, target drivers.Target, x, y int) (drivers.TreeResult, error) {
+	args := targetArgs(target, "describe-ui", "--point", strconv.Itoa(x)+","+strconv.Itoa(y))
+	res := d.exec.Run(ctx, "axe", args...)
+	if res.Err != nil {
+		return drivers.TreeResult{}, errors.New(firstLine(res.Stderr))
+	}
+	return drivers.TreeResult{JSON: []byte(res.Stdout)}, nil
+}
+
 func (d *Driver) Swipe(ctx context.Context, target drivers.Target, spec drivers.SwipeSpec) error {
 	args := targetArgs(target, "swipe",
 		"--start-x", strconv.Itoa(spec.StartX),

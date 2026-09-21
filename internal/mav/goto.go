@@ -280,9 +280,12 @@ func GotoRefusesDestructive(el *Element) bool {
 
 // TapPoint is the centre of an element's frame, which is how goto taps: the
 // point it already resolved, not a selector that would re-read the tree.
-// Measured: a tap by coordinates costs 277ms and a tap by text 1,480ms, and the
-// difference is that read. It is the whole reason goto is faster than a loop of
-// find.
+// The difference is that read. Measured 2026-09-21 on iPhone 17 Pro / iOS 26.3
+// from a simpool slot, 10 taps each alternated in one batch, clean launch
+// before every tap, all 20 landing: 786 ms by coordinate against 899 ms by
+// label. An earlier note here claimed 277 ms against 1,480 ms; that gap was
+// never re-measured after the tap path was pinned to physical touch, and it is
+// ~113 ms per tap, not ~1,200.
 func TapPoint(el Element) (x, y int, ok bool) {
 	nums := frameNumbers(el.Frame)
 	if len(nums) < 4 {
@@ -373,7 +376,8 @@ func parseFloat(s string) (float64, bool) {
 // could equally be it" — on an iOS list every row is rendered twice, so that
 // clause made it abstain on everything until candidates were de-duplicated.
 func GotoStepQuestion(goal string) string {
-	return "Below is the list of elements currently on one screen of an iOS app, one per line, numbered.\n" +
+	return untrustedTextPreamble +
+		"Below is the list of elements currently on one screen of an iOS app, one per line, numbered.\n" +
 		"Someone is trying to reach: " + goal + "\n\n" +
 		"Which numbered element should they tap next? Two kinds of answer are equally right:\n" +
 		"  - the element that IS what they are looking for, if it is on this screen;\n" +

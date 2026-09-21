@@ -15,7 +15,12 @@ import (
 type Flow struct {
 	Name   string               `yaml:"name"`
 	Params map[string]FlowParam `yaml:"params,omitempty"`
-	Steps  []FlowStep           `yaml:"steps"`
+	// Inputs is the closed set of values this flow may type. Declared by
+	// whoever wrote the flow, so that a step can name one (`text: {from: ...}`)
+	// or let the model name one (`text: {ask: ...}`) without anything the
+	// model says ever reaching the keyboard.
+	Inputs map[string]string `yaml:"inputs,omitempty"`
+	Steps  []FlowStep        `yaml:"steps"`
 }
 
 type FlowStep struct {
@@ -30,6 +35,11 @@ type FlowStep struct {
 	Points    []FlowPathPoint
 	Do        []FlowStep
 	Env       map[string]string
+	// Text is the declared source of what a type step types, when it is not a
+	// literal. Inputs is the flow's declaration, carried onto the step so the
+	// executor can resolve one without being handed the whole flow.
+	Text   *FlowTextSource
+	Inputs map[string]string
 }
 
 type FlowCondition struct {
@@ -100,9 +110,9 @@ type FlowCoordinate struct {
 }
 
 type flowStepPayload struct {
-	Screen         string `yaml:"screen"`
-	Text           string `yaml:"text"`
-	ID             string `yaml:"id"`
+	Screen         string        `yaml:"screen"`
+	Text           flowTextField `yaml:"text"`
+	ID             string        `yaml:"id"`
 	Value          string `yaml:"value"`
 	X              string `yaml:"x"`
 	Y              string `yaml:"y"`
@@ -191,6 +201,7 @@ type flowStepPayload struct {
 	Expression     string          `yaml:"expression"`
 	DirectionDebug string          `yaml:"debugDirection"`
 	Kind           string          `yaml:"kind"`
+	Ask            string          `yaml:"ask"`
 	Kill           bool            `yaml:"kill"`
 	Points         []FlowPathPoint `yaml:"points"`
 	From           *FlowCoordinate `yaml:"from"`
@@ -235,6 +246,7 @@ func ParseFlow(data []byte) (Flow, error) {
 		Version any                  `yaml:"version,omitempty"`
 		Name    string               `yaml:"name"`
 		Params  map[string]FlowParam `yaml:"params,omitempty"`
+		Inputs  map[string]string    `yaml:"inputs,omitempty"`
 		Steps   []yaml.Node          `yaml:"steps"`
 	}
 	decoder := yaml.NewDecoder(strings.NewReader(string(data)))
@@ -242,7 +254,7 @@ func ParseFlow(data []byte) (Flow, error) {
 	if err := decoder.Decode(&raw); err != nil {
 		return Flow{}, err
 	}
-	flow := Flow{Name: raw.Name, Params: raw.Params}
+	flow := Flow{Name: raw.Name, Params: raw.Params, Inputs: raw.Inputs}
 	if len(raw.Steps) == 0 {
 		return Flow{}, fmt.Errorf("flow_steps_missing")
 	}
@@ -253,7 +265,21 @@ func ParseFlow(data []byte) (Flow, error) {
 		}
 		flow.Steps = append(flow.Steps, step)
 	}
+	// The declaration travels with the step. The executor resolves one step at
+	// a time and is never handed the flow, so a step that may type has to
+	// carry the closed set of things it is allowed to type.
+	attachFlowInputs(flow.Steps, flow.Inputs)
 	return flow, nil
+}
+
+func attachFlowInputs(steps []FlowStep, inputs map[string]string) {
+	if len(inputs) == 0 {
+		return
+	}
+	for i := range steps {
+		steps[i].Inputs = inputs
+		attachFlowInputs(steps[i].Do, inputs)
+	}
 }
 
 func parseFlowStepNode(node yaml.Node) (FlowStep, error) {
@@ -289,7 +315,7 @@ func parseFlowStepNode(node yaml.Node) (FlowStep, error) {
 		}
 	}
 	put("screen", payload.Screen)
-	put("text", payload.Text)
+	put("text", payload.Text.Literal)
 	put("id", payload.ID)
 	put("value", payload.Value)
 	put("x", payload.X)
@@ -360,6 +386,7 @@ func parseFlowStepNode(node yaml.Node) (FlowStep, error) {
 	put("expression", payload.Expression)
 	put("debugDirection", payload.DirectionDebug)
 	put("kind", payload.Kind)
+	put("ask", payload.Ask)
 	if payload.From != nil {
 		put("startX", payload.From.X)
 		put("startY", payload.From.Y)
@@ -420,7 +447,7 @@ func parseFlowStepNode(node yaml.Node) (FlowStep, error) {
 	return FlowStep{
 		Action: action, Params: params, Where: where, After: payload.After,
 		OnFailure: payload.OnFailure, Any: payload.Any, All: payload.All, Not: payload.Not,
-		Points: payload.Points,
+		Points: payload.Points, Text: payload.Text.Source,
 	}, nil
 }
 
@@ -671,6 +698,21 @@ func validateFlowSteps(steps []FlowStep) error {
 		if step.OnFailure.MaxAttempts < 0 || step.OnFailure.Backoff < 0 {
 			return fmt.Errorf("steps[%d].%s.onFailure: retry values must be non-negative", index, step.Action)
 		}
+		if step.Text != nil {
+			if step.Action != "type" {
+				return fmt.Errorf("steps[%d].%s.text: a declared text source only belongs on a type step", index, step.Action)
+			}
+			// A `from` naming an input the flow never declared is a typo, and
+			// it is knowable at load time rather than three screens in.
+			if step.Text.From != "" {
+				if _, ok := step.Inputs[step.Text.From]; !ok {
+					return fmt.Errorf("steps[%d].type.text.from: no input named %q is declared", index, step.Text.From)
+				}
+			}
+			if step.Text.Ask != "" && len(step.Inputs) == 0 {
+				return fmt.Errorf("steps[%d].type.text.ask: the flow declares no inputs to choose from", index)
+			}
+		}
 		if step.Params["regex"] != "" {
 			if _, err := regexp.Compile(step.Params["regex"]); err != nil {
 				return fmt.Errorf("steps[%d].%s.regex: %w", index, step.Action, err)
@@ -728,7 +770,7 @@ func isSupportedFlowAction(action string) bool {
 		"sim.appearance", "sim.statusbar.set", "sim.statusbar.clear", "sim.language.set",
 		"time.freeze", "time.travel", "time.scale", "time.status", "time.reset",
 		"debug.attach", "debug.wait", "debug.break", "debug.eval", "debug.step", "debug.detach",
-		"delay", "sleep", "wait", "assert", "assertCount", "waitUntil", "scrollUntil", "capture", "extract",
+		"delay", "sleep", "wait", "assert", "assertCount", "waitUntil", "scrollUntil", "capture", "extract", "verify",
 		"evidence.start", "video.start", "evidence.step", "evidence.stop", "video.stop",
 		"network.start", "network.stop", "network.status",
 		"logs", "exec", "crashes", "report":

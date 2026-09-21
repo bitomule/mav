@@ -32,9 +32,8 @@ func tenRowScreen() []Element {
 	return out
 }
 
-func TestGotoAcceptsAChoiceTheVerdictWouldHaveThrownAway(t *testing.T) {
+func TestGotoResolvesTheChoiceItWasGiven(t *testing.T) {
 	batch := FindCandidates(tenRowScreen())
-	// The exact shape that broke it: right index, verdict unsure.
 	el, reason := InterpretGotoAnswer("3", batch)
 	if el == nil {
 		t.Fatalf("goto discarded a correct choice: reason=%s", reason)
@@ -42,9 +41,11 @@ func TestGotoAcceptsAChoiceTheVerdictWouldHaveThrownAway(t *testing.T) {
 	if el.ID != "CAMERA" {
 		t.Fatalf("wrong element: %+v", el)
 	}
-	// And find, whose caller taps without a loop underneath, still refuses it.
-	if el, _ := InterpretFindAnswer("unsure", "3", batch); el != nil {
-		t.Fatal("find must keep reading the verdict; its consequence is stricter")
+	// find reads the same answer the same way, now that neither reads the
+	// verdict. What still differs is the consequence: find's caller taps what
+	// it is handed, so find keeps its vetoes and its stricter question.
+	if el, _ := InterpretFindAnswer("3", batch); el == nil || el.ID != "CAMERA" {
+		t.Fatalf("find must resolve the same choice: %+v", el)
 	}
 }
 
@@ -81,45 +82,17 @@ func TestReadingTheChoiceCannotProduceAnArrival(t *testing.T) {
 	}
 }
 
-// What happens to all of this when jevi is fixed.
-//
-// The defect is jevi attaching a confidence-derived verdict to a `choice`
-// answer. goto reads only the choice, so a jevi that stops attaching one
-// changes nothing for it. find still reads the verdict while it exists — and
-// that is the half that could have broken silently, because "no verdict" read
-// as "not yes" would make find abstain on every answer, for a reason nobody
-// would connect to a jevi release.
+// Neither command reads the verdict any more, and that is a measurement and
+// not a preference: over 40 runs of `mav ui find`, jevi answered
+// verdict "yes" 40 times out of 40 — on the 15 abstentions too. Every
+// abstention in those 40 runs was the model answering `none`. There is nothing
+// left here that a jevi release can change.
 
-func TestFindKeepsWorkingWhenJeviStopsClassifying(t *testing.T) {
+func TestBothCommandsReadTheSameAnswerTheSameWay(t *testing.T) {
 	batch := FindCandidates(tenRowScreen())
-	el, reason := InterpretFindAnswer("", "3", batch)
-	if el == nil {
-		t.Fatalf("a choice with no verdict must stand on its own, got reason=%s", reason)
-	}
-	if el.ID != "CAMERA" {
-		t.Fatalf("wrong element: %+v", el)
-	}
-}
-
-func TestFindStillRefusesAVerdictThatSaysNo(t *testing.T) {
-	// The control: accepting an ABSENT verdict must not accept a NEGATIVE one.
-	// Without this the change above would be a silent loosening of find.
-	batch := FindCandidates(tenRowScreen())
-	for _, verdict := range []string{"no", "unsure"} {
-		if el, _ := InterpretFindAnswer(verdict, "3", batch); el != nil {
-			t.Fatalf("verdict %q was accepted: find must still refuse it today", verdict)
-		}
-	}
-}
-
-func TestGotoIsUnaffectedByTheJeviChangeEitherWay(t *testing.T) {
-	// goto never reads the verdict, so both shapes resolve identically. This
-	// is the assertion that says the workaround is not a workaround: reading
-	// the choice is correct before and after the upstream fix, and there is
-	// nothing here to delete when jevi lands.
-	batch := FindCandidates(tenRowScreen())
-	chosen, _ := InterpretGotoAnswer("3", batch)
-	if chosen == nil || chosen.ID != "CAMERA" {
-		t.Fatal("goto should resolve the choice regardless of any verdict")
+	gotoEl, _ := InterpretGotoAnswer("3", batch)
+	findEl, _ := InterpretFindAnswer("3", batch)
+	if gotoEl == nil || findEl == nil || gotoEl.ID != findEl.ID {
+		t.Fatalf("the two readings diverged: goto=%+v find=%+v", gotoEl, findEl)
 	}
 }

@@ -72,7 +72,7 @@ func TestLiteralResolutionRefusesWhenTwoElementsShareTheText(t *testing.T) {
 func TestControlAWrongIndexIsCaughtNotReturned(t *testing.T) {
 	batch := FindCandidates(settingsScreen())
 	// The model answers yes on an index past the end of the list it was given.
-	el, reason := InterpretFindAnswer("yes", "99", batch)
+	el, reason := InterpretFindAnswer("99", batch)
 	if el != nil {
 		t.Fatalf("an out-of-range index was returned as an element: %+v", el)
 	}
@@ -81,27 +81,24 @@ func TestControlAWrongIndexIsCaughtNotReturned(t *testing.T) {
 	}
 }
 
-func TestControlBAConfidentButUnsureVerdictIsAnAbstention(t *testing.T) {
+func TestControlBTheAbstentionIsTheModelChoosingNone(t *testing.T) {
 	// The measurement this encodes: correct picks score from 0.76 and wrong
-	// ones reach 0.88, so no number separates them. The verdict does. Nothing
-	// in this path reads a probability — the function takes no such argument.
+	// ones reach 0.88, so no number separates them. Nothing in this path reads
+	// a probability — the function takes no such argument. What separates them
+	// is the model declining, and declining means answering `none`, which is
+	// on the menu for exactly this reason.
 	//
-	// The empty string used to be in this list and has been moved out
-	// deliberately, not edited away to make a change pass. A verdict of `no`
-	// or `unsure` is the model declining, which is the whole mechanism. No
-	// verdict at all is something else: jevi not classifying the answer, which
-	// is what a fixed jevi will do for a `choice`. Reading the second as the
-	// first would make find abstain on every answer the day that lands, and
-	// nobody would connect it to a jevi release. See
-	// TestFindKeepsWorkingWhenJeviStopsClassifying for the other half.
+	// It is the only thing holding the abstention up. Over 40 runs jevi
+	// answered verdict "yes" 40 times out of 40, the 15 abstentions included,
+	// so a second signal read off the verdict was inert and has been removed.
 	batch := FindCandidates(settingsScreen())
-	for _, verdict := range []string{"unsure", "no"} {
-		el, reason := InterpretFindAnswer(verdict, "2", batch)
+	for _, label := range []string{"none", "NONE", " none ", ""} {
+		el, reason := InterpretFindAnswer(label, batch)
 		if el != nil {
-			t.Fatalf("verdict %q returned an element: %+v", verdict, el)
+			t.Fatalf("%q returned an element: %+v", label, el)
 		}
 		if reason != ReasonAbstained {
-			t.Fatalf("verdict %q gave reason %q, expected %s", verdict, reason, ReasonAbstained)
+			t.Fatalf("%q gave reason %q, expected %s", label, reason, ReasonAbstained)
 		}
 	}
 }

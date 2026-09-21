@@ -55,6 +55,18 @@ type TreeDriver interface {
 	Tree(ctx context.Context, target Target, spec TreeSpec) (TreeResult, error)
 }
 
+// PointTreeDriver describes only what is under one screen coordinate.
+//
+// It is a separate interface and not a field on TreeSpec because a driver that
+// ignored such a field would hand back the whole screen and every caller would
+// believe it had asked a cheap question. Measured on iPhone 17 Pro / iOS 26.3,
+// 10 reads each of the same still screen: the whole tree is 287 ms and the
+// point is 128 ms.
+type PointTreeDriver interface {
+	Driver
+	TreeAtPoint(ctx context.Context, target Target, x, y int) (TreeResult, error)
+}
+
 type GestureDriver interface {
 	Driver
 	Swipe(ctx context.Context, target Target, spec SwipeSpec) error

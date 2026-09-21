@@ -577,6 +577,68 @@ screenshot. Coordinate taps can be useful for manual visual fallback, but they
 are not the preferred basis for reliable routes. Use `text` only when neither
 id nor coordinates are appropriate.
 
+## Steps that say what they want in words
+
+A flow declares the route; the model only ever resolves **one element on one
+screen**, which is the part it does well. Three pieces, and they compose with
+every action that already takes a selector (`tap`, `type`, `longPress`,
+`toggle`, `assert`...).
+
+**`find`: a selector that asks.** One field, read the same way from YAML and
+from the command line:
+
+```yaml
+- tap: { where: { find: "la primera categoría" } }
+- tap: { where: { find: "la primera caja", role: "cell" } }
+```
+
+```bash
+mav ui tap --find "la primera categoría"
+```
+
+The other selector fields are structural and run **first**: they cut the
+candidates down, and the words only choose among what survived. What cannot be
+acted on — disabled, invisible — is never offered. If the model declines, the
+step fails with `find_abstained` and stops: there is no second wording, no
+second model, no ranking, and no confidence threshold anywhere. "Could not ask"
+is a different code, `find_unavailable`, with `find_reason=no_key|no_network|
+ci_refused`. Like `mav ui find`, this never runs in CI.
+
+**Text the model does not write.** The flow declares its inputs; a step names
+one, or lets the model name one:
+
+```yaml
+inputs:
+  nombre: "Caja de herramientas"
+  cantidad: "12"
+steps:
+  - type: { where: { find: "el campo del nombre" }, text: { from: nombre } }
+  - type: { where: { find: "el campo de cantidad" }, text: { ask: "lo que toca escribir aquí" } }
+```
+
+`from` is a map lookup and costs nothing. `ask` puts the **keys** on the menu
+and the code substitutes the value; anything that is not one of the declared
+keys is an abstention (`text_abstained`), so nothing the model says is ever
+typed. With one declared input nothing is asked.
+
+**`verify`: a judgement about content.**
+
+```yaml
+- verify: { ask: "¿la caja que se ve abierta está vacía?" }
+```
+
+For the questions with no structural answer. It records
+`verdict=yes|no|unclear`; a `no` fails the step with `verify_rejected`, and an
+`unclear` does not — declining is not a negative verdict. What it may never
+decide is whether the screen changed or whether the flow arrived: that is
+decided in code, never by asking.
+
+While a flow runs, the tree read for one step is reused by the next one as long
+as nothing could have moved (any step that is not a read invalidates it). A
+find that consulted the model re-checks the chosen element's identity against a
+fresh read immediately before acting, and fails with `element_moved` rather
+than tapping where the row used to be.
+
 ## Gestures
 
 `mav ui longPress --x X --y Y [--duration 800ms]` holds one finger down. It is

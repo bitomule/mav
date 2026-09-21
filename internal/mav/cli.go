@@ -66,6 +66,13 @@ type CLI struct {
 	// this the fallback diagnosis (selector_via/selector_error/next) would
 	// never reach the step record inside `mav run`.
 	tapFallbackSink *map[string]string
+
+	// trees is this run's screen: the last tree read, a dirty bit, and the
+	// element a find chose and has not acted on yet. A pointer so the copies
+	// withStdout and friends make all share one, and nil - the default - is a
+	// cache that never hits, so a command that was never given one reads the
+	// screen exactly as often as it always did.
+	trees *treeCache
 }
 
 func (c CLI) withSkipBuild(skip bool) CLI {
@@ -502,7 +509,7 @@ Selects a physical iOS device and switches target_kind to device.
 
 Navigates to a screen on its own: reads the screen, decides what to tap to get closer, taps it, reads again.
 
-It taps the point it already resolved rather than a selector, which is where the time comes from: a selector tap re-reads the tree (277ms by coordinates against 1,480ms by text, measured).
+It taps the point it already resolved rather than a selector, because a selector tap re-reads the tree: 786 ms by coordinate against 899 ms by label, measured on iPhone 17 Pro / iOS 26.3, 10 taps each. That is ~113 ms a tap, not the second-and-a-half an older note here claimed.
 
 --arrived-when is the only way goto can assert arrival, and it is checked by code against the screen's ROUTE — the navigation title, the selected tab, any modal on top — never against free text anywhere in the tree. Terms are ` + "`title:\"...\"`" + ` and ` + "`text:\"...\"`" + `, all required:
   mav goto "the language screen" --arrived-when 'title:"Idioma y región"'
@@ -2414,7 +2421,22 @@ type readyUITree struct {
 	Driver string
 }
 
+// describeUITree reads the screen, or hands back the one already read if
+// nothing has happened since. The cache is off unless this invocation turned
+// it on (see withTreeCache), so every command that never asked for one reads
+// exactly as often as it always did.
 func (c CLI) describeUITree(ctx context.Context, cfg Config, prefer string, includeSystem bool) (describedUITree, error) {
+	if cached, ok := c.trees.lookup(prefer, includeSystem); ok {
+		return cached, nil
+	}
+	described, err := c.describeUITreeUncached(ctx, cfg, prefer, includeSystem)
+	if err == nil {
+		c.trees.store(prefer, includeSystem, described)
+	}
+	return described, err
+}
+
+func (c CLI) describeUITreeUncached(ctx context.Context, cfg Config, prefer string, includeSystem bool) (describedUITree, error) {
 	if includeSystem {
 		if targetKind(cfg) != drivers.KindSim {
 			return describedUITree{}, fmt.Errorf("tree_system_unsupported_on_device")
@@ -2445,6 +2467,27 @@ func (c CLI) describeUITree(ctx context.Context, cfg Config, prefer string, incl
 		return describedUITree{}, fmt.Errorf("tree_tool_missing")
 	}
 	tree, err := treeDriver.Tree(ctx, target, drivers.TreeSpec{})
+	if err != nil {
+		return describedUITree{Driver: driver.ID(), Result: CommandResult{Stderr: err.Error(), Err: err}}, nil
+	}
+	return describedUITree{Driver: driver.ID(), Result: CommandResult{Stdout: string(tree.JSON)}}, nil
+}
+
+// describeUITreeAtPoint reads only what is under one coordinate. It is never
+// cached and never fills the cache: a point is not a screen, and serving it to
+// something that asked for the screen would hand back a tree with one branch
+// in it.
+func (c CLI) describeUITreeAtPoint(ctx context.Context, cfg Config, prefer string, x, y int) (describedUITree, error) {
+	target := targetFromConfig(cfg)
+	driver, _, err := c.router().Route(ctx, drivers.CapTreeAX, target, routerPrefer(prefer))
+	if err != nil {
+		return describedUITree{}, err
+	}
+	pointDriver, ok := driver.(drivers.PointTreeDriver)
+	if !ok {
+		return describedUITree{}, fmt.Errorf("point_tree_unsupported")
+	}
+	tree, err := pointDriver.TreeAtPoint(ctx, target, x, y)
 	if err != nil {
 		return describedUITree{Driver: driver.ID(), Result: CommandResult{Stderr: err.Error(), Err: err}}, nil
 	}
@@ -2775,6 +2818,26 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			// resolved to *the same point*, (364.0, 84.0) — actually taps.
 			// So every advanced selector (--index, --role, --near-text) was
 			// silently doing nothing on a simulator while answering ok.
+			// A `find` is the exception, and it is the one case where the
+			// coordinate is both cheaper and better evidenced than the label.
+			//
+			// Cheaper because `--text` hands the label back to axe, which
+			// resolves the selector by reading the screen again -- a read this
+			// call already paid for. Measured on iPhone 17 Pro / iOS 26.3 from
+			// a simpool slot, 10 taps each alternated in one batch, clean
+			// launch before every tap, all 20 navigated: 786 ms by coordinate
+			// against 899 ms by label.
+			//
+			// Better evidenced because a model-resolved find has just asked
+			// the screen what is under this exact point, and been told it is
+			// this element. Nothing else in mav taps a coordinate it has
+			// confirmed that recently.
+			if selector.Find != "" {
+				if x, y, ok := TapPoint(matched); ok {
+					return c.uiTap(ctx, opts, cfg, append(onlyFastPathArgs(args),
+						"--x", strconv.Itoa(x), "--y", strconv.Itoa(y)))
+				}
+			}
 			if id, label, ok := elementTapHandle(matched); ok {
 				handleArgs := onlyFastPathArgs(args)
 				if id != "" {
@@ -3073,11 +3136,20 @@ func selectorDiagnosticFields(selector Selector, matched Element) map[string]str
 }
 
 func (c CLI) resolveSelector(ctx context.Context, cfg Config, selector Selector, prefer string) (Element, error) {
+	// A selector carrying words is resolved by asking, not by matching, and
+	// this is the single place both halves of mav come through: every command
+	// that resolves a selector against the tree - tap, type, longPress,
+	// toggle - gets `find`, and the guard that goes with it, without being
+	// touched one by one.
+	if selector.Find != "" {
+		return c.resolveFindForAction(ctx, cfg, selector, prefer)
+	}
 	described, err := c.describeUITree(ctx, cfg, prefer, false)
 	if err != nil || described.Result.Err != nil {
 		return Element{}, fmt.Errorf("tree_failed")
 	}
-	matches, err := MatchElements(ExtractElements(described.Result.Stdout), selector)
+	elements := ExtractElements(described.Result.Stdout)
+	matches, err := MatchElements(elements, selector)
 	if err != nil {
 		return Element{}, err
 	}
@@ -3106,6 +3178,16 @@ func (e *ambiguousSelectorError) Error() string { return "selector_ambiguous" }
 func selectorFail(selector Selector, matched Element, err error) Output {
 	fields := selectorDiagnosticFields(selector, matched)
 	addSelectorAmbiguousNext(fields, err)
+	// A find that did not answer carries its own why - abstained, vetoed, no
+	// key - and the code alone (find_abstained) does not say which.
+	var findErr *findSelectorError
+	if errors.As(err, &findErr) {
+		for key, value := range findErr.Fields() {
+			if fields[key] == "" {
+				fields[key] = value
+			}
+		}
+	}
 	return Fail(err.Error(), fields)
 }
 
@@ -4894,6 +4976,10 @@ func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) err
 	// the artifact this whole invocation runs against, so every `open` the
 	// flow dispatches has to see it, including the ones that never asked.
 	c = c.withSkipBuild(hasFlag(args[1:], "--skip-build"))
+	// The tree cache lives for this run. A flow declares its route, so a
+	// sequence of reads on one screen is the common shape and each of them
+	// costs 320 ms otherwise.
+	c = c.withTreeCache()
 	// runFlow never reads .mav/current-run: an explicit --run reuses that run
 	// (e.g. a second flow continuing evidence collection on a run a caller
 	// already opened); otherwise it always creates a fresh run, so two
@@ -5703,6 +5789,15 @@ func flowStepTargetFailure(step FlowStep, err error) (map[string]string, error) 
 }
 
 func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions, run RunState, index int, step FlowStep) (map[string]string, error) {
+	// Anything that is not a read dirties the tree cache, on the way in and on
+	// the way out. Both, because a gesture reads the screen itself to resolve
+	// what it is acting on, and that read describes the screen BEFORE the
+	// gesture: without the second invalidation it would be served to the step
+	// after it as if it were current.
+	if !isReadOnlyFlowAction(step.Action) {
+		c.trees.invalidate()
+		defer c.trees.invalidate()
+	}
 	prefer, preferErr := c.flowStepPreferDriver(opts, step)
 	if preferErr != nil {
 		return copyParams(step.Params), preferErr
@@ -5806,6 +5901,19 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 		// with no cause and finished green, so a flow that never tapped
 		// anything read exactly like one that did.
 		return fields, commandOutputErr(err, out.String(), "tap_failed")
+	case "verify":
+		cfg, cfgErr := c.mustLoadConfig()
+		if cfgErr != nil {
+			return flowStepTargetFailure(step, cfgErr)
+		}
+		elements, readErr := c.readElementsForFind(ctx, cfg, prefer)
+		if readErr != nil {
+			return map[string]string{"ask": step.Params["ask"]}, readErr
+		}
+		// The verdict decides this step and nothing else. Whether the flow
+		// moved on, and whether it arrived, are decided in code by
+		// screenFingerprint and by the selector - never by asking.
+		return c.runVerifyStep(ctx, elements, step.Params["ask"])
 	case "doubleTap":
 		args := append(selectorCLIArgs(flowStepSelector(step)), flowArgs(step.Params, "--x", "x", "--y", "y", "--duration", "duration")...)
 		var out bytes.Buffer
@@ -5816,7 +5924,10 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 		err := c.withStdout(&out).uiDoubleTap(ctx, GlobalOptions{PreferDriver: prefer}, cfg, args)
 		return copyParams(step.Params), commandOutputErr(err, out.String(), "double_tap_failed")
 	case "type":
-		text := step.Params["text"]
+		text, textFields, textErr := c.resolveFlowStepText(ctx, step)
+		if textErr != nil {
+			return textFields, textErr
+		}
 		var out bytes.Buffer
 		// Only an explicit selector targets a tap before typing; the legacy
 		// params fallback would resurrect "text" (the content to type) as a
@@ -5828,6 +5939,12 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 		}
 		err := c.withStdout(&out).uiType(ctx, GlobalOptions{PreferDriver: prefer}, cfg, args)
 		fields := map[string]string{"chars": strconv.Itoa(len(text))}
+		// Which input was used, and whether a model named it. The value
+		// itself never goes on the record: it is the flow author's, and a
+		// step record is read by whoever reads the run.
+		for key, value := range textFields {
+			fields[key] = value
+		}
 		if prefer != "" {
 			fields["driver"] = prefer
 		}
