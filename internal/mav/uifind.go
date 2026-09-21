@@ -123,6 +123,9 @@ func FindCandidates(elements []Element) []Element {
 		if !isActionable(el) {
 			continue
 		}
+		if !isOfferableState(el) {
+			continue
+		}
 		if findElementText(el) == "" {
 			continue
 		}
@@ -134,6 +137,37 @@ func FindCandidates(elements []Element) []Element {
 		out = append(out, el)
 	}
 	return out
+}
+
+// isOfferableState drops what cannot be acted on: the disabled and the
+// invisible. An element that cannot be tapped is an answer that cannot be
+// executed, so offering it can only ever produce a wrong pick - it is not a
+// batch-size saving, and there is none to be had (jev's latency does not move
+// with the number of candidates: 358 ms with 3, 414 with 12, 387 with 20).
+//
+// THIS FILTERS ON STATE, NEVER ON TEXT. What a label says is exactly what the
+// model is there to weigh, and a filter that reads the words would decide the
+// question in code while pretending to prepare it. `Agregar Caja` - the button
+// that CREATES a box, on a screen of boxes - stays a candidate: it is visible
+// and enabled, so it is offerable, and whether it is what the caller meant is
+// the model's call and the destructive guard's.
+//
+// Absent is not false: a driver that reports neither `enabled` nor a frame
+// says nothing about state, and reading silence as "disabled" would empty the
+// batch on every tree that omits those fields.
+func isOfferableState(el Element) bool {
+	if strings.EqualFold(strings.TrimSpace(el.Enabled), "false") {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(el.Visible), "false") {
+		return false
+	}
+	if strings.TrimSpace(el.Frame) != "" {
+		if _, _, width, height, ok := parseElementFrame(el.Frame); ok && (width <= 0 || height <= 0) {
+			return false
+		}
+	}
+	return true
 }
 
 // elementText is everything about an element a person could have meant when
