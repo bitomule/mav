@@ -2473,6 +2473,27 @@ func (c CLI) describeUITreeUncached(ctx context.Context, cfg Config, prefer stri
 	return describedUITree{Driver: driver.ID(), Result: CommandResult{Stdout: string(tree.JSON)}}, nil
 }
 
+// describeUITreeAtPoint reads only what is under one coordinate. It is never
+// cached and never fills the cache: a point is not a screen, and serving it to
+// something that asked for the screen would hand back a tree with one branch
+// in it.
+func (c CLI) describeUITreeAtPoint(ctx context.Context, cfg Config, prefer string, x, y int) (describedUITree, error) {
+	target := targetFromConfig(cfg)
+	driver, _, err := c.router().Route(ctx, drivers.CapTreeAX, target, routerPrefer(prefer))
+	if err != nil {
+		return describedUITree{}, err
+	}
+	pointDriver, ok := driver.(drivers.PointTreeDriver)
+	if !ok {
+		return describedUITree{}, fmt.Errorf("point_tree_unsupported")
+	}
+	tree, err := pointDriver.TreeAtPoint(ctx, target, x, y)
+	if err != nil {
+		return describedUITree{Driver: driver.ID(), Result: CommandResult{Stderr: err.Error(), Err: err}}, nil
+	}
+	return describedUITree{Driver: driver.ID(), Result: CommandResult{Stdout: string(tree.JSON)}}, nil
+}
+
 func (c CLI) recoverEmptyAXTree(ctx context.Context, cfg Config) error {
 	if targetKind(cfg) != drivers.KindSim {
 		return fmt.Errorf("device_accessibility_recovery_unavailable")
