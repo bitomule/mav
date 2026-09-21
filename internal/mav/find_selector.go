@@ -80,3 +80,67 @@ func (c CLI) resolveFindElement(ctx context.Context, elements []Element, selecto
 	}
 	return *result.Element, result, nil
 }
+
+// resolveFindForAction is resolveFindElement with the guard around it: the
+// answer is checked against the screen as it is NOW, immediately before
+// anything touches it.
+//
+// The window it closes is the model's own round trip. A resolution reads a
+// tree, spends 550 ms asking, and then acts on what it read - and in those
+// 550 ms a screen that was still finishing drawing can move the row. So the
+// identity of the chosen element is captured at resolution and re-checked
+// against a fresh read before the caller acts on it.
+//
+// One re-read and one re-resolution. Not a loop: a screen that keeps moving
+// under a step is a screen the step should fail on, not one to chase.
+//
+// The re-check is skipped for a literal resolution, which asked nobody and so
+// has no window to close - that is the route the price is not paid on.
+func (c CLI) resolveFindForAction(ctx context.Context, cfg Config, selector Selector, prefer string) (Element, error) {
+	elements, err := c.readElementsForFind(ctx, cfg, prefer)
+	if err != nil {
+		return Element{}, err
+	}
+	chosen, result, err := c.resolveFindElement(ctx, elements, selector)
+	if err != nil {
+		return Element{}, err
+	}
+	if result.ResolvedBy != ResolvedByModel {
+		return chosen, nil
+	}
+	c.trees.rememberChoice(guardFor(chosen))
+
+	// Dirty first: this read has to be a read, not the tree the decision was
+	// made from.
+	c.trees.invalidate()
+	fresh, err := c.readElementsForFind(ctx, cfg, prefer)
+	if err != nil {
+		return Element{}, err
+	}
+	// The decision is consumed before anything moves. A retry that reached
+	// here without resolving again has nothing to act on, which is the point:
+	// it cannot tap twice on one decision.
+	guard, ok := c.trees.consumeChoice()
+	if !ok {
+		return Element{}, fmt.Errorf("find_decision_consumed")
+	}
+	if guard.Holds(fresh) {
+		return chosen, nil
+	}
+	rechosen, _, err := c.resolveFindElement(ctx, fresh, selector)
+	if err != nil {
+		return Element{}, err
+	}
+	if !guardFor(rechosen).Holds(fresh) {
+		return Element{}, fmt.Errorf("element_moved")
+	}
+	return rechosen, nil
+}
+
+func (c CLI) readElementsForFind(ctx context.Context, cfg Config, prefer string) ([]Element, error) {
+	described, err := c.describeUITree(ctx, cfg, prefer, false)
+	if err != nil || described.Result.Err != nil {
+		return nil, fmt.Errorf("tree_failed")
+	}
+	return ExtractElements(described.Result.Stdout), nil
+}

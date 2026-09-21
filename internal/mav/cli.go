@@ -66,6 +66,13 @@ type CLI struct {
 	// this the fallback diagnosis (selector_via/selector_error/next) would
 	// never reach the step record inside `mav run`.
 	tapFallbackSink *map[string]string
+
+	// trees is this run's screen: the last tree read, a dirty bit, and the
+	// element a find chose and has not acted on yet. A pointer so the copies
+	// withStdout and friends make all share one, and nil - the default - is a
+	// cache that never hits, so a command that was never given one reads the
+	// screen exactly as often as it always did.
+	trees *treeCache
 }
 
 func (c CLI) withSkipBuild(skip bool) CLI {
@@ -2414,7 +2421,22 @@ type readyUITree struct {
 	Driver string
 }
 
+// describeUITree reads the screen, or hands back the one already read if
+// nothing has happened since. The cache is off unless this invocation turned
+// it on (see withTreeCache), so every command that never asked for one reads
+// exactly as often as it always did.
 func (c CLI) describeUITree(ctx context.Context, cfg Config, prefer string, includeSystem bool) (describedUITree, error) {
+	if cached, ok := c.trees.lookup(prefer, includeSystem); ok {
+		return cached, nil
+	}
+	described, err := c.describeUITreeUncached(ctx, cfg, prefer, includeSystem)
+	if err == nil {
+		c.trees.store(prefer, includeSystem, described)
+	}
+	return described, err
+}
+
+func (c CLI) describeUITreeUncached(ctx context.Context, cfg Config, prefer string, includeSystem bool) (describedUITree, error) {
 	if includeSystem {
 		if targetKind(cfg) != drivers.KindSim {
 			return describedUITree{}, fmt.Errorf("tree_system_unsupported_on_device")
@@ -3073,19 +3095,19 @@ func selectorDiagnosticFields(selector Selector, matched Element) map[string]str
 }
 
 func (c CLI) resolveSelector(ctx context.Context, cfg Config, selector Selector, prefer string) (Element, error) {
+	// A selector carrying words is resolved by asking, not by matching, and
+	// this is the single place both halves of mav come through: every command
+	// that resolves a selector against the tree - tap, type, longPress,
+	// toggle - gets `find`, and the guard that goes with it, without being
+	// touched one by one.
+	if selector.Find != "" {
+		return c.resolveFindForAction(ctx, cfg, selector, prefer)
+	}
 	described, err := c.describeUITree(ctx, cfg, prefer, false)
 	if err != nil || described.Result.Err != nil {
 		return Element{}, fmt.Errorf("tree_failed")
 	}
 	elements := ExtractElements(described.Result.Stdout)
-	// A selector carrying words is resolved by asking, not by matching, and
-	// this is the single place both halves of mav come through: every command
-	// that resolves a selector against the tree - tap, type, longPress,
-	// toggle - gets `find` from here without being touched one by one.
-	if selector.Find != "" {
-		matched, _, findErr := c.resolveFindElement(ctx, elements, selector)
-		return matched, findErr
-	}
 	matches, err := MatchElements(elements, selector)
 	if err != nil {
 		return Element{}, err
@@ -4913,6 +4935,10 @@ func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) err
 	// the artifact this whole invocation runs against, so every `open` the
 	// flow dispatches has to see it, including the ones that never asked.
 	c = c.withSkipBuild(hasFlag(args[1:], "--skip-build"))
+	// The tree cache lives for this run. A flow declares its route, so a
+	// sequence of reads on one screen is the common shape and each of them
+	// costs 630 ms otherwise.
+	c = c.withTreeCache()
 	// runFlow never reads .mav/current-run: an explicit --run reuses that run
 	// (e.g. a second flow continuing evidence collection on a run a caller
 	// already opened); otherwise it always creates a fresh run, so two
@@ -5722,6 +5748,15 @@ func flowStepTargetFailure(step FlowStep, err error) (map[string]string, error) 
 }
 
 func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions, run RunState, index int, step FlowStep) (map[string]string, error) {
+	// Anything that is not a read dirties the tree cache, on the way in and on
+	// the way out. Both, because a gesture reads the screen itself to resolve
+	// what it is acting on, and that read describes the screen BEFORE the
+	// gesture: without the second invalidation it would be served to the step
+	// after it as if it were current.
+	if !isReadOnlyFlowAction(step.Action) {
+		c.trees.invalidate()
+		defer c.trees.invalidate()
+	}
 	prefer, preferErr := c.flowStepPreferDriver(opts, step)
 	if preferErr != nil {
 		return copyParams(step.Params), preferErr
