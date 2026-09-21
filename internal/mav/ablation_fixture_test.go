@@ -111,6 +111,53 @@ func TestTheAblationFixturesStillDescribeWhatWasMeasured(t *testing.T) {
 	}
 }
 
+// THE SEARCH-FIELD DEFECT, measured off these fixtures and left unfixed on
+// purpose. Written down here so nobody re-derives it, and so nobody "fixes" it
+// with the two things that are forbidden.
+//
+// `mav ui find "la primera caja"` on the category list - which has no box on it
+// at all - returns the SEARCH FIELD, 5/5. Every run below is 5 against these
+// fixtures, down the real resolution path.
+//
+// What it is NOT:
+//
+//   - Not the Spanish word. "the first box" in English picks the same search
+//     field, 5/5. The suspicion that "caja" reads as "caja de búsqueda" is
+//     refuted: the same thing happens in a language where it does not.
+//   - Not a catch-all. The search field is not where the model dumps anything
+//     it cannot place: "the delete button" 0/5, "the shopping cart icon" 0/5 -
+//     both abstain. The abstention works on this exact screen.
+//   - Not a missing state filter. The field is visible, enabled and actionable,
+//     so it is a legitimate candidate, and dropping it would be dropping a real
+//     tap target.
+//
+// What it IS: a bare noun that genuinely denotes a text box in both languages.
+// Give the phrase anything that disambiguates and the model abstains
+// correctly - "a cardboard box for storing things" 0/5, "the list row for a
+// box" 0/5. It is the undisambiguated word that loses, and on that screen the
+// only "box" really is the search box.
+//
+// Three fixes were tried and all three are rejected, measured:
+//
+//  1. Filtering candidates by text - forbidden, and it would take `Agregar
+//     Caja` off the menu, which is the rule in the other direction.
+//  2. A confidence cut - forbidden and useless: correct picks score from 0.62
+//     and wrong ones reach 0.88.
+//  3. The structural trim that the find selector already composes with:
+//     `{find: "la primera caja", role: "button"}`. It does NOT fix this. It
+//     replaces one wrong answer with another - Test Category 1, 4/5 - because
+//     with the search field gone the model still does not abstain. That is
+//     worse than the defect: a category is a plausible-looking tap that
+//     navigates.
+//  4. Prompt wording. Adding "an element that merely relates to it - a field
+//     where you could type or search for it - is not it" changed nothing: the
+//     seven good cells held and the defect cell stayed at 5/5. The model is not
+//     reading the field as "where you would search for a box"; it reads it as
+//     being a box. The wording was reverted rather than left in doing nothing.
+//
+// So it stands, and what a flow author does about it is not a code change:
+// name the thing in a way that a text box cannot satisfy.
+
 func TestTheCategoryScreenHasNoBoxAndKeepsItsSearchField(t *testing.T) {
 	// The screen the defect lives on: there is no box anywhere, and the search
 	// field is a legitimate candidate (visible, enabled, actionable). Whether
@@ -128,6 +175,32 @@ func TestTheCategoryScreenHasNoBoxAndKeepsItsSearchField(t *testing.T) {
 	if searchFields != 1 {
 		t.Fatalf("expected the one search field among the candidates, got %d:\n%s",
 			searchFields, RenderFindCandidates(candidates))
+	}
+}
+
+func TestNothingFiltersTheSearchFieldOutByWhatItSays(t *testing.T) {
+	// The guard on the fix that must never be made. Taking the search field
+	// off the menu because of the defect above would be filtering by text, and
+	// the same rule keeps `Agregar Caja` - the button that creates a box on a
+	// screen of boxes - on it. This asserts both directions at once, with no
+	// model involved.
+	for _, name := range []string{fixtureCategories, fixtureBoxes} {
+		candidates := FindCandidates(loadFixtureScreen(t, name))
+		searchField, createButton := false, false
+		for _, el := range candidates {
+			if strings.Contains(strings.ToLower(el.Role), "search") {
+				searchField = true
+			}
+			if el.ID == "createBoxButton" || el.ID == "createCategoryButton" {
+				createButton = true
+			}
+		}
+		if !searchField {
+			t.Errorf("%s: the search field is visible, enabled and tappable; it stays a candidate", name)
+		}
+		if !createButton {
+			t.Errorf("%s: the create button stays a candidate; the filter reads state, never words", name)
+		}
 	}
 }
 
