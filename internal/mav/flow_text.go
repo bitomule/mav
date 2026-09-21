@@ -147,9 +147,6 @@ func (c CLI) resolveFlowStepText(ctx context.Context, step FlowStep) (string, ma
 		return "", fields, fmt.Errorf("text_unavailable")
 	}
 	fields["model_ms"] = fmt.Sprint(answer.LatencyMS)
-	if answer.Verdict != "" && answer.Verdict != "yes" {
-		return "", fields, fmt.Errorf("text_abstained")
-	}
 	chosen := strings.TrimSpace(answer.Label)
 	// The answer is read as a NAME and nothing else. Anything that is not one
 	// of the declared keys - `none` included, and free text especially - is an

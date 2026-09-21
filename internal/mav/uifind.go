@@ -27,9 +27,12 @@ type FindResult struct {
 	ResolvedBy string   `json:"resolved_by"`
 	Element    *Element `json:"element"`
 	Goal       string   `json:"goal"`
-	Verdict    string   `json:"verdict,omitempty"`
-	Reason     string   `json:"reason,omitempty"`
-	Candidates int      `json:"candidates"`
+	// Verdict is what jevi attached to the answer. Printed, never read: it was
+	// `yes` on 40 answers out of 40, abstentions included, which is how it was
+	// established that nothing can be decided from it.
+	Verdict    string `json:"verdict,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+	Candidates int    `json:"candidates"`
 	// Omitted counts candidates that did not fit in the batch sent to the
 	// model. It exists because the failure this command was built to close is
 	// a tree that drops half a screen without saying so; find must not repeat
@@ -432,10 +435,12 @@ func FindQuestion(goal string) string {
 // with nothing relevant on it returns a confident wrong element, and nobody
 // will connect that to this line.
 //
-// It is also the half of the abstention that survives upstream changes. mav
-// declines on two independent signals — the verdict and the label — and jevi
-// 0.3.0 stopped attaching a confidence-derived verdict to a choice, which left
-// the first one inert. This is the one still doing the work.
+// It is now the ONLY thing holding the abstention up, and that is measured
+// rather than assumed: over 40 runs of `mav ui find`, jevi answered
+// `verdict: "yes"` 40 times out of 40 — on the 15 abstentions as well. Every
+// one of those 15 was the model answering `none`. mav used to decline on two
+// signals, the verdict and the label; the verdict half never once fired and
+// has been removed. There is no second net under this line.
 func FindOptions(batch []Element) []string {
 	out := make([]string, 0, len(batch)+1)
 	for i := range batch {
@@ -444,34 +449,17 @@ func FindOptions(batch []Element) []string {
 	return append(out, "none")
 }
 
-// InterpretFindAnswer turns the model's answer into a choice, applying rule 2:
-// anything that is not a plain yes on a real index is an abstention. Nothing
-// numeric is read — confidence is deliberately not a parameter of this function,
-// because correct picks score from 0.76 and wrong ones reach 0.88.
-func InterpretFindAnswer(verdict, label string, batch []Element) (*Element, string) {
-	// An ABSENT verdict is not a refusal, and this is the line that stops find
-	// breaking on the day jevi is fixed.
-	//
-	// jevi currently attaches a verdict to a `choice` answer, derived from a
-	// confidence cut of its own — that is the defect that made goto discard
-	// correct answers, and it has been reported upstream rather than patched
-	// here. When jevi stops attaching it, a choice will arrive with a label
-	// and no verdict. Reading that as "not yes" would make find abstain on
-	// every single answer, silently, and the tool would look broken for a
-	// reason nobody would connect to a jevi release.
-	//
-	// So: a verdict that says `yes` is accepted, one that says anything else
-	// is a refusal, and no verdict at all means jevi is not classifying, so
-	// the choice stands on its own. Nothing loosens today — jevi does attach
-	// one — and nothing breaks the day it does not.
-	//
-	// find keeps requiring the verdict while it is there, unlike goto, which
-	// reads only the choice. That is deliberate and measured: goto's caller
-	// has a loop underneath that catches a wrong lead in one step, and find's
-	// caller taps what it is handed.
-	if verdict != "" && verdict != "yes" {
-		return nil, ReasonAbstained
-	}
+// InterpretFindAnswer turns the model's answer into a choice. The answer read
+// is the LABEL, and only the label: the abstention is the model choosing
+// `none`, which is why `none` is on the menu.
+//
+// Nothing numeric is read — confidence is deliberately not a parameter of this
+// function, because correct picks score from 0.76 and wrong ones reach 0.88.
+//
+// The verdict is not read either, and that is measured: over 40 runs jevi
+// attached `verdict: "yes"` to every single answer, the 15 abstentions
+// included. A branch on it never once ran.
+func InterpretFindAnswer(label string, batch []Element) (*Element, string) {
 	label = strings.TrimSpace(strings.ToLower(label))
 	if label == "" || label == "none" {
 		return nil, ReasonAbstained
