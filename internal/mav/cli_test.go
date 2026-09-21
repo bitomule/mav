@@ -2896,6 +2896,32 @@ func TestSelectorCLIFlagRecognizesWhereJSON(t *testing.T) {
 	}
 }
 
+// `mav ui type` splits its arguments into a target and the characters to type,
+// and anything it does not recognise as a target is typed. So every flag
+// selectorCLIArgs can emit has to be answered here, and checking them one at a
+// time is how `--find` was missed in v0.26.0: a flow step with
+// `where: { find: ... }` left the field reading
+// `Kitchen --find the search field` and reported ok.
+func TestEverySelectorFlagIsScrubbedFromTypedText(t *testing.T) {
+	enabled, selected, focused, visible, index := true, true, true, true, 3
+	full := Selector{
+		ID: "boxRow", Text: "Caja", TextContains: "Caj", TextStartsWith: "Ca",
+		TextRegex: "Ca.*", Value: "v", ValueContains: "v", Role: "button",
+		Bounds: "{{0, 0}, {10, 10}}", Find: "the search field",
+		Enabled: &enabled, Selected: &selected, Focused: &focused, Visible: &visible,
+		Index: &index,
+		Near:  &NearSelector{Where: Selector{ID: "anchor", Text: "Ancla"}, Direction: "below", MaxDistance: 40},
+	}
+	for _, arg := range selectorCLIArgs(full) {
+		if !strings.HasPrefix(arg, "--") {
+			continue
+		}
+		if !isSelectorCLIFlag(arg) {
+			t.Fatalf("%s describes WHERE, so `mav ui type` would type it into the field instead of scrubbing it", arg)
+		}
+	}
+}
+
 func TestFlowTypeStepArgsExcludeLegacyTextSelector(t *testing.T) {
 	flow, err := ParseFlow([]byte(`
 steps:
