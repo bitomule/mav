@@ -163,6 +163,18 @@ instancia incorrecta. Por eso `--arrived-when` acepta varios términos y los exi
 Sin varios términos ese caso queda abierto, y la salida tiene que decirlo en vez de dejar que
 se descubra.
 
+**Los prefijos son exactamente `title:`, `text:` y `screen:`.** Un término **sin prefijo** sigue
+siendo un título, que es lo que la gente quiere decir cuando nombra una pantalla. Un término que
+*parece* un prefijo y no lo es —`id:boxes-view`— es un **error de sintaxis**, no un título:
+antes se convertía en "busca un título que contenga el texto literal `id:boxes-view`", que no
+casa nunca, y quien lo escribía veía `arrived=false` y se ponía a depurar su app.
+
+Dónde está la línea, porque un título lleva dos puntos legítimamente —`Moving Boxes: Office
+cables` es una pantalla real del banco de pruebas—: cuenta como prefijo sólo si el término **no
+empieza por comilla**, lo de delante de los primeros dos puntos son **sólo letras ASCII** sin
+espacios, y **hay algo detrás** de los dos puntos. Así `Boxes:` (dos puntos al final) sigue
+siendo título, `"id:boxes-view"` entrecomillado sigue siendo título, y `id:boxes-view` falla.
+
 ### Y lo que emite
 
 **Evidencia, no veredicto.** `mav` es un verificador: devuelve lo que vio y quien llama juzga,

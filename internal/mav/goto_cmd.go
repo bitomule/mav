@@ -32,7 +32,13 @@ func (c CLI) gotoScreen(ctx context.Context, opts GlobalOptions, cfg Config, arg
 		}, map[string]string{})
 	}
 
-	criterion := ParseArrivalCriterion(flagValue(args, "--arrived-when"))
+	criterion, err := ParseArrivalCriterion(flagValue(args, "--arrived-when"))
+	if err != nil {
+		return Fail("goto_arrived_when_invalid", map[string]string{
+			"error": err.Error(),
+			"usage": `mav goto "the camera settings screen" [--arrived-when 'title:"Cámara"']`,
+		}).Write(c.Stdout)
+	}
 	maxSteps := gotoMaxSteps
 	if raw := flagValue(args, "--max-steps"); raw != "" {
 		if n, err := strconv.Atoi(raw); err == nil && n > 0 && n <= gotoMaxSteps {
