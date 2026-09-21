@@ -1,5 +1,116 @@
 # Changelog
 
+## v0.26.0
+
+### A flow can say what it wants in words, and it beats `goto` on the clock
+
+`goto` already arrives. The thing it could not do is arrive *predictably*: it hands
+the same sentence to every screen on the route, so a wording that anchors on one
+screen unanchors on the next. Measured: `"the box inside Test Category 2"` resolves
+5/5 on Boxy's category list and 0/5 on its box list, and `"the box inside this
+category"` does exactly the reverse.
+
+So the route stops being the model's problem. A flow writes the steps down and the
+model resolves one element per screen, which is what it was already good at:
+
+```yaml
+name: boxy_primera_categoria_primera_caja
+steps:
+  - tap: { where: { find: "la primera categoría" } }
+  - tap: { where: { find: "la primera caja" } }
+```
+
+```sh
+mav ui tap --find "la primera categoría"
+```
+
+`find` is a **selector kind**, not a new command, because `Selector` is one struct
+read by both the CLI flags and the YAML tags. So it lands on both surfaces at once —
+neither is a wrapper around the other — and every action that already took a
+selector (`tap`, `type`, `longPress`, `toggle`) can use it without being touched.
+The structural fields still run first and cut the candidates down; the words only
+choose among what survives.
+
+**Measured against free navigation**, one alternated batch, 10 runs a lane, same
+binary, Boxy on iPhone 17 Pro / iOS 26.3:
+
+| lane | median | arrived | right category |
+|---|---|---|---|
+| `goto --arrived-when` | 4,260 ms | 10/10 | 10/10 |
+| the flow, with its `assert` | **3,801 ms** | 10/10 | 10/10 |
+
+458 ms faster, 10.8%. Arrival was read back off the tree, never from the command's
+own `arrived=true`, and the category came from the navigation title, never from a
+box code — `createTestBoxes()` hands `1000`/`1001` to the categories in unordered
+fetch order, and both turned up across the runs.
+
+### Text the model never writes
+
+A flow declares its inputs; a step names one, or lets the model name one:
+
+```yaml
+inputs:
+  nombre: "Caja de herramientas"
+steps:
+  - type: { where: { find: "el campo del nombre" }, text: { from: nombre } }
+  - type: { where: { find: "el campo de cantidad" }, text: { ask: "lo que toca escribir aquí" } }
+```
+
+`from` is a map lookup and costs nothing. `ask` puts the **keys** on the menu and
+the code substitutes the value, so nothing the model says is ever typed. That closes
+hallucinated text and injection from UI labels in the same move.
+
+### `verify`, fenced out of every decision it must not make
+
+`verify: { ask: "¿la caja que se ve abierta está vacía?" }` is for judgements about
+content, where there is nothing structural to consult. A `no` fails the step; an
+`unclear` does not, because declining is not a negative verdict.
+
+What it may never do is decide whether the screen changed or whether the flow
+arrived. Those are code, on a fingerprint of sorted `(id, label, role)` — asking a
+model whether its own last action worked is a judge with correlated errors, and a
+test enforces the fence in three directions.
+
+### Two guards that were not guarding anything
+
+- **`element_moved` could not fire on any screen.** The check asked whether the
+  re-resolved element was still in the tree it had just come out of, which can only
+  answer yes. It now asks the live screen with `axe describe-ui --point`, which
+  costs 128 ms against 287 ms for the whole tree. With the old check the step
+  dispatched a blind tap; with the new one it fails and dispatches nothing.
+- **The verdict branch in `find` never ran.** `jevi` returned `verdict: "yes"` on 40
+  answers out of 40, abstentions included. Removed — abstention rests on the `none`
+  option, which is the only thing that was ever holding it up.
+
+### A window nobody is looking at no longer reroutes every swipe
+
+`mav ui swipe` was reported as returning `ok` without moving the screen. It was not:
+six of six moved it, and the original evidence was a list already scrolled to its
+end. What was real sat next to it — every swipe on that simulator came back
+`rotation_unavailable=180` while the device was in portrait. The rotation belonged
+to a *Simulator.app window* that a headless boot never opens, left behind in the
+host's preferences for that UDID. `mav` already refused to use the angle, so it bent
+no coordinates; it only routed the gesture away from AXe and told the caller its
+gesture had gone sideways when it had not.
+
+### Corrected measurements
+
+Numbers in the tree had drifted far enough to mislead anyone planning against them.
+Reading the screen is **320 ms**, not 630; `jev` deciding is **350 ms**, not 550.
+And the note claiming a tap by coordinate costs 277 ms against 1,480 ms by text was
+out by an order of magnitude: it is **786 ms against 899 ms**. That gap was the
+stated justification for a design decision, and it is 113 ms, not 1,200.
+
+### Known, measured, and deliberately not fixed
+
+`find "la primera caja"` on a screen with no box on it returns the **search field**.
+It is not a Spanish pun — `"the first box"` does the same, and abstention works fine
+on that screen for other phrasings. What loses is the bare noun, which denotes a text
+box in both languages. Four fixes were measured and rejected, including narrowing by
+`role`, which makes it *worse* by swapping the search field for a category that
+actually navigates. The mitigation is in the skill: name the thing, not its part of
+speech.
+
 ## v0.25.1
 
 ### `goto` no longer says it failed while standing on the destination
