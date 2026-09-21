@@ -448,10 +448,51 @@ func parseFloat(s string) (float64, bool) {
 // refusal or it picks a row at random. What is NOT kept is find's "two or more
 // could equally be it" — on an iOS list every row is rendered twice, so that
 // clause made it abstain on everything until candidates were de-duplicated.
+//
+// THE SENTENCE THAT NAMES THE GOAL is the one that was wrong, and it took a
+// table to find out, because the suspicion was on the wrong half.
+//
+// The report was that on Boxy's category grid — Moving Boxes top-left, Test
+// Category 1 to its right, Test Category 2 below — the goal "la primera
+// categoría" resolved to Test Category 1 instead of Moving Boxes, and that the
+// LEADS clause was to blame: a row literally named "1" reads as the lead to
+// "the first one". Both halves of that were measured and both are wrong.
+//
+// Measured 21 sep on origin/main, off the raw `axe describe-ui` JSON of two
+// live Boxy screens, 40 runs a cell (hits / misses / abstentions counted
+// separately, never folded into "resolved"):
+//
+//	                               first category   box contents   box contents   goal absent
+//	                               on the grid      from the grid  from the box   (4 cells)
+//	                               (IS)             (LEADS)        list (IS)      (none)
+//	find's question                40/40            0/40, 40 abst  40/40          40/40 abst
+//	goto's question, as it was     29-34/40         40/40          40/40          40/40 abst
+//	find's naming line + LEADS     40/40            40/40          40/40          40/40 abst
+//	this wording                   40/40            40/40          40/40          40/40 abst
+//
+// Read off that table:
+//
+//   - The LEADS clause is NOT the cause. Put find's naming sentence in front of
+//     this exact clause and the broken cell goes to 40/40 with the multi-step
+//     cell still at 40/40. The clause is doing its job and stays.
+//   - The reported 3/40 does not reproduce. Three independent 40-run baselines
+//     of the old wording gave 29, 31 and 34 hits — a real loss against find's
+//     40/40, and a much smaller one than reported.
+//   - What carries the loss is "Someone is trying to reach: X". Swap ONLY that
+//     line into find's otherwise-unchanged question and the loss comes with it:
+//     35/40, where find's own line is 40/40. Reading, unverified: "trying to
+//     reach X" invites X to be read as the name of a destination, and there is
+//     a row on that screen whose name contains a 1; "a user described where
+//     they want to get to" marks X as the user's own words, and then "primera"
+//     is read as a position.
+//
+// find's ambiguity clause was measured again here and still does not go in:
+// with it the table is identical, cell for cell, so it buys nothing and it is
+// the clause that once abstained on everything.
 func GotoStepQuestion(goal string) string {
 	return untrustedTextPreamble +
 		"Below is the list of elements currently on one screen of an iOS app, one per line, numbered.\n" +
-		"Someone is trying to reach: " + goal + "\n\n" +
+		"A user described where they want to get to as: " + goal + "\n\n" +
 		"Which numbered element should they tap next? Two kinds of answer are equally right:\n" +
 		"  - the element that IS what they are looking for, if it is on this screen;\n" +
 		"  - the element that LEADS towards it — a section that contains it, a row on the way.\n" +
