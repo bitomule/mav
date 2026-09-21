@@ -78,7 +78,8 @@ func flowInputKeys(inputs map[string]string) []string {
 // values are not sent: the question is which name, and the code holds the
 // values.
 func TextChoiceQuestion(ask string, keys []string) string {
-	return "A flow is about to type into a field on an iOS app. The values it may type are " +
+	return untrustedTextPreamble +
+		"A flow is about to type into a field on an iOS app. The values it may type are " +
 		"declared by the person who wrote the flow, and are listed below by name.\n" +
 		"What belongs in this field was described as: " + ask + "\n\n" +
 		"Which named value is it? Answer with that name.\n" +

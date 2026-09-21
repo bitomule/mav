@@ -373,7 +373,8 @@ func parseFloat(s string) (float64, bool) {
 // could equally be it" — on an iOS list every row is rendered twice, so that
 // clause made it abstain on everything until candidates were de-duplicated.
 func GotoStepQuestion(goal string) string {
-	return "Below is the list of elements currently on one screen of an iOS app, one per line, numbered.\n" +
+	return untrustedTextPreamble +
+		"Below is the list of elements currently on one screen of an iOS app, one per line, numbered.\n" +
 		"Someone is trying to reach: " + goal + "\n\n" +
 		"Which numbered element should they tap next? Two kinds of answer are equally right:\n" +
 		"  - the element that IS what they are looking for, if it is on this screen;\n" +

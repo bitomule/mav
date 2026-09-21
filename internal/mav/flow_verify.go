@@ -32,7 +32,8 @@ const (
 // VerifyQuestion is the wording. Like find's, it makes declining a correct
 // answer rather than a failure to be avoided.
 func VerifyQuestion(ask string) string {
-	return "Below is what is currently on one screen of an iOS app, one element per line.\n" +
+	return untrustedTextPreamble +
+		"Below is what is currently on one screen of an iOS app, one element per line.\n" +
 		"Answer this question about it: " + ask + "\n\n" +
 		"Answer `yes` or `no`. Answer `unclear` if the screen does not settle the question; " +
 		"that is a correct answer, and guessing is not."
