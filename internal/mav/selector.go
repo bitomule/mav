@@ -27,6 +27,7 @@ func selectorFromCLI(args []string) (Selector, error) {
 		ValueContains:  flagValue(args, "--value-contains"),
 		Role:           flagValue(args, "--role"),
 		Bounds:         flagValue(args, "--bounds"),
+		Find:           flagValue(args, "--find"),
 	}
 	var err error
 	if selector.Enabled, err = optionalBoolFlag(args, "--enabled"); err != nil {
@@ -122,6 +123,14 @@ type Selector struct {
 	Bounds         string        `yaml:"bounds,omitempty" json:"bounds,omitempty"`
 	Near           *NearSelector `yaml:"near,omitempty" json:"near,omitempty"`
 	ParentOf       *Selector     `yaml:"parentOf,omitempty" json:"parentOf,omitempty"`
+	// Find describes the wanted element in the caller's own words, and it is
+	// the one predicate no code can evaluate: it is resolved by asking a
+	// model, down the same ladder `mav ui find` uses. Every other field here
+	// is structural and is applied FIRST, so the batch the model is asked
+	// about is already cut down to what the flow author allowed. That order is
+	// the whole composition rule: the structural fields trim, the words
+	// choose.
+	Find string `yaml:"find,omitempty" json:"find,omitempty"`
 }
 
 type NearSelector struct {
@@ -135,7 +144,16 @@ func (s Selector) IsZero() bool {
 		s.TextStartsWith == "" && s.TextRegex == "" && s.Value == "" &&
 		s.ValueContains == "" && s.Role == "" && s.Enabled == nil &&
 		s.Selected == nil && s.Focused == nil && s.Visible == nil &&
-		s.Index == nil && s.Bounds == "" && s.Near == nil && s.ParentOf == nil
+		s.Index == nil && s.Bounds == "" && s.Near == nil && s.ParentOf == nil &&
+		s.Find == ""
+}
+
+// Structural is the selector with the words taken out: everything a machine
+// can decide on its own. It is what trims the candidates before the model is
+// asked anything.
+func (s Selector) Structural() Selector {
+	s.Find = ""
+	return s
 }
 
 func (s Selector) Validate() error {
@@ -185,6 +203,15 @@ func (s Selector) Validate() error {
 func MatchElements(elements []Element, selector Selector) ([]Element, error) {
 	if selector.IsZero() {
 		return nil, fmt.Errorf("selector_missing")
+	}
+	// A `find` is not something this function can evaluate, and dropping it
+	// quietly would be the worst of the options available: a selector meant to
+	// name one element would match the whole screen and come back as
+	// ambiguity, or - with an index alongside - as whatever row happened to be
+	// first. Callers that can ask a model go through resolveFindElement before
+	// they reach here.
+	if selector.Find != "" {
+		return nil, fmt.Errorf("selector_find_unsupported")
 	}
 	if err := selector.Validate(); err != nil {
 		return nil, err
@@ -433,6 +460,7 @@ func selectorCLIArgs(selector Selector) []string {
 	appendValue("--value-contains", selector.ValueContains)
 	appendValue("--role", selector.Role)
 	appendValue("--bounds", selector.Bounds)
+	appendValue("--find", selector.Find)
 	if selector.Enabled != nil {
 		appendValue("--enabled", strconv.FormatBool(*selector.Enabled))
 	}

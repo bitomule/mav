@@ -3077,7 +3077,16 @@ func (c CLI) resolveSelector(ctx context.Context, cfg Config, selector Selector,
 	if err != nil || described.Result.Err != nil {
 		return Element{}, fmt.Errorf("tree_failed")
 	}
-	matches, err := MatchElements(ExtractElements(described.Result.Stdout), selector)
+	elements := ExtractElements(described.Result.Stdout)
+	// A selector carrying words is resolved by asking, not by matching, and
+	// this is the single place both halves of mav come through: every command
+	// that resolves a selector against the tree - tap, type, longPress,
+	// toggle - gets `find` from here without being touched one by one.
+	if selector.Find != "" {
+		matched, _, findErr := c.resolveFindElement(ctx, elements, selector)
+		return matched, findErr
+	}
+	matches, err := MatchElements(elements, selector)
 	if err != nil {
 		return Element{}, err
 	}
@@ -3106,6 +3115,16 @@ func (e *ambiguousSelectorError) Error() string { return "selector_ambiguous" }
 func selectorFail(selector Selector, matched Element, err error) Output {
 	fields := selectorDiagnosticFields(selector, matched)
 	addSelectorAmbiguousNext(fields, err)
+	// A find that did not answer carries its own why - abstained, vetoed, no
+	// key - and the code alone (find_abstained) does not say which.
+	var findErr *findSelectorError
+	if errors.As(err, &findErr) {
+		for key, value := range findErr.Fields() {
+			if fields[key] == "" {
+				fields[key] = value
+			}
+		}
+	}
 	return Fail(err.Error(), fields)
 }
 
