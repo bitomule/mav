@@ -690,3 +690,59 @@ nombrarse.
   si el título del pedido 456 coincide con el del 123, esto no los separa. Para eso están los
   varios términos.
 - Medido sobre **una** app. Los 30/30 de cero llegadas falsas son de Boxy, no del mundo.
+
+---
+
+## 14. Un número dentro de un nombre envenena un ordinal
+
+Medido el 21 sep, y es el resultado más limpio que ha dado este banco: **cero varianza en las
+cuatro celdas**, 20 tiradas cada una, 80 llamadas al modelo en 9,7 segundos.
+
+Mismo banco, misma pregunta, mismo lote de 9 candidatos y mismo orden. Lo único que cambia
+entre las dos columnas son **dos etiquetas**: `Test Category 1` → `Kitchen Stuff` y
+`Test Category 2` → `Garage Stuff`. `Moving Boxes` se queda en la posición 3 en las cuatro.
+
+| categorías del fixture | objetivo | qué elige | acierto |
+|---|---|---|---|
+| `Test Category 1` | `"the first category"` | **Test Category 1**, 20/20 | **0/20** |
+| sin número en el nombre | `"the first category"` | Moving Boxes, 20/20 | **20/20** |
+| `Test Category 1` | `"la primera categoría"` | Moving Boxes, 20/20 | 20/20 |
+| sin número en el nombre | `"la primera categoría"` | Moving Boxes, 20/20 | 20/20 |
+
+**En inglés, `"first"` y `"1"` se pegan.** Con una fila llamada literalmente `Test Category 1`
+delante, el modelo lee *"the first category"* como *"la categoría número 1"* y la elige
+**siempre**. No es un modelo dudando entre dos lecturas razonables: es determinista, 20 de 20
+en las dos direcciones.
+
+En castellano no pasa, porque *"primera"* y *"1"* no se asocian igual. Eso hace que el mismo
+banco dé 0/20 o 20/20 **según el idioma de la pregunta**, sobre pantallas idénticas, y eso es
+exactamente la clase de cosa que se atribuye al producto cuando es del fixture.
+
+### Lo que esto significa, y no es sobre el inglés
+
+**Un nombre de prueba que lleva un número dentro hace ambiguo cualquier objetivo ordinal**, y
+la ambigüedad es real: *"la primera categoría"* sobre una lista donde una se llama "1" tiene
+dos lecturas razonables, y las tienen igual una persona y un modelo. El fallo no está en quien
+responde, está en el banco.
+
+**Un usuario real no lo sufre.** Nadie llama a una categoría "Test Category 1". Esto envenena
+nuestras medidas, no el producto — y durante una noche entera se leyó como un defecto de
+`goto` en inglés.
+
+### Las dos salidas, y cuál cuesta menos
+
+- **Cambiar el objetivo**, que es gratis: nombra la cosa en vez de contarla.
+  `"the contents of the Moving Boxes category, first box"` no tiene ordinal que choque con
+  ningún nombre, y es más natural — la gente dice el nombre de lo que busca.
+- **Renombrar el fixture**, que es lo correcto de fondo y **no es una línea**: de
+  `Test Category 1` y `Test Category 2` dependen los tests de UI de Boxy, dos flujos `.mav`,
+  su documentación de testing, y las capturas JSON de los bancos de `mav` — que quedarían
+  describiendo una pantalla que ya no existe, invalidando toda comparación con lo medido
+  antes. Es una tarea coordinada, no un apaño.
+
+### Y explica hacia atrás dos cosas que ya estaban medidas
+
+El objetivo **largo** siempre falló menos que el corto (18/24 contra 0/30 en inglés): lleva
+más anclas, así que el ordinal pesa menos en la decisión. Y las cuatro tiradas fallidas de una
+tanda de 23 con el objetivo largo **tocaron todas `Test Category 1`** — el mismo mecanismo,
+más diluido. Cualquier tasa medida en inglés contra este fixture está deprimida por esto.
