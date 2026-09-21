@@ -258,7 +258,41 @@ Dos cosas que decide cualquiera que toque esto:
 De `jev-ultrafast`, y cuesta cero: la elección se borra del estado **antes** de mover un
 dedo, para que un reintento no pueda tocar dos veces.
 
+### 1.3bis Escribe el objetivo LARGO, que es más fiable que el corto
+
+Contraintuitivo y medido el 21 sep sobre la pantalla real de tres categorías, 10 tiradas:
+
+| objetivo | resultado |
+|---|---|
+| `"la primera categoría"` | `Test Category 1` **3/10** — falla |
+| `"los contenidos de la primera categoría, primera caja"` | **10/10** |
+
+La causa no es la forma del mensaje ni `jevi`: es **ambigüedad de verdad**. Con tres
+categorías en pantalla, *"la primera"* se puede leer como **orden en pantalla**
+(`Moving Boxes`, que es la de arriba) o como el **nombre** `Test Category **1**`. Las dos
+lecturas son razonables y el modelo elige una.
+
+La frase larga desambigua sola, porque **cada trozo ancla en una pantalla distinta** y el
+conjunto sólo tiene una interpretación coherente. Es la misma regla de §0 vista desde el
+otro lado: enumerar la ruta dentro de la frase no sólo la hace sobrevivir a todos los
+saltos, también **elimina ambigüedades dentro de un salto**.
+
+> **Regla para quien escriba un paso o un objetivo: si acortas, comprueba.** Lo corto
+> parece más limpio y aquí acierta un tercio de las veces.
+
 ### 1.4 `find` devuelve cosas que no son lo pedido, y son TRES celdas, no una
+
+> **AVISO DEL 21 SEP, Y VA ANTES QUE LA TABLA: ESTA SECCIÓN MIDE UN FIXTURE QUE NO ES LA
+> PANTALLA QUE SE VE.** `categories-view.txt` tiene **dos** categorías y ningún
+> `Moving Boxes`; la pantalla real tiene **tres**. Sobre la real, `"la primera caja"`
+> devuelve `Moving Boxes` **10/10** — o sea que **el defecto del campo de búsqueda no
+> existe en la pantalla que mira nadie**. Es un artefacto de una captura de dos categorías,
+> y se pasaron horas persiguiéndolo antes de que alguien comparara el fixture con la
+> pantalla viva.
+>
+> Lo que sigue vale para entender el camino de resolución, no para predecir lo que se va a
+> encontrar un usuario. **Cuando los dos discrepan, decide la pantalla viva**, porque es la
+> que decide para él.
 
 > **AMPLIADA EL 21 SEP.** Esta sección documentaba un solo caso —el campo de búsqueda— y
 > el defecto es tres veces más grande. Y hay una confusión de lectura debajo que hay que

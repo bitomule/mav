@@ -221,6 +221,34 @@ var ablationPhrases = []string{
 // The recorded table (21 sep, mav 0.25.1) is in the output next to what this
 // run produced, so a change is read off rather than remembered.
 //
+// READ THIS BEFORE CITING ANY NUMBER FROM THIS BENCH: THESE ARE NOT THE SCREENS
+// A USER SEES.
+//
+// `categories-view.txt` holds TWO categories and no `Moving Boxes`. The screen
+// the demo records, and the one every real run walks through, holds THREE. That
+// difference is not cosmetic — it changes the answers:
+//
+//   - On this fixture, "la primera caja" returns the SEARCH FIELD 10/10, which
+//     is the defect documented at length below.
+//   - On the real three-category screen, the same phrase returns `Moving Boxes`
+//     10/10. **The search-field defect does not exist on the screen anyone
+//     looks at.** It is an artefact of a two-category capture.
+//
+// Hours went into chasing that one before anybody compared the fixture with the
+// live screen. So: this bench is for questions about the resolution path —
+// deterministic, repeatable, no simulator — and it is NOT evidence about what a
+// user will hit. When the two disagree, the live screen decides, because it is
+// the one that decides for them.
+//
+// The real failure on the live screen is a different phrase entirely:
+// "la primera categoría" over three categories, where "first" can be read as
+// screen order (`Moving Boxes`) or as the NAME `Test Category 1`. Genuine
+// ambiguity, not a message-shape problem and not jevi's. And the fix is
+// counter-intuitive enough to be worth writing down: the LONGER goal
+// ("los contenidos de la primera categoría, primera caja") resolves 10/10 where
+// the short one wobbles. A goal that names each screen in turn is more reliable
+// than a goal that names one thing.
+//
 // IT COUNTS RESOLUTIONS, NOT CORRECT ANSWERS. It reports how often find returns
 // SOME element versus abstains, and prints what it picked; it never compares
 // against a right answer. So a "5/5" here means "resolved 5 of 5", and reading
