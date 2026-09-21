@@ -200,13 +200,16 @@ Dos piezas.
 
 ### 2.1 El árbol de la tirada, con un bit sucio
 
-Una lectura cuesta 630 ms —`axe describe-ui`, y no se puede bajar: `describe-ui` sólo
-acepta `--udid` y `--point`, no hay nada que saltarse—. El caché guarda el último
+Una lectura de la pantalla entera cuesta **287 ms** —`axe describe-ui`, remedido el 21 sep,
+10 tiradas sobre una pantalla quieta, mediana 287, min 284, max 295—. Lo que sí se puede
+bajar es **preguntar por menos**: `describe-ui --point x,y` cuesta **128 ms** en las mismas
+10 tiradas (min 126, max 136), y es la misma herramienta con la opción que ya trae. El caché
+guarda el último
 `[]Element` leído y un bit `dirty`:
 
 - cualquier acción que pueda mover la pantalla pone `dirty`;
 - un paso de sólo lectura con `dirty == false` **reutiliza** lo que hay y se ahorra los
-  630 ms enteros;
+  287 ms enteros;
 - la primera lectura después de una acción refresca y limpia el bit.
 
 Sucio por defecto ante cualquier gesto. Sin TTL y sin adivinar: un caché que caduca por
@@ -229,6 +232,24 @@ campos que `sameElement`, **sin el frame**, porque las coordenadas se mueven fra
 punto entre dos lecturas de una pantalla quieta—. Antes de tocar se comprueba. Si no
 cuadra: **una** relectura y una reresolución, y si vuelve a no cuadrar el paso falla. Una,
 no un bucle.
+
+**Implementado el 21 sep, y aquí está lo que costó equivocarse.** La primera versión
+comprobaba el guard **releyendo el árbol entero**, porque en `mav` no había lectura por
+punto. Medido con un shim sobre `axe`: el flujo hacía **5 lecturas de pantalla entera**, las
+mismas 5 que `goto`, y el ahorro del asiento de llegada se iba entero en eso. Con
+`--point x,y` el flujo hace **3 lecturas enteras y 2 por punto**.
+
+Dos cosas que decide cualquiera que toque esto:
+
+- **El punto es un sí rápido, nunca un no.** `describe-ui --point` contesta con el elemento
+  donde cae el hit-test **y sus descendientes**, así que una elección que sea **ancestro** de
+  ese elemento no aparece en la respuesta aunque no se haya movido nada. Por eso un no del
+  punto sólo compra la relectura entera, que es la que decide; ese caso lo absorbe el
+  `Holds(fresh)` de después y nunca llega a `element_moved`.
+- **La segunda comprobación estaba muerta.** Preguntaba si la reresolución seguía estando en
+  `fresh` —el árbol del que acababa de salir—, lo que sólo puede contestar que sí:
+  `element_moved` no podía saltar en ninguna pantalla, por rápido que se moviera. Ahora la
+  segunda comprobación vuelve a preguntarle a la pantalla, por punto.
 
 ### 2.3 Consumir la decisión antes de actuar
 
@@ -339,6 +360,27 @@ La predicción con los números de hoy:
 Contra el recorrido real de Boxy: `goto` hace 2 pasos y mide **4.095 ms**, que es más que
 2×1.470 porque paga además la lectura inicial y la verificación final. Un flujo de dos pasos
 `find` sin asiento debería quedar sobre **3,3 s**. Esa es la predicción; la medida decide.
+
+### La medida, ya hecha: el flujo gana por 332 ms
+
+Cara a cara del 21 sep, mismo binario, mismo slot, 10 tiradas por carril **alternadas**, la
+alerta de reconocimiento de voz quemada en un calentamiento, y en igualdad de condiciones
+—`goto --arrived-when` contra un flujo de **tres** pasos, los dos toques y un `assert` sobre
+`id: voice_record_button`, que es el carril que también comprueba la llegada—:
+
+| carril | n | mediana | min | max | llegó | tocó `Test Category 1` |
+|---|---|---|---|---|---|---|
+| `goto --arrived-when` | 10 | **4.306 ms** | 4.141 | 4.574 | 10/10 | 10/10 |
+| flujo con `assert` | 10 | **3.974 ms** | 3.854 | 4.371 | 10/10 | 10/10 |
+
+Llegada comprobada por fuera leyendo el árbol y buscando `id=voice_record_button`, nunca por
+lo que el propio comando dijera de sí mismo; `Test Category 1` sacado de los ids que cada
+tirada tocó, nunca de un código de caja —`1000` y `1001` se reparten sin orden, y en estas
+10 salieron los dos—.
+
+**332 ms de ventaja en mediana, y los rangos ya no solapan salvo por la primera tirada del
+flujo** (4.371 ms, la única por encima de 4.032). La tanda anterior, con el guard releyendo
+el árbol entero, daba 4.206 contra 4.194: empate.
 
 De dónde sale la ventaja, y conviene ser honesto: **un paso con `find` no es más rápido que
 un paso de `goto`**. Gana en otras tres cosas:
