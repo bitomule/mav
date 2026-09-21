@@ -1,5 +1,80 @@
 # Changelog
 
+## v0.27.0
+
+### `goto` arrives, and now it says so
+
+Measured on Boxy with eight named boxes, ten fresh runs from the root:
+`mav goto "los contenidos de la primera categoría, primera caja"` reaches the
+destination **10 out of 10**, against 18 of 24 before. Every run tapped the right
+category and then the first box, verified by reading the tree rather than by the
+command's own word for it.
+
+What it could not do was report it. With no `--arrived-when` the loop ended in
+`outcome=no_route` on all ten — the same label it uses when there was never a way
+to start. Two different facts had been sharing one word, and the one you get while
+standing on your destination is the one that reads as failure.
+
+They are separate now, on a fact the loop already recorded and nobody read:
+whether any tap changed the screen.
+
+- **`no_route`** — nothing here leads to the goal, and nothing ever did.
+- **`dead_end`** — the route was walked and this screen offers nothing further,
+  which is what a destination looks like from the inside.
+
+No model is asked. Arrival is still decided in code, and without a criterion
+`goto` still says `arrived=unverified` rather than claiming anything.
+
+The output also carries `criterion_source` (`explicit` or `none`) and prints the
+criterion back in the syntax `--arrived-when` takes.
+
+### `mav ui tap --find` never worked outside a flow
+
+A defect shipped in 0.26.0, not a refinement. The interlock that spends a
+resolution once — so a retry cannot act twice on one decision — was stored in the
+tree cache, and only `mav run` turns that cache on. Every bare `mav ui tap --find`
+therefore had nowhere to record its decision, and the consume immediately after
+found nothing and returned `find_decision_consumed` without moving a finger. The
+CLI half of the feature was dead from the day it was released.
+
+It now has a home the CLI has too: the run's when there is a run, a private one
+when there is not. Nothing was relaxed, and the interlock was extended to the one
+decision in that file which had never passed through it.
+
+### `mav ui type --find` typed its selector into the field
+
+Also from 0.26.0. `mav ui type` splits its arguments into where-to-type and
+what-to-type, and `--find` was missing from the list that describes the where — so
+it was treated as text. The field ended up holding
+`Kitchen ''find the search field in the bottom toolbar`.
+
+A test now ties the two flag lists together, which is the invariant `--find`
+broke: a new selector flag must appear in both or it gets typed.
+
+### Write the longer goal
+
+Counter-intuitive and measured, ten runs on a three-category screen:
+
+| goal | result |
+|---|---|
+| `"la primera categoría"` | 3/10 |
+| `"los contenidos de la primera categoría, primera caja"` | **10/10** |
+
+Not a prompt-shape problem. With three categories on screen, "the first" reads
+either as screen order or as the name `Test Category 1`, and both readings are
+reasonable. The longer goal disambiguates itself because each fragment anchors on
+a different screen. If you shorten a goal, measure it.
+
+### The ablation bench is not the screen anyone sees
+
+Written into the bench itself, because its numbers have been cited as if they
+predicted real behaviour. Its category fixture holds two categories; the screen a
+user walks through holds three, and the answers differ: on the fixture
+`"la primera caja"` returns the search field 10/10, and on the real screen it
+returns the right category 10/10. The defect documented there does not exist on
+the screen anyone looks at. When fixture and live screen disagree, the live screen
+decides.
+
 ## Unreleased
 
 ### `find` works outside a flow, and `type` stops typing its own selector
