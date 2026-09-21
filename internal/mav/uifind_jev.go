@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -47,8 +48,21 @@ type jevChoice struct {
 // different facts for whoever called.
 var errJevUnavailable = errors.New("jev unavailable")
 
+// errJevTooOld is kept apart from errJevUnavailable because the remedy differs
+// and the caller prints it. "jev could not be reached" sends someone looking at
+// their network; "your jevi predates the check mav relies on" sends them to one
+// command. Collapsing the two would cost exactly the investigation this error
+// exists to skip.
+var errJevTooOld = errors.New("jevi too old")
+
 // askJevChoice puts one choice question to jev over the given text.
 func askJevChoice(ctx context.Context, key, question, text string, options []string) (jevChoice, error) {
+	// The floor is checked here and nowhere else: this is the one path that
+	// spawns jevi, and it costs one `jevi --version` per PROCESS rather than per
+	// call. jevversion.go says why that distinction is load-bearing.
+	if err := checkJevVersion(ctx); err != nil {
+		return jevChoice{}, fmt.Errorf("%w: %s", errJevTooOld, err)
+	}
 	cmd := exec.CommandContext(ctx, "jevi", "ask",
 		"--options", strings.Join(options, ","),
 		"--json", "--soft", question)

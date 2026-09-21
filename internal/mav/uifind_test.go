@@ -103,16 +103,18 @@ func TestControlBTheAbstentionIsTheModelChoosingNone(t *testing.T) {
 	}
 }
 
-func TestControlCAnElementNotInTheBatchIsVetoed(t *testing.T) {
-	// The measured failure: asked for something absent from the screen, the
-	// model chose an element anyway 13 times out of 26. The veto is what makes
-	// that harmless.
-	batch := FindCandidates(settingsScreen())
-	stranger := Element{ID: "NOT_HERE", Label: "Exportar", Role: "button"}
-	if got := VetoChoice(&stranger, "export the file", batch); got != ReasonNotACandidate {
-		t.Fatalf("an element that was never on the screen passed the veto: %q", got)
-	}
-}
+// Control C used to assert that an element absent from the batch was vetoed
+// here. It is gone with the arm it pinned, and the measurement that justified
+// it is not: asked for something absent from the screen, the model chose an
+// element anyway 13 times out of 26. That failure is still real and still
+// guarded — by jevi 0.4.0, which calls it `off_menu_answer` and WITHHOLDS the
+// label rather than returning it with a warning, so it can no longer reach mav
+// at all. An empty label is already an abstention here.
+//
+// The guard that replaces it is jevMinVersion, not trust, and
+// TestTheOffMenuCheckIsGoneBecauseJeviHoldsItBack now asserts the new shape.
+// Putting this test back would mean putting the arm back; if that is ever the
+// right call, the reason will be that the floor was removed.
 
 // --- The veto, in both directions --------------------------------------------
 
