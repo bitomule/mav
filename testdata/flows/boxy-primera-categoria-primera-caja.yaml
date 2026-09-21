@@ -1,0 +1,19 @@
+# El recorrido que `mav goto` hace con una frase plana, escrito como dos pasos.
+#
+# Existe para una comparación y no para otra cosa: mismo recorrido, mismo fixture,
+# `goto` contra esto. El listón está medido — `goto` llega 10/10 en 4.095 ms de
+# mediana — y si esto no baja de ahí manteniendo la llegada, no sirve.
+#
+# Lo que cambia respecto a `goto` no es el modelo ni la pantalla: es que la ruta
+# está escrita. El modelo resuelve un elemento por pantalla, que es lo que ya sabe
+# hacer, y no tiene que deducir en qué orden van las pantallas.
+#
+# Sin criterio de llegada dentro del flujo a propósito: quien mida comprueba la
+# llegada leyendo el árbol por fuera, contra un elemento ESTRUCTURAL. Nunca contra
+# un código de caja — `createTestBoxes()` reparte `1000`/`1001` sin orden entre las
+# categorías, así que el código cambia entre lanzamientos (4/10 y 6/10 en la última
+# tanda) y un aserto sobre él reporta fallos sobre navegación correcta.
+name: boxy_primera_categoria_primera_caja
+steps:
+  - tap: { where: { find: "la primera categoría" } }
+  - tap: { where: { find: "la primera caja" } }
