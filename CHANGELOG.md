@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+### `goto` reads the goal as a description again, and stops losing the first of three
+
+On Boxy's category grid — Moving Boxes top-left, Test Category 1 to its right,
+Test Category 2 below — the goal `la primera categoría` came back as **Test
+Category 1**, the row that merely has a 1 in its name. `mav ui find` never made
+that mistake on the same screen with the same candidates. Only the wording
+differed.
+
+The suspicion was `goto`'s LEADS clause — the one that lets it answer with a row
+that is not the destination but leads to it. It measured innocent. What carried
+the loss was the single sentence that names the goal: `Someone is trying to
+reach: X` invites X to be read as the name of a destination, and one row on that
+screen is named "1". `A user described where they want to get to as: X` marks X
+as the user's own words, and "primera" is then read as a position.
+
+Measured 21 sep off the raw `axe describe-ui` JSON of two live Boxy screens,
+iPhone 17 Pro / iOS 26.3 from a simpool slot, load 3.1–6.4, 40 runs a cell, with
+hits, misses and abstentions counted separately:
+
+| cell | right answer | before | after |
+|---|---|---|---|
+| first category, on the grid | the row that IS it | 29–34 hits / 6–10 misses | **40 hits / 0 misses** |
+| box contents, from the grid | the row that LEADS (destination two taps away) | 40 hits | **40 hits** |
+| box contents, from the box list | the row that IS it | 40 hits | **40 hits** |
+| four goals absent from the screen | `none` | 40 abstentions each | **40 abstentions each** |
+
+End to end, `mav goto "los contenidos de la primera categoría, primera caja"`
+arrives **12/12** before and after, tap canary green on every run.
+
+Nothing else moved: same candidate extraction, same `none` on the option list,
+same answer reading, same veto. No confidence threshold, no second model, no
+filtering of candidates by text.
+
 ### `goto` knows it arrived without you telling it the destination's name first
 
 Measured on Boxy with eight named boxes, iPhone 17 Pro / iOS 26.3 from a simpool
