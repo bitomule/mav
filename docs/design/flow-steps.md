@@ -8,6 +8,30 @@ Manda sobre lo que diga `goto.md` donde se contradigan, y hereda el traspaso de 
 
 ## 0. Por qué esto y no `goal`
 
+> **AVISO DEL 21 SEP, LEER ANTES QUE EL RESTO DE ESTA SECCIÓN.** Lo que sigue era cierto
+> el 20 sep y **hoy no se reproduce**. Vuelto a medir con `mav` 0.25.1, 10 tiradas fresh:
+> `mav goto "los contenidos de la primera categoría, primera caja"` **llega 10/10** desde la
+> raíz, en 2 pasos, **4.095 ms de mediana**. Las 10 tocaron `Test Category 1` —comprobado por
+> los ids de lo que tocó en los logs crudos, no por su propio `arrived=true`—. Ninguna murió
+> en `no_route`.
+>
+> **Cuidado con concluir de aquí que §12 es falsa.** §12 y §11 midieron, hasta donde se
+> sabe, `mav ui find`; esto mide `mav goto`, y **no son el mismo resolvedor**:
+> `InterpretFindAnswer` exige `verdict == "yes"` y se abstiene si no, mientras
+> `InterpretGotoAnswer` lee sólo la etiqueta e ignora el veredicto —hay una tabla en su
+> propio comentario: leyendo el veredicto 4/8, leyendo la etiqueta 8/8—; y `FindQuestion`
+> pregunta *"cuál ES"* mientras `GotoStepQuestion` acepta también *"cuál LLEVA"*. Las dos
+> medidas pueden ser ciertas a la vez. Está midiéndose; si divergen, lo que hay que hacer con
+> §11 y §12 es **corregirlas diciendo sobre qué comando valen**, no borrarlas — y el hallazgo
+> de verdad sería que `find` y `goto` no se comportan igual con la misma frase.
+>
+> Así que **el flujo con pasos escritos ya no se justifica porque sea lo único que llega**.
+> Se justifica sólo si cumple el requisito que puso David: **igual o más rápido, y llegando**.
+> El listón es **4.095 ms y 10/10**. Si no baja de ahí, no hay flujo que vender.
+>
+> La sección se queda escrita porque explica de dónde viene el diseño, y porque la forma
+> —un objetivo por pantalla— sigue siendo la correcta por lo que dice §4 de este documento.
+
 Esto no es una corazonada: es la conclusión de `goto.md` §12, y está medida.
 
 `goto` le pasa **el mismo objetivo a `find` en cada pantalla**, así que una frase sólo sirve
@@ -41,11 +65,15 @@ La navegación libre (`goto` sin pasos) se queda como investigación.
 
 ### Dos cosas de §11 que decide cualquiera que mida esto
 
-- **Una categoría con UNA sola caja es el peor caso, no el más sencillo.** Aislado en una
-  variable: con UNA fila de número pelado, *"the first box"* acierta **0/4**; con DOS filas,
-  **4/4**. Una fila que pone `1000` y nada más no se lee como "una caja" — hacen falta
-  hermanas de la misma forma para que "la primera" signifique algo. Un banco de pruebas con
-  una caja por categoría prueba lo contrario de lo que parece.
+- **Una categoría con UNA sola caja era el peor caso — y el 21 sep ya no lo es.** §11 lo
+  aisló en una variable: con UNA fila de número pelado *"the first box"* acertaba **0/4**, y
+  con DOS filas **4/4**. Hoy, con el fixture dejando **una sola caja por categoría**, esa
+  misma pantalla resuelve **10/10**. Se deja escrito porque el razonamiento de §11 sigue
+  siendo bueno —una fila sin hermanas no dice de qué clase de cosa es— pero **la medida ya
+  no lo respalda**, y nadie debería diseñar contra ella sin volver a medirla.
+- **Y "primera caja" es hoy un aserto casi vacío**: con una caja por categoría, acertar es
+  gratis. El escenario prueba bien "primera categoría" y casi nada de "primera caja". Para
+  probar el ordinal de verdad hace falta un fixture con dos cajas o más por categoría.
 - **La alerta de permiso sustituye el árbol entero**: con una delante, `mav ui tree` devuelve
   sólo sus dos botones y nada de la app, y un recorrido sale vacío como si la app estuviera
   rota. `xcrun simctl privacy <udid> reset all <bundle>` antes de cada tirada, y aun así
@@ -227,15 +255,31 @@ es una respuesta que no se puede ejecutar.
 Es un requisito de David, no un deseo: **igual o más rápido que `goal`, y medido**. Si sale
 más lento, no sirve.
 
-La predicción, con los números del 20 sep (un paso de `goto` ≈ 2.025 ms: 630 leer + 550
-modelo + 845 tocar, de los cuales `mav` pone 101):
+**Los números de `goto.md` §10 están caducados y cualquiera que calcule con ellos se pasa de
+largo.** Vuelto a medir el 21 sep con el `cost` de `mav ui find`, n=5:
+
+| | §10 (20 sep) | hoy (21 sep) |
+|---|---|---|
+| leer la pantalla | 630 ms | **320 ms** |
+| jev decidiendo | 550 ms | **350 ms** |
+| el toque | 845 ms | **803 ms** |
+| un paso | 2.025 ms | **≈1.470 ms** |
+
+El toque es lo único que no se ha movido, y es ya **el 55% de un paso**. Es de `axe` y no se
+baja desde aquí.
+
+La predicción con los números de hoy:
 
 | | lectura | modelo | toque | asiento | total |
 |---|---|---|---|---|---|
-| paso de `goto` | 630 | 550 | 845 | +1.260 al final | 2.025 |
-| paso de flujo literal (`text:`) | 630 | **0** | 845 | 0 | 1.475 |
-| paso de flujo con `find` | 630 | 550 | 845 | 0 | 2.025 |
+| paso de `goto` | 320 | 350 | 803 | +640 al final | 1.470 |
+| paso de flujo literal (`text:`) | 320 | **0** | 803 | 0 | **1.125** |
+| paso de flujo con `find` | 320 | 350 | 803 | 0 | 1.470 |
 | paso de flujo con árbol cacheado | **0** | — | — | 0 | según el paso |
+
+Contra el recorrido real de Boxy: `goto` hace 2 pasos y mide **4.095 ms**, que es más que
+2×1.470 porque paga además la lectura inicial y la verificación final. Un flujo de dos pasos
+`find` sin asiento debería quedar sobre **3,3 s**. Esa es la predicción; la medida decide.
 
 De dónde sale la ventaja, y conviene ser honesto: **un paso con `find` no es más rápido que
 un paso de `goto`**. Gana en otras tres cosas:
