@@ -8,29 +8,30 @@ Manda sobre lo que diga `goto.md` donde se contradigan, y hereda el traspaso de 
 
 ## 0. Por qué esto y no `goal`
 
-> **AVISO DEL 21 SEP, LEER ANTES QUE EL RESTO DE ESTA SECCIÓN.** Lo que sigue era cierto
-> el 20 sep y **hoy no se reproduce**. Vuelto a medir con `mav` 0.25.1, 10 tiradas fresh:
-> `mav goto "los contenidos de la primera categoría, primera caja"` **llega 10/10** desde la
-> raíz, en 2 pasos, **4.095 ms de mediana**. Las 10 tocaron `Test Category 1` —comprobado por
-> los ids de lo que tocó en los logs crudos, no por su propio `arrived=true`—. Ninguna murió
-> en `no_route`.
+> **AVISO DEL 21 SEP, LEER ANTES QUE EL RESTO DE ESTA SECCIÓN.** Lo de abajo sigue siendo
+> cierto, pero **no es el motivo por el que esto se construye**, y conviene no venderlo así.
 >
-> **Cuidado con concluir de aquí que §12 es falsa.** §12 y §11 midieron, hasta donde se
-> sabe, `mav ui find`; esto mide `mav goto`, y **no son el mismo resolvedor**:
-> `InterpretFindAnswer` exige `verdict == "yes"` y se abstiene si no, mientras
-> `InterpretGotoAnswer` lee sólo la etiqueta e ignora el veredicto —hay una tabla en su
-> propio comentario: leyendo el veredicto 4/8, leyendo la etiqueta 8/8—; y `FindQuestion`
-> pregunta *"cuál ES"* mientras `GotoStepQuestion` acepta también *"cuál LLEVA"*. Las dos
-> medidas pueden ser ciertas a la vez. Está midiéndose; si divergen, lo que hay que hacer con
-> §11 y §12 es **corregirlas diciendo sobre qué comando valen**, no borrarlas — y el hallazgo
-> de verdad sería que `find` y `goto` no se comportan igual con la misma frase.
+> **`goto` ya llega con la frase plana**: 10/10 desde la raíz, 2 pasos, y las 10 tocaron
+> `Test Category 1` —comprobado por los ids de lo que tocó en los logs crudos, no por su
+> propio `arrived=true`, que es la clase de evidencia que no puede fallar—.
 >
-> Así que **el flujo con pasos escritos ya no se justifica porque sea lo único que llega**.
-> Se justifica sólo si cumple el requisito que puso David: **igual o más rápido, y llegando**.
-> El listón es **4.095 ms y 10/10**. Si no baja de ahí, no hay flujo que vender.
+> **Y §12 no es falsa: la atribución sí lo era.** Remedido con 80 tiradas, la tabla de §12
+> se reproduce **clavada sobre `mav ui find`** (5/5 donde dice 3/3, 0/5 donde dice 0/3, con
+> el cruce incluido) y coincide con `goto` en siete de las ocho celdas. `goto` diverge en
+> una, y **resolviendo mal**: elige `Test Category 1` las cinco veces cuando la caja que
+> persigue la frase está en la 2. Adivina un lead, que es algo que su bucle absorbe y el
+> llamante de `find` no. De las dos diferencias posibles manda **la pregunta, no el
+> veredicto**: el veredicto resultó inerte —`jevi` devolvió `yes` 40 de 40, incluidas las 15
+> abstenciones— y esa guarda ya se ha quitado.
 >
-> La sección se queda escrita porque explica de dónde viene el diseño, y porque la forma
-> —un objetivo por pantalla— sigue siendo la correcta por lo que dice §4 de este documento.
+> Así que este documento **no se justifica porque el flujo sea lo único que llega**. Se
+> justifica por el requisito que puso David —**igual o más rápido, y llegando**— y por §1.4:
+> en un flujo la redacción de cada paso se corrige mirando **una** pantalla, mientras que en
+> `goto` la misma frase tiene que sobrevivir a todas a la vez, sin que nadie sepa que eso es
+> lo que hay que conseguir.
+>
+> **El listón se cumplió**: medido en la misma tanda y alternando carriles, el flujo con su
+> paso de comprobación queda por debajo de `goto`. Los números están en §6.
 
 Esto no es una corazonada: es la conclusión de `goto.md` §12, y está medida.
 
@@ -88,12 +89,13 @@ La navegación libre (`goto` sin pasos) se queda como investigación.
 
 ### Dos cosas de §11 que decide cualquiera que mida esto
 
-- **Una categoría con UNA sola caja era el peor caso — y el 21 sep ya no lo es.** §11 lo
-  aisló en una variable: con UNA fila de número pelado *"the first box"* acertaba **0/4**, y
-  con DOS filas **4/4**. Hoy, con el fixture dejando **una sola caja por categoría**, esa
-  misma pantalla resuelve **10/10**. Se deja escrito porque el razonamiento de §11 sigue
-  siendo bueno —una fila sin hermanas no dice de qué clase de cosa es— pero **la medida ya
-  no lo respalda**, y nadie debería diseñar contra ella sin volver a medirla.
+- **Una categoría con UNA sola caja: §11 sigue en pie, y parecía que no.** §11 aisló que con
+  UNA fila de **número pelado** *"the first box"* acertaba **0/4** y con DOS **4/4**. Hoy esa
+  misma pantalla de una sola fila resuelve **10/10**, lo que parece contradecirlo — y no lo
+  hace: **la fila de este fixture no es un número pelado**, lleva `id=boxRow_1001`. §11 ya
+  decía que el modelo necesita que algo en la fila diga de qué clase de cosa es, y que puede
+  sacarlo de un identificador, de la etiqueta **o** de tener hermanas iguales. Aquí lo saca
+  del identificador. Las dos medidas son ciertas y no se tocan.
 - **Y "primera caja" es hoy un aserto casi vacío**: con una caja por categoría, acertar es
   gratis. El escenario prueba bien "primera categoría" y casi nada de "primera caja". Para
   probar el ordinal de verdad hace falta un fixture con dos cajas o más por categoría.
