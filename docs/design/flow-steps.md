@@ -235,6 +235,42 @@ no un bucle.
 De `jev-ultrafast`, y cuesta cero: la elección se borra del estado **antes** de mover un
 dedo, para que un reintento no pueda tocar dos veces.
 
+### 1.4 No escribas un sustantivo desnudo en un paso
+
+Medido el 21 sep, y es lo único que hay que saber para escribir un paso que funcione.
+
+`find "la primera caja"` en la **lista de categorías** —una pantalla sin una sola caja—
+devuelve **el campo de búsqueda**, 5/5, sin que salte ningún veto. Es justo lo que la opción
+`none` existe para evitar.
+
+La hipótesis obvia era que en castellano *"caja"* también es la caja de búsqueda. **Está
+refutada**: `"the first box"` en inglés elige el mismo campo, 5/5. Y no es que la abstención
+esté rota en esa pantalla — `"the delete button"` y `"the shopping cart icon"` se abstienen
+0/5 ahí mismo.
+
+Lo que falla es el **sustantivo desnudo**, que en los dos idiomas denota también una caja de
+texto. En cuanto la frase desambigua, vuelve a abstenerse bien: `"a cardboard box for
+storing things"` 0/5, `"the list row for a box"` 0/5.
+
+**Cuatro arreglos probados y los cuatro rechazados**, para que nadie los repita:
+
+| intento | por qué no |
+|---|---|
+| filtrar candidatos por texto | prohibido, y se lleva por delante `Agregar Caja` |
+| corte de confianza | prohibido, y no separa nada (aciertos desde 0,62, fallos hasta 0,88) |
+| recortar con `role: "button"` | **medido: no arregla** — cambia el campo de búsqueda por `Test Category 1` 4/5, que es peor, porque una categoría sí navega |
+| redactar el prompt en contra | las siete celdas buenas aguantaron y **la del defecto se quedó en 5/5**: el modelo no lee el campo como *donde buscarías* una caja, lo lee como que *es* una caja |
+
+Así que el defecto se queda en pie a propósito, con un test determinista que cierra la
+puerta al arreglo prohibido, y la mitigación es de quien escribe el flujo:
+
+> **Un paso nombra la cosa, no su categoría gramatical.** `"la fila de la caja 1000"` o
+> `"la primera caja de la lista"`, no `"la primera caja"`.
+
+Y es un argumento más a favor de esto frente a la navegación libre: en un flujo escrito la
+redacción de cada paso **se escribe una vez y se corrige mirando una pantalla**, mientras
+que en `goto` la misma frase tiene que sobrevivir a todas las pantallas del camino a la vez.
+
 ## 3. Las esperas se asumen
 
 Como el flujo declara la ruta, no hay que descubrir cuándo ha terminado una transición.
