@@ -258,7 +258,108 @@ Dos cosas que decide cualquiera que toque esto:
 De `jev-ultrafast`, y cuesta cero: la elección se borra del estado **antes** de mover un
 dedo, para que un reintento no pueda tocar dos veces.
 
-### 1.4 No escribas un sustantivo desnudo en un paso
+### 1.3bis Escribe el objetivo LARGO, que es más fiable que el corto
+
+Contraintuitivo y medido el 21 sep sobre la pantalla real de tres categorías, 10 tiradas:
+
+| objetivo | resultado |
+|---|---|
+| `"la primera categoría"` | `Test Category 1` **3/10** — falla |
+| `"los contenidos de la primera categoría, primera caja"` | **10/10** |
+
+La causa no es la forma del mensaje ni `jevi`: es **ambigüedad de verdad**. Con tres
+categorías en pantalla, *"la primera"* se puede leer como **orden en pantalla**
+(`Moving Boxes`, que es la de arriba) o como el **nombre** `Test Category **1**`. Las dos
+lecturas son razonables y el modelo elige una.
+
+La frase larga desambigua sola, porque **cada trozo ancla en una pantalla distinta** y el
+conjunto sólo tiene una interpretación coherente. Es la misma regla de §0 vista desde el
+otro lado: enumerar la ruta dentro de la frase no sólo la hace sobrevivir a todos los
+saltos, también **elimina ambigüedades dentro de un salto**.
+
+> **Regla para quien escriba un paso o un objetivo: si acortas, comprueba.** Lo corto
+> parece más limpio y aquí acierta un tercio de las veces.
+
+### 1.4 `find` devuelve cosas que no son lo pedido, y son TRES celdas, no una
+
+> **AVISO DEL 21 SEP, Y VA ANTES QUE LA TABLA: ESTA SECCIÓN MIDE UN FIXTURE QUE NO ES LA
+> PANTALLA QUE SE VE.** `categories-view.txt` tiene **dos** categorías y ningún
+> `Moving Boxes`; la pantalla real tiene **tres**. Sobre la real, `"la primera caja"`
+> devuelve `Moving Boxes` **10/10** — o sea que **el defecto del campo de búsqueda no
+> existe en la pantalla que mira nadie**. Es un artefacto de una captura de dos categorías,
+> y se pasaron horas persiguiéndolo antes de que alguien comparara el fixture con la
+> pantalla viva.
+>
+> Lo que sigue vale para entender el camino de resolución, no para predecir lo que se va a
+> encontrar un usuario. **Cuando los dos discrepan, decide la pantalla viva**, porque es la
+> que decide para él.
+
+> **AMPLIADA EL 21 SEP.** Esta sección documentaba un solo caso —el campo de búsqueda— y
+> el defecto es tres veces más grande. Y hay una confusión de lectura debajo que hay que
+> deshacer primero, porque si no, dos medidas nuestras parecen contradecirse.
+
+**El banco de ablación no mide aciertos: mide RESOLUCIONES.** `TestAblationTable` cuenta
+cuántas veces `find` devuelve *algún* elemento y cuántas se abstiene, e imprime **qué**
+eligió. Nunca compara contra una respuesta correcta. Así que un "5/5" de esa tabla —y los
+"3/3" de `goto.md` §12, que salen del mismo sitio— significa **"resolvió 5 de 5"**, no
+**"acertó 5 de 5"**. Se leyeron como aciertos, y eso fue una interpretación, no una medida.
+
+Deshecha la confusión, las tres celdas malas de la **lista de categorías** son:
+
+| frase | qué devuelve | ¿es un fallo? |
+|---|---|---|
+| `"la primera caja"` | el **campo de búsqueda** | **Sí, siempre.** No hay ninguna caja en esa pantalla y un campo de texto no es una caja para nadie. |
+| `"the box inside Test Category 2"` | el botón `Test Category 2`, 10/10 | **Para `find` sí, para `goto` no.** |
+| `"open the box in Test Category 2"` | el botón `Test Category 2`, 10/10 | Igual que la anterior. |
+
+**Y esa última columna es lo importante**, porque las dos últimas celdas son un fallo y un
+acierto *a la vez*, según quién pregunte:
+
+- `FindQuestion` pregunta **cuál ES** lo descrito. Una categoría no es una caja, así que
+  `find` debería **abstenerse** y no lo hace. Es un fallo suyo.
+- `GotoStepQuestion` acepta además **cuál LLEVA** hacia ello. Tocar la categoría es el
+  camino correcto hacia la caja de dentro, así que para `goto` es la respuesta buena.
+
+Las dos comparten el mismo camino de candidatos y el mismo modelo, y **difieren sólo en la
+pregunta** — que es exactamente lo que se midió en `goto.md` §12. O sea que no hay
+contradicción entre nuestras medidas: hay una tabla que cuenta resoluciones y dos comandos
+con criterios de acierto opuestos en las mismas celdas.
+
+**Consecuencia práctica, y es la que vale:** `find` es más flojo de lo que la tabla sugiere.
+De las cuatro frases probadas sobre la lista de categorías, **tres devuelven algo que no es
+lo pedido**. Quien escriba un paso `find` no debe suponer que una abstención le protege: en
+esta pantalla no se abstiene casi nunca.
+
+**Lo que NO lo arregla**, y ya son cinco cosas medidas, dos de ellas por dos nodos
+distintos con dos bancos distintos: filtrar por texto, un corte de confianza, recortar por
+`role`, redactar el prompt en contra, y **mandar cada opción con su registro estructurado
+en vez de con su número** — esto último medido a 30 tiradas, 0/30 hoy y 1/30 con el mejor
+brazo, o sea que sólo cambia unos fallos por otros.
+
+> **Y una advertencia sobre cómo leer cualquier medida nuestra anterior al 21 sep.**
+> `jevi` **reordenaba alfabéticamente las claves** de toda pregunta que reenviaba: usaba
+> `serde_json` sin `preserve_order`, así que una pregunta escrita `{goal, context, rules}`
+> le llegaba al modelo como `{context, goal, rules}`, y una opción escrita
+> `{role, name, id}` como `{id, name, role}`. Su propio comentario decía que la pregunta
+> viajaba sin tocar: cierto de los valores, falso del orden.
+>
+> **Eso no es un detalle, es la explicación de una medida entera.** Una tanda de nueve
+> formas de llamada distintas dio respuestas byte a byte idénticas en ocho de ellas — no
+> porque la forma diera igual, sino porque las nueve llegaban aplanadas a la misma. Medido
+> sobre una celda de este mismo fixture: por HTTP a mano con el orden de quien llama,
+> **28/30**; alfabetizada como la dejaba `jevi`, **3/30**. Y por el binario, con ablación
+> limpia, **2/30 antes y 29/30 después**. Una línea en `Cargo.toml`.
+>
+> Las medidas viejas **no se retiran**: son correctas para *"lo que se podía mandar con
+> aquel `jevi`"*. Lo que no son es comparables con nada tomado sobre otra versión.
+>
+> De ahí sale también que **copiar la forma nativa entera es peor que la nuestra**:
+> reproducida exactamente la de `jev-ultrafast`, mide igual que la de hoy. Lo que paga es
+> la lista numerada en prosa **más** los registros estructurados **más** `instructions`
+> como objeto, las tres a la vez; quitar cualquiera devuelve al punto de partida. No
+> éramos poco nativos — es que no podíamos mandar la única combinación que gana.
+
+### No escribas un sustantivo desnudo en un paso
 
 Medido el 21 sep, y es lo único que hay que saber para escribir un paso que funcione.
 
