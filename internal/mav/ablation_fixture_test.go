@@ -24,7 +24,86 @@ import (
 const (
 	fixtureCategories = "categories-view.txt"
 	fixtureBoxes      = "boxes-view.txt"
+	// The screens a user actually sees, captured 21 sep from a simpool slot
+	// (iPhone 17 Pro / iOS 26.3) with the eight-box fixture. They exist
+	// because the two above do not describe what anyone looks at: the capture
+	// there holds TWO categories and the live screen holds THREE, and that
+	// difference changes the answers. Measurements about what goto will do go
+	// against these.
+	//
+	// The category uuids in them are regenerated on every launch and appear
+	// three times each. Nothing may be asserted against one.
+	fixtureCategoriesThree  = "categories-three-view.txt"
+	fixtureNewCategorySheet = "new-category-sheet.txt"
+	// The SAME screen as categories-three-view.txt, captured in the same
+	// state as the raw `axe describe-ui` JSON that find actually reads,
+	// rather than as printed tree lines. It exists to settle whether the
+	// printed fixtures misrepresent a live run — the header above warns that
+	// the printer drops nodes the extraction keeps, and that warning had
+	// never been tested against a candidate list.
+	//
+	// Measured: on this screen both reads yield THE SAME NINE CANDIDATES, in
+	// the same order, differing only in the per-launch category uuids. The
+	// dropped nodes are untitled groups that were never candidates.
+	// TestWhatBreaksTheControlCell asserts the two stay in agreement.
+	fixtureCategoriesThreeAXE  = "categories-three-view.axe.json"
+	fixtureNewCategorySheetAXE = "new-category-sheet.axe.json"
 )
+
+// The claim the printed fixtures rest on, asserted rather than assumed, and it
+// costs no model call. The header above has always warned that these .txt
+// fixtures are `mav ui tree` OUTPUT while find reads the raw axe JSON, and that
+// the printer drops nodes the extraction keeps — a warning that was used for
+// months to doubt numbers taken off them without anyone checking what it costs
+// at the only place it could matter, the CANDIDATE list.
+//
+// Measured on both screens: it costs nothing. The nodes the printer drops are
+// untitled groups, which FindCandidates rejects anyway for carrying no text. A
+// printed capture and a live read of the same screen offer the model the same
+// menu, and the only thing that differs is the per-launch category uuids.
+//
+// So a measurement off these fixtures IS a measurement about the candidate
+// list a live run would send. That does not make the fixture the live screen
+// in every respect — it is still a frozen moment — but the shape of the
+// question is the same one, and that is what the shape measurements turn on.
+func TestThePrintedFixturesOfferTheSameMenuAsALiveRead(t *testing.T) {
+	for _, pair := range []struct{ printed, raw string }{
+		{fixtureCategoriesThree, fixtureCategoriesThreeAXE},
+		{fixtureNewCategorySheet, fixtureNewCategorySheetAXE},
+	} {
+		printed, _ := FindBatch(FindCandidates(loadFixtureScreen(t, pair.printed)))
+		raw, _ := FindBatch(FindCandidates(loadRawAXEFixture(t, pair.raw)))
+		if len(printed) != len(raw) {
+			t.Errorf("%s: printed offers %d candidates, the live read offers %d",
+				pair.printed, len(printed), len(raw))
+			continue
+		}
+		for i := range printed {
+			// By label and role. Not by id: the category uuids are
+			// regenerated on every launch, so the two captures never share
+			// them and asserting on one would fail for the wrong reason.
+			if printed[i].Label != raw[i].Label || printed[i].Role != raw[i].Role {
+				t.Errorf("%s: candidate %d differs — printed %q/%s, live %q/%s",
+					pair.printed, i+1, printed[i].Label, printed[i].Role, raw[i].Label, raw[i].Role)
+			}
+		}
+	}
+}
+
+// loadRawAXEFixture reads a capture down the path find uses in a live run:
+// the driver's own JSON through ExtractElements, with no printer in between.
+func loadRawAXEFixture(t *testing.T, name string) []Element {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", "ablation", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	elements := ExtractElements(string(data))
+	if len(elements) == 0 {
+		t.Fatalf("%s carries no elements", name)
+	}
+	return elements
+}
 
 // treeFieldPattern finds where each field of a `node ...` line starts. Split
 // this way rather than on spaces because values contain them unquoted:

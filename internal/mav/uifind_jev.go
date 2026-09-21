@@ -93,6 +93,41 @@ func askJevChoice(ctx context.Context, key, question, text string, options []str
 	}, nil
 }
 
+// askJevQuestions puts a whole question SET — several heads in one round trip —
+// and returns every answer by head name.
+//
+// Same transport as askJevChoice on purpose: the set goes in argv and the text
+// to judge goes down stdin, which is where askJevChoice puts it, so nothing
+// about how the screen reaches the model changes between the one-head call and
+// the many-head one. The only difference is the question document, which is
+// what is being measured.
+func askJevQuestions(ctx context.Context, key, questionsJSON, text string) (map[string]jevChoice, int64, error) {
+	cmd := exec.CommandContext(ctx, "jevi", "ask",
+		"--questions-json", questionsJSON, "--json", "--soft")
+	cmd.Stdin = strings.NewReader(text)
+	cmd.Env = append(os.Environ(), jevProviderEnvVar+"="+key)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	// The exit code is not read, for the reason spelled out on askJevChoice:
+	// jevi answers with it, and an answer is not a failure.
+	_ = cmd.Run()
+
+	var doc jevAnswer
+	if err := json.Unmarshal(bytes.TrimSpace(stdout.Bytes()), &doc); err != nil {
+		return nil, 0, errJevUnavailable
+	}
+	if !doc.OK {
+		return nil, 0, errJevUnavailable
+	}
+	out := make(map[string]jevChoice, len(doc.Answers))
+	for name, answer := range doc.Answers {
+		out[name] = jevChoice{Verdict: answer.Verdict, Label: answer.Label, LatencyMS: doc.LatencyMS}
+	}
+	return out, doc.LatencyMS, nil
+}
+
 // findIsRefusedHere reports the reason find must not consult a model in this
 // environment, or "". CI is the one that matters: a judgement that costs money
 // and varies between runs has no place in a pipeline, and refusing out loud is
