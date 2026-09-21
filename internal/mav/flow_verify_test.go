@@ -81,7 +81,7 @@ func TestVerifyCannotDecideProgressOrArrival(t *testing.T) {
 
 func TestVerifyIsAReadAndKeepsTheCachedScreen(t *testing.T) {
 	if !isReadOnlyFlowAction("verify") {
-		t.Fatal("verify only reads; dirtying the tree would charge it a 630 ms re-read it never earned")
+		t.Fatal("verify only reads; dirtying the tree would charge it a 320 ms re-read it never earned")
 	}
 }
 

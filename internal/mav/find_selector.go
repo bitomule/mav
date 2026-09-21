@@ -86,8 +86,8 @@ func (c CLI) resolveFindElement(ctx context.Context, elements []Element, selecto
 // anything touches it.
 //
 // The window it closes is the model's own round trip. A resolution reads a
-// tree, spends 550 ms asking, and then acts on what it read - and in those
-// 550 ms a screen that was still finishing drawing can move the row. So the
+// tree, spends 350 ms asking, and then acts on what it read - and in those
+// 350 ms a screen that was still finishing drawing can move the row. So the
 // identity of the chosen element is captured at resolution and re-checked
 // against a fresh read before the caller acts on it.
 //

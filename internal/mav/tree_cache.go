@@ -8,10 +8,10 @@ import (
 // The tree cache is not "I kept the tree". It is "I kept the identity, and I
 // know per element whether it still holds".
 //
-// One read costs 630 ms - `axe describe-ui`, and there is nothing to shave off
-// it: describe-ui takes --udid and --point and nothing else. So a run that
-// finds, asserts and taps on one screen pays that three times for three reads
-// of the same still screen.
+// One read costs 320 ms on the 21 sep remeasurement - `axe describe-ui`, and
+// there is nothing to shave off it: describe-ui takes --udid and --point and
+// nothing else. So a run that finds, asserts and taps on one screen pays that
+// three times for three reads of the same still screen.
 //
 // Two pieces, and they answer different questions.
 
@@ -127,8 +127,8 @@ func (t *treeCache) consumeChoice() (elementGuard, bool) {
 // before it is touched.
 //
 // The hole it closes is measured: a resolution reads a coordinate from one
-// tree, asks a model about it - 550 ms - and then taps that coordinate having
-// checked nothing. In those 550 ms the screen can finish drawing and move the
+// tree, asks a model about it - 350 ms - and then taps that coordinate having
+// checked nothing. In those 350 ms the screen can finish drawing and move the
 // row.
 //
 // NO FRAME. The same reason screenFingerprint leaves it out: two reads of a

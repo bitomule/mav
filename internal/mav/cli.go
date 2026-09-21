@@ -4937,7 +4937,7 @@ func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) err
 	c = c.withSkipBuild(hasFlag(args[1:], "--skip-build"))
 	// The tree cache lives for this run. A flow declares its route, so a
 	// sequence of reads on one screen is the common shape and each of them
-	// costs 630 ms otherwise.
+	// costs 320 ms otherwise.
 	c = c.withTreeCache()
 	// runFlow never reads .mav/current-run: an explicit --run reuses that run
 	// (e.g. a second flow continuing evidence collection on a run a caller
