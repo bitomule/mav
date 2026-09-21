@@ -588,13 +588,27 @@ every action that already takes a selector (`tap`, `type`, `longPress`,
 from the command line:
 
 ```yaml
-- tap: { where: { find: "la primera categoría" } }
-- tap: { where: { find: "la primera caja", role: "cell" } }
+steps:
+  - tap:
+      where:
+        find: la primera categoría
+  - tap:
+      where:
+        find: la primera caja
+        role: cell
 ```
 
 ```bash
 mav ui tap --find "la primera categoría"
 ```
+
+The rule for where things go is the same one the rest of the flow already
+follows, and it is worth saying once: **parameters go at the top level of the
+step, the selector goes in `where`.** `tap` has always taken `x` and `y` at the
+top level, and `where` has always been the selector slot for every action that
+takes one, so `find` is not a new shape — it is a new field in the slot that was
+already there. The braces above are YAML's compact style, not structure; write
+it expanded, as here.
 
 The other selector fields are structural and run **first**: they cut the
 candidates down, and the words only choose among what survived. What cannot be
@@ -609,11 +623,19 @@ one, or lets the model name one:
 
 ```yaml
 inputs:
-  nombre: "Caja de herramientas"
+  nombre: Caja de herramientas
   cantidad: "12"
 steps:
-  - type: { where: { find: "el campo del nombre" }, text: { from: nombre } }
-  - type: { where: { find: "el campo de cantidad" }, text: { ask: "lo que toca escribir aquí" } }
+  - type:
+      where:
+        find: el campo del nombre
+      text:
+        from: nombre
+  - type:
+      where:
+        find: el campo de cantidad
+      text:
+        ask: lo que toca escribir aquí
 ```
 
 `from` is a map lookup and costs nothing. `ask` puts the **keys** on the menu
@@ -624,7 +646,8 @@ typed. With one declared input nothing is asked.
 **`verify`: a judgement about content.**
 
 ```yaml
-- verify: { ask: "¿la caja que se ve abierta está vacía?" }
+- verify:
+    ask: ¿la caja que se ve abierta está vacía?
 ```
 
 For the questions with no structural answer. It records
