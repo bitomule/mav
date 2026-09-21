@@ -5869,7 +5869,7 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 		if readErr != nil {
 			return map[string]string{"ask": step.Params["ask"]}, readErr
 		}
-		// The verdict is recorded and nothing reads it back. Whether the flow
+		// The verdict decides this step and nothing else. Whether the flow
 		// moved on, and whether it arrived, are decided in code by
 		// screenFingerprint and by the selector - never by asking.
 		return c.runVerifyStep(ctx, elements, step.Params["ask"])

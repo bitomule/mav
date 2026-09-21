@@ -627,9 +627,11 @@ typed. With one declared input nothing is asked.
 - verify: { ask: "¿la caja que se ve abierta está vacía?" }
 ```
 
-It records `verdict=yes|no|unclear` and nothing reads it back. Whether the
-screen changed, and whether the flow arrived, are decided in code — never by
-asking.
+For the questions with no structural answer. It records
+`verdict=yes|no|unclear`; a `no` fails the step with `verify_rejected`, and an
+`unclear` does not — declining is not a negative verdict. What it may never
+decide is whether the screen changed or whether the flow arrived: that is
+decided in code, never by asking.
 
 While a flow runs, the tree read for one step is reused by the next one as long
 as nothing could have moved (any step that is not a read invalidates it). A

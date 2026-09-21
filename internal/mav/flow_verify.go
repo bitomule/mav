@@ -8,20 +8,37 @@ import (
 
 // `verify: { ask: "is the box on screen empty?" }` is for judgements of
 // CONTENT that a selector cannot express. It reads the screen, puts the
-// question, and records the verdict. That is all it does.
+// question, and the answer decides whether the step passed.
 //
-// WHAT IT MAY NEVER DO, and the reason this is a separate file with a test
-// aimed at it: verify feeds no decision about progress and none about arrival.
-// Handing a model the screen before and after and asking whether it changed is
-// a judge with correlated errors - same model, same tree - and it is a solved
-// problem in code: screenFingerprint is the sorted identity of (id, label,
-// role), and it exists precisely because comparing frames reported changed
-// on a gesture that moved nothing, and counting nodes reported unchanged on a
-// screen that had entirely changed (80 before, 80 after).
+// There are two distinctions here and they are easy to run together. Written
+// out, because losing either of them is how this turns into something it must
+// not be.
 //
-// So: whether the screen changed, and whether a flow got where it was going,
-// stay with screenFingerprint and with the selector. verify answers questions
-// about what is on the screen, to whoever reads the run.
+// FIRST: what verify is allowed to decide.
+//
+//   - ALLOWED - a judgement of content. "Is the box on screen empty?" has no
+//     structural answer: there is nothing to select, nothing to count, nothing
+//     in the tree that settles it. A verifier that cannot fail is not a
+//     verifier, it is a log line, so a `no` fails the step.
+//   - FORBIDDEN - whether the screen CHANGED, or whether the flow ARRIVED.
+//     Asking a model that is a judge whose errors correlate with the thing
+//     being judged, same model over the same tree, and it is already solved in
+//     code: screenFingerprint is the sorted identity of (id, label, role), and
+//     it exists because comparing frames reported changed on a gesture that
+//     moved nothing, and counting nodes reported unchanged on a screen that
+//     had entirely changed (80 nodes before, 80 after). Progress and arrival
+//     stay with screenFingerprint and the selector, and nothing in this file
+//     may reach for them.
+//
+// SECOND: "the model says no" is not "the model does not know", and only the
+// first one is a failure.
+//
+//   - `no` fails the step, with its own code, verify_rejected.
+//   - `unclear` does not. Declining is a correct answer and not a negative
+//     verdict - the same rule find lives by, where the abstention is on the
+//     menu precisely so the model has somewhere to put "I am not sure" other
+//     than a wrong answer. A step that failed on `unclear` would punish the
+//     honest answer and reward the guess.
 
 const (
 	verifyYes     = "yes"
@@ -58,9 +75,8 @@ func RenderScreenForVerify(elements []Element) string {
 	return b.String()
 }
 
-// runVerifyStep reads the screen and asks. It returns an error only when the
-// question could not be put at all - never because of the answer, which is a
-// record and not a gate.
+// runVerifyStep reads the screen and asks. The verdict is always on the
+// record; a `no` also fails the step, and an `unclear` does not.
 func (c CLI) runVerifyStep(ctx context.Context, elements []Element, ask string) (map[string]string, error) {
 	fields := map[string]string{"ask": ask}
 	if strings.TrimSpace(ask) == "" {
@@ -85,7 +101,11 @@ func (c CLI) runVerifyStep(ctx context.Context, elements []Element, ask string) 
 		return fields, fmt.Errorf("verify_unavailable")
 	}
 	fields["model_ms"] = fmt.Sprint(answer.LatencyMS)
-	fields["verdict"] = normalizeVerifyVerdict(answer.Label)
+	verdict := normalizeVerifyVerdict(answer.Label)
+	fields["verdict"] = verdict
+	if verdict == verifyNo {
+		return fields, fmt.Errorf("verify_rejected")
+	}
 	return fields, nil
 }
 

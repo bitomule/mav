@@ -8,13 +8,40 @@ import (
 )
 
 func TestVerifyRecordsTheVerdict(t *testing.T) {
-	fakeJev(t, "no", 12)
+	fakeJev(t, "yes", 12)
 	fields, err := CLI{}.runVerifyStep(t.Context(), boxesScreen(), "¿la caja está vacía?")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fields["verdict"] != verifyNo {
+	if fields["verdict"] != verifyYes {
 		t.Fatalf("the verdict has to reach the record: %+v", fields)
+	}
+}
+
+func TestVerifyFailsTheStepOnNoAndNotOnUnclear(t *testing.T) {
+	// A verifier that cannot fail is a log line. A `no` on a question with no
+	// structural answer - "is the box empty?" - is the whole point of the
+	// step, so it fails it.
+	fakeJev(t, "no", 12)
+	fields, err := CLI{}.runVerifyStep(t.Context(), boxesScreen(), "¿la caja está vacía?")
+	if err == nil || err.Error() != "verify_rejected" {
+		t.Fatalf("a no must fail the step with its own code, got %v", err)
+	}
+	if fields["verdict"] != verifyNo {
+		t.Fatalf("the verdict stays on the record even when it fails: %+v", fields)
+	}
+
+	// "The model does not know" is not "the model says no", and only the
+	// second is a failure. Failing on `unclear` would punish the honest answer
+	// and reward the guess, which is the opposite of what the abstention is
+	// on the menu for.
+	fakeJev(t, "unclear", 12)
+	fields, err = CLI{}.runVerifyStep(t.Context(), boxesScreen(), "¿la caja está vacía?")
+	if err != nil {
+		t.Fatalf("an abstention is not a negative verdict: %v", err)
+	}
+	if fields["verdict"] != verifyUnclear {
+		t.Fatalf("the abstention has to be legible on the record: %+v", fields)
 	}
 }
 
@@ -25,20 +52,25 @@ func TestVerifyCannotDecideProgressOrArrival(t *testing.T) {
 	// errors correlated to the one that acted, and the code answer is both
 	// free and better.
 	//
+	// A `no` failing its own step is NOT this rule being broken: that is a
+	// judgement of content, where there is nothing structural to consult. What
+	// is forbidden is verify having anything to say about whether the screen
+	// moved or whether the flow got there.
+	//
 	// Three things are checked, because the rule can be broken in three
 	// places: in what verify returns, in what verify reads, and in what the
 	// progress and arrival code reads.
 
-	// 1. A verdict is a record, not a gate. `no` does not fail the step and
-	//    does not produce any field an advance decision consumes.
-	fakeJev(t, "no", 12)
-	fields, err := CLI{}.runVerifyStep(t.Context(), boxesScreen(), "¿la caja está vacía?")
-	if err != nil {
-		t.Fatalf("a verdict must never fail a step: %v", err)
-	}
-	for _, forbidden := range []string{"changed", "verified", "arrived", "fingerprint", "outcome"} {
-		if _, found := fields[forbidden]; found {
-			t.Fatalf("verify must not produce %q, which is read as a decision: %+v", forbidden, fields)
+	// 1. Whatever the verdict, verify produces no field that a progress or
+	//    arrival decision consumes. It answers its own question and nothing
+	//    downstream can mistake it for the other one.
+	for _, verdict := range []string{"yes", "no", "unclear"} {
+		fakeJev(t, verdict, 12)
+		fields, _ := CLI{}.runVerifyStep(t.Context(), boxesScreen(), "¿la caja está vacía?")
+		for _, forbidden := range []string{"changed", "verified", "arrived", "fingerprint", "outcome"} {
+			if _, found := fields[forbidden]; found {
+				t.Fatalf("verify must not produce %q, which is read as a decision: %+v", forbidden, fields)
+			}
 		}
 	}
 
