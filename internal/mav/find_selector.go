@@ -114,13 +114,22 @@ func (c CLI) resolveFindForAction(ctx context.Context, cfg Config, selector Sele
 	if result.ResolvedBy != ResolvedByModel {
 		return chosen, nil
 	}
-	c.trees.rememberChoice(guardFor(chosen))
+	// The ledger, not the cache. Whoever comes to this next: the temptation is
+	// to hang the spent-decision flag off c.trees, because the tree it was
+	// resolved from is already there - and that is the v0.26.0 defect. The
+	// cache is optional (nil outside `mav run`), so the flag was written
+	// nowhere and read back as "already spent", and every model-resolved
+	// selector failed find_decision_consumed at the CLI. choices() is the
+	// run's ledger when there is a run and a private one when there is not,
+	// so the interlock exists either way.
+	ledger := c.trees.choices()
+	ledger.remember(guardFor(chosen))
 
 	if holds, asked := c.guardHoldsUnderPoint(ctx, cfg, prefer, chosen); asked && holds {
 		// The decision is consumed before anything moves. A retry that
 		// reached here without resolving again has nothing to act on, which
 		// is the point: it cannot tap twice on one decision.
-		if _, ok := c.trees.consumeChoice(); !ok {
+		if _, ok := ledger.consume(); !ok {
 			return Element{}, fmt.Errorf("find_decision_consumed")
 		}
 		return chosen, nil
@@ -133,7 +142,7 @@ func (c CLI) resolveFindForAction(ctx context.Context, cfg Config, selector Sele
 	if err != nil {
 		return Element{}, err
 	}
-	guard, ok := c.trees.consumeChoice()
+	guard, ok := ledger.consume()
 	if !ok {
 		return Element{}, fmt.Errorf("find_decision_consumed")
 	}
@@ -143,6 +152,14 @@ func (c CLI) resolveFindForAction(ctx context.Context, cfg Config, selector Sele
 	rechosen, _, err := c.resolveFindElement(ctx, fresh, selector)
 	if err != nil {
 		return Element{}, err
+	}
+	// The re-resolution is a decision of its own and goes through the same
+	// interlock: written down, then spent before the caller is handed it.
+	// Without this it was the one decision in the file that left the ledger
+	// untouched, so the property held on one route and not the other.
+	ledger.remember(guardFor(rechosen))
+	if _, ok := ledger.consume(); !ok {
+		return Element{}, fmt.Errorf("find_decision_consumed")
 	}
 	// The second and last check, and it is a live one. Checking the
 	// re-resolution against `fresh` - the tree it was just resolved FROM - can

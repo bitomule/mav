@@ -33,7 +33,9 @@ type treeCache struct {
 	// middle is already two generations old by the time anyone asks for it.
 	gen     uint64
 	entries map[string]cachedTree
-	choice  *elementGuard
+	// ledger is the run's spent-decision interlock. Reached through
+	// choices(), which works on a nil cache too - see choiceLedger.
+	ledger choiceLedger
 }
 
 type cachedTree struct {
@@ -96,31 +98,55 @@ func (t *treeCache) invalidate() {
 	t.gen++
 }
 
-// rememberChoice stores the identity of the element a resolution chose, and
-// consumeChoice takes it away. The decision is consumed BEFORE anything moves,
-// so a retry cannot act on a choice that has already been acted on - it has to
-// resolve again or fail.
-func (t *treeCache) rememberChoice(guard elementGuard) {
-	if t == nil {
-		return
-	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.choice = &guard
+// choiceLedger holds the element a find chose and has not acted on yet.
+// remember writes it, consume takes it away, and consume answers no the second
+// time: the decision is spent BEFORE anything moves, so nothing can act twice
+// on one choice - it has to resolve again or fail.
+//
+// It is SEPARATE FROM THE CACHE, and that is the whole point of the type. The
+// cache is an optimisation a caller opts into (withTreeCache) and a nil one is
+// a cache that never hits; the ledger is an interlock, and an interlock that
+// is absent whenever the optimisation is off is not an interlock. It was one
+// field on treeCache until v0.26.x, and every `mav ui ...` outside `mav run` -
+// the whole CLI, which never turns the cache on - had nothing to remember the
+// decision IN, so the consume that follows found nothing and every
+// model-resolved selector died `find_decision_consumed` before touching the
+// screen. Measured on a simpool slot: `mav ui tap --find "..."` failed 1/1
+// that way, and `mav ui type --find` inherited it through the tap it runs.
+type choiceLedger struct {
+	mu     sync.Mutex
+	choice *elementGuard
 }
 
-func (t *treeCache) consumeChoice() (elementGuard, bool) {
-	if t == nil {
+func (l *choiceLedger) remember(guard elementGuard) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.choice = &guard
+}
+
+func (l *choiceLedger) consume() (elementGuard, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.choice == nil {
 		return elementGuard{}, false
 	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.choice == nil {
-		return elementGuard{}, false
-	}
-	guard := *t.choice
-	t.choice = nil
+	guard := *l.choice
+	l.choice = nil
 	return guard, true
+}
+
+// choices hands back where this resolution's decision is written.
+//
+// With a run's cache it is the RUN's ledger, so every step of that run shares
+// one and a decision spent by one actor is gone for the next. Without one it
+// is private to the caller that asked, which is the same guarantee at the only
+// scope a single `mav ui` invocation has: the decision is still spent before
+// the screen is touched, and still cannot be acted on twice.
+func (t *treeCache) choices() *choiceLedger {
+	if t == nil {
+		return &choiceLedger{}
+	}
+	return &t.ledger
 }
 
 // elementGuard is the identity of a chosen element, re-checked live just

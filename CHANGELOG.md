@@ -1,5 +1,43 @@
 # Changelog
 
+## Unreleased
+
+### `find` works outside a flow, and `type` stops typing its own selector
+
+Two defects shipped with the `find` selector in v0.26.0. Both are fixed here, and
+both were measured on a simpool slot (iPhone 17 Pro / iOS 26.3, Boxy fixture),
+reading the result out of the accessibility tree rather than out of an exit code.
+
+**`mav ui tap --find "..."` always failed.** The interlock that spends a
+resolution's decision before anything touches the screen — so nothing can act
+twice on one choice — was stored on the tree cache. That cache is opt-in and only
+`mav run` turns it on, so every `mav ui ...` invocation had nowhere to write the
+decision, the consume that follows found nothing, and the command died
+`find_decision_consumed` before moving a finger. It is now a ledger of its own:
+the run's when there is a run, a private one when there is not, so the interlock
+holds either way. `mav ui type --find` inherited the failure through the tap it
+runs to focus the field.
+
+**A `type` step typed its own `where` into the field.** `mav ui type` splits its
+arguments into a target and the characters to type, and `--find` was missing from
+the list of flags that describe the target — so it was typed. Measured before the
+fix:
+
+```yaml
+- type: { where: { find: "the search field" }, text: "Kitchen" }
+```
+
+left the field reading `Kitchen --find the search field` while the step reported
+`ok`. The same step with a structural `where` was correct, which is what made this
+look like `find` being broken for `type` and fine for `tap`: `tap` never splits its
+arguments into a target and a payload, so it never asks the question.
+
+`toggle` and `doubleTap` take `find` and resolve it once, so only the first defect
+reached them; `erase`, `longPress`, `assert` and `scrollUntil` do not accept a
+`find` at all — a `find` reaching a plain match still fails loudly with
+`selector_find_unsupported`.
+
+
 ## v0.26.0
 
 ### Two abstentions in a row no longer mean the same thing as never starting

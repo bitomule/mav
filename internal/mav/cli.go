@@ -3521,12 +3521,28 @@ func (c CLI) uiType(ctx context.Context, opts GlobalOptions, cfg Config, args []
 	return c.writeFastPathResult(ctx, cfg, args, "ui.type", fields)
 }
 
+// isSelectorCLIFlag names every flag that describes WHERE, so `mav ui type`
+// can tell the target apart from the characters to type. Anything missing from
+// this list is typed into the field: `--find` was, from v0.26.0 until this
+// commit, and a flow step
+//
+//   - type: { where: { find: "the search field" }, text: "Kitchen" }
+//
+// left the field reading `Kitchen --find the search field` while the step
+// reported ok. Measured on a simpool slot, read back out of the tree as
+// value="Kitchen ”find the search field in the bottom toolbar". The same step
+// with a structural `where` was right, which is why this looked like `find`
+// being broken for `type` and fine for `tap` - `tap` never splits its args
+// into a target and a payload, so it never asks this question.
+//
+// Keep it in step with selectorCLIArgs: every flag that function can emit has
+// to be answered here.
 func isSelectorCLIFlag(value string) bool {
 	switch value {
 	case "--id", "--text", "--text-contains", "--text-starts-with", "--text-regex",
 		"--value", "--value-contains", "--role", "--enabled", "--selected", "--focused",
 		"--visible", "--index", "--bounds", "--near-id", "--near-text",
-		"--near-direction", "--near-distance", "--where-json":
+		"--near-direction", "--near-distance", "--where-json", "--find":
 		return true
 	default:
 		return false

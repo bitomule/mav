@@ -116,6 +116,70 @@ func TestGuardFailsWithElementMovedWhenTheScreenKeepsMoving(t *testing.T) {
 	}
 }
 
+// A CLI with no tree cache is every `mav ui ...` there is: the cache is turned
+// on by `mav run` alone. v0.26.0 kept the spent-decision flag ON the cache, so
+// with no cache there was nowhere to write it, the consume that follows found
+// nothing, and `mav ui tap --find` died find_decision_consumed without
+// touching the screen. Measured on a simpool slot before the fix, 1/1.
+func TestACacheLessCLIStillResolvesAFind(t *testing.T) {
+	fakeJev(t, "1", 10)
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.Tools = map[string]bool{"axe": true}
+	cfg.SimulatorUDID = guardPointUDID
+	runner := &sequenceRecordingRunner{
+		tools: cfg.Tools,
+		seq:   map[string][]string{},
+		calls: map[string]int{},
+		out:   map[string]string{},
+	}
+	runner.out["axe describe-ui --udid "+guardPointUDID] = guardPointTree
+	runner.out["axe describe-ui --point 100,125 --udid "+guardPointUDID] = guardPointHit
+
+	c := CLI{Runner: runner, Root: root}
+	el, err := c.resolveFindForAction(t.Context(), cfg, Selector{Find: "la caja"}, "auto")
+	if err != nil {
+		t.Fatalf("a find with no cache around it must still resolve: %v", err)
+	}
+	if el.ID != "openBox" {
+		t.Fatalf("wrong element came back: %+v", el)
+	}
+}
+
+// The other half, and the one that must not be traded away for the half
+// above: once a resolution has handed its element to the caller, the decision
+// is spent. Nothing holding the run's ledger can act on it a second time
+// without resolving again.
+func TestASpentDecisionCannotBeActedOnTwice(t *testing.T) {
+	fakeJev(t, "1", 10)
+	c, cfg, runner := guardPointConfig(t)
+	runner.out["axe describe-ui --udid "+guardPointUDID] = guardPointTree
+	runner.out["axe describe-ui --point 100,125 --udid "+guardPointUDID] = guardPointHit
+
+	if _, err := c.resolveFindForAction(t.Context(), cfg, Selector{Find: "la caja"}, "auto"); err != nil {
+		t.Fatalf("the first resolution had to succeed: %v", err)
+	}
+	if _, ok := c.trees.choices().consume(); ok {
+		t.Fatal("the decision was already acted on; a retry must find nothing left to act on")
+	}
+}
+
+// Same on the slow route: the point disagreed, the tree was re-read, the
+// element was re-resolved -- and that second decision is spent too.
+func TestTheReResolvedDecisionIsSpentAsWell(t *testing.T) {
+	fakeJev(t, "1", 10)
+	c, cfg, runner := guardPointConfig(t)
+	runner.out["axe describe-ui --udid "+guardPointUDID] = guardPointTree
+	runner.seq["axe describe-ui --point 100,125 --udid "+guardPointUDID] = []string{guardPointMovedHit, guardPointHit}
+
+	if _, err := c.resolveFindForAction(t.Context(), cfg, Selector{Find: "la caja"}, "auto"); err != nil {
+		t.Fatalf("the element never left the screen, so this had to succeed: %v", err)
+	}
+	if _, ok := c.trees.choices().consume(); ok {
+		t.Fatal("the re-resolution is a decision too, and it has to be spent before the caller acts")
+	}
+}
+
 func TestLiteralResolutionPaysNoGuard(t *testing.T) {
 	// Nobody was asked, so there is no round trip for the screen to move in.
 	t.Setenv("CI", "1")
