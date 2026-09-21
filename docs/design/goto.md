@@ -54,7 +54,8 @@ un bucle que se puede desbloquear pidiéndolo no es un tope.
 | tiempo total | **90 s** | para, `outcome=timeout` |
 | pasos sin que cambie la pantalla | **2** | para, `outcome=stuck` |
 | toques repetidos sobre la misma huella | **2** | para, `outcome=looping` |
-| `find` se abstiene | **2 seguidas** | para, `outcome=no_route` |
+| se abstiene sin haberse movido | **2 seguidas** | para, `outcome=no_route` |
+| se abstiene después de haber recorrido | **2 seguidas** | para, `outcome=dead_end` |
 | pantalla destructiva por delante | inmediato | para, `outcome=refused` |
 
 12 pasos porque una pantalla de una app iOS está a 1–4 toques de la raíz; 12 es holgado y
@@ -277,7 +278,9 @@ Sale, como `find`, una línea `ok` y un documento JSON:
 ```json
 {
   "arrived": "true | false | unverified",
-  "outcome": "arrived | exhausted | timeout | stuck | looping | no_route | refused | out_of_app | ambiguous_criterion",
+  "outcome": "arrived | exhausted | timeout | stuck | looping | no_route | dead_end | refused | out_of_app | ambiguous_criterion",
+  "criterion_source": "explicit | inferred | none",
+  "criterion": "title:\"...\"",
   "steps": [ {"tapped": {...}, "fingerprint_before": "...", "fingerprint_after": "...", "changed": true} ],
   "route_before": {"tab": "...", "nav_title": "...", "modal": null},
   "route_after":  {"tab": "...", "nav_title": "...", "modal": null},
