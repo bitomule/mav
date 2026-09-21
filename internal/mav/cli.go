@@ -7049,7 +7049,19 @@ func (c CLI) execFlowShellOutput(ctx context.Context, run RunState, index int, p
 	stepCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(stepCtx, "/bin/bash", "-lc", command)
+	// The watchdog's end of the pipe: the shell learns MAV is gone by reading
+	// EOF on it, so it has to exist before the command string does.
+	shellCommand := command
+	shellEnd, mavEnd, pipeErr := os.Pipe()
+	if pipeErr == nil {
+		defer shellEnd.Close()
+		defer mavEnd.Close()
+		shellCommand = watchParentShell(command)
+	}
+	cmd := exec.CommandContext(stepCtx, "/bin/bash", "-lc", shellCommand)
+	if pipeErr == nil {
+		cmd.ExtraFiles = []*os.File{shellEnd}
+	}
 	// An exec step is where MAV hands control to a build (`make mav-build`
 	// and its bazel client, typically), and both halves of that hand-off used
 	// to leak. Without a process group of its own, CommandContext signals
@@ -7061,6 +7073,9 @@ func (c CLI) execFlowShellOutput(ctx context.Context, run RunState, index int, p
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return killProcessGroup(cmd.Process) }
 	cmd.WaitDelay = execShellWaitDelay
+	// Both of those guards, and the step timeout that drives them, run inside
+	// MAV -- so none of them survives MAV being killed mid-step, which is the
+	// leak watchParentShell handles from inside the shell instead.
 	cmd.Dir = c.Root
 	cmd.Env = append(os.Environ(),
 		"MAV_ROOT="+c.Root,
@@ -8368,6 +8383,43 @@ func readPID(path string) (int, error) {
 // flushing a large build log on its way out is never truncated, short enough
 // that a run is never held hostage by a process it no longer owns.
 const execShellWaitDelay = 5 * time.Second
+
+// watchParentShell prefixes an exec step's command with a watchdog that ends
+// the step's process group the moment MAV itself is gone.
+//
+// The step's timeout, its Cancel and its WaitDelay all run inside MAV, so all
+// three die with it: kill -9 the `mav run` process (a test harness reaping a
+// child, a CI runner tearing down a job, a person out of patience) and the
+// shell it had mid-step is reparented to launchd and keeps going. An exec
+// step that waits on something -- `until [ -f ... ]` is the shape that bit us
+// -- then waits forever, at whatever rate it polls. 348 of those, polling at
+// 20Hz, put this machine at load average 124 with no single process above 15%
+// CPU. Nothing collects them short of a reboot, and every `go test ./...` in
+// this repo minted a fresh batch.
+//
+// macOS has no PR_SET_PDEATHSIG, so the death signal is a pipe: MAV holds the
+// write end and never writes to it, the shell gets the read end as fd 3
+// (ExtraFiles), and reading it blocks for exactly as long as MAV lives. The
+// kernel closes MAV's descriptors however MAV dies, SIGKILL included, and the
+// read returns EOF immediately. The shell then SIGKILLs its own process
+// group -- which Setpgid made its own alone, so this can never reach MAV or
+// anything else.
+//
+// A pipe rather than polling `kill -0 $PPID`, which was the first shape of
+// this fix and does not hold: `kill -0` succeeds on a zombie, and a parent
+// SIGKILLed by a harness that never reaps it stays a zombie for as long as
+// that harness lives. Measured, with that version in: one `go test ./...`
+// left 205 shells polling a dead parent that still answered. Pid reuse is the
+// same class of hole. EOF has neither failure mode, and no poll interval to
+// lose a second to.
+//
+// The watchdog's own output goes to /dev/null so it never holds the step's
+// pipes open (that would make every step pay WaitDelay), and `disown` keeps
+// it out of the job table, so a command ending in a bare `wait` does not wait
+// for a watchdog that outlives it by design.
+func watchParentShell(command string) string {
+	return `{ read -r -u 3 _; kill -KILL -$$; } >/dev/null 2>&1 & disown` + "\n" + command
+}
 
 // killProcessGroup asks a process group started with Setpgid to stop. Signals
 // the group (negative pid) rather than the leader alone, which is the whole
