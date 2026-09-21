@@ -49,7 +49,8 @@ func (c CLI) gotoScreen(ctx context.Context, opts GlobalOptions, cfg Config, arg
 	defer cancel()
 
 	dismiss := flagValue(args, "--dismiss-permission")
-	result, err := c.runGotoLoop(ctx, cfg, opts, goal, criterion, maxSteps, dismiss)
+	inferArrival := hasFlag(args, "--infer-arrival")
+	result, err := c.runGotoLoop(ctx, cfg, opts, goal, criterion, maxSteps, dismiss, inferArrival)
 	if err != nil {
 		return err
 	}
@@ -59,7 +60,8 @@ func (c CLI) gotoScreen(ctx context.Context, opts GlobalOptions, cfg Config, arg
 }
 
 func (c CLI) runGotoLoop(ctx context.Context, cfg Config, opts GlobalOptions,
-	goal string, criterion ArrivalCriterion, maxSteps int, dismiss string) (GotoResult, error) {
+	goal string, criterion ArrivalCriterion, maxSteps int, dismiss string,
+	inferArrival bool) (GotoResult, error) {
 
 	result := GotoResult{Arrived: "false", Goal: goal, CriterionSource: CriterionNone}
 	if !criterion.IsZero() {
@@ -83,6 +85,23 @@ func (c CLI) runGotoLoop(ctx context.Context, cfg Config, opts GlobalOptions,
 		result.Arrived = "unverified"
 		result.Next = "that criterion already holds on the screen you are on; name the destination in a way that does not match where you start"
 		return result, nil
+	}
+
+	// Step zero, and only step zero: with no criterion given AND the caller
+	// asking for it, ask the model what the destination will be CALLED — from
+	// here, before anything is tapped, while it has nothing invested in the
+	// answer. It is never asked whether it arrived; that stays code comparing
+	// routes.
+	//
+	// OFF BY DEFAULT, and that is a measured decision rather than caution.
+	// On the route this was built for it answered `none` 10 times out of 10 —
+	// correctly, because the destination's name is not on the starting screen —
+	// and each of those was a model round trip (~350 ms) spent to learn
+	// nothing. A fixed cost on every run for a benefit that did not appear does
+	// not belong on the default path. Behind the flag it costs nothing until
+	// someone who knows their destination is named on screen asks for it.
+	if criterion.IsZero() && inferArrival {
+		criterion = c.inferGotoCriterion(ctx, elements, goal, route, &result)
 	}
 
 	seen := NewSeenRoutes()
@@ -233,6 +252,42 @@ func (c CLI) runGotoLoop(ctx context.Context, cfg Config, opts GlobalOptions,
 	return c.finishGoto(ctx, cfg, opts, result, criterion, elements), nil
 }
 
+// inferGotoCriterion asks the one deduction question and returns the criterion
+// to use, which is a zero criterion whenever anything at all is off: no key, no
+// network, no names to choose from, the model declining, or — the guard that
+// matters — a deduced criterion that already holds where we are standing.
+//
+// Nothing here can make the run worse than not having asked: every failure
+// falls back to the zero criterion, which is exactly today's behaviour.
+func (c CLI) inferGotoCriterion(ctx context.Context, elements []Element, goal string,
+	route Route, result *GotoResult) ArrivalCriterion {
+
+	names := GotoTitleCandidates(elements, goal)
+	if len(names) == 0 {
+		return ArrivalCriterion{}
+	}
+	key, _, ok := ResolveJevKey()
+	if !ok {
+		return ArrivalCriterion{}
+	}
+	answer, err := askJevChoice(ctx, key, GotoCriterionQuestion(goal),
+		RenderGotoTitleCandidates(names), GotoCriterionOptions(names))
+	if err != nil {
+		return ArrivalCriterion{}
+	}
+	name, picked := InterpretGotoCriterionAnswer(answer.Label, names)
+	if !picked {
+		return ArrivalCriterion{}
+	}
+	criterion, accepted := AcceptInferredCriterion(name, route, elements)
+	if !accepted {
+		return ArrivalCriterion{}
+	}
+	result.CriterionSource = CriterionInferred
+	result.Criterion = criterion.String()
+	return criterion
+}
+
 // finishGoto is the last thing every unhappy path goes through, and it LOOKS
 // ONE MORE TIME before accepting that the run did not arrive.
 //
@@ -259,7 +314,7 @@ func (c CLI) finishGoto(ctx context.Context, cfg Config, opts GlobalOptions,
 	if criterion.IsZero() {
 		result.Arrived = "unverified"
 		if result.Next != "" {
-			result.Next += ". No --arrived-when was given, so arrival cannot be confirmed either way"
+			result.Next += ". No --arrived-when was given and none could be deduced, so arrival cannot be confirmed either way"
 		}
 		return result
 	}
@@ -345,6 +400,9 @@ func (c CLI) writeGotoResult(result GotoResult, extra map[string]string) error {
 	}
 	if result.CriterionSource != "" {
 		fields["criterion_source"] = result.CriterionSource
+	}
+	if result.CriterionSource == CriterionInferred {
+		fields["criterion_inferred"] = result.Criterion
 	}
 	if !result.RouteFinal.IsZero() {
 		fields["route"] = result.RouteFinal.String()

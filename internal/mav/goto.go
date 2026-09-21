@@ -107,15 +107,16 @@ func (a ArrivalCriterion) IsZero() bool {
 	return len(a.Titles) == 0 && len(a.Texts) == 0
 }
 
-// Where the criterion came from. Reported on every run, because a criterion a
-// person wrote and one nobody wrote are not the same evidence, and today the
-// output says which without the caller having to remember what it passed.
+// Where the criterion came from. Reported on every run, because a criterion the
+// machine deduced and one a person wrote are not the same evidence.
 const (
 	CriterionExplicit = "explicit"
+	CriterionInferred = "inferred"
 	CriterionNone     = "none"
 )
 
-// String writes the criterion back in the same syntax --arrived-when takes.
+// String writes the criterion back in the same syntax --arrived-when takes, so
+// what goto deduced can be pasted straight back in to pin it.
 func (a ArrivalCriterion) String() string {
 	parts := make([]string, 0, len(a.Titles)+len(a.Texts))
 	for _, t := range a.Titles {
@@ -219,6 +220,168 @@ func treeContainsText(elements []Element, want string) bool {
 	return false
 }
 
+// --- Deducing the criterion, once, before anything is at stake ---------------
+//
+// Arrival is still decided by CODE comparing ROUTES. What can be deduced is the
+// CRITERION those routes are compared against, and only under one condition:
+// the question is asked at step zero, from the starting screen, before a single
+// tap. The model proposes what to look for while it has nothing invested in the
+// answer, and it is never asked afterwards whether it got there. Handing it the
+// before and after and asking "did you arrive" is a judge with errors
+// correlated with the loop's own — same model, same tree — and is not done.
+//
+// An explicit --arrived-when always wins. A deduced criterion is only used when
+// none was given, it goes through the same starting-screen guard, and if the
+// model declines or names something useless goto behaves exactly as it does
+// today: arrived=unverified. It can never be worse than saying nothing.
+//
+// jevi answers choices, not free text, so the question cannot be "what will the
+// title be" in the open. The option list is built in code from names that are
+// already in front of the model — the labels on the starting screen, plus any
+// phrase the caller put in quotes in the goal — and the model picks one or
+// declines. No threshold anywhere, no second model, no ranking by elimination.
+
+// gotoTitleCandidateCap bounds the names offered. jev's latency does not move
+// with the number of options (358 ms with 3, 387 with 20), so this is about the
+// prompt staying readable, not about cost.
+const gotoTitleCandidateCap = 40
+
+// GotoTitleCandidates is the list of names the deduction chooses between:
+// quoted phrases from the goal first, because a caller who quoted something
+// usually quoted the destination's name, then every distinct label on the
+// starting screen.
+func GotoTitleCandidates(elements []Element, goal string) []string {
+	out := make([]string, 0, gotoTitleCandidateCap)
+	seen := map[string]bool{}
+	add := func(s string) {
+		s = strings.TrimSpace(s)
+		key := normalizeForMatch(s)
+		if s == "" || key == "" || seen[key] || len(out) >= gotoTitleCandidateCap {
+			return
+		}
+		seen[key] = true
+		out = append(out, s)
+	}
+	for _, phrase := range quotedPhrases(goal) {
+		add(phrase)
+	}
+	for _, el := range elements {
+		add(el.Label)
+		add(el.Title)
+	}
+	return out
+}
+
+func quotedPhrases(goal string) []string {
+	var out []string
+	var cur strings.Builder
+	inQuote := false
+	for _, r := range goal {
+		if r != '"' {
+			if inQuote {
+				cur.WriteRune(r)
+			}
+			continue
+		}
+		if inQuote {
+			out = append(out, cur.String())
+			cur.Reset()
+		}
+		inQuote = !inQuote
+	}
+	return out
+}
+
+// RenderGotoTitleCandidates writes the numbered list the question is asked over.
+func RenderGotoTitleCandidates(names []string) string {
+	var b strings.Builder
+	for i, name := range names {
+		b.WriteString(itoa(i + 1))
+		b.WriteString(") ")
+		b.WriteString(name)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// GotoCriterionOptions is the option list: one per name, plus the abstention.
+// `none` is not tidiable away here either — the service does not decline on its
+// own, and a name it picked because it had to would be a criterion nobody wrote
+// and nothing checked.
+func GotoCriterionOptions(names []string) []string {
+	out := make([]string, 0, len(names)+1)
+	for i := range names {
+		out = append(out, itoa(i+1))
+	}
+	return append(out, "none")
+}
+
+// GotoCriterionQuestion asks what the destination will be CALLED, not whether
+// anyone got there.
+//
+// The clause about passing through is the whole risk of this feature in one
+// sentence: a name that titles an intermediate screen would declare arrival
+// halfway, which produces a false arrived=true — strictly worse than the
+// unverified it replaces. So the question says it outright rather than leaving
+// it to be inferred from the word "final".
+func GotoCriterionQuestion(goal string) string {
+	return untrustedTextPreamble +
+		"Below is a list of names taken from the screen an iOS app is on RIGHT NOW, one per line, numbered.\n" +
+		"Someone standing on this screen is about to navigate to: " + goal + "\n\n" +
+		"When they get there they will be on a different screen, and that screen has a title in " +
+		"its navigation bar. Which of these names will that final screen's title contain? " +
+		"Answer with that number.\n" +
+		"Do NOT pick a name that titles a screen they only pass THROUGH on the way — a section " +
+		"they open, a list they scroll. It has to name where they STOP.\n" +
+		"Answer `none` if the final screen's title will be something that is not in this list, " +
+		"or if you cannot tell from here. Answering `none` is a correct and expected answer: a " +
+		"caller that gets `none` reports that it could not confirm arrival, which is what it " +
+		"does today anyway, whereas a wrong name makes it claim it arrived somewhere it did " +
+		"not. Do not guess."
+}
+
+// InterpretGotoCriterionAnswer reads the pick the same way the step question's
+// is read: the label, and only the label.
+func InterpretGotoCriterionAnswer(label string, names []string) (string, bool) {
+	label = strings.TrimSpace(strings.ToLower(label))
+	if label == "" || label == "none" {
+		return "", false
+	}
+	idx := 0
+	for _, r := range label {
+		if r < '0' || r > '9' {
+			return "", false
+		}
+		idx = idx*10 + int(r-'0')
+	}
+	if idx < 1 || idx > len(names) {
+		return "", false
+	}
+	return names[idx-1], true
+}
+
+// AcceptInferredCriterion turns a deduced name into a criterion, or refuses it.
+//
+// It refuses the one deduction that would be actively harmful: a name that
+// already holds on the screen we are standing on. That is the same guard an
+// explicit --arrived-when goes through, with one difference in what happens
+// next — an explicit criterion that matches the start is the caller's mistake
+// and stops the run (ambiguous_criterion), while a deduction that lands on the
+// current screen's own name is goto's mistake and is simply dropped, leaving
+// the command exactly as it behaves with no criterion at all. A deduction must
+// never make the command worse than not having deduced anything.
+func AcceptInferredCriterion(name string, route Route, elements []Element) (ArrivalCriterion, bool) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ArrivalCriterion{}, false
+	}
+	criterion := ArrivalCriterion{Titles: []string{name}}
+	if criterion.MatchesRoute(route, elements) {
+		return ArrivalCriterion{}, false
+	}
+	return criterion, true
+}
+
 // Outcomes. Every run ends in exactly one of these, and every one of them is
 // reported: a loop that stops without saying where it stopped is the failure
 // this whole command is built around.
@@ -275,9 +438,10 @@ type GotoResult struct {
 	RouteFinal   Route      `json:"route_final"`
 	Steps        []GotoStep `json:"steps"`
 	// CriterionSource says who wrote the criterion arrival was judged against:
-	// "explicit" when the caller passed --arrived-when, "none" when there is
-	// none and arrival cannot be asserted either way. Criterion prints it back
-	// in the syntax the flag takes.
+	// "explicit" when the caller passed --arrived-when, "inferred" when goto
+	// deduced it at step zero, "none" when there is none and arrival cannot be
+	// asserted. A criterion the machine invented must never be presented as one
+	// a person wrote, so the deduced one is printed too, in Criterion.
 	CriterionSource string   `json:"criterion_source"`
 	Criterion       string   `json:"criterion,omitempty"`
 	Refused         *Element `json:"refused_element,omitempty"`

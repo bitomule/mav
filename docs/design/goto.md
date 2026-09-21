@@ -167,21 +167,12 @@ se descubra.
 **Evidencia, no veredicto.** `mav` es un verificador: devuelve lo que vio y quien llama juzga,
 porque quien llama es casi siempre otro agente con más contexto que un jev sin él. Salen la
 ruta inicial, la ruta final, la huella, la lista de toques y si hubo abstención. `arrived` es
-`true` sólo cuando un criterio declarado se cumplió contra la ruta; sin criterio declarado es
-`unverified` y nunca `true`. La salida dice además **de dónde salió el criterio**
-(`criterion_source`), para que quien lea el JSON no tenga que acordarse de qué se pasó.
-
-### Y una etiqueta que mentía: `no_route` contra `dead_end`
-
-`outcome=no_route` cubría dos hechos distintos: **"no había por dónde empezar"** y **"recorrí la
-ruta y aquí ya no hay nada que lleve más lejos"**. El segundo es lo que parece el destino desde
-dentro, y darle la misma etiqueta que al primero es **lo que hacía que el comando pareciera roto
-estando exactamente donde se le pidió** — medido en seis tomas de un vídeo, las seis con
-`no_route` y cinco de ellas en la pantalla correcta.
-
-Se separan por un hecho que ya estaba en el registro y nadie leía: **si algún toque cambió la
-pantalla**. Sin movimiento, `no_route`. Con movimiento y luego dos abstenciones, `dead_end`.
-Ningún modelo opina aquí: es `record.Changed`, que ya se calculaba.
+`true` sólo cuando **un criterio se cumplió contra la ruta**, lo haya escrito quien llama o lo
+haya deducido `goto` en el paso cero con `--infer-arrival` (§13, apagado por defecto); sin
+criterio, `unverified` y nunca `true`. La salida
+dice de dónde salió el criterio (`criterion_source`) y, si lo dedujo la máquina, cuál fue
+(`criterion_inferred`): un criterio inventado presentado como escrito por una persona es
+justo lo que no queremos.
 
 ## 3. Cómo detecta que da vueltas
 
@@ -283,7 +274,7 @@ dedo.
 ## 6. La forma del comando
 
 ```
-mav goto "<la pantalla que quieres>" [--arrived-when "<id o texto>"] [--max-steps 12] [--timeout 90s]
+mav goto "<la pantalla que quieres>" [--arrived-when "<id o texto>"] [--infer-arrival] [--max-steps 12] [--timeout 90s]
 ```
 
 Sale, como `find`, una línea `ok` y un documento JSON:
@@ -292,7 +283,7 @@ Sale, como `find`, una línea `ok` y un documento JSON:
 {
   "arrived": "true | false | unverified",
   "outcome": "arrived | exhausted | timeout | stuck | looping | no_route | dead_end | refused | out_of_app | ambiguous_criterion",
-  "criterion_source": "explicit | none",
+  "criterion_source": "explicit | inferred | none",
   "criterion": "title:\"...\"",
   "steps": [ {"tapped": {...}, "fingerprint_before": "...", "fingerprint_after": "...", "changed": true} ],
   "route_before": {"tab": "...", "nav_title": "...", "modal": null},
@@ -322,6 +313,11 @@ Sin esto, `goto` no se da por construido:
    estando en la lista de Ajustes, donde esa palabra ya está. Tiene que salir
    `outcome=ambiguous_criterion` sin dar un solo paso. Es el fallo que encontró la revisión y
    el que declaraba llegada en el paso 0.
+2c. **Un criterio DEDUCIDO que ya se cumple en la pantalla de partida.** Mismo guard, final
+   distinto: el explícito para el comando (`ambiguous_criterion`) porque es un error de quien
+   llama; el deducido **se tira** y `goto` sigue navegando y reporta `unverified`, porque es un
+   error de `goto` y pararse por él dejaría a quien llama peor que antes de que existiera la
+   deducción.
 3. **Una pantalla detrás de un botón destructivo.** Tiene que parar con `outcome=refused` y
    nombrar el elemento. Y el control de ese control: comprobar primero que el botón destructivo
    está de verdad en el árbol, porque hoy una prueba de la guarda pasó por las tres ramas
@@ -569,3 +565,94 @@ es cosmética: es la variable que decide si el bucle llega**.
 Lo que queda abierto, y no está medido: si la solución es un objetivo por paso, una
 reformulación por pantalla, o que `find` reciba también dónde está el bucle además de adónde
 va.
+
+---
+
+## 13. Deducir el criterio: construido, medido, y **inerte** en el caso que lo pidió
+
+Medido el 21 sep 2026 sobre Boxy con 8 cajas con nombre, `iPhone 17 Pro` / iOS 26.3 de simpool.
+Objetivo idéntico en las dos tandas: `"los contenidos de la primera categoría, primera caja"`.
+
+### Qué se construyó, y por qué es legítimo
+
+**El modelo no juzga si ha llegado. Nunca.** Eso sigue siendo código comparando rutas (§2). Lo
+que se añade es que el **criterio** se deduzca, con **una sola pregunta en el paso cero**, desde
+la pantalla de partida y antes de tocar nada: *"cuando lleguen a `<objetivo>`, ¿qué nombre va a
+llevar el título de la pantalla final?"*. Con la respuesta se construye el **mismo
+`ArrivalCriterion`** de siempre y a partir de ahí no cambia nada.
+
+Lo que lo hace legítimo, y lo separa del juez ciego rechazado arriba: el modelo **propone qué
+buscar antes de tener nada en juego**, y **no opina jamás sobre su propio viaje**.
+
+Las reglas que no se tocan: `--arrived-when` explícito **siempre manda**; el criterio deducido
+pasa por el mismo guard de pantalla de partida (§7.2c); la confirmación sigue siendo sobre
+pantalla asentada; si el modelo se abstiene, `goto` se comporta **exactamente como hoy**,
+`arrived=unverified`. Ningún umbral de confianza en ninguna parte.
+
+`jevi` responde elecciones, no texto libre, así que la pregunta no puede ser abierta. La lista
+de opciones se construye **en código**: las frases que quien llama puso entre comillas en el
+objetivo, y después cada etiqueta distinta de la pantalla de partida, más `none`.
+
+### Los números, y no son los que se esperaban
+
+| | criterio deducido | `arrived=true` | **llegada en la pantalla equivocada** |
+|---|---|---|---|
+| deducido, 10 tiradas | **0/10** | **0/10** | **0/10** |
+| `--arrived-when` a mano, 10 tiradas | 10/10 (escrito) | **9/10** | 0/10 |
+
+**El modelo contestó `none` las diez veces.** No es que dedujera mal: es que **no dedujo**.
+
+**El fallo peligroso no ocurrió ni una vez**, que es el resultado que había que asegurar: cero
+`arrived=true` falsos. La única tirada de la línea base que no llegó (B-6) fue un error de
+navegación real —abrió otra categoría y paró en `title="Vista de cajas vacía"`— y lo reportó
+como `arrived=false`, que es lo correcto.
+
+### Por qué salió inerte, y es un defecto de diseño, no del modelo
+
+**Los nombres candidatos salen sólo de la pantalla de PARTIDA.** El destino se titula
+`Moving Boxes: Office cables`, y *"Office cables"* no está en la rejilla de categorías: el único
+candidato que se solapa es `Moving Boxes`. El modelo lo declinó 10/10 en vez de adivinar, que es
+lo que la pregunta le pide hacer cuando el nombre del destino no está en la lista.
+
+Y la prudencia costó algo real: **en las 10 tiradas `route_final` fue `Moving Boxes: Office
+cables`** — `goto` llegó al destino en dos pasos todas las veces y reportó `unverified`.
+
+Hay además un matiz que nadie podía saber desde la partida: la pantalla intermedia de la lista de
+cajas **no tiene título de navegación** (`route_after` del paso 1 es `{}`), así que
+`title:"Moving Boxes"` habría casado **sólo** con el destino. El riesgo del que avisa la pregunta
+—casar a mitad de camino— no existía en este recorrido, y no había manera de verlo antes de
+andarlo.
+
+Y hay un agravante del banco: esa rejilla de categorías es justo donde `find` tiene sus tres
+celdas malas documentadas (§12) —devuelve el botón de la categoría cuando le piden una caja, y el
+campo de búsqueda cuando le piden "la primera caja"—, con cinco arreglos medidos y descartados.
+**La pantalla de partida de este recorrido es la peor del banco**, así que el `none` 10/10 no es
+sólo correcto: es lo más sensato que se podía contestar ahí.
+
+**Conclusión sin adornos: el camino está construido y es seguro, y en el recorrido que motivó el
+encargo no produce veredicto.** Sirve donde el nombre del destino está a la vista al empezar —una
+fila que se toca y da nombre a la pantalla que abre, o una frase entrecomillada en el objetivo—
+y no sirve cuando el destino se llama con algo que aún no se ha visto. Para eso, la salida
+honesta sigue siendo escribir `--arrived-when`.
+
+### Por eso va detrás de `--infer-arrival`, apagada por defecto
+
+No es prudencia: es el coste. Cada una de esas diez abstenciones fue **una llamada al modelo
+(~350 ms) en un `goto` que no iba a aprender nada**. Un coste fijo en todas las ejecuciones a
+cambio de un beneficio que no aparece no va en el camino por defecto. Detrás de la bandera no
+cuesta nada hasta que alguien que sabe que su destino se llama con algo que ya está en pantalla
+la pide.
+
+**Se consideró la alternativa de no preguntar cuando se pueda saber de antemano que va a fallar,
+y NO es decidible en código.** La pregunta sería *"¿alguno de estos nombres puede titular el
+destino?"*, y responderla es exactamente lo que se le está pidiendo al modelo: hace falta
+entender el objetivo en palabras del llamante y qué pantalla abre cada fila. Lo único decidible
+sin modelo —si hay una frase entrecomillada en el objetivo, si la lista de candidatos está
+vacía— no separa los casos que importan: en este recorrido había 20 candidatos y ninguno servía,
+y ningún recuento lo habría dicho. Un filtro barato aquí no ahorra la llamada, sólo la esconde a
+veces y se equivoca el resto. Así que bandera, y explícita.
+
+**Lo que NO hay que hacer para "arreglarlo":** volver a preguntar más adelante en el viaje. En
+cuanto la pregunta se hace después del primer toque, el modelo ya tiene su propio recorrido
+delante y deja de ser una propuesta desinteresada: pasa a ser el juez ciego de §2 con otro
+nombre, con sus dos argumentos intactos.

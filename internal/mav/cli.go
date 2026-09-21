@@ -505,7 +505,7 @@ Selects a physical iOS device and switches target_kind to device.
   mav ui scrollUntil --id ID [--direction up] [--max-swipes 5]
 `
 	case "goto":
-		return `Usage: mav goto "<the screen you want>" [--arrived-when '<criteria>'] [--dismiss-permission '<button label>'] [--max-steps 12] [--timeout 90s]
+		return `Usage: mav goto "<the screen you want>" [--arrived-when '<criteria>'] [--infer-arrival] [--dismiss-permission '<button label>'] [--max-steps 12] [--timeout 90s]
 
 Navigates to a screen on its own: reads the screen, decides what to tap to get closer, taps it, reads again.
 
@@ -515,13 +515,21 @@ It taps the point it already resolved rather than a selector, because a selector
   mav goto "the language screen" --arrived-when 'title:"Idioma y región"'
   mav goto "order 123" --arrived-when 'title:"Order detail" text:"123"'
 
-A criterion that ALREADY holds on the screen you start from is refused (ambiguous_criterion) rather than reported as instant arrival. Without --arrived-when, goto reports arrived=unverified and never true: there is no second model asked to confirm its own work.
+A criterion that ALREADY holds on the screen you start from is refused (ambiguous_criterion) rather than reported as instant arrival.
+
+Without --arrived-when, goto reports arrived=unverified and never true.
+
+--infer-arrival, OFF by default, lets goto DEDUCE a criterion, once, at step zero: from the starting screen and before a single tap it asks the model what the destination screen will be called, and builds the same title: criterion out of the answer. The model proposes what to look for while it has nothing invested in the answer; it is never asked afterwards whether it arrived. Arrival stays code comparing routes, and there is no second model confirming the loop's own work. The output carries criterion_source=inferred and criterion_inferred, so a criterion the machine wrote is never presented as one you wrote. If the model declines, or names the screen you are standing on, goto reports arrived=unverified exactly as it did before.
+
+Use it when the destination's name is ALREADY VISIBLE where you start — a row you tap that names the screen it opens, or a phrase you quoted in the goal. It cannot invent a name it has not seen, so when the destination is called something that only appears later it declines, and the round trip (~350 ms) buys nothing. Measured on a two-hop Boxy route of exactly that shape: declined 10 times out of 10, 0 false arrivals. That is why it is off by default rather than free.
+
+An explicit --arrived-when always wins over a deduced one, and skips the question entirely.
 
 It never taps anything destructive, with no escape hatch — unlike ` + "`mav ui find`" + `, because nobody reads anything between the decision and the finger.
 
 --dismiss-permission names the ONE button goto may press on a permission alert, and you name it because goto cannot work it out. Measured on a real three-option alert ("Permitir una vez" / "Permitir al usarse la app" / "No permitir"): two of the three grant, the one that does not was last, and there was no kTCCService marker anywhere on it. A rule guessing by position or by marker grants the permission when it guesses wrong. Naming the button is an instruction rather than a heuristic, and an instruction cannot guess wrong.
 
-It fails closed: if that exact label is not on the modal, goto stops as it always did. Matching folds case and accents and nothing else — no prefix, no substring, no nearest match — and a label naming something destructive is refused even when you declared it. Every dismissal is reported as dismissed_permission and dismissed_action, and at most 3 per run. It stops on: arrival, 12 steps, 90s, two taps that changed nothing, a screen it has already visited, two abstentions in a row, a modal on top, or a destructive element in the way. Two abstentions in a row come back as no_route when it never moved and dead_end when it walked the route first and then found nothing leading further — a dead end on the screen you asked for is not the same failure as never finding a way to start. Every run also reports criterion_source=explicit|none. The outcome says which, and the output is evidence — every step, both routes — not a verdict.
+It fails closed: if that exact label is not on the modal, goto stops as it always did. Matching folds case and accents and nothing else — no prefix, no substring, no nearest match — and a label naming something destructive is refused even when you declared it. Every dismissal is reported as dismissed_permission and dismissed_action, and at most 3 per run. It stops on: arrival, 12 steps, 90s, two taps that changed nothing, a screen it has already visited, two abstentions in a row, a modal on top, or a destructive element in the way. Two abstentions in a row come back as no_route when it never moved and dead_end when it walked the route first and then found nothing leading further — a dead end on the screen you asked for is not the same failure as never finding a way to start. The outcome says which, and the output is evidence — every step, both routes — not a verdict.
 
 Refuses to run when CI is set.
 `
