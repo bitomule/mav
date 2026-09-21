@@ -220,6 +220,31 @@ var ablationPhrases = []string{
 //
 // The recorded table (21 sep, mav 0.25.1) is in the output next to what this
 // run produced, so a change is read off rather than remembered.
+//
+// IT COUNTS RESOLUTIONS, NOT CORRECT ANSWERS. It reports how often find returns
+// SOME element versus abstains, and prints what it picked; it never compares
+// against a right answer. So a "5/5" here means "resolved 5 of 5", and reading
+// it as "was right 5 of 5" is an interpretation this test does not support --
+// which is exactly how three wrong picks on the category screen were recorded
+// for a day as successes. docs/design/flow-steps.md §1.4 has which is which.
+//
+// AND EVERY NUMBER TAKEN THROUGH THE INSTALLED jevi BEFORE 21 SEP WAS MEASURED
+// WITH THE QUESTION'S KEY ORDER DESTROYED. jevi deserialised and re-serialised
+// each forwarded question through serde_json WITHOUT preserve_order, so every
+// object came out alphabetised: a question written {goal, context, rules}
+// reached the model as {context, goal, rules}, and an option written
+// {role, name, id} as {id, name, role}. Its own comment claimed the question
+// travelled untouched -- true of the values, false of the order.
+//
+// That is not a footnote, it is the whole reason this bench once showed nine
+// call shapes producing byte-identical answers: they were nine shapes flattened
+// into the same one. Measured on one cell of this fixture, by hand over HTTP:
+// caller's order 28/30, alphabetised 3/30. Through the binary, ablated clean:
+// 2/30 before the fix, 29/30 after.
+//
+// So a measurement from this bench is only comparable with another taken on the
+// same jevi build. When in doubt, re-run it rather than trusting a number in a
+// document -- that is what the bench is for and it costs 40 calls.
 func TestAblationTable(t *testing.T) {
 	if os.Getenv("MAV_ABLATION") == "" {
 		t.Skip("set MAV_ABLATION=1 to spend 40 model calls on the control table")

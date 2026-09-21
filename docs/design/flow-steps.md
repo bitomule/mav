@@ -302,6 +302,29 @@ distintos con dos bancos distintos: filtrar por texto, un corte de confianza, re
 en vez de con su número** — esto último medido a 30 tiradas, 0/30 hoy y 1/30 con el mejor
 brazo, o sea que sólo cambia unos fallos por otros.
 
+> **Y una advertencia sobre cómo leer cualquier medida nuestra anterior al 21 sep.**
+> `jevi` **reordenaba alfabéticamente las claves** de toda pregunta que reenviaba: usaba
+> `serde_json` sin `preserve_order`, así que una pregunta escrita `{goal, context, rules}`
+> le llegaba al modelo como `{context, goal, rules}`, y una opción escrita
+> `{role, name, id}` como `{id, name, role}`. Su propio comentario decía que la pregunta
+> viajaba sin tocar: cierto de los valores, falso del orden.
+>
+> **Eso no es un detalle, es la explicación de una medida entera.** Una tanda de nueve
+> formas de llamada distintas dio respuestas byte a byte idénticas en ocho de ellas — no
+> porque la forma diera igual, sino porque las nueve llegaban aplanadas a la misma. Medido
+> sobre una celda de este mismo fixture: por HTTP a mano con el orden de quien llama,
+> **28/30**; alfabetizada como la dejaba `jevi`, **3/30**. Y por el binario, con ablación
+> limpia, **2/30 antes y 29/30 después**. Una línea en `Cargo.toml`.
+>
+> Las medidas viejas **no se retiran**: son correctas para *"lo que se podía mandar con
+> aquel `jevi`"*. Lo que no son es comparables con nada tomado sobre otra versión.
+>
+> De ahí sale también que **copiar la forma nativa entera es peor que la nuestra**:
+> reproducida exactamente la de `jev-ultrafast`, mide igual que la de hoy. Lo que paga es
+> la lista numerada en prosa **más** los registros estructurados **más** `instructions`
+> como objeto, las tres a la vez; quitar cualquiera devuelve al punto de partida. No
+> éramos poco nativos — es que no podíamos mandar la única combinación que gana.
+
 ### No escribas un sustantivo desnudo en un paso
 
 Medido el 21 sep, y es lo único que hay que saber para escribir un paso que funcione.
