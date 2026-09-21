@@ -72,3 +72,25 @@ func TestGotoSettleReadsTheScreenAgainRatherThanTheCache(t *testing.T) {
 		t.Fatalf("describe-ui calls=%d, want at least 3 -- settling on one cached read is not settling", n)
 	}
 }
+
+// `text:` matches by CONTAINS, and that is worth a test rather than a comment:
+// on a fixture seeded with `Test Category 1` and `Test Category 2`, a criterion
+// of text:"Test Category" already holds before anything happens. A flow step
+// written that way fails for the wrong reason -- goto's ambiguous-criterion
+// guard rather than the absence of the thing it was asked to create -- so the
+// measurement it was meant to make silently measures nothing.
+//
+// Same family as the ordinal collision: a name that is a prefix of what is
+// already on screen is not a name, it is a wildcard.
+func TestArrivalTextCriterionMatchesBySubstring(t *testing.T) {
+	seeded := []Element{
+		{Label: "Test Category 1", Role: "button"},
+		{Label: "Test Category 2", Role: "button"},
+	}
+	if !treeContainsText(seeded, "Test Category") {
+		t.Fatal("text: is a contains match; a prefix of a seeded label must match")
+	}
+	if treeContainsText(seeded, "Kitchen Stuff") {
+		t.Fatal("a name that collides with nothing on screen must not match")
+	}
+}
