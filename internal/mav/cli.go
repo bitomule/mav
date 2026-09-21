@@ -521,7 +521,7 @@ It never taps anything destructive, with no escape hatch — unlike ` + "`mav ui
 
 --dismiss-permission names the ONE button goto may press on a permission alert, and you name it because goto cannot work it out. Measured on a real three-option alert ("Permitir una vez" / "Permitir al usarse la app" / "No permitir"): two of the three grant, the one that does not was last, and there was no kTCCService marker anywhere on it. A rule guessing by position or by marker grants the permission when it guesses wrong. Naming the button is an instruction rather than a heuristic, and an instruction cannot guess wrong.
 
-It fails closed: if that exact label is not on the modal, goto stops as it always did. Matching folds case and accents and nothing else — no prefix, no substring, no nearest match — and a label naming something destructive is refused even when you declared it. Every dismissal is reported as dismissed_permission and dismissed_action, and at most 3 per run. It stops on: arrival, 12 steps, 90s, two taps that changed nothing, a screen it has already visited, two abstentions in a row, a modal on top, or a destructive element in the way. The outcome says which, and the output is evidence — every step, both routes — not a verdict.
+It fails closed: if that exact label is not on the modal, goto stops as it always did. Matching folds case and accents and nothing else — no prefix, no substring, no nearest match — and a label naming something destructive is refused even when you declared it. Every dismissal is reported as dismissed_permission and dismissed_action, and at most 3 per run. It stops on: arrival, 12 steps, 90s, two taps that changed nothing, a screen it has already visited, two abstentions in a row, a modal on top, or a destructive element in the way. Two abstentions in a row come back as no_route when it never moved and dead_end when it walked the route first and then found nothing leading further — a dead end on the screen you asked for is not the same failure as never finding a way to start. Every run also reports criterion_source=explicit|none. The outcome says which, and the output is evidence — every step, both routes — not a verdict.
 
 Refuses to run when CI is set.
 `
@@ -3521,12 +3521,28 @@ func (c CLI) uiType(ctx context.Context, opts GlobalOptions, cfg Config, args []
 	return c.writeFastPathResult(ctx, cfg, args, "ui.type", fields)
 }
 
+// isSelectorCLIFlag names every flag that describes WHERE, so `mav ui type`
+// can tell the target apart from the characters to type. Anything missing from
+// this list is typed into the field: `--find` was, from v0.26.0 until this
+// commit, and a flow step
+//
+//   - type: { where: { find: "the search field" }, text: "Kitchen" }
+//
+// left the field reading `Kitchen --find the search field` while the step
+// reported ok. Measured on a simpool slot, read back out of the tree as
+// value="Kitchen ”find the search field in the bottom toolbar". The same step
+// with a structural `where` was right, which is why this looked like `find`
+// being broken for `type` and fine for `tap` - `tap` never splits its args
+// into a target and a payload, so it never asks this question.
+//
+// Keep it in step with selectorCLIArgs: every flag that function can emit has
+// to be answered here.
 func isSelectorCLIFlag(value string) bool {
 	switch value {
 	case "--id", "--text", "--text-contains", "--text-starts-with", "--text-regex",
 		"--value", "--value-contains", "--role", "--enabled", "--selected", "--focused",
 		"--visible", "--index", "--bounds", "--near-id", "--near-text",
-		"--near-direction", "--near-distance", "--where-json":
+		"--near-direction", "--near-distance", "--where-json", "--find":
 		return true
 	default:
 		return false

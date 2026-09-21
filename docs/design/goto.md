@@ -54,7 +54,8 @@ un bucle que se puede desbloquear pidiéndolo no es un tope.
 | tiempo total | **90 s** | para, `outcome=timeout` |
 | pasos sin que cambie la pantalla | **2** | para, `outcome=stuck` |
 | toques repetidos sobre la misma huella | **2** | para, `outcome=looping` |
-| `find` se abstiene | **2 seguidas** | para, `outcome=no_route` |
+| se abstiene sin haberse movido | **2 seguidas** | para, `outcome=no_route` |
+| se abstiene después de haber recorrido | **2 seguidas** | para, `outcome=dead_end` |
 | pantalla destructiva por delante | inmediato | para, `outcome=refused` |
 
 12 pasos porque una pantalla de una app iOS está a 1–4 toques de la raíz; 12 es holgado y
@@ -167,7 +168,20 @@ se descubra.
 porque quien llama es casi siempre otro agente con más contexto que un jev sin él. Salen la
 ruta inicial, la ruta final, la huella, la lista de toques y si hubo abstención. `arrived` es
 `true` sólo cuando un criterio declarado se cumplió contra la ruta; sin criterio declarado es
-`unverified` y nunca `true`.
+`unverified` y nunca `true`. La salida dice además **de dónde salió el criterio**
+(`criterion_source`), para que quien lea el JSON no tenga que acordarse de qué se pasó.
+
+### Y una etiqueta que mentía: `no_route` contra `dead_end`
+
+`outcome=no_route` cubría dos hechos distintos: **"no había por dónde empezar"** y **"recorrí la
+ruta y aquí ya no hay nada que lleve más lejos"**. El segundo es lo que parece el destino desde
+dentro, y darle la misma etiqueta que al primero es **lo que hacía que el comando pareciera roto
+estando exactamente donde se le pidió** — medido en seis tomas de un vídeo, las seis con
+`no_route` y cinco de ellas en la pantalla correcta.
+
+Se separan por un hecho que ya estaba en el registro y nadie leía: **si algún toque cambió la
+pantalla**. Sin movimiento, `no_route`. Con movimiento y luego dos abstenciones, `dead_end`.
+Ningún modelo opina aquí: es `record.Changed`, que ya se calculaba.
 
 ## 3. Cómo detecta que da vueltas
 
@@ -277,7 +291,9 @@ Sale, como `find`, una línea `ok` y un documento JSON:
 ```json
 {
   "arrived": "true | false | unverified",
-  "outcome": "arrived | exhausted | timeout | stuck | looping | no_route | refused | out_of_app | ambiguous_criterion",
+  "outcome": "arrived | exhausted | timeout | stuck | looping | no_route | dead_end | refused | out_of_app | ambiguous_criterion",
+  "criterion_source": "explicit | none",
+  "criterion": "title:\"...\"",
   "steps": [ {"tapped": {...}, "fingerprint_before": "...", "fingerprint_after": "...", "changed": true} ],
   "route_before": {"tab": "...", "nav_title": "...", "modal": null},
   "route_after":  {"tab": "...", "nav_title": "...", "modal": null},
