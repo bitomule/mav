@@ -47,19 +47,43 @@ func TestANilTreeCacheIsAWorkingCacheThatNeverHits(t *testing.T) {
 	if _, ok := cache.lookup("auto", false); ok {
 		t.Fatal("a command that was never given a cache must always read")
 	}
-	if _, ok := cache.consumeChoice(); ok {
-		t.Fatal("there is no decision to consume without a cache")
+	// The interlock does NOT go away with the cache. Without this the whole
+	// CLI - which never turns the cache on - could not spend a decision at
+	// all, and every model-resolved selector failed before it touched
+	// anything.
+	ledger := cache.choices()
+	ledger.remember(guardFor(Element{ID: "boxRow_1000", Label: "1000", Role: "cell"}))
+	if _, ok := ledger.consume(); !ok {
+		t.Fatal("a cacheless caller must still be able to spend its own decision")
+	}
+	if _, ok := ledger.consume(); ok {
+		t.Fatal("and spending it twice must still be refused")
 	}
 }
 
 func TestTheDecisionIsConsumedSoARetryCannotActTwice(t *testing.T) {
 	cache := newTreeCache()
-	cache.rememberChoice(guardFor(Element{ID: "boxRow_1000", Label: "1000", Role: "cell"}))
-	if _, ok := cache.consumeChoice(); !ok {
+	cache.choices().remember(guardFor(Element{ID: "boxRow_1000", Label: "1000", Role: "cell"}))
+	if _, ok := cache.choices().consume(); !ok {
 		t.Fatal("the decision must be there to consume")
 	}
-	if _, ok := cache.consumeChoice(); ok {
+	if _, ok := cache.choices().consume(); ok {
 		t.Fatal("a second attempt must find nothing to act on")
+	}
+}
+
+// A run shares ONE ledger, which is what makes "cannot act twice" hold across
+// the steps of a run and not merely inside one call: the choices() a second
+// step gets is the choices() the first step spent.
+func TestOneRunSharesOneLedger(t *testing.T) {
+	cache := newTreeCache()
+	step := cache.choices()
+	step.remember(guardFor(Element{ID: "boxRow_1000", Label: "1000", Role: "cell"}))
+	if _, ok := cache.choices().consume(); !ok {
+		t.Fatal("the run's ledger must be the same one every step writes to")
+	}
+	if _, ok := step.consume(); ok {
+		t.Fatal("another holder of the same run's ledger must not find it again")
 	}
 }
 
