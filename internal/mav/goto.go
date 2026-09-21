@@ -1,6 +1,7 @@
 package mav
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 )
@@ -145,10 +146,20 @@ func (a ArrivalCriterion) String() string {
 	return strings.Join(parts, " ")
 }
 
-// ParseArrivalCriterion reads `title:"..."` and `text:"..."` terms. A bare word
-// with no prefix is a title, because that is what people mean when they name a
-// screen, and guessing the other way round would silently match a row label.
-func ParseArrivalCriterion(spec string) ArrivalCriterion {
+// arrivalPrefixes are the only prefixes --arrived-when understands, in the
+// order the error message lists them.
+var arrivalPrefixes = []string{"title:", "text:", "screen:"}
+
+// ParseArrivalCriterion reads `title:"..."`, `text:"..."` and `screen:"..."`
+// terms. A bare word with no prefix is a title, because that is what people
+// mean when they name a screen, and guessing the other way round would silently
+// match a row label.
+//
+// A term that LOOKS like a prefix and is not one is a syntax error, not a
+// title: `id:boxes-view` used to become "find a title containing the literal
+// text id:boxes-view", which never matches, so the caller saw arrived=false and
+// went debugging their app instead of their command.
+func ParseArrivalCriterion(spec string) (ArrivalCriterion, error) {
 	var out ArrivalCriterion
 	for _, term := range splitTerms(spec) {
 		switch {
@@ -165,12 +176,53 @@ func ParseArrivalCriterion(spec string) ArrivalCriterion {
 				out.Texts = append(out.Texts, v)
 			}
 		default:
+			if word, ok := unknownArrivalPrefix(term); ok {
+				return ArrivalCriterion{}, fmt.Errorf(
+					"unknown --arrived-when prefix %q in term %q; the prefixes are %s, "+
+						"and a term with no prefix is a title (quote it if the title itself "+
+						"contains a colon)",
+					word, term, strings.Join(arrivalPrefixes, " "))
+			}
 			if v := unquote(term); v != "" {
 				out.Titles = append(out.Titles, v)
 			}
 		}
 	}
-	return out
+	return out, nil
+}
+
+// unknownArrivalPrefix decides whether a term that matched no known prefix was
+// still MEANT as one, and returns the word the caller used.
+//
+// Where the line sits, and why, because titles legitimately contain colons —
+// `Moving Boxes: Office cables` is a real screen in the test bank. A term counts
+// as a prefix only when all four hold:
+//
+//  1. it does not open with a quote: a quoted term is a literal title, which is
+//     how you write a title that starts with a word and a colon;
+//  2. it contains a colon;
+//  3. everything before the first colon is one or more ASCII letters — no
+//     spaces, no digits, no punctuation, which is what every real prefix is;
+//  4. something follows the colon. A trailing colon is punctuation inside a
+//     name, so the `Boxes:` of an unquoted `Moving Boxes: Office cables` stays
+//     a title term.
+func unknownArrivalPrefix(term string) (string, bool) {
+	if strings.HasPrefix(term, `"`) {
+		return "", false
+	}
+	colon := strings.Index(term, ":")
+	if colon <= 0 || colon == len(term)-1 {
+		return "", false
+	}
+	word := term[:colon]
+	for _, r := range word {
+		if r < 'a' || r > 'z' {
+			if r < 'A' || r > 'Z' {
+				return "", false
+			}
+		}
+	}
+	return word, true
 }
 
 // splitTerms splits on spaces except inside double quotes, so a screen name with

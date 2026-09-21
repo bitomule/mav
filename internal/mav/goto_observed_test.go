@@ -135,7 +135,7 @@ func TestScreenCriterionIsWholeNotSubstring(t *testing.T) {
 	if !(ArrivalCriterion{Screens: []string{"boxes-view"}}).MatchesRoute(route, nil) {
 		t.Error("the screen id did not match itself")
 	}
-	if ParseArrivalCriterion(`screen:"boxes-view"`).String() != `screen:"boxes-view"` {
+	if mustCriterion(t, `screen:"boxes-view"`).String() != `screen:"boxes-view"` {
 		t.Error("--arrived-when does not round-trip a screen: term")
 	}
 }
