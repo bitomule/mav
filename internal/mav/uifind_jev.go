@@ -57,9 +57,9 @@ var errJevTooOld = errors.New("jevi too old")
 
 // askJevChoice puts one choice question to jev over the given text.
 func askJevChoice(ctx context.Context, key, question, text string, options []string) (jevChoice, error) {
-	// The floor is checked here and nowhere else: this is the one path that
-	// spawns jevi, and it costs one `jevi --version` per PROCESS rather than per
-	// call. jevversion.go says why that distinction is load-bearing.
+	// The floor is checked on every path that spawns jevi — here and in
+	// askJevQuestions — and it costs one `jevi --version` per PROCESS rather than
+	// per call. jevversion.go says why that distinction is load-bearing.
 	if err := checkJevVersion(ctx); err != nil {
 		return jevChoice{}, fmt.Errorf("%w: %s", errJevTooOld, err)
 	}
@@ -116,6 +116,22 @@ func askJevChoice(ctx context.Context, key, question, text string, options []str
 // the many-head one. The only difference is the question document, which is
 // what is being measured.
 func askJevQuestions(ctx context.Context, key, questionsJSON, text string) (map[string]jevChoice, int64, error) {
+	// THE SAME FLOOR AS askJevChoice, and it is load-bearing here for a worse
+	// reason than there. mav stopped discarding off-menu answers itself because
+	// jevi 0.4.0 WITHHOLDS the label rather than returning it, so an off-menu
+	// answer arrives as an empty label and reads as an abstention. That holds
+	// only above the floor: an older jevi hands the label back with a warning
+	// mav no longer reads, and then every head in this set can return something
+	// that was never on its menu — including the head that names WHICH DECLARED
+	// VALUE TO TYPE. Below the floor that is not a wrong tap, it is characters
+	// going into somebody's app.
+	//
+	// This is a SECOND path that spawns jevi, which askJevChoice's comment did
+	// not anticipate. That comment has been corrected rather than left claiming
+	// the floor is checked in one place.
+	if err := checkJevVersion(ctx); err != nil {
+		return nil, 0, fmt.Errorf("%w: %s", errJevTooOld, err)
+	}
 	cmd := exec.CommandContext(ctx, "jevi", "ask",
 		"--questions-json", questionsJSON, "--json", "--soft")
 	cmd.Stdin = strings.NewReader(text)
