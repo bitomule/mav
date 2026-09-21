@@ -735,6 +735,7 @@ Supported step types:
 
 ```text
 open
+goto
 go
 tree
 tap
@@ -792,6 +793,28 @@ equivalent:
 
 On failure, MAV stops run-owned processes, tries to capture failure evidence,
 writes report data, and returns a compact failure line.
+
+Use `goto` to navigate to a screen without writing the route, and the declared
+steps to do the work once there. `goto` carries no selector -- it is handed a
+goal in prose, not an element -- so its parameters sit at the top level of the
+step, next to `where` rather than inside it:
+
+```yaml
+- goto:
+    goal: the screen that lists every category
+    arrivedWhen: 'screen:categoriesView'
+    maxSteps: 6        # optional, 1..12
+    timeout: 45s       # optional, up to 90s
+```
+
+Two rules apply inside a flow and nowhere else:
+
+- **`arrivedWhen` is mandatory.** A `goto` step without it is a lint error, not
+  a run-time surprise.
+- **`arrived=unverified` fails the step.** On the command line `unverified` is
+  an honest answer -- goto says it cannot confirm and whoever reads it decides.
+  Inside a flow it is an unchecked premise the following steps would act on,
+  and a flow that carries on over a false arrival touches where it should not.
 
 Use `wait` for a single `id`, `text`, or `value`. Use `waitUntil` with `any`
 when more than one result is acceptable, and use `changedFrom` after a named

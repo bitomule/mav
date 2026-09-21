@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### `goto` is a flow step now, and inside a flow it has to prove it arrived
+
+`goto` navigates; the declared steps do the work. A flow can now mix them in one
+file: `goto` walks to the screen, and `tap` / `type` press the buttons once
+there. It carries no selector, so `goal`, `arrivedWhen`, `maxSteps` and
+`timeout` sit at the top level of the step, next to `where` rather than inside
+it.
+
+Two rules hold inside a flow and nowhere else.
+
+**`arrivedWhen` is mandatory.** A `goto` step without one is a lint error,
+caught by `mav flow lint` before anything runs.
+
+**`arrived=unverified` fails the step.** On the command line `unverified` is an
+honest answer — goto says it cannot confirm arrival and whoever reads it
+decides. Inside a flow it is an unchecked premise the following steps are going
+to act on, and a flow that carries on over a false arrival touches where it
+should not. A flow that fails is annoying; one that does strange things in
+somebody's app is something else.
+
+There is a measured reason behind both: `goto` can declare arrival on opening
+the screen an action lives on, without having done the action. It knows how to
+check that it reached a PLACE, not that it did a THING. With a criterion
+required, that inferred-arrival route is never taken inside a flow.
+
 ## v0.28.0
 
 ### `goto` says it arrived without being told what to expect

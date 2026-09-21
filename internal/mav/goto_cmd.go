@@ -59,6 +59,91 @@ func (c CLI) gotoScreen(ctx context.Context, opts GlobalOptions, cfg Config, arg
 	})
 }
 
+// executeGotoFlowStep runs the same loop the command runs, and judges its
+// result by the stricter rule a flow needs.
+//
+// Outside a flow, `arrived=unverified` is an honest answer -- the command says
+// it cannot confirm and whoever reads it decides. Inside a flow it is an
+// unchecked premise the following steps are going to act on, and a flow that
+// carries on over a false arrival touches where it should not. A flow that
+// fails is annoying; one that does strange things in somebody's app is
+// something else. So unverified FAILS the step; it does not pass it.
+//
+// The criterion itself is mandatory, and rejected at lint time rather than
+// here (validateGotoFlowStep). This is the second half of the same guarantee:
+// even with a criterion written, a run that cannot confirm arrival against it
+// stops the flow instead of handing the next step a place it never checked.
+func (c CLI) executeGotoFlowStep(ctx context.Context, opts GlobalOptions, step FlowStep) (map[string]string, error) {
+	cfg, cfgErr := c.mustLoadConfig()
+	if cfgErr != nil {
+		return flowStepTargetFailure(step, cfgErr)
+	}
+
+	goal := strings.TrimSpace(step.Params["goal"])
+	criterion := ParseArrivalCriterion(step.Params["arrivedWhen"])
+	maxSteps := gotoMaxSteps
+	if raw := step.Params["maxSteps"]; raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 && n <= gotoMaxSteps {
+			maxSteps = n
+		}
+	}
+	timeout := gotoDefaultTimeout
+	if raw := step.Params["timeout"]; raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil && d > 0 && d <= gotoDefaultTimeout {
+			timeout = d
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// The loop writes its own fail lines; inside a flow the step's line is the
+	// one the run prints, so its output goes to a sink and only the code and
+	// the first line survive as fields.
+	var sink strings.Builder
+	result, err := c.withStdout(&sink).runGotoLoop(ctx, cfg, opts, goal, criterion, maxSteps, step.Params["dismissPermission"])
+
+	fields := map[string]string{
+		"goal":             goal,
+		"arrived":          result.Arrived,
+		"outcome":          result.Outcome,
+		"criterion":        criterion.String(),
+		"criterion_source": result.CriterionSource,
+		"steps":            strconv.Itoa(len(result.Steps)),
+	}
+	if !result.RouteFinal.IsZero() {
+		fields["route"] = result.RouteFinal.String()
+	}
+	if result.Next != "" {
+		fields["next"] = result.Next
+	}
+	for _, d := range result.Dismissed {
+		fields["dismissed_permission"] = d.Modal
+		fields["dismissed_action"] = d.Action
+	}
+	if err != nil {
+		if detail := firstLine(strings.TrimSpace(sink.String())); detail != "" {
+			fields["detail"] = detail
+		}
+		return fields, err
+	}
+
+	return fields, gotoFlowStepVerdict(result.Arrived)
+}
+
+// gotoFlowStepVerdict turns what the loop reported into the step's verdict.
+// Only a confirmed arrival passes: `unverified` is a premise nobody checked,
+// and the steps after this one would act on it as if it were an arrival.
+func gotoFlowStepVerdict(arrived string) error {
+	switch arrived {
+	case "true":
+		return nil
+	case "unverified":
+		return errors.New("goto_arrival_unverified")
+	default:
+		return errors.New("goto_did_not_arrive")
+	}
+}
+
 func (c CLI) runGotoLoop(ctx context.Context, cfg Config, opts GlobalOptions,
 	goal string, criterion ArrivalCriterion, maxSteps int, dismiss string) (GotoResult, error) {
 
