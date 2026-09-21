@@ -1,5 +1,80 @@
 # Changelog
 
+## v0.28.0
+
+### `goto` says it arrived without being told what to expect
+
+`--arrived-when` still works and still wins when you write it. What changes is
+that you no longer have to. Naming the destination up front was the part that
+broke the promise: if you already know the screen's exact title, much of the
+point of asking in your own words has gone.
+
+An earlier attempt asked the model, before setting off, what the destination
+would be called. It scored 0/10, and correctly — the candidate names come only
+from the starting screen, and on this route the destination is not on it. It was
+being asked to guess a name it could not see.
+
+So the criterion is not guessed before the walk; it is chosen after it. `goto`
+records every screen it actually stood on, and when the walk is over it lists
+them — each by its title, or by mav's own `screen=` identity when it has none,
+with some of the text it showed — **alphabetically, with no step numbers and no
+marker of where it ended** — and asks which one is the destination, with `none`
+on the menu. Code, which alone knows which of them was the last, derives arrival:
+`true` only when the pick IS where it stopped and is not where it started.
+
+The blindness is structural rather than a matter of prompt. The model cannot
+identify the endpoint in an alphabetical menu, so it cannot flatter the run by
+picking it, and it is never asked whether it arrived — it is asked to choose
+among places, which is a different question from grading its own trip.
+
+Measured on Boxy with eight named boxes, ten runs a lane, no `--arrived-when`
+anywhere:
+
+| | result |
+|---|---|
+| false arrivals | **0 of 30** |
+| confirms a real arrival | **9 of 10** (0/10 before) |
+| cost | **one model call, 324 ms**, only when there is something to answer |
+
+That last row is the gate the earlier attempt could not have: nothing moved,
+fewer than two distinct screens, or a final screen with no name are all decidable
+in code before anything is spent.
+
+The ablation: a goal whose destination does not exist ends on the very screen the
+first lane confirms, with the same three-entry menu — only the goal differs — and
+answers `none` 10/10, `arrived=unverified` 10/10.
+
+A names-only menu measured 0/10, which is worth knowing: "the FIRST category,
+FIRST box" is positional, and a name does not say which is first.
+
+### One sentence was costing `goto` a fifth of its choices
+
+On a three-category screen, asked for the first category, `find` picked the right
+one 40 times out of 40 and `goto` managed 29 to 34. Same model, same screen, same
+nine candidates. The difference was the sentence that names the goal:
+
+```
+- "Someone is trying to reach: " + goal
++ "A user described where they want to get to as: " + goal
+```
+
+Now 40/40, and the loss travels with the sentence: put `goto`'s phrasing into
+`find`'s question and `find` drops to 35/40.
+
+The obvious suspect was wrong. `goto`'s clause offering "the element that LEADS
+towards it" is untouched — it exists because without it `goto` stopped at the
+Settings root when the goal was inside General, and it is not what was costing
+anything.
+
+Four controls, forty runs each, reading raw `axe` JSON on live screens: the
+broken cell 40/40, the multi-step case the LEADS clause protects still 40/40, the
+direct case still 40/40, and four absent goals still abstaining 40/40. End to end
+12/12 before and after.
+
+Also measured: the untrusted-text preamble was costing about 8 hits in 40 under
+the old wording. Under the new one it costs nothing, so the defence stays without
+a trade.
+
 ## Unreleased
 
 ### `goto` reads the goal as a description again, and stops losing the first of three
