@@ -1,5 +1,60 @@
 # Changelog
 
+## Unreleased
+
+### `goto` knows it arrived without you telling it the destination's name first
+
+Measured on Boxy with eight named boxes, iPhone 17 Pro / iOS 26.3 from a simpool
+slot, load 4.1–6.4 throughout, tap canary green. Ten runs a lane, no
+`--arrived-when` anywhere.
+
+| lane | goal | `arrived=true` | **arrived on the WRONG screen** |
+|---|---|---|---|
+| reaches it | contents of the first category's first box | **9/10** | **0/10** |
+| does not (returns to the start) | Dropbox sync settings | 0/10 | **0/10** |
+| does not, and **ends on the other lane's destination** | change history of the first box | 0/10 | **0/10** |
+
+The tenth run of the first lane had not arrived — `goto` opened a different
+category and stopped on `Vista de cajas vacia` — so that is **9 of the 9 runs
+that got there**, which is what a hand-written `--arrived-when` scores.
+
+**What it does.** Arrival is still decided by code comparing routes. What is new
+is where the criterion comes from when you did not write one: at the END of the
+walk, `goto` lists every distinct screen it actually stood on — each by its title
+or, for a screen without one, by its internal screen name, followed by some of
+the text it showed — **alphabetically, with no step numbers and no marker of
+where it ended** — and asks which of them is the destination, with `none` on the
+menu. Code, which alone knows which one was the last, decides.
+
+**It is never asked whether it arrived**, and it cannot tell which entry the
+answer would be. Choosing between screens it observed is not grading its own
+work. And it is monotone: a pick that is not where the run stopped stays
+`unverified`, never `false`, so this can only ever turn an unverified into a
+true.
+
+**It does not charge for saying nothing.** The question is skipped when nothing
+moved, when fewer than two distinct screens were seen, or when the screen it
+stopped on has neither a title nor a screen identity — all decidable in code
+before a penny is spent. One call, 324 ms median, only where there is something
+to answer.
+
+The third lane is the ablation that matters: it ends on the **same screen with
+the same three-entry menu** as the lane that confirms, and only the goal differs.
+`none`, ten times out of ten.
+
+New in the output: `criterion_source=observed`, `criterion_observed`, and
+`observed_screens` — the menu the destination was named out of, so a pick is
+readable next to what it was picked from. A criterion nobody wrote is never
+printed as one you wrote, and an explicit `--arrived-when` always wins.
+
+### `--arrived-when` takes `screen:"..."`
+
+`mav`'s own screen identity — the `screen=` that `mav ui tree` already prints —
+is now part of a route and can be named as an arrival criterion, compared whole
+rather than as a substring. It exists because a Spanish-locale SwiftUI app mostly
+has no navigation-bar headings: on Boxy neither the category grid nor the box
+list has one, and without this there was nothing to call them.
+
 ## v0.27.0
 
 ### `goto` arrives, and now it says so

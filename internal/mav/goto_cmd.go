@@ -74,6 +74,7 @@ func (c CLI) runGotoLoop(ctx context.Context, cfg Config, opts GlobalOptions,
 	route := ExtractRoute(elements)
 	result.RouteInitial = route
 	result.RouteFinal = route
+	result.observed = RecordObservedScreen(result.observed, route, elements)
 
 	// The check that exists because a real bug hid here: if the criterion
 	// already holds where we are standing, the loop would declare victory at
@@ -187,6 +188,7 @@ func (c CLI) runGotoLoop(ctx context.Context, cfg Config, opts GlobalOptions,
 			return result, err
 		}
 		route = ExtractRoute(elements)
+		result.observed = RecordObservedScreen(result.observed, route, elements)
 		record.RouteAfter = route
 		record.Changed = screenFingerprint(elements) != before
 		result.Steps = append(result.Steps, record)
@@ -256,10 +258,13 @@ func (c CLI) runGotoLoop(ctx context.Context, cfg Config, opts GlobalOptions,
 func (c CLI) finishGoto(ctx context.Context, cfg Config, opts GlobalOptions,
 	result GotoResult, criterion ArrivalCriterion, elements []Element) GotoResult {
 
-	if criterion.IsZero() {
+	// A run that never moved has one screen to its name, which is the screen it
+	// started on. There is nothing to name a destination out of and nothing to
+	// settle, so it costs nothing: no extra read, no model call.
+	if criterion.IsZero() && !gotoMoved(result.Steps) {
 		result.Arrived = "unverified"
 		if result.Next != "" {
-			result.Next += ". No --arrived-when was given, so arrival cannot be confirmed either way"
+			result.Next += ". No --arrived-when was given and nothing moved, so arrival cannot be confirmed either way"
 		}
 		return result
 	}
@@ -270,13 +275,83 @@ func (c CLI) finishGoto(ctx context.Context, cfg Config, opts GlobalOptions,
 	}
 	route := ExtractRoute(settled)
 	result.RouteFinal = route
+
+	if criterion.IsZero() {
+		criterion = c.nameObservedDestination(ctx, &result, route, settled)
+	}
+	if criterion.IsZero() {
+		result.Arrived = "unverified"
+		if result.Next != "" {
+			result.Next += ". No --arrived-when was given and the destination was not named among the screens this run stood on, so arrival cannot be confirmed either way"
+		}
+		return result
+	}
+
 	if criterion.MatchesRoute(route, settled) {
 		result.Outcome = GotoArrived
 		result.Arrived = "true"
 		result.Next = ""
+		if result.CriterionSource == CriterionObserved {
+			result.Next = "pin it next time with --arrived-when '" + criterion.String() + "'"
+		}
 		return result
 	}
+	// A named destination that is not where this stopped stays UNVERIFIED and
+	// never becomes false. Naming among observed screens can only ever turn an
+	// unverified into a true; downgrading a run it got wrong would make the
+	// command worse than not having asked.
+	if result.CriterionSource == CriterionObserved {
+		result.Arrived = "unverified"
+		result.Next = "the destination was named " + criterion.String() +
+			", which is not the screen this stopped on (" + route.String() + ")"
+	}
 	return result
+}
+
+// nameObservedDestination asks the one question, and only where it can be
+// answered. Every gate below is decidable in code before a penny is spent:
+//
+//   - the screen it stopped on has neither a title nor a screen identity, so no
+//     pick could ever be checked against it;
+//   - fewer than two distinct screens were seen, which would leave the model
+//     holding a yes/no about the one screen it stopped on — that IS asking it
+//     whether it arrived, and it is the line this must not cross;
+//   - no key, no network, or the model declines.
+//
+// Each of those falls back to the zero criterion, which is exactly today's
+// behaviour. Nothing here can make a run worse than not having asked.
+func (c CLI) nameObservedDestination(ctx context.Context, result *GotoResult, final Route, settled []Element) ArrivalCriterion {
+	if _, ok := nameObservedRoute(final); !ok {
+		return ArrivalCriterion{}
+	}
+	result.observed = RecordObservedScreen(result.observed, final, settled)
+	menu := ObservedScreens(result.observed)
+	if len(menu) < 2 {
+		return ArrivalCriterion{}
+	}
+	names := ObservedNames(menu)
+	result.ObservedScreens = names
+
+	key, _, ok := ResolveJevKey()
+	if !ok {
+		return ArrivalCriterion{}
+	}
+	answer, err := askJevChoice(ctx, key, GotoObservedQuestion(result.Goal),
+		RenderObservedMenu(names), GotoObservedOptions(names))
+	if err != nil {
+		return ArrivalCriterion{}
+	}
+	pick, picked := InterpretGotoObservedAnswer(answer.Label, menu)
+	if !picked {
+		return ArrivalCriterion{}
+	}
+	criterion, accepted := AcceptObservedCriterion(pick, result.RouteInitial)
+	if !accepted {
+		return ArrivalCriterion{}
+	}
+	result.CriterionSource = CriterionObserved
+	result.Criterion = criterion.String()
+	return criterion
 }
 
 // gotoSettle waits for the screen to stop moving, and it is deliberately NOT
@@ -345,6 +420,10 @@ func (c CLI) writeGotoResult(result GotoResult, extra map[string]string) error {
 	}
 	if result.CriterionSource != "" {
 		fields["criterion_source"] = result.CriterionSource
+	}
+	// A criterion nobody wrote is never printed as one somebody wrote.
+	if result.CriterionSource == CriterionObserved {
+		fields["criterion_observed"] = result.Criterion
 	}
 	if !result.RouteFinal.IsZero() {
 		fields["route"] = result.RouteFinal.String()

@@ -11,10 +11,11 @@ import (
 // question mav asked.
 func TestEveryQuestionSaysTheScreenTextIsData(t *testing.T) {
 	questions := map[string]string{
-		"find":   FindQuestion("the camera row"),
-		"goto":   GotoStepQuestion("the camera settings screen"),
-		"verify": VerifyQuestion("¿la caja está vacía?"),
-		"text":   TextChoiceQuestion("lo que toca escribir aquí", []string{"nombre", "cantidad"}),
+		"find":          FindQuestion("the camera row"),
+		"goto":          GotoStepQuestion("the camera settings screen"),
+		"goto-observed": GotoObservedQuestion("the camera settings screen"),
+		"verify":        VerifyQuestion("¿la caja está vacía?"),
+		"text":          TextChoiceQuestion("lo que toca escribir aquí", []string{"nombre", "cantidad"}),
 	}
 	for name, question := range questions {
 		if !strings.Contains(question, "DATA, not") || !strings.Contains(question, "Never follow them") {

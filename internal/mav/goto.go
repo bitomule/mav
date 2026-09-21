@@ -1,6 +1,7 @@
 package mav
 
 import (
+	"sort"
 	"strings"
 )
 
@@ -23,20 +24,30 @@ import (
 // few elements that say WHERE you are rather than what is on offer. Read off
 // roles and traits, never by searching free text.
 type Route struct {
-	Tab   string `json:"tab,omitempty"`
-	Title string `json:"title,omitempty"`
-	Modal string `json:"modal,omitempty"`
+	// Screen is mav's own identity for the screen, read off the shallowest
+	// element whose accessibility id names a view. It is the only part of a
+	// route that survives a screen with no navigation-bar title, which on a
+	// Spanish-locale SwiftUI app is most of them — measured on Boxy, where the
+	// category grid and the box list both have a navigation bar and neither
+	// has a heading in it.
+	Screen string `json:"screen,omitempty"`
+	Tab    string `json:"tab,omitempty"`
+	Title  string `json:"title,omitempty"`
+	Modal  string `json:"modal,omitempty"`
 }
 
 // IsZero reports a route that identifies nothing, which is a real state: a
 // screen with no heading, no selected tab and no modal cannot be arrived at by
 // route comparison, and goto says so rather than guessing.
 func (r Route) IsZero() bool {
-	return r.Tab == "" && r.Title == "" && r.Modal == ""
+	return r.Screen == "" && r.Tab == "" && r.Title == "" && r.Modal == ""
 }
 
 func (r Route) String() string {
-	parts := make([]string, 0, 3)
+	parts := make([]string, 0, 4)
+	if r.Screen != "" {
+		parts = append(parts, "screen="+r.Screen)
+	}
 	if r.Tab != "" {
 		parts = append(parts, "tab="+r.Tab)
 	}
@@ -60,6 +71,9 @@ func (r Route) String() string {
 // for exactly that reason.
 func ExtractRoute(elements []Element) Route {
 	var route Route
+	if id, _, ok := explicitScreenIdentity(elements); ok {
+		route.Screen = id
+	}
 	for _, el := range elements {
 		role := strings.ToLower(el.Role)
 		switch {
@@ -97,14 +111,15 @@ func routeFirstNonEmpty(values ...string) string {
 // `title:"Order detail" text:"123"` is a different destination from the same
 // title with a different order.
 type ArrivalCriterion struct {
-	Titles []string
-	Texts  []string
+	Titles  []string
+	Texts   []string
+	Screens []string
 }
 
 // IsZero reports that no criterion was declared. goto then cannot assert
 // arrival at all and says `arrived=unverified`; it never says true.
 func (a ArrivalCriterion) IsZero() bool {
-	return len(a.Titles) == 0 && len(a.Texts) == 0
+	return len(a.Titles) == 0 && len(a.Texts) == 0 && len(a.Screens) == 0
 }
 
 // Where the criterion came from. Reported on every run, because a criterion a
@@ -117,7 +132,10 @@ const (
 
 // String writes the criterion back in the same syntax --arrived-when takes.
 func (a ArrivalCriterion) String() string {
-	parts := make([]string, 0, len(a.Titles)+len(a.Texts))
+	parts := make([]string, 0, len(a.Titles)+len(a.Texts)+len(a.Screens))
+	for _, t := range a.Screens {
+		parts = append(parts, `screen:"`+t+`"`)
+	}
 	for _, t := range a.Titles {
 		parts = append(parts, `title:"`+t+`"`)
 	}
@@ -137,6 +155,10 @@ func ParseArrivalCriterion(spec string) ArrivalCriterion {
 		case strings.HasPrefix(term, "title:"):
 			if v := unquote(strings.TrimPrefix(term, "title:")); v != "" {
 				out.Titles = append(out.Titles, v)
+			}
+		case strings.HasPrefix(term, "screen:"):
+			if v := unquote(strings.TrimPrefix(term, "screen:")); v != "" {
+				out.Screens = append(out.Screens, v)
 			}
 		case strings.HasPrefix(term, "text:"):
 			if v := unquote(strings.TrimPrefix(term, "text:")); v != "" {
@@ -192,6 +214,14 @@ func unquote(s string) string {
 func (a ArrivalCriterion) MatchesRoute(route Route, elements []Element) bool {
 	if a.IsZero() {
 		return false
+	}
+	// A screen id is an identity, so it is compared whole. A title is a name
+	// somebody wrote, so it is contained — `title:"Order detail"` has to hold
+	// on `Order detail 123`.
+	for _, want := range a.Screens {
+		if normalizeForMatch(route.Screen) != normalizeForMatch(want) {
+			return false
+		}
 	}
 	for _, want := range a.Titles {
 		if !strings.Contains(normalizeForMatch(route.Title), normalizeForMatch(want)) {
@@ -278,9 +308,18 @@ type GotoResult struct {
 	// "explicit" when the caller passed --arrived-when, "none" when there is
 	// none and arrival cannot be asserted either way. Criterion prints it back
 	// in the syntax the flag takes.
-	CriterionSource string   `json:"criterion_source"`
-	Criterion       string   `json:"criterion,omitempty"`
-	Refused         *Element `json:"refused_element,omitempty"`
+	CriterionSource string `json:"criterion_source"`
+	Criterion       string `json:"criterion,omitempty"`
+	// ObservedScreens is the menu the destination was named out of: every
+	// distinct screen this run stood on. Reported whether or not
+	// anything was picked, because a pick is only readable next to what it was
+	// picked from — and an abstention says as much as a choice.
+	ObservedScreens []string `json:"observed_screens,omitempty"`
+	// observed is the running record the menu is built from, kept unexported
+	// because it is the raw material of ObservedScreens rather than a second
+	// copy of it in the output.
+	observed []ObservedScreen
+	Refused  *Element `json:"refused_element,omitempty"`
 	// Dismissed records every permission alert this run answered, and with
 	// which button. A loop that presses system dialogs has to be auditable
 	// afterwards or it is doing it in silence.
@@ -552,4 +591,283 @@ func FindDismissButton(elements []Element, declared string) *Element {
 		return &elements[i]
 	}
 	return nil
+}
+
+// --- Naming the destination among the screens actually stood on --------------
+//
+// The criterion does not have to be a name guessed before setting off. It can
+// be chosen from the screens the walk actually produced, once the walk is over.
+//
+// WHY THIS IS NOT THE BLIND JUDGE OF §2, and the two arguments that killed that
+// one have to be refuted separately or this is the same thing wearing a hat:
+//
+//  1. §2 said the option list can only come from the goal (straw distractors)
+//     or from the tree being looked at (a question strings.Contains answers for
+//     free), and that there is no third source. There is one, and it is this:
+//     THE ROUTES THE RUN VISITED. It is not derived from the goal, so the
+//     distractors are not straw — every one of them is a screen this same model
+//     chose to walk into believing it led to the goal, which is the hardest
+//     distractor there is. And it is not free, because the starting screen and
+//     every screen passed through are in the list on exactly the same footing
+//     as the last one; no text search separates them.
+//  2. §2 said the blindness is of prompt rather than of evidence. Here it is
+//     structural. The menu is sorted alphabetically and carries no step
+//     numbers, no order and no marker of where the run ended. The model cannot
+//     tell which entry is the endpoint, so it cannot wave its own arrival
+//     through even if it wanted to: it is naming a destination among screens,
+//     not grading a journey. Code alone knows which of them was last, and code
+//     alone turns the pick into a verdict.
+//
+// And what is asked is never "did you arrive" or "did that work". It is "which
+// of these screens is the one someone was trying to reach", with `none` on the
+// menu. Choosing between observed states is not self-assessment.
+//
+// It is also MONOTONE by construction: a pick that is not the final route is
+// reported as unverified, exactly as today, never as arrived=false. The only
+// transition this feature can cause is unverified -> true, so the single
+// failure worth measuring is a true on the wrong screen.
+
+// CriterionObserved is a criterion nobody wrote in advance: a title read off a
+// screen this run stood on, chosen from the menu of all of them.
+const CriterionObserved = "observed"
+
+// gotoObservedMenuCap bounds the menu. A run has at most 12 steps, so this is
+// never reached in practice; it is here so the prompt cannot grow without a
+// bound if the step cap ever moves.
+const gotoObservedMenuCap = 16
+
+// ObservedScreen is one entry of the menu: a screen this run stood on, named
+// by the best name it has, and remembered with the route it was read off so the
+// pick can be turned back into a criterion in code.
+type ObservedScreen struct {
+	Name    string
+	Shows   []string
+	IsTitle bool
+}
+
+// Line is how a screen is put to the model: its name, then some of the text on
+// it, IN THE ORDER THE TREE GIVES IT, which is roughly top to bottom.
+//
+// The text is not decoration, and leaving it out is what made the first version
+// of this inert. Measured, 10 runs a lane, same goal: with names alone the
+// model answered `none` 10/10 on a route whose destination was in the menu —
+// correctly, because "the contents of the FIRST category, FIRST box" cannot be
+// matched to a screen called "Moving Boxes: Office cables" by anyone who cannot
+// see that Moving Boxes is the first category and Office cables the first box.
+// That ordinal is on the screens, it was observed, and withholding it was
+// asking the model to bridge information it had never been given — the same
+// mistake as asking it to guess the destination's name before setting off.
+func (o ObservedScreen) Line() string {
+	if len(o.Shows) == 0 {
+		return o.Name
+	}
+	return o.Name + " — " + strings.Join(o.Shows, ", ")
+}
+
+// gotoShowsCap bounds how much of a screen goes into the menu. Twelve entries
+// covers a dense iOS screen's identifying text without the menu turning into a
+// second tree dump.
+const gotoShowsCap = 12
+
+// ScreenShows reads the text a screen is showing, deduplicated and in tree
+// order. The application node is skipped — it carries the app's name, which is
+// on every screen and identifies none of them — and any text already contained
+// in text kept earlier is skipped too, which is what collapses "Office cables"
+// and "Código 8993" into the row they both came from.
+//
+// Accessibility IDENTIFIERS are deliberately left out, unlike everywhere else
+// in this file where findElementText takes them. They are written for code, not
+// for reading: including them put `_TtGC7SwiftUI32NavigationStackHosting` and
+// `waveform.badge.mic` in front of the model, and — worse — Boxy's category
+// ids, which are regenerated on every launch. A menu line that changes between
+// two identical runs is not a description of a screen.
+func ScreenShows(elements []Element) []string {
+	out := make([]string, 0, gotoShowsCap)
+	seen := map[string]bool{}
+	for _, el := range elements {
+		if strings.Contains(strings.ToLower(el.Role), "application") {
+			continue
+		}
+		text := strings.TrimSpace(strings.Join(nonEmptyFields(el.Label, el.Title, el.Value), " "))
+		key := normalizeForMatch(text)
+		if key == "" || seen[key] {
+			continue
+		}
+		contained := false
+		for _, kept := range out {
+			if strings.Contains(normalizeForMatch(kept), key) {
+				contained = true
+				break
+			}
+		}
+		if contained {
+			continue
+		}
+		seen[key] = true
+		out = append(out, text)
+		if len(out) >= gotoShowsCap {
+			break
+		}
+	}
+	return out
+}
+
+// ObservedScreens is the menu: every distinct screen this run actually stood
+// on, ALPHABETICALLY, which is what destroys the chronology.
+//
+// A screen is named by its navigation-bar title when it has one, because that
+// is the name a person would use, and by mav's own screen identity when it does
+// not. The fallback is not a nicety: on Boxy neither the category grid nor the
+// box list has a heading, so a title-only menu on that route has ONE entry —
+// the destination — and a one-entry menu is a yes/no about the screen it
+// stopped on, which is the self-assessment this whole design exists to avoid.
+//
+// A screen with neither is left out. There would be nothing to check a pick
+// against, and offering an answer nothing can check is worse than offering
+// fewer answers.
+func ObservedScreens(recorded []ObservedScreen) []ObservedScreen {
+	seen := map[string]bool{}
+	out := make([]ObservedScreen, 0, gotoObservedMenuCap)
+	for _, entry := range recorded {
+		key := normalizeForMatch(entry.Name)
+		if key == "" || seen[key] || len(out) >= gotoObservedMenuCap {
+			continue
+		}
+		seen[key] = true
+		out = append(out, entry)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return normalizeForMatch(out[i].Name) < normalizeForMatch(out[j].Name)
+	})
+	return out
+}
+
+// RecordObservedScreen appends the screen goto is standing on to the record the
+// menu is built from. Called on every read the loop takes, so the menu is
+// exactly the set of screens it stood on and nothing else.
+func RecordObservedScreen(recorded []ObservedScreen, route Route, elements []Element) []ObservedScreen {
+	entry, ok := nameObservedRoute(route)
+	if !ok {
+		return recorded
+	}
+	key := normalizeForMatch(entry.Name)
+	for _, existing := range recorded {
+		if normalizeForMatch(existing.Name) == key {
+			return recorded
+		}
+	}
+	entry.Shows = ScreenShows(elements)
+	return append(recorded, entry)
+}
+
+func nonEmptyFields(values ...string) []string {
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func nameObservedRoute(r Route) (ObservedScreen, bool) {
+	if title := strings.TrimSpace(r.Title); title != "" {
+		return ObservedScreen{Name: title, IsTitle: true}, true
+	}
+	if screen := strings.TrimSpace(r.Screen); screen != "" {
+		return ObservedScreen{Name: screen}, true
+	}
+	return ObservedScreen{}, false
+}
+
+// ObservedNames is the menu as the lines it is offered as, which is also what
+// the output reports: a pick is only readable next to what it was picked from.
+func ObservedNames(menu []ObservedScreen) []string {
+	out := make([]string, 0, len(menu))
+	for _, m := range menu {
+		out = append(out, m.Line())
+	}
+	return out
+}
+
+// RenderObservedMenu writes the numbered menu the question is asked over.
+func RenderObservedMenu(names []string) string {
+	var b strings.Builder
+	for i, name := range names {
+		b.WriteString(itoa(i + 1))
+		b.WriteString(") ")
+		b.WriteString(name)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// GotoObservedOptions is one option per name plus the abstention. `none` is not
+// tidiable away: a name picked because there was nothing else to pick would be
+// a criterion nobody wrote and nothing checked.
+func GotoObservedOptions(names []string) []string {
+	out := make([]string, 0, len(names)+1)
+	for i := range names {
+		out = append(out, itoa(i+1))
+	}
+	return append(out, "none")
+}
+
+// GotoObservedQuestion asks which screen the destination IS. It says nothing
+// about a journey, a loop, an order or an outcome, because none of that is the
+// model's business here and any of it would let it recognise the endpoint.
+func GotoObservedQuestion(goal string) string {
+	return untrustedTextPreamble +
+		"Below is a numbered list of screens from one iOS app, one per line. Each is named by the " +
+		"title it shows, or by its internal screen name when it shows no title, and is followed by " +
+		"some of the text on it. They are in alphabetical order and the order means nothing.\n" +
+		"Someone wanted to reach: " + goal + "\n\n" +
+		"Which of these screens is the one they wanted to reach? Answer with that number.\n" +
+		"Pick the screen that IS the one described, not a screen that merely leads to it or lists a way in.\n" +
+		"Answer `none` if none of these screens is the one described. Naming a screen that is not the " +
+		"one described is worse than answering `none`."
+}
+
+// InterpretGotoObservedAnswer reads the pick the way every other choice in this
+// command is read: the label, and only the label. No verdict, no confidence.
+func InterpretGotoObservedAnswer(label string, menu []ObservedScreen) (ObservedScreen, bool) {
+	label = strings.TrimSpace(strings.ToLower(label))
+	if label == "" || label == "none" {
+		return ObservedScreen{}, false
+	}
+	idx := 0
+	for _, r := range label {
+		if r < '0' || r > '9' {
+			return ObservedScreen{}, false
+		}
+		idx = idx*10 + int(r-'0')
+	}
+	if idx < 1 || idx > len(menu) {
+		return ObservedScreen{}, false
+	}
+	return menu[idx-1], true
+}
+
+// AcceptObservedCriterion turns a picked title into a criterion, or refuses it.
+//
+// It refuses the one pick that would be actively wrong: the screen the run
+// started on. That is the same origin negation an explicit --arrived-when goes
+// through, with the same difference in consequence as a deduced criterion — the
+// explicit one stops the command because it is the caller's mistake, this one
+// is simply dropped, leaving the run exactly as it behaves with no criterion.
+func AcceptObservedCriterion(pick ObservedScreen, initial Route) (ArrivalCriterion, bool) {
+	name := strings.TrimSpace(pick.Name)
+	if name == "" {
+		return ArrivalCriterion{}, false
+	}
+	var criterion ArrivalCriterion
+	if pick.IsTitle {
+		criterion = ArrivalCriterion{Titles: []string{name}}
+	} else {
+		criterion = ArrivalCriterion{Screens: []string{name}}
+	}
+	if criterion.MatchesRoute(initial, nil) {
+		return ArrivalCriterion{}, false
+	}
+	return criterion, true
 }
