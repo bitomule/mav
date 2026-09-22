@@ -1,6 +1,29 @@
 # Changelog
 
-## Unreleased
+## v0.29.0
+
+`goto` navigates and declared steps act — that split is now what the tool
+enforces, not a convention we agreed to follow.
+
+Measured on Boxy, iPhone 17 Pro / iOS 26.3, on this commit, ground truth read
+from the accessibility tree every run and never from the command's own word:
+
+| | rate |
+|---|---|
+| `goto` navigating to a box's contents | **20/20 arrived** — and the command agreed with the tree 20/20 |
+| a flow using `find` to create a named category | **20/20**, zero false writes |
+| `goto` handed an action goal | **5/5 `arrived=unverified`**, nothing created |
+
+Nothing measured lower than it did in 0.28.0.
+
+**One observation that did not reproduce, recorded rather than buried.** Across
+32 flow runs, one exited green having created nothing: three steps `ok`, the
+sheet still open with the name typed in. Twenty clean runs afterwards could not
+reproduce it. The standing hypothesis — unverified, no ablation — is that a
+coordinate tap reports `ok` whether or not the button was still live, since
+`find` filters disabled elements when it READS the screen and the tap never
+re-checks. It belongs to the same family as everything else fixed here: a tap
+that answers `ok` without landing.
 
 ### `tap --find` tapped where the element used to be
 
