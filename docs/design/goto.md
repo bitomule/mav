@@ -163,6 +163,18 @@ instancia incorrecta. Por eso `--arrived-when` acepta varios términos y los exi
 Sin varios términos ese caso queda abierto, y la salida tiene que decirlo en vez de dejar que
 se descubra.
 
+**Los prefijos son exactamente `title:`, `text:` y `screen:`.** Un término **sin prefijo** sigue
+siendo un título, que es lo que la gente quiere decir cuando nombra una pantalla. Un término que
+*parece* un prefijo y no lo es —`id:boxes-view`— es un **error de sintaxis**, no un título:
+antes se convertía en "busca un título que contenga el texto literal `id:boxes-view`", que no
+casa nunca, y quien lo escribía veía `arrived=false` y se ponía a depurar su app.
+
+Dónde está la línea, porque un título lleva dos puntos legítimamente —`Moving Boxes: Office
+cables` es una pantalla real del banco de pruebas—: cuenta como prefijo sólo si el término **no
+empieza por comilla**, lo de delante de los primeros dos puntos son **sólo letras ASCII** sin
+espacios, y **hay algo detrás** de los dos puntos. Así `Boxes:` (dos puntos al final) sigue
+siendo título, `"id:boxes-view"` entrecomillado sigue siendo título, y `id:boxes-view` falla.
+
 ### Y lo que emite
 
 **Evidencia, no veredicto.** `mav` es un verificador: devuelve lo que vio y quien llama juzga,
@@ -746,3 +758,75 @@ El objetivo **largo** siempre falló menos que el corto (18/24 contra 0/30 en in
 más anclas, así que el ordinal pesa menos en la decisión. Y las cuatro tiradas fallidas de una
 tanda de 23 con el objetivo largo **tocaron todas `Test Category 1`** — el mismo mecanismo,
 más diluido. Cualquier tasa medida en inglés contra este fixture está deprimida por esto.
+
+---
+
+## 15. Un SITIO al que ir no es una COSA que hacer
+
+Medido el 22 sep en Boxy, mismo slot y mismo fixture. `mav goto "create a category called
+Test Category"` daba:
+
+```
+ok cmd=goto arrived=true criterion_observed="title:\"Crear categoria\"" outcome=arrived steps=3
+```
+
+El árbol leído justo después —relanzando la app sin resetear, para ver lo persistido— **no
+tiene ninguna categoría llamada `Test Category`**. `goto` abrió la hoja donde se crea una
+categoría y llamó a eso crearla. Reproducido 3/3 sobre `origin/main` aquí, 20/20 en la medida
+anterior.
+
+**La causa en una frase: toda la noción de llegada de este comando es la pantalla en la que
+está.** §2 y la §14 anterior son sobre eso, y están bien para un objetivo que nombra un sitio.
+Para un objetivo que pide una acción, la pantalla donde esa acción vive es un falso positivo
+perfecto: es exactamente la pantalla a la que hay que llegar para hacerla.
+
+**Ninguna pantalla distingue los dos casos.** "llévame a la pantalla donde se crea una
+categoría" y "crea una categoría" terminan en la misma pantalla, con el mismo árbol, y sólo una
+de las dos está terminada ahí. La diferencia está entera en la frase. Así que se lee de la
+frase: **una pregunta, en el paso cero, antes de leer nada y antes de tocar nada.**
+
+### Por qué es legítimo preguntarlo, con el mismo argumento de §14
+
+Se elige entre **dos opciones concretas**, sobre **una frase**, con **nada recorrido**: no hay
+camino que defender, ni pantalla en la que se esté, ni trayecto que calificar. El modelo no
+sabe todavía qué va a pasar, así que no puede estar aprobándolo. Y como en todo este fichero,
+**lo que se hace con la elección lo decide el código**, no el modelo. Nunca se le pregunta si
+ha llegado.
+
+Es además **de un solo sentido**: un objetivo leído como acción sólo puede PERDER la capacidad
+de afirmar llegada, nunca ganarla. Un objetivo leído como sitio se queda exactamente como está
+hoy, que es lo que mantiene intacto el carril medido de destinos.
+
+### Qué pasa cuando no hay respuesta
+
+Sin clave, sin red, con un `jevi` por debajo del suelo de versión, o con una etiqueta que no es
+ninguna de las dos: el objetivo **queda sin clasificar**, y sin clasificar es el comportamiento
+de hoy. Nada se le quita a un caso que antes funcionaba. Por eso el menú no lleva abstención:
+un tercer `unclear` sería una segunda forma de escribir el mismo camino de fallo.
+
+Y con `--arrived-when` **no se pregunta**: quien lo escribió ya ha dicho con sus palabras qué
+significa llegar, y este comando no tiene nada que añadirle.
+
+### Medido
+
+10 tiradas por carril, binario con el arreglo, misma app y mismo fixture:
+
+| carril | objetivo | antes | después |
+|---|---|---|---|
+| el que mentía | `create a category called Test Category` | `arrived=true` 20/20, nada creado | `arrived=unverified` `goal_kind=action` **10/10**, nada creado (árbol leído en cada tirada) |
+| el control | `the contents of the Moving Boxes category, first box` | `arrived=true` 20/20 | `arrived=true` `goal_kind=place` **10/10** |
+
+Cero varianza en las dos celdas. El clasificador solo, medido aparte sobre cuatro frases y 5
+tiradas cada una, también 20/20: `create a category called Test Category` → `action`,
+`delete the Moving Boxes category` → `action`, `the screen where a category is created` →
+`place`, `the contents of the Moving Boxes category, first box` → `place`.
+
+**Coste: una llamada al modelo por ejecución que no traía criterio.** En un objetivo leído como
+acción no es una llamada de más: sustituye a la de nombrar destino que esa ejecución habría
+hecho de todos modos.
+
+### Lo que esto NO es
+
+No es el contrato de llegada por acción. `goto` sigue sin saber comprobar que una categoría se
+creó; lo que deja de hacer es **afirmar que sí**. Comprobarlo requeriría decir qué cambio en el
+árbol cuenta como la acción hecha, y eso es un contrato nuevo, no un parche a éste.

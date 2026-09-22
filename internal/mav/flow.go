@@ -43,27 +43,34 @@ type FlowStep struct {
 }
 
 type FlowCondition struct {
-	ID             string          `yaml:"id,omitempty"`
-	Text           string          `yaml:"text,omitempty"`
-	TextContains   string          `yaml:"textContains,omitempty"`
-	TextStartsWith string          `yaml:"textStartsWith,omitempty"`
-	TextRegex      string          `yaml:"textRegex,omitempty"`
-	Value          string          `yaml:"value,omitempty"`
-	ValueContains  string          `yaml:"valueContains,omitempty"`
-	Role           string          `yaml:"role,omitempty"`
-	Enabled        *bool           `yaml:"enabled,omitempty"`
-	Selected       *bool           `yaml:"selected,omitempty"`
-	Focused        *bool           `yaml:"focused,omitempty"`
-	Visible        *bool           `yaml:"visible,omitempty"`
-	Index          *int            `yaml:"index,omitempty"`
-	Bounds         string          `yaml:"bounds,omitempty"`
-	Near           *NearSelector   `yaml:"near,omitempty"`
-	ParentOf       *Selector       `yaml:"parentOf,omitempty"`
-	ChangedFrom    string          `yaml:"changedFrom,omitempty"`
-	Stable         bool            `yaml:"stable,omitempty"`
-	Any            []FlowCondition `yaml:"any,omitempty"`
-	All            []FlowCondition `yaml:"all,omitempty"`
-	Not            *FlowCondition  `yaml:"not,omitempty"`
+	ID             string        `yaml:"id,omitempty"`
+	Text           string        `yaml:"text,omitempty"`
+	TextContains   string        `yaml:"textContains,omitempty"`
+	TextStartsWith string        `yaml:"textStartsWith,omitempty"`
+	TextRegex      string        `yaml:"textRegex,omitempty"`
+	Value          string        `yaml:"value,omitempty"`
+	ValueContains  string        `yaml:"valueContains,omitempty"`
+	Role           string        `yaml:"role,omitempty"`
+	Enabled        *bool         `yaml:"enabled,omitempty"`
+	Selected       *bool         `yaml:"selected,omitempty"`
+	Focused        *bool         `yaml:"focused,omitempty"`
+	Visible        *bool         `yaml:"visible,omitempty"`
+	Index          *int          `yaml:"index,omitempty"`
+	Bounds         string        `yaml:"bounds,omitempty"`
+	Near           *NearSelector `yaml:"near,omitempty"`
+	ParentOf       *Selector     `yaml:"parentOf,omitempty"`
+	// Find is carried so a condition can SAY it was written with words, not so
+	// it can evaluate them. Dropping it here is what made
+	// `assert: { where: { find: "..." } }` read as an empty selector and fail
+	// as "the screen does not show it" -- a silent wrong answer on a step
+	// whose whole job is to be believed. Carried, it reaches the refusal in
+	// evaluateSingleConditionWithPrefer instead.
+	Find        string          `yaml:"find,omitempty"`
+	ChangedFrom string          `yaml:"changedFrom,omitempty"`
+	Stable      bool            `yaml:"stable,omitempty"`
+	Any         []FlowCondition `yaml:"any,omitempty"`
+	All         []FlowCondition `yaml:"all,omitempty"`
+	Not         *FlowCondition  `yaml:"not,omitempty"`
 }
 
 type FlowParam struct {
@@ -799,7 +806,11 @@ func validateGotoFlowStep(index int, step FlowStep) error {
 	if strings.TrimSpace(step.Params["arrivedWhen"]) == "" {
 		return fmt.Errorf("steps[%d].goto.arrivedWhen: an arrival criterion is mandatory inside a flow; without one goto can only report unverified, which the steps after it would act on as if it were an arrival", index)
 	}
-	if ParseArrivalCriterion(step.Params["arrivedWhen"]).IsZero() {
+	criterion, err := ParseArrivalCriterion(step.Params["arrivedWhen"])
+	if err != nil {
+		return fmt.Errorf("steps[%d].goto.arrivedWhen: %w", index, err)
+	}
+	if criterion.IsZero() {
 		return fmt.Errorf("steps[%d].goto.arrivedWhen: %q names nothing to check arrival against", index, step.Params["arrivedWhen"])
 	}
 	if !step.Where.IsZero() {

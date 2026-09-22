@@ -26,7 +26,7 @@ func TestWalkingTheRouteAndStoppingIsNotTheSameAsNeverStarting(t *testing.T) {
 // A criterion nobody wrote and one the caller wrote are different evidence, and
 // the output now says which without the caller having to remember.
 func TestTheOutputSaysWhereTheCriterionCameFrom(t *testing.T) {
-	c := ParseArrivalCriterion(`title:"Order detail" text:"123"`)
+	c := mustCriterion(t, `title:"Order detail" text:"123"`)
 	if c.String() != `title:"Order detail" text:"123"` {
 		t.Fatalf("the criterion does not print back in the syntax the flag takes: %q", c.String())
 	}

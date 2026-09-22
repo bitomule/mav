@@ -101,3 +101,65 @@ func TestExecStepKillsTheWholeProcessGroupOnTimeout(t *testing.T) {
 	_ = syscall.Kill(pid, syscall.SIGKILL)
 	t.Fatalf("grandchild %d survived the step's timeout; it would now be reparented to launchd", pid)
 }
+
+// TestExecStepShellDoesNotSurviveMav is the third leak of the same family,
+// and the one that actually filled this machine: every guard on the step
+// (its timeout, its Cancel, its WaitDelay) runs inside MAV, so SIGKILLing
+// MAV mid-step leaves the shell running with nothing left to stop it. The
+// flow here waits on a file that is never created, exactly like the
+// `until [ -f ... ]; do sleep 0.05; done` barriers in concurrent_run_test.go
+// whose orphans were found still polling long after the temp directory
+// holding the file they wait for had been deleted.
+func TestExecStepShellDoesNotSurviveMav(t *testing.T) {
+	root := mkShortRoot(t)
+	writeConcurrencyConfig(t, root)
+	binDir := writeFakeXcrun(t)
+
+	coord := t.TempDir()
+	shellPIDPath := filepath.Join(coord, "shell.pid")
+	never := filepath.Join(coord, "never")
+	flowPath := filepath.Join(root, "waiter.yaml")
+	flow := "name: waiter\nsteps:\n  - exec:\n      cmd: 'echo $$ > \"" + shellPIDPath +
+		"\"; until [ -f \"" + never + "\" ]; do sleep 0.05; done'\n      timeout: 120s\n"
+	if err := os.WriteFile(flowPath, []byte(flow), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cmd, stdout, stderr := startChild(t, ctx, root, flowPath, binDir, t.TempDir())
+
+	var shellPID int
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if pid, err := readPID(shellPIDPath); err == nil && processAlive(pid) {
+			shellPID = pid
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if shellPID == 0 {
+		t.Fatalf("exec step's shell never reported its pid\nstdout=%s\nstderr=%s", stdout, stderr)
+	}
+	// Belt and braces: a failing assertion below must not leave behind the
+	// very orphan this test exists to forbid.
+	t.Cleanup(func() { _ = syscall.Kill(-shellPID, syscall.SIGKILL) })
+
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatalf("kill mav child: %v", err)
+	}
+	// Deliberately not reaped: a harness that kills MAV and walks away
+	// (concurrent_run_test.go's own t.Cleanup does exactly this) leaves it a
+	// zombie for as long as the harness lives, and a zombie still answers
+	// `kill -0`. That is the state the first version of this fix got wrong,
+	// so the test has to reproduce it rather than tidy it away with a Wait.
+
+	deadline = time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if !processAlive(shellPID) {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("exec step's shell (pid %d) outlived the mav process that started it; it is now reparented to launchd, polling forever for %s", shellPID, never)
+}

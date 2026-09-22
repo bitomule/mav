@@ -88,7 +88,7 @@ func flowConditionFromSelector(selector Selector) FlowCondition {
 		Value: selector.Value, ValueContains: selector.ValueContains, Role: selector.Role,
 		Enabled: selector.Enabled, Selected: selector.Selected, Focused: selector.Focused,
 		Visible: selector.Visible, Index: selector.Index, Bounds: selector.Bounds,
-		Near: selector.Near, ParentOf: selector.ParentOf,
+		Near: selector.Near, ParentOf: selector.ParentOf, Find: selector.Find,
 	}
 }
 
@@ -99,7 +99,7 @@ func (c FlowCondition) Selector() Selector {
 		Value: c.Value, ValueContains: c.ValueContains, Role: c.Role,
 		Enabled: c.Enabled, Selected: c.Selected, Focused: c.Focused,
 		Visible: c.Visible, Index: c.Index, Bounds: c.Bounds,
-		Near: c.Near, ParentOf: c.ParentOf,
+		Near: c.Near, ParentOf: c.ParentOf, Find: c.Find,
 	}
 }
 

@@ -1,6 +1,7 @@
 package mav
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 )
@@ -145,10 +146,20 @@ func (a ArrivalCriterion) String() string {
 	return strings.Join(parts, " ")
 }
 
-// ParseArrivalCriterion reads `title:"..."` and `text:"..."` terms. A bare word
-// with no prefix is a title, because that is what people mean when they name a
-// screen, and guessing the other way round would silently match a row label.
-func ParseArrivalCriterion(spec string) ArrivalCriterion {
+// arrivalPrefixes are the only prefixes --arrived-when understands, in the
+// order the error message lists them.
+var arrivalPrefixes = []string{"title:", "text:", "screen:"}
+
+// ParseArrivalCriterion reads `title:"..."`, `text:"..."` and `screen:"..."`
+// terms. A bare word with no prefix is a title, because that is what people
+// mean when they name a screen, and guessing the other way round would silently
+// match a row label.
+//
+// A term that LOOKS like a prefix and is not one is a syntax error, not a
+// title: `id:boxes-view` used to become "find a title containing the literal
+// text id:boxes-view", which never matches, so the caller saw arrived=false and
+// went debugging their app instead of their command.
+func ParseArrivalCriterion(spec string) (ArrivalCriterion, error) {
 	var out ArrivalCriterion
 	for _, term := range splitTerms(spec) {
 		switch {
@@ -165,12 +176,53 @@ func ParseArrivalCriterion(spec string) ArrivalCriterion {
 				out.Texts = append(out.Texts, v)
 			}
 		default:
+			if word, ok := unknownArrivalPrefix(term); ok {
+				return ArrivalCriterion{}, fmt.Errorf(
+					"unknown --arrived-when prefix %q in term %q; the prefixes are %s, "+
+						"and a term with no prefix is a title (quote it if the title itself "+
+						"contains a colon)",
+					word, term, strings.Join(arrivalPrefixes, " "))
+			}
 			if v := unquote(term); v != "" {
 				out.Titles = append(out.Titles, v)
 			}
 		}
 	}
-	return out
+	return out, nil
+}
+
+// unknownArrivalPrefix decides whether a term that matched no known prefix was
+// still MEANT as one, and returns the word the caller used.
+//
+// Where the line sits, and why, because titles legitimately contain colons —
+// `Moving Boxes: Office cables` is a real screen in the test bank. A term counts
+// as a prefix only when all four hold:
+//
+//  1. it does not open with a quote: a quoted term is a literal title, which is
+//     how you write a title that starts with a word and a colon;
+//  2. it contains a colon;
+//  3. everything before the first colon is one or more ASCII letters — no
+//     spaces, no digits, no punctuation, which is what every real prefix is;
+//  4. something follows the colon. A trailing colon is punctuation inside a
+//     name, so the `Boxes:` of an unquoted `Moving Boxes: Office cables` stays
+//     a title term.
+func unknownArrivalPrefix(term string) (string, bool) {
+	if strings.HasPrefix(term, `"`) {
+		return "", false
+	}
+	colon := strings.Index(term, ":")
+	if colon <= 0 || colon == len(term)-1 {
+		return "", false
+	}
+	word := term[:colon]
+	for _, r := range word {
+		if r < 'a' || r > 'z' {
+			if r < 'A' || r > 'Z' {
+				return "", false
+			}
+		}
+	}
+	return word, true
 }
 
 // splitTerms splits on spaces except inside double quotes, so a screen name with
@@ -298,9 +350,16 @@ type GotoStep struct {
 
 // GotoResult is the whole run.
 type GotoResult struct {
-	Arrived      string     `json:"arrived"` // "true" | "false" | "unverified"
-	Outcome      string     `json:"outcome"`
-	Goal         string     `json:"goal"`
+	Arrived string `json:"arrived"` // "true" | "false" | "unverified"
+	Outcome string `json:"outcome"`
+	Goal    string `json:"goal"`
+	// GoalKind is what the goal sentence asks for: "place" when it names
+	// somewhere to be, "action" when it asks for something to be done, and
+	// empty when it was never classified — no criterion was needed, or the
+	// question could not be put. An action goal never gets arrived=true out of
+	// this command, because every arrival test here is about WHERE this is
+	// standing and none of them is about what was done.
+	GoalKind     string     `json:"goal_kind,omitempty"`
 	RouteInitial Route      `json:"route_initial"`
 	RouteFinal   Route      `json:"route_final"`
 	Steps        []GotoStep `json:"steps"`
@@ -911,4 +970,73 @@ func AcceptObservedCriterion(pick ObservedScreen, initial Route) (ArrivalCriteri
 		return ArrivalCriterion{}, false
 	}
 	return criterion, true
+}
+
+// --- Is the goal a place, or a thing to do? ----------------------------------
+//
+// Every arrival test in this file answers the same question: WHERE is this
+// standing. That is the whole of goto's notion of having arrived, and it is the
+// right notion for a goal that names somewhere to be. It is the wrong one for a
+// goal that asks for something to be done, and the difference was measured:
+// `mav goto "create a category called Test Category"` opened the sheet on which
+// a category is created and reported arrived=true with
+// criterion_observed=title:"Create Category", 20 runs out of 20. The tree read
+// straight afterwards had no such category in it and the name field still held
+// its placeholder. goto had opened the room where the work happens and called
+// that doing the work.
+//
+// No screen distinguishes the two. "take me to the screen where a category is
+// created" and "create a category" end on the same screen, with the same tree,
+// and only one of them is finished there. The difference is entirely in the
+// sentence, so it is read off the sentence, once, before anything is touched.
+//
+// This is legitimate for the same reason the observed naming below it is: the
+// model chooses between two concrete options over a sentence it has no stake
+// in, with nothing walked, nothing tapped and no journey to defend, and code
+// decides what the choice means. It is never asked whether it arrived.
+//
+// And it is one-directional. A goal read as an action can only ever LOSE the
+// ability to assert arrival; it can never gain one. A goal read as a place is
+// left exactly as it behaves today, which is what keeps the measured
+// destination lane intact.
+const (
+	GoalKindPlace  = "place"
+	GoalKindAction = "action"
+)
+
+// GotoGoalKindQuestion asks what kind of sentence the goal is, and nothing
+// else. It says nothing about screens walked, steps taken or outcomes, because
+// none of that exists yet when it is asked.
+func GotoGoalKindQuestion() string {
+	return untrustedTextPreamble +
+		"Below is one sentence, written by a user of a command that walks an iOS app by tapping.\n\n" +
+		"Does that sentence name a PLACE IN THE APP to go and look at — a screen, a list, a view, " +
+		"something that is reached by navigating and is then simply there — or does it ask for a " +
+		"THING TO BE DONE — work that changes the app's data, and that is not finished merely by " +
+		"opening the screen where it is done?\n" +
+		"Answer `place` if the sentence names somewhere to be, including the screen on which some " +
+		"action is performed.\n" +
+		"Answer `action` if the sentence asks for something to be carried out, created, changed, " +
+		"deleted, sent or saved."
+}
+
+// GotoGoalKindOptions is the two options, and there is deliberately no
+// abstention: an unanswerable question here has the same consequence as a
+// failed call, which is that the goal stays unclassified and the run behaves
+// exactly as it does today.
+func GotoGoalKindOptions() []string {
+	return []string{GoalKindPlace, GoalKindAction}
+}
+
+// InterpretGoalKind reads the label, and only the label — the same reading
+// every other choice in this command gets. Anything that is not one of the two
+// options leaves the goal unclassified.
+func InterpretGoalKind(label string) (string, bool) {
+	switch strings.TrimSpace(strings.ToLower(label)) {
+	case GoalKindPlace:
+		return GoalKindPlace, true
+	case GoalKindAction:
+		return GoalKindAction, true
+	}
+	return "", false
 }

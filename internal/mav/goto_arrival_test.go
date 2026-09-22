@@ -32,7 +32,7 @@ func TestTheDestinationsCriterionMatchesThatScreen(t *testing.T) {
 	// The premise the whole defect rests on: the criterion was always correct.
 	// If this fails, the bug was never where we thought it was.
 	screen := boxContentsScreen()
-	c := ParseArrivalCriterion(`title:"Test Category 2: 1000"`)
+	c := mustCriterion(t, `title:"Test Category 2: 1000"`)
 	if !c.MatchesRoute(ExtractRoute(screen), screen) {
 		t.Fatal("the criterion does not match its own destination; the diagnosis is wrong")
 	}
@@ -49,7 +49,7 @@ func TestACriterionThatDoesNotHoldStillDoesNotHold(t *testing.T) {
 		`title:"Test Category 2: 1001"`,
 		`title:"Test Category 2: 1000" text:"Item 5"`, // right screen, absent content
 	} {
-		c := ParseArrivalCriterion(spec)
+		c := mustCriterion(t, spec)
 		if c.MatchesRoute(ExtractRoute(screen), screen) {
 			t.Fatalf("%s matched a screen it should not", spec)
 		}
@@ -65,7 +65,7 @@ func TestTheNavigationBarIdIsNotMistakenForTheTitle(t *testing.T) {
 		{ID: "Test Category 2: 1000", Role: "Barra de navegación"},
 		{Label: "Something Else", Role: "heading"},
 	}
-	c := ParseArrivalCriterion(`title:"Test Category 2: 1000"`)
+	c := mustCriterion(t, `title:"Test Category 2: 1000"`)
 	if c.MatchesRoute(ExtractRoute(screen), screen) {
 		t.Fatal("a navigation bar id was accepted as the screen's title")
 	}

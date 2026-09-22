@@ -37,7 +37,10 @@ func TestExplicitCriterionNeverBecomesAnObservedArrival(t *testing.T) {
 	// performed" looks like in the tree.
 	runner.out["axe describe-ui --udid "+guardPointUDID] = gotoCacheSheetTree
 
-	criterion := ParseArrivalCriterion(`text:"Kitchen Stuff"`)
+	criterion, err := ParseArrivalCriterion(`text:"Kitchen Stuff"`)
+	if err != nil {
+		t.Fatalf("ParseArrivalCriterion: %v", err)
+	}
 	if criterion.IsZero() {
 		t.Fatal("the criterion under test must not be empty")
 	}

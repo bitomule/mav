@@ -32,7 +32,7 @@ func TestACriterionAlreadyTrueOnTheStartingScreenIsNotArrival(t *testing.T) {
 	// text is present ANYWHERE in the tree declares victory before tapping,
 	// because the destination's name is a row on the list you start from.
 	screen := settingsListScreen()
-	criterion := ParseArrivalCriterion("Notificaciones")
+	criterion := mustCriterion(t, "Notificaciones")
 	route := ExtractRoute(screen)
 
 	if route.Title != "Ajustes" {
@@ -47,7 +47,7 @@ func TestTheSameCriterionMatchesOnceTheScreenActuallyChanged(t *testing.T) {
 	// The control for the test above: if the criterion never matched anything,
 	// the assertion there would pass for the wrong reason.
 	screen := notificationsScreen()
-	criterion := ParseArrivalCriterion("Notificaciones")
+	criterion := mustCriterion(t, "Notificaciones")
 	if !criterion.MatchesRoute(ExtractRoute(screen), screen) {
 		t.Fatal("the criterion should match once the heading is the destination")
 	}
@@ -62,7 +62,7 @@ func TestARowLabelIsNeverEnoughToArrive(t *testing.T) {
 		{Label: "Cámara", Role: "tab"},                // a tab label
 		{Label: "Cámara", Role: "button", ID: "back"}, // a Back button
 	}
-	if ParseArrivalCriterion("Cámara").MatchesRoute(ExtractRoute(screen), screen) {
+	if mustCriterion(t, "Cámara").MatchesRoute(ExtractRoute(screen), screen) {
 		t.Fatal("a row, a tab and a Back button named the destination and that counted as arrival")
 	}
 }
@@ -109,7 +109,7 @@ func TestSeveralTermsAreAllRequired(t *testing.T) {
 		{Label: "Detalle del pedido", Role: "heading"},
 		{Label: "Pedido 456", Role: "text"},
 	}
-	c := ParseArrivalCriterion(`title:"Detalle del pedido" text:"123"`)
+	c := mustCriterion(t, `title:"Detalle del pedido" text:"123"`)
 	if c.MatchesRoute(ExtractRoute(screen), screen) {
 		t.Fatal("the right screen with the wrong instance counted as arrival")
 	}
@@ -120,7 +120,7 @@ func TestSeveralTermsAreAllRequired(t *testing.T) {
 }
 
 func TestAQuotedScreenNameSurvivesItsSpaces(t *testing.T) {
-	c := ParseArrivalCriterion(`title:"Idioma y región"`)
+	c := mustCriterion(t, `title:"Idioma y región"`)
 	if len(c.Titles) != 1 || c.Titles[0] != "Idioma y región" {
 		t.Fatalf("a quoted title was split: %+v", c.Titles)
 	}
