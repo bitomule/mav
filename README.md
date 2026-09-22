@@ -32,8 +32,11 @@ returns compact output the next turn can parse:
 
 - Accessibility tree, semantic taps, waits, and screenshots go through AXe when
   it is healthy.
-- Simulator multitouch, system UI, hardware buttons, erase, and hideKeyboard go
+- Simulator multitouch, system UI, hardware buttons, and hideKeyboard go
   through Baguette.
+- Erasing a field goes through AXe, and only on a simulator. Baguette's HID
+  keyboard delivers no keystroke into a focused field, so it no longer offers
+  the capability at all.
 - Physical device install, launch, coordinate input, logs, screenshots, and
   crashes go through idb.
 - Simulator crash checks read local DiagnosticReports directly.
@@ -351,8 +354,8 @@ decided and what was deliberately left out.
   (see [Semantic taps](#semantic-taps-use-physical-touch)).
 - idb, for coordinate taps and device/simulator fallback operations.
 - Baguette, for simulator multitouch (pinch, two-finger pan), the
-  SpringBoard / system UI tree, hardware buttons, keyboard erase, and
-  hideKeyboard. Sim-only — device multitouch is intentionally unsupported.
+  SpringBoard / system UI tree, hardware buttons, and hideKeyboard.
+  Sim-only — device multitouch is intentionally unsupported.
 - cua-driver, for macOS targets: accessibility tree, window capture, taps, and
   typing. Install with `mav setup --install cua-driver`.
 - axcli, for macOS input into accessory windows that cua-driver's `list_windows`
@@ -602,8 +605,8 @@ mav ui tree --include-system
 MAV chooses drivers by capability. AXe is the default fast path for
 accessibility tree inspection, semantic taps, typing, swipes, waits, and
 assertions. idb is used for coordinate taps and device/simulator fallback
-operations. Baguette provides multitouch, system UI, hardware buttons, erase,
-and hideKeyboard on simulator.
+operations. Baguette provides multitouch, system UI, hardware buttons, and
+hideKeyboard on simulator. AXe provides erase.
 
 ### Semantic taps use physical touch
 
@@ -646,8 +649,14 @@ mav ui wait --help
 mav ui pinch --help
 ```
 
-`mav ui erase` and `mav ui hideKeyboard` dispatch through baguette on
-simulator. On a physical device they return `erase_unsupported_on_device` and
+`mav ui erase` dispatches through AXe on simulator, sending HID usage 42
+(Backspace) once per character, and reads the field back out of the
+accessibility tree between rounds until it stops shrinking. It never reports
+success it has not seen: a field that did not change answers
+`ui_erase_ineffective`, a screen with no editable field answers
+`ui_erase_no_field`, and a tree it cannot read answers
+`ui_erase_unverifiable`. `mav ui hideKeyboard` dispatches through baguette on
+simulator. On a physical device both return `erase_unsupported_on_device` and
 `hide_keyboard_unsupported_on_device` respectively. Tap and retype the field,
 or tap outside the input area to dismiss the keyboard.
 

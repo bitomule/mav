@@ -22,7 +22,10 @@ type Driver struct {
 	path string // resolved binary path, populated by Probe
 }
 
-var _ drivers.TypeDriver = (*Driver)(nil)
+var (
+	_ drivers.TypeDriver  = (*Driver)(nil)
+	_ drivers.EraseDriver = (*Driver)(nil)
+)
 
 // New constructs a Driver. The Executor is wired through by the parent mav
 // package (see NewExecutor in drivers_adapter.go).
@@ -40,7 +43,7 @@ func (d *Driver) Provides(target drivers.Target) drivers.CapabilitySet {
 	if target.Kind == drivers.KindMac {
 		return drivers.NewSet()
 	}
-	return drivers.NewSet(
+	set := drivers.NewSet(
 		drivers.CapTreeAX,
 		drivers.CapSemanticTap,
 		drivers.CapCoordTap,
@@ -48,6 +51,14 @@ func (d *Driver) Provides(target drivers.Target) drivers.CapabilitySet {
 		drivers.CapScreenshot,
 		drivers.CapType,
 	)
+	// Erase is simulator-only: `axe key` needs a --udid that names a booted
+	// simulator, and on a physical device AXe reads the tree but drives no
+	// keyboard. Declaring it for devices would have the router hand `ui
+	// erase` a driver that cannot serve it.
+	if target.Kind == drivers.KindSim {
+		set.Add(drivers.CapErase)
+	}
+	return set
 }
 
 // Cost favours AXe for the fast-path operations it is canonical for.
@@ -55,7 +66,7 @@ func (d *Driver) Cost(c drivers.Capability, _ drivers.Target) int {
 	switch c {
 	case drivers.CapTreeAX, drivers.CapSemanticTap, drivers.CapScreenshot, drivers.CapSwipe:
 		return 0
-	case drivers.CapCoordTap, drivers.CapType:
+	case drivers.CapCoordTap, drivers.CapType, drivers.CapErase:
 		return 50
 	default:
 		return 100
@@ -174,6 +185,44 @@ func (d *Driver) Type(ctx context.Context, target drivers.Target, spec drivers.T
 	res := d.exec.Run(ctx, "axe", targetArgs(target, "type", spec.Text)...)
 	if res.Err != nil {
 		return errors.New(firstLine(res.Stderr))
+	}
+	return nil
+}
+
+// backspaceKeycode is HID usage 42 on the keyboard page — the same usage
+// baguette registers for its "Backspace" code name. The code was never the
+// problem: measured on 2026-09-22 against one focused Boxy search field
+// holding "a12345", alternating the two paths and reading value= back out
+// of the accessibility tree, `baguette key --code Backspace` left the value
+// untouched twice while `axe key 42` took it to "a1234" and then "a123".
+// Same simulator, same window, same focused field. baguette 0 of 2, axe 2
+// of 2. `baguette key --code KeyZ` typed nothing either, so it is the
+// transport that delivers nothing, not the key name.
+const backspaceKeycode = "42"
+
+// defaultEraseCount is how many deletions to send when the caller gave no
+// text to measure. It is a bound, not a guess at the field's length: the
+// caller verifies the field actually emptied and comes back for another
+// round if it did not.
+const defaultEraseCount = 32
+
+// Erase deletes from the focused field by sending Backspace presses. AXe has
+// no semantic field targeting for deletion, so the selector in spec describes
+// what the caller believes is focused; it is the caller's job to have focused
+// it and to check the result.
+func (d *Driver) Erase(ctx context.Context, target drivers.Target, spec drivers.TextSpec) error {
+	count := spec.Deletions
+	if count <= 0 {
+		count = len([]rune(spec.Text))
+	}
+	if count <= 0 {
+		count = defaultEraseCount
+	}
+	for i := 0; i < count; i++ {
+		res := d.exec.Run(ctx, "axe", targetArgs(target, "key", backspaceKeycode)...)
+		if res.Err != nil {
+			return errors.New(firstLine(res.Stderr))
+		}
 	}
 	return nil
 }

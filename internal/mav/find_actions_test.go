@@ -19,6 +19,26 @@ const findActionTree = `[
  {"AXUniqueId":"boxRow_1000","AXLabel":"1000","type":"Button","enabled":true,"AXFrame":"{{0, 200}, {200, 50}}"}
 ]`
 
+// The same form once the name field has been emptied. `erase` reads the field
+// back out of the tree after every round of deletions, so a fake screen that
+// never changes is a fake driver that never deletes — which is the failure it
+// now reports, correctly. The erase tests hand it a tree that shrinks.
+const findActionTreeErased = `[
+ {"AXUniqueId":"nameField","AXLabel":"Nombre","AXValue":"","type":"TextField","enabled":true,"AXFrame":"{{0, 100}, {200, 50}}"},
+ {"AXUniqueId":"boxRow_1000","AXLabel":"1000","type":"Button","enabled":true,"AXFrame":"{{0, 200}, {200, 50}}"}
+]`
+
+// shrinkTheNameField makes the fake screen answer the way a real one does
+// under a working erase: the field still holds "Cocina" while find resolves
+// it and while erase reads it, and is empty on the read after the deletions.
+func shrinkTheNameField(runner *sequenceRecordingRunner) {
+	runner.seq["axe describe-ui --udid "+findActionUDID] = []string{
+		findActionTree,
+		findActionTree,
+		findActionTreeErased,
+	}
+}
+
 const findActionNameHit = `{"AXUniqueId":"nameField","AXLabel":"Nombre","AXValue":"Cocina","type":"TextField","enabled":true,"AXFrame":"{{0, 100}, {200, 50}}"}`
 
 const findActionRowHit = `{"AXUniqueId":"boxRow_1000","AXLabel":"1000","type":"Button","enabled":true,"AXFrame":"{{0, 200}, {200, 50}}"}`
@@ -62,6 +82,7 @@ func findActionCLI(t *testing.T) (CLI, *sequenceRecordingRunner, *bytes.Buffer) 
 func TestEraseAcceptsFindAndFocusesTheFieldFirst(t *testing.T) {
 	fakeJev(t, "1", 10)
 	cli, runner, out := findActionCLI(t)
+	shrinkTheNameField(runner)
 
 	allowFail(t, cli.Run(context.Background(), []string{"ui", "erase", "--find", "el campo del nombre"}))
 	if !strings.Contains(out.String(), "ok cmd=ui.erase") {
@@ -69,23 +90,36 @@ func TestEraseAcceptsFindAndFocusesTheFieldFirst(t *testing.T) {
 	}
 
 	// Emptying has to happen in the field that was named, and no driver can
-	// be told that: baguette deletes from whatever holds focus. So the tap
-	// that moves focus must come BEFORE the first Backspace, or the step
-	// reports ok having emptied some other field.
+	// be told that: AXe deletes from whatever holds focus. So the tap that
+	// moves focus must come BEFORE the first deletion, or the step reports
+	// ok having emptied some other field.
 	tapAt, eraseAt := -1, -1
 	for i, command := range runner.commands {
 		if tapAt < 0 && isTapCommand(command) {
 			tapAt = i
 		}
-		if eraseAt < 0 && strings.Contains(command, "--code Backspace") {
+		if eraseAt < 0 && strings.Contains(command, "axe key 42") {
 			eraseAt = i
 		}
 	}
 	if tapAt < 0 || eraseAt < 0 {
-		t.Fatalf("expected a tap and a Backspace, got %v", runner.commands)
+		t.Fatalf("expected a tap and a deletion, got %v", runner.commands)
 	}
 	if tapAt > eraseAt {
 		t.Fatalf("focus must be taken before anything is deleted: tap at %d, erase at %d", tapAt, eraseAt)
+	}
+
+	// And it deletes what the field it found actually holds. "Cocina" is six
+	// characters; the old erase sent a fixed 32 regardless, which is the
+	// other half of not looking at the field.
+	deletions := 0
+	for _, command := range runner.commands {
+		if strings.Contains(command, "axe key 42") {
+			deletions++
+		}
+	}
+	if deletions != len("Cocina") {
+		t.Fatalf("expected one deletion per character of the found field, got %d: %v", deletions, runner.commands)
 	}
 }
 
@@ -97,6 +131,7 @@ func TestEraseAcceptsFindAndFocusesTheFieldFirst(t *testing.T) {
 func TestEraseNeverForwardsTheFindWordsToTheDriver(t *testing.T) {
 	fakeJev(t, "1", 10)
 	cli, runner, _ := findActionCLI(t)
+	shrinkTheNameField(runner)
 
 	if err := cli.Run(context.Background(), []string{"ui", "erase", "--find", "el campo del nombre"}); err != nil {
 		t.Fatal(err)

@@ -572,7 +572,7 @@ Prefer accessibility ids. Use coordinates only when the tree is insufficient and
 	case "ui type":
 		return "Usage: mav ui type TEXT [--prefer-driver auto|axe]\n"
 	case "ui erase":
-		return "Usage: mav ui erase [--id ID | --text TEXT | --value VALUE | --find \"...\" | --focused true]\n\nSimulator-backed through baguette. Physical devices return erase_unsupported_on_device.\n"
+		return "Usage: mav ui erase [--id ID | --text TEXT | --value VALUE | --find \"...\" | --focused true]\n\nSimulator-backed through AXe, and it verifies the field emptied by reading the tree. Physical devices return erase_unsupported_on_device.\n"
 	case "ui hideKeyboard":
 		return "Usage: mav ui hideKeyboard\n\nSimulator-backed through baguette. Physical devices return hide_keyboard_unsupported_on_device.\n"
 	case "ui swipe":
@@ -3586,7 +3586,7 @@ func (c CLI) uiErase(ctx context.Context, opts GlobalOptions, cfg Config, args [
 	// something in it", and without this the only way to it was an id.
 	//
 	// The two moves are the ones `type` already makes, and for the same
-	// reason: no driver has semantic targeting for erase. baguette clears
+	// reason: no driver has semantic targeting for erase. AXe deletes from
 	// whatever holds focus and ignores the selector outright, so words have
 	// to become FOCUS before anything is deleted — resolve, tap, then erase
 	// the field that is now focused. Going straight to the driver with the
@@ -3609,10 +3609,106 @@ func (c CLI) uiErase(ctx context.Context, opts GlobalOptions, cfg Config, args [
 		text = ""
 	}
 	target := targetFromConfig(cfg)
-	if err := baguetteErase(ctx, c.router(), target, drivers.TextSpec{Text: text, Selector: drivers.ElementSelector{ID: id, Value: value}, Focused: focused}); err != nil {
-		return Fail("ui_erase_failed", map[string]string{"driver": "baguette", "stderr": err.Error()}).Write(c.Stdout)
+	spec := drivers.TextSpec{Text: text, Selector: drivers.ElementSelector{ID: id, Value: value}, Focused: focused}
+
+	// Everything below reads the field back out of the tree between rounds,
+	// and that is the point of it. `ui erase` answered ok for months while
+	// deleting nothing: it was routed to baguette, whose HID keyboard
+	// delivers no keystroke into a simulator field, and an exit code cannot
+	// tell that apart from a field that emptied. Measured 2026-09-22 on a
+	// Boxy search field holding "a12345": erase reported
+	// `ok cmd=ui.erase driver=baguette` and the tree still read
+	// value='a12345'. Nothing here trusts a driver's own word again.
+	before, err := c.readEraseSnapshot(ctx, cfg)
+	if err != nil {
+		return Fail("ui_erase_unverifiable", map[string]string{
+			"stderr": firstLine(err.Error()),
+			"next":   "erase will not report success it cannot check; fix the accessibility tree read first (`mav ui tree`)",
+		}).Write(c.Stdout)
 	}
-	fields := map[string]string{"driver": "baguette"}
+	if before.Fields == 0 {
+		return Fail("ui_erase_no_field", map[string]string{
+			"tree_driver": before.Driver,
+			"next":        "no editable field is in the tree that " + before.Driver + " read; tap the field first (`mav ui tap --text ...`), or check that this driver can see the app's fields",
+		}).Write(c.Stdout)
+	}
+
+	driverID := ""
+	current := before
+	rounds := 0
+	for rounds < maxEraseRounds {
+		if current.Longest == 0 {
+			break
+		}
+		rounds++
+		round := spec
+		round.Deletions = current.Longest
+		served, eraseErr := baguetteErase(ctx, c.router(), target, round)
+		if served != "" {
+			driverID = served
+		}
+		if eraseErr != nil {
+			return Fail("ui_erase_failed", map[string]string{"driver": driverID, "stderr": firstLine(eraseErr.Error())}).Write(c.Stdout)
+		}
+		after, readErr := c.readEraseSnapshot(ctx, cfg)
+		if readErr != nil {
+			return Fail("ui_erase_unverifiable", map[string]string{
+				"driver": driverID,
+				"stderr": firstLine(readErr.Error()),
+				"next":   "the deletions were sent but the result could not be read back; re-read the tree (`mav ui tree`)",
+			}).Write(c.Stdout)
+		}
+		if after.Values == current.Values {
+			// Nothing moved. On a later round that is what empty looks
+			// like from here: a field back at its placeholder does not
+			// change when you delete from it again. On the FIRST round it
+			// is ambiguous — an already-empty field and a dead delete path
+			// look identical — so it is settled by measurement rather than
+			// by assuming the friendly reading, which is exactly the
+			// assumption this command used to ship.
+			if rounds == 1 {
+				verdict, probed, probeErr := c.probeEraseNoChange(ctx, cfg, target, spec, before)
+				switch {
+				case verdict == eraseProbeAlreadyEmpty && probeErr == nil:
+					current = probed
+					rounds = 0
+				case verdict == eraseProbeNoFocus:
+					return Fail("ui_erase_no_focus", map[string]string{
+						"driver": driverID,
+						"value":  before.Values,
+						"next":   "the field did not take a character, so nothing here is focused; tap the field first (`mav ui tap --text ...`)",
+					}).Write(c.Stdout)
+				default:
+					failure := map[string]string{
+						"driver": driverID,
+						"value":  probed.Values,
+						"next":   "the driver accepted the deletions and the field did not change, and a probe character it accepted could not be deleted either; the field may now hold one extra character. Check `mav doctor` for the driver serving erase",
+					}
+					if probeErr != nil {
+						failure["stderr"] = firstLine(probeErr.Error())
+					}
+					return Fail("ui_erase_ineffective", failure).Write(c.Stdout)
+				}
+				break
+			}
+			current = after
+			break
+		}
+		current = after
+	}
+	if current.Values != before.Values && rounds >= maxEraseRounds {
+		return Fail("ui_erase_incomplete", map[string]string{
+			"driver": driverID,
+			"rounds": strconv.Itoa(rounds),
+			"value":  current.Values,
+			"next":   "the field kept changing without settling; erase it in smaller steps or clear it from the app",
+		}).Write(c.Stdout)
+	}
+
+	fields := map[string]string{"driver": driverID, "rounds": strconv.Itoa(rounds)}
+	if rounds == 0 {
+		fields["already_empty"] = "true"
+	}
 	if id != "" {
 		fields["id"] = id
 	}

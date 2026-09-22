@@ -77,6 +77,14 @@ func (d *Driver) Provides(target drivers.Target) drivers.CapabilitySet {
 	if target.IsDevice() || target.IsMac() {
 		return drivers.NewSet()
 	}
+	// CapErase is deliberately absent, and its Erase method is gone with it.
+	// baguette's HID keyboard delivers nothing into a focused simulator text
+	// field: measured on 2026-09-22 against one Boxy search field holding
+	// "a12345", `baguette key --code Backspace` left value= untouched twice
+	// while `axe key 42` — the same HID usage, same simulator, same window —
+	// took it to "a1234" and then "a123". `baguette key --code KeyZ` typed
+	// nothing either, so no key name recovers it. Declaring the capability
+	// only bought a `{"ok":true}` for a field that still held its text.
 	return drivers.NewSet(
 		drivers.CapTap,
 		drivers.CapDoubleTap,
@@ -90,7 +98,6 @@ func (d *Driver) Provides(target drivers.Target) drivers.CapabilitySet {
 		drivers.CapHardwareBtn,
 		drivers.CapScreenshot,
 		drivers.CapTreeSystem,
-		drivers.CapErase,
 		drivers.CapHideKeyboard,
 	)
 }
@@ -164,7 +171,7 @@ func (d *Driver) DragPath(ctx context.Context, target drivers.Target, spec drive
 // flagged higher than AXe so AXe still wins those when both are healthy.
 func (d *Driver) Cost(c drivers.Capability, _ drivers.Target) int {
 	switch c {
-	case drivers.CapPinch, drivers.CapTwoFingerPan, drivers.CapHardwareBtn, drivers.CapTreeSystem, drivers.CapErase, drivers.CapHideKeyboard:
+	case drivers.CapPinch, drivers.CapTwoFingerPan, drivers.CapHardwareBtn, drivers.CapTreeSystem, drivers.CapHideKeyboard:
 		return 0
 	case drivers.CapType, drivers.CapCoordTap, drivers.CapSwipe, drivers.CapTap, drivers.CapScreenshot:
 		return 50
@@ -339,24 +346,6 @@ func (d *Driver) Type(ctx context.Context, target drivers.Target, spec drivers.T
 		"--text", spec.Text,
 	}
 	return d.runOK(ctx, "type", args)
-}
-
-// Erase clears the focused field by sending repeated Backspace key presses.
-// If callers pass Text, use its length as a lower bound; otherwise send a
-// conservative fixed count. Baguette does not currently offer semantic field
-// targeting, so non-focused selectors are intentionally ignored by this shim.
-func (d *Driver) Erase(ctx context.Context, target drivers.Target, spec drivers.TextSpec) error {
-	count := len([]rune(spec.Text))
-	if count < 32 {
-		count = 32
-	}
-	for i := 0; i < count; i++ {
-		args := []string{"key", "--udid", target.UDID, "--code", "Backspace"}
-		if err := d.runOK(ctx, "key", args); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // HideKeyboard sends Escape through the simulator keyboard, which dismisses

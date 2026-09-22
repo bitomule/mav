@@ -170,16 +170,16 @@ func baguetteW3CActions(ctx context.Context, router *drivers.Router, target driv
 	return gd.W3CActions(ctx, target, body)
 }
 
-func baguetteErase(ctx context.Context, router *drivers.Router, target drivers.Target, spec drivers.TextSpec) error {
+func baguetteErase(ctx context.Context, router *drivers.Router, target drivers.Target, spec drivers.TextSpec) (string, error) {
 	driver, _, err := router.Route(ctx, drivers.CapErase, target, "")
 	if err != nil {
-		return err
+		return "", err
 	}
-	td, ok := driver.(drivers.TextDriver)
+	ed, ok := driver.(drivers.EraseDriver)
 	if !ok {
-		return fmt.Errorf("driver %q does not implement TextDriver", driver.ID())
+		return driver.ID(), fmt.Errorf("driver %q does not implement EraseDriver", driver.ID())
 	}
-	return td.Erase(ctx, target, spec)
+	return driver.ID(), ed.Erase(ctx, target, spec)
 }
 
 func baguetteHideKeyboard(ctx context.Context, router *drivers.Router, target drivers.Target) error {

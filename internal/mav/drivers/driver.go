@@ -79,13 +79,23 @@ type GestureDriver interface {
 type TextDriver interface {
 	Driver
 	Type(ctx context.Context, target Target, spec TextSpec) error
-	Erase(ctx context.Context, target Target, spec TextSpec) error
 	HideKeyboard(ctx context.Context, target Target) error
 }
 
 type TypeDriver interface {
 	Driver
 	Type(ctx context.Context, target Target, spec TextSpec) error
+}
+
+// EraseDriver is deletion, and it is its own interface because the driver
+// that can type into a simulator field is not necessarily the one that can
+// delete from it. Bundling Erase into TextDriver meant every typist was
+// assumed to be a deleter too, and baguette — which types nothing and
+// deletes nothing through its HID keyboard — satisfied the interface and
+// won the route.
+type EraseDriver interface {
+	Driver
+	Erase(ctx context.Context, target Target, spec TextSpec) error
 }
 
 type ScreenshotDriver interface {

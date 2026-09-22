@@ -81,3 +81,32 @@ func TestTreeReturnsRawJSON(t *testing.T) {
 		t.Fatalf("json=%s", got.JSON)
 	}
 }
+
+func TestEraseSendsOneBackspacePerDeletion(t *testing.T) {
+	exec := &fakeExec{tools: map[string]bool{"axe": true}}
+	d := New(exec)
+	if err := d.Erase(context.Background(), drivers.Target{Kind: drivers.KindSim, UDID: "SIM-1"}, drivers.TextSpec{Deletions: 3, Focused: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(exec.commands) != 3 {
+		t.Fatalf("expected 3 deletions, got %d: %v", len(exec.commands), exec.commands)
+	}
+	// HID usage 42, keyboard page: the same usage baguette names "Backspace"
+	// and fails to deliver. Sent as a bare keycode because that is the only
+	// shape `axe key` takes.
+	if exec.commands[0] != "axe key 42 --udid SIM-1" {
+		t.Fatalf("command=%q", exec.commands[0])
+	}
+}
+
+func TestEraseIsSimulatorOnly(t *testing.T) {
+	d := New(&fakeExec{tools: map[string]bool{"axe": true}})
+	if !d.Provides(drivers.Target{Kind: drivers.KindSim}).Has(drivers.CapErase) {
+		t.Fatal("axe must serve erase on a simulator")
+	}
+	// On a device AXe reads the tree and drives no keyboard, so declaring
+	// erase there would route `ui erase` to a driver that cannot do it.
+	if d.Provides(drivers.Target{Kind: drivers.KindDevice}).Has(drivers.CapErase) {
+		t.Fatal("axe must not claim erase on a physical device")
+	}
+}

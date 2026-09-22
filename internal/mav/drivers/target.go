@@ -120,6 +120,12 @@ type TextSpec struct {
 	Text     string
 	Selector ElementSelector // optional: type into a specific field
 	Focused  bool            // if true, target the currently focused field
+	// Deletions is how many single-character deletions one Erase call should
+	// send. Zero leaves the driver to pick its own bound. The caller sets it
+	// because the caller is the one that read the field and knows how much
+	// is in it; a driver guessing a fixed count is how an erase ended up
+	// stopping half way through a long value.
+	Deletions int
 }
 
 // TreeSpec controls how the accessibility tree is collected.
