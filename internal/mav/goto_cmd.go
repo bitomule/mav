@@ -72,6 +72,13 @@ func (c CLI) runGotoLoop(ctx context.Context, cfg Config, opts GlobalOptions,
 	if !criterion.IsZero() {
 		result.CriterionSource = CriterionExplicit
 		result.Criterion = criterion.String()
+	} else {
+		// Step zero, before the screen has been read and before anything has
+		// been tapped: is this goal a place or a thing to do? Only asked when
+		// the caller named no criterion, because a caller who wrote
+		// --arrived-when has already said in their own words what arriving
+		// means and this command has nothing to add to it.
+		result.GoalKind = c.classifyGoal(ctx, goal)
 	}
 
 	elements, err := c.gotoReadScreen(ctx, cfg, opts)
@@ -283,6 +290,21 @@ func (c CLI) finishGoto(ctx context.Context, cfg Config, opts GlobalOptions,
 	route := ExtractRoute(settled)
 	result.RouteFinal = route
 
+	// An action goal is where this command runs out of things it can honestly
+	// check. Naming the screen it stopped on would name the screen on which the
+	// work is done, which is exactly the false arrival this gate exists for, so
+	// the question is not put at all — it costs nothing and it could only lie.
+	if criterion.IsZero() && result.GoalKind == GoalKindAction {
+		result.Arrived = "unverified"
+		if result.Next != "" {
+			result.Next += ". "
+		}
+		result.Next += "that goal asks for something to be DONE, and goto only checks WHERE it is standing; " +
+			"it walked to route_final and cannot confirm the work happened. Read the tree, or name the " +
+			"screen you wanted with --arrived-when"
+		return result
+	}
+
 	if criterion.IsZero() {
 		criterion = c.nameObservedDestination(ctx, &result, route, settled)
 	}
@@ -361,6 +383,29 @@ func (c CLI) nameObservedDestination(ctx context.Context, result *GotoResult, fi
 	return criterion
 }
 
+// classifyGoal puts the one question of GotoGoalKindQuestion, or leaves the
+// goal unclassified. Every way of not getting an answer — no key, no network, a
+// jevi too old, a label that is neither option — returns "", and "" is exactly
+// today's behaviour: the goal is not an action as far as this command knows, so
+// nothing is withheld that used to be given. The cost is one model call per run
+// that named no criterion, and on a goal read as an action it is not an extra
+// one: it replaces the naming call that run would otherwise have made.
+func (c CLI) classifyGoal(ctx context.Context, goal string) string {
+	key, _, ok := ResolveJevKey()
+	if !ok {
+		return ""
+	}
+	answer, err := askJevChoice(ctx, key, GotoGoalKindQuestion(), goal, GotoGoalKindOptions())
+	if err != nil {
+		return ""
+	}
+	kind, ok := InterpretGoalKind(answer.Label)
+	if !ok {
+		return ""
+	}
+	return kind
+}
+
 // gotoSettle waits for the screen to stop moving, and it is deliberately NOT
 // used on every step.
 //
@@ -427,6 +472,9 @@ func (c CLI) writeGotoResult(result GotoResult, extra map[string]string) error {
 	}
 	if result.CriterionSource != "" {
 		fields["criterion_source"] = result.CriterionSource
+	}
+	if result.GoalKind != "" {
+		fields["goal_kind"] = result.GoalKind
 	}
 	// A criterion nobody wrote is never printed as one somebody wrote.
 	if result.CriterionSource == CriterionObserved {

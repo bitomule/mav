@@ -1,5 +1,50 @@
 # Changelog
 
+## Unreleased
+
+### `goto` said it had arrived at work it had not done
+
+Measured on Boxy, 20 runs out of 20: `mav goto "create a category called Test
+Category"` reported `arrived=true` with
+`criterion_observed=title:"Crear categoria"`. The tree read straight afterwards
+had no such category in it and the name field still held its placeholder. `goto`
+had opened the sheet on which a category is created and called that creating
+one.
+
+The cause in one line: **`goto` knows how to check that it reached a PLACE, not
+that it did a THING.** Its entire notion of arrival is the screen it is standing
+on, so when the goal is an action it opens the screen where that action lives
+and takes the action for done. It is not a rare case — every goal that asks for
+something to be done ended this way.
+
+No screen tells the two apart. "take me to the screen where a category is
+created" and "create a category" finish on the same screen with the same tree,
+and only one of them is finished there. The difference is entirely in the
+sentence, so it is now read off the sentence: **one question, at step zero,
+before anything is read or tapped — does this goal name a place to go, or ask
+for something to be done?** A goal read as an action never gets a criterion
+inferred for it and never reports `arrived=true`; it walks, reports
+`arrived=unverified` and says why. A goal read as a place is untouched.
+
+This is legitimate for the same reason the observed naming of v0.28.0 is: the
+model chooses between two concrete options over a sentence it has no stake in,
+with nothing walked and no journey to defend, and code decides what the choice
+means. It is never asked whether it arrived.
+
+Measured on the same slot and fixture, 10 runs a lane:
+
+| lane | goal | before | after |
+|---|---|---|---|
+| the one that lied | `create a category called Test Category` | `arrived=true` 20/20, nothing created | `arrived=unverified` `goal_kind=action` **10/10**, nothing created (tree read each run) |
+| the control | `the contents of the Moving Boxes category, first box` | `arrived=true` 20/20 | `arrived=true` `goal_kind=place` **10/10** |
+
+Cost: **one model call per run that named no criterion**. On a goal read as an
+action it is not an extra one — it replaces the naming call that run would
+otherwise have made. A run with `--arrived-when` is never asked at all, because
+a caller who wrote one has already said what arriving means.
+
+`goal_kind` is on the `ok` line and in the JSON when the question was put.
+
 ## v0.28.0
 
 ### `goto` says it arrived without being told what to expect
