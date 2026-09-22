@@ -226,7 +226,9 @@ entirely.
    for manual exploration. Prefer accessibility identifiers first (`--id`).
    `mav ui erase --focused` clears a focused field: baguette on simulator, and on
    macOS the driver sets the field to the empty value, which does not depend on
-   the field holding focus. `mav ui hideKeyboard` dismisses the keyboard via
+   the field holding focus. `mav ui erase --find "<the field>"` names the field
+   in words instead: it taps it to take focus first, because no driver can be
+   told which field to empty. `mav ui hideKeyboard` dismisses the keyboard via
    baguette on simulator and is a successful no-op on macOS. Both
    return structured errors on a physical device (`erase_unsupported_on_device`,
    `hide_keyboard_unsupported_on_device`). Use `scrollUntil` before tapping
@@ -610,6 +612,26 @@ takes one, so `find` is not a new shape — it is a new field in the slot that w
 already there. The braces above are YAML's compact style, not structure; write
 it expanded, as here.
 
+**Which actions take it, and which will not.** `tap`, `doubleTap`, `type`,
+`toggle`, `erase`, `longPress` and `scrollUntil` take `find`. The checks —
+`assert`, `assertCount`, `wait`, `waitUntil`, `when`, `whileNotVisible` — refuse
+it with `selector_find_unsupported`, and `mav flow lint` refuses it before the
+run. An assertion is the independent half of a step, and a model that has
+already chosen where to tap cannot also be the one ruling on whether the tap
+worked; on top of that a find answers with an element or an abstention, and
+`not:` has nothing to invert. Assert on what the element leaves behind — an id,
+a text, a value.
+
+`scrollUntil` asks once per swipe, so it is capped at **6 consultations** per
+step (the default `maxSwipes` plus the look before the first swipe). Past that
+it fails with `scroll_until_find_limit` rather than asking quietly forever.
+
+**`find` will not abstain while your words name something that is on the
+screen**, even as the container of what you want: `"the box inside Test Category
+2"` on the category grid returns the `Test Category 2` button, 5/5, while
+`"the box inside this category"` — same screen, same meaning, no name —
+abstains 5/5. Name the thing you want, or reach it in two steps.
+
 The other selector fields are structural and run **first**: they cut the
 candidates down, and the words only choose among what survived. What cannot be
 acted on — disabled, invisible — is never offered. If the model declines, the
@@ -664,7 +686,8 @@ than tapping where the row used to be.
 
 ## Gestures
 
-`mav ui longPress --x X --y Y [--duration 800ms]` holds one finger down. It is
+`mav ui longPress (--x X --y Y | --id ID | --find "...") [--duration 800ms]` holds
+one finger down, on a point or on whatever the selector names. It is
 not multitouch, so it works on a physical device as well as on a simulator: on
 a device the hold goes out through idb.
 

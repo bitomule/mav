@@ -336,6 +336,54 @@ distintos con dos bancos distintos: filtrar por texto, un corte de confianza, re
 en vez de con su número** — esto último medido a 30 tiradas, 0/30 hoy y 1/30 con el mejor
 brazo, o sea que sólo cambia unos fallos por otros.
 
+#### Y un sexto, medido el 22 sep: la frase que nombra el objetivo. Tampoco.
+
+Era el candidato con mejor pinta que ha habido, porque no era una corazonada: en v0.28.0 se
+midió que **esa frase, y sólo esa, se llevaba una quinta parte de los aciertos de `goto`**
+(29–34/40 con *"Someone is trying to reach: X"*, 40/40 con *"A user described where they
+want to get to as: X"*). La pregunta de `find` sigue diciendo *"what they want to **tap**"*,
+que es un marco de **acción** — y tocar la categoría es, en efecto, la acción que abre la
+caja de dentro. Pasarlo a un marco de **identidad** parecía exactamente el mismo cambio que
+allí lo arregló todo:
+
+```
+- "A user described what they want to tap as: " + goal
+- "Which numbered element is it?"
++ "A user described the element they are looking for as: " + goal
++ "Which numbered element IS that element?"
+```
+
+Medido sobre el banco entero, ocho celdas, dos pasadas: **idéntico, celda por celda y pick
+por pick**. Las dos celdas malas siguen devolviendo el botón `Test Category 2` 5/5, y las
+seis buenas no se movieron. No es que el arreglo sea pequeño: es que no existe.
+
+**Y el aviso del ordinal (`goto.md` §14) no rescata estos descartes.** Envenena las medidas
+de la celda `"la primera caja"`, que lleva ordinal; **estas dos no llevan ninguno**. El
+mecanismo de §14 —un número dentro de un nombre absorbiendo un *"primera"*— no está
+operando aquí.
+
+#### Lo que sí sabemos ahora, y es una regla más afilada que la que había
+
+El defecto no es *"`find` no se abstiene en esta pantalla"*. Es más estrecho, y se lee
+directamente de la tabla:
+
+| frase, misma pantalla, mismos candidatos | nombra una fila que está en pantalla | resultado |
+|---|---|---|
+| `"the box inside Test Category 2"` | sí, `Test Category 2` | la devuelve, 5/5 |
+| `"open the box in Test Category 2"` | sí, `Test Category 2` | la devuelve, 5/5 |
+| `"the box inside this category"` | no | **se abstiene 5/5** |
+
+Las tres quieren decir lo mismo. La única que se abstiene es la que **no nombra ninguna
+fila visible**. O sea: **`find` no se abstendrá mientras el objetivo nombre algo que está en
+la pantalla**, aunque lo nombre como contenedor de lo que se busca. Y eso no se puede quitar
+desde la pregunta sin quitárselo también a `goto`, que comparte el camino y para quien esa
+respuesta es la correcta.
+
+**Se queda sin cerrar, a propósito.** La mitigación sigue siendo de quien escribe el paso, y
+ahora con una regla que se puede comprobar de un vistazo: **si tu frase nombra una pantalla
+o un contenedor por su nombre, `find` te devolverá ese contenedor.** Nombra la cosa
+(`"la fila de la caja 1000"`), o llega a ella en dos pasos.
+
 > **Y una advertencia sobre cómo leer cualquier medida nuestra anterior al 21 sep.**
 > `jevi` **reordenaba alfabéticamente las claves** de toda pregunta que reenviaba: usaba
 > `serde_json` sin `preserve_order`, así que una pregunta escrita `{goal, context, rules}`

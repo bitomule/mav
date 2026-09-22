@@ -1,5 +1,114 @@
 # Changelog
 
+## Unreleased
+
+### `find` reaches `erase`, `longPress` and `scrollUntil`
+
+The `find` selector — naming an element in your own words — was taken by `tap`,
+`type`, `toggle` and `doubleTap`, and refused by everything else. Three more
+accept it now.
+
+**`erase` is the one that was missing.** You could find a field and type into it,
+and you could not find it and empty it first — so a flow that fills in a form
+with something already in it could not be written. And the refusal was not even
+loud: `mav ui erase --find "..."` reported `ok` having deleted nothing, because
+`--find` was read by nobody on that path.
+
+Emptying takes two moves, and they are the two `type` already makes: no driver
+has semantic targeting for erase (baguette clears whatever holds focus and
+ignores the selector outright), so the words have to become FOCUS before
+anything is deleted. The tap is `uiTap`'s, so the find decision is still spent
+once per step, through the same ledger.
+
+Measured on Boxy's new-box sheet, iPhone 17 Pro / iOS 26.3 from a simpool slot.
+Two text fields on screen, neither focused, the code field reading `VLNM`. Same
+two commands under each binary — `ui erase --find "el campo del código de caja"`
+then a bare `ui type "QQ"`, which goes wherever focus is — and the value read
+back out of the tree:
+
+| | `boxIdentifierTextField` | the other text field |
+|---|---|---|
+| before | `value=VLNM`, untouched | untouched |
+| after | **`value=VLNMQ`** | untouched |
+
+So the words reached the field they named, and only it. The deletion itself does
+not show on this machine, and that is not about `find`: `mav ui erase --focused`
+on a focused field is equally inert here, because the simulator's hardware
+keyboard is disconnected and baguette's Backspace HID keys land nowhere. Same
+result with and without a find, which is what makes it a separate matter.
+
+**`longPress`** was coordinates only, so a caller who could only describe the
+target had nowhere to go. It now resolves a selector through the same route the
+other gestures take, which brings `--find` and every structural predicate with
+it. Live on the same slot: `mav ui longPress --find "la categoría Cocina"`
+lands on `x=104 y=212`, the centre of that cell; the same command before the
+change is `fail code=gesture_invalid error=x_missing`.
+
+**`scrollUntil`** asks per swipe, so the question was never whether it could ask
+but how often. It consults a model at most **6 times** per step — the default
+`maxSwipes` plus the look before the first swipe — so a default step is
+unchanged and only a deliberately long scroll is cut short, loudly, with
+`scroll_until_find_limit` and the count it spent. A find that cannot be asked at
+all (no key, no network, CI) stops the scroll immediately instead of burning
+every swipe first; an abstention means "not on this screen" and swipes again.
+
+### `assert`, `assertCount` and the waits refuse `find`, out loud
+
+They are left out on purpose, and the silent version was worse than the refusal:
+a condition dropped the words on the way in, so `assert: { where: { find: "..."
+} }` read as an empty selector and reported *the screen does not show it* — a
+wrong answer from the one step whose job is to be believed.
+
+Four reasons, and the first three are why it is not a wiring job:
+
+- An assertion is the INDEPENDENT half of a step. A `tap` with `find` already
+  trusts the model to pick the row; letting the same model then rule on whether
+  the tap worked is the judge marking its own exam.
+- `find` answers with one element or with an abstention. A condition has to
+  answer true or false, and `not:` has to invert it. `find_abstained` is
+  neither.
+- A condition must be decidable where nothing can be asked. With no key, or in
+  CI, every find is `find_unavailable` — a suite would stop reporting failures
+  and start reporting errors, on exactly the machines that only read the summary.
+- `assertCount` settles on its own: a find resolves to one element or none, so
+  the only counts it could assert are 0 and 1.
+
+`mav flow lint` now catches it before a run spends a simulator.
+
+### The two Boxy cells where `find` returns the category button: still open
+
+Asked for `"the box inside Test Category 2"` on a screen with no box on it,
+`find` returns the **`Test Category 2` button**, 5/5. One more fix was measured
+and it did not work, so that is six.
+
+It was the best candidate there has been, because it was not a hunch: v0.28.0
+measured that the single sentence naming the goal was costing `goto` a fifth of
+its choices. `find` still says *"what they want to **tap**"* — an ACTION frame,
+and tapping the category IS the action that opens the box inside. Moving it to
+an identity frame (*"the element they are looking for"* / *"which numbered
+element IS that element"*) measured **identical, cell for cell and pick for
+pick**, across all eight bench cells.
+
+And `goto.md` §14's ordinal poisoning does not rescue the earlier discards
+here: it poisons `"la primera caja"`, which carries an ordinal. **These two
+carry none.**
+
+What the bench does now say, sharply, is a better rule than the one in the docs:
+
+| same screen, same candidates | names a row that is on screen | result |
+|---|---|---|
+| `"the box inside Test Category 2"` | yes | returns it, 5/5 |
+| `"open the box in Test Category 2"` | yes | returns it, 5/5 |
+| `"the box inside this category"` | no | **abstains 5/5** |
+
+All three mean the same thing. **`find` will not abstain while the goal names
+something that is on the screen**, even when it names it as the container of
+what is wanted — and that cannot be taken out of the question without taking it
+from `goto`, which shares the path and for which that answer is correct.
+
+So it stays open, deliberately. If your phrase names a screen or a container by
+name, `find` will hand you that container. Name the thing.
+
 ## v0.28.0
 
 ### `goto` says it arrived without being told what to expect
