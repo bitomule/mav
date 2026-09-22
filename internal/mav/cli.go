@@ -491,10 +491,10 @@ Selects a physical iOS device and switches target_kind to device.
   mav ui tap --text TEXT [--prefer-driver auto|axe]
   mav ui tap --value VALUE
   mav ui type TEXT [--prefer-driver auto|axe]
-  mav ui erase [--id ID | --text TEXT | --value VALUE | --focused true]
+  mav ui erase [--id ID | --text TEXT | --value VALUE | --find "..." | --focused true]
   mav ui hideKeyboard
   mav ui swipe [--direction up|down|left|right]
-  mav ui longPress --x X --y Y [--duration 800ms]
+  mav ui longPress (--x X --y Y | --id ID | --find "...") [--duration 800ms]
   mav ui pinch --x X --y Y --scale SCALE [--pan-x DX] [--pan-y DY] [--distance D] [--angle DEG] [--rotate DEG] [--duration 800ms] [--hold DURATION]
   mav ui rotate --x X --y Y --degrees DEG [--distance D] [--duration 800ms] [--hold DURATION]
   mav ui twoFingerPan --x X --y Y --pan-x DX --pan-y DY [--distance D] [--angle DEG] [--duration 800ms] [--hold DURATION]
@@ -572,7 +572,7 @@ Prefer accessibility ids. Use coordinates only when the tree is insufficient and
 	case "ui type":
 		return "Usage: mav ui type TEXT [--prefer-driver auto|axe]\n"
 	case "ui erase":
-		return "Usage: mav ui erase [--id ID | --text TEXT | --value VALUE | --focused true]\n\nSimulator-backed through baguette. Physical devices return erase_unsupported_on_device.\n"
+		return "Usage: mav ui erase [--id ID | --text TEXT | --value VALUE | --find \"...\" | --focused true]\n\nSimulator-backed through baguette. Physical devices return erase_unsupported_on_device.\n"
 	case "ui hideKeyboard":
 		return "Usage: mav ui hideKeyboard\n\nSimulator-backed through baguette. Physical devices return hide_keyboard_unsupported_on_device.\n"
 	case "ui swipe":
@@ -584,7 +584,7 @@ Prefer accessibility ids. Use coordinates only when the tree is insufficient and
 	case "ui twoFingerPan":
 		return "Usage: mav ui twoFingerPan --x X --y Y --pan-x DX --pan-y DY [--distance D] [--angle DEG] [--duration 800ms] [--hold DURATION]\n"
 	case "ui longPress":
-		return "Usage: mav ui longPress --x X --y Y [--duration 800ms]\n"
+		return "Usage: " + longPressUsage + "\n"
 	case "ui actions":
 		return "Usage: mav ui actions --file actions.json\n"
 	case "ui wait":
@@ -3577,6 +3577,37 @@ func (c CLI) uiErase(ctx context.Context, opts GlobalOptions, cfg Config, args [
 	text := flagValue(args, "--text")
 	value := flagValue(args, "--value")
 	focused := flagValue(args, "--focused") == "true" || hasFlag(args, "--focused")
+	selector, selectorErr := selectorFromCLI(args)
+	if selectorErr != nil {
+		return Fail("selector_invalid", map[string]string{"error": selectorErr.Error()}).Write(c.Stdout)
+	}
+	// `--find` names the field in words. Emptying a field you can only
+	// describe is the common half of "fill in a form that already has
+	// something in it", and without this the only way to it was an id.
+	//
+	// The two moves are the ones `type` already makes, and for the same
+	// reason: no driver has semantic targeting for erase. baguette clears
+	// whatever holds focus and ignores the selector outright, so words have
+	// to become FOCUS before anything is deleted — resolve, tap, then erase
+	// the field that is now focused. Going straight to the driver with the
+	// resolved id would have deleted from whatever was focused before,
+	// reported ok, and left the field it was pointed at untouched.
+	//
+	// The tap is uiTap's, not a second resolution: that is the one route that
+	// spends the find decision through its ledger, so a find still resolves
+	// once per step here as it does everywhere else.
+	if selector.Find != "" {
+		var tapOutput bytes.Buffer
+		if err := c.withStdout(&tapOutput).uiTap(ctx, opts, cfg, selectorCLIArgs(selector)); err != nil ||
+			strings.HasPrefix(strings.TrimSpace(tapOutput.String()), "fail ") {
+			return Fail("ui_erase_target_failed", map[string]string{"result": firstLine(tapOutput.String())}).Write(c.Stdout)
+		}
+		focused = true
+		// The selector's own --text is a predicate for the tap, not a hint
+		// about how long the field is. Letting it through as the erase
+		// length would send the wrong number of deletions.
+		text = ""
+	}
 	target := targetFromConfig(cfg)
 	if err := baguetteErase(ctx, c.router(), target, drivers.TextSpec{Text: text, Selector: drivers.ElementSelector{ID: id, Value: value}, Focused: focused}); err != nil {
 		return Fail("ui_erase_failed", map[string]string{"driver": "baguette", "stderr": err.Error()}).Write(c.Stdout)
@@ -4370,18 +4401,44 @@ func (c CLI) uiPress(ctx context.Context, opts GlobalOptions, cfg Config, args [
 // rotate and twoFingerPan it is not gated to the simulator: on a physical
 // device idb is the only tap driver, and `idb ui tap --duration` holds there
 // exactly as it does on a simulator.
+// longPressUsage names both ways in: the coordinate pair it always took, and
+// the selector -- id, or words through `--find` -- it now resolves to one.
+const longPressUsage = `mav ui longPress (--x X --y Y | --id ID | --find "...") [--duration 800ms]`
+
 func (c CLI) uiLongPress(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
-	_ = opts
 	x := flagValue(args, "--x")
 	y := flagValue(args, "--y")
 	durationText := flagValue(args, "--duration")
-	xv, err := parseRequiredFloat(x, "x")
-	if err != nil {
-		return Fail("gesture_invalid", map[string]string{"error": err.Error(), "usage": "mav ui longPress --x X --y Y [--duration 800ms]"}).Write(c.Stdout)
-	}
-	yv, err := parseRequiredFloat(y, "y")
-	if err != nil {
-		return Fail("gesture_invalid", map[string]string{"error": err.Error(), "usage": "mav ui longPress --x X --y Y [--duration 800ms]"}).Write(c.Stdout)
+	var xv, yv float64
+	if x == "" && y == "" {
+		// A long press was a coordinate-only gesture, which left a caller who
+		// could only DESCRIBE the target with nowhere to go — and describing
+		// it is the normal way to reach a context menu on a row whose id is
+		// repeated down the list.
+		//
+		// actionCoordinates is the route the other selector-driven gestures
+		// already take, so `find` arrives here for free and so does every
+		// structural predicate: it resolves the selector once and hands back
+		// the centre of what it named.
+		px, py, err := c.actionCoordinates(ctx, cfg, opts, args)
+		if err != nil {
+			selector, _ := selectorFromCLI(args)
+			if !selector.IsZero() {
+				return selectorFail(selector, Element{}, err).Write(c.Stdout)
+			}
+			return Fail("gesture_invalid", map[string]string{"error": err.Error(), "usage": longPressUsage}).Write(c.Stdout)
+		}
+		xv, yv = float64(px), float64(py)
+	} else {
+		parsedX, err := parseRequiredFloat(x, "x")
+		if err != nil {
+			return Fail("gesture_invalid", map[string]string{"error": err.Error(), "usage": longPressUsage}).Write(c.Stdout)
+		}
+		parsedY, err := parseRequiredFloat(y, "y")
+		if err != nil {
+			return Fail("gesture_invalid", map[string]string{"error": err.Error(), "usage": longPressUsage}).Write(c.Stdout)
+		}
+		xv, yv = parsedX, parsedY
 	}
 	duration := parseFlowDuration(durationText, 800*time.Millisecond)
 	if duration <= 0 {
@@ -5982,7 +6039,17 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 		}
 		return fields, commandOutputErr(err, out.String(), "type_failed")
 	case "erase":
-		args := flowArgs(step.Params, "--id", "id", "--text", "text", "--value", "value", "--focused", "focused")
+		// A `where` carrying words replaces the legacy params rather than
+		// joining them: erase reads `--text` as how much to delete and the
+		// selector reads it as a predicate, and one flag cannot be both. A
+		// structural `where` is still ignored here, as it always was, so no
+		// existing step changes what it deletes.
+		var args []string
+		if step.Where.Find != "" {
+			args = selectorCLIArgs(step.Where)
+		} else {
+			args = flowArgs(step.Params, "--id", "id", "--text", "text", "--value", "value", "--focused", "focused")
+		}
 		var out bytes.Buffer
 		cfg, cfgErr := c.mustLoadConfig()
 		if cfgErr != nil {
@@ -6050,7 +6117,7 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 		err := c.withStdout(io.Discard).uiPress(ctx, GlobalOptions{}, cfg, args)
 		return copyParams(step.Params), outputErr(err, "press_failed")
 	case "longPress":
-		args := flowArgs(step.Params, "--x", "x", "--y", "y", "--duration", "duration")
+		args := append(selectorCLIArgs(flowStepSelector(step)), flowArgs(step.Params, "--x", "x", "--y", "y", "--duration", "duration")...)
 		cfg, cfgErr := c.mustLoadConfig()
 		if cfgErr != nil {
 			return flowStepTargetFailure(step, cfgErr)
@@ -6983,13 +7050,33 @@ func (c CLI) scrollUntilFlowConditionWithSelector(ctx context.Context, params ma
 		direction = "up"
 	}
 	condition := flowConditionFromSelector(selector)
+	consultations := 0
 	for i := 0; i <= maxSwipes; i++ {
-		ok, err := c.evaluateSingleConditionWithPrefer(ctx, condition, prefer)
+		var ok bool
+		var err error
+		if selector.Find != "" {
+			if consultations >= findScrollConsultLimit {
+				return map[string]string{
+					"swipes": strconv.Itoa(i), "direction": direction,
+					"find_consultations": strconv.Itoa(consultations),
+					"find_limit":         strconv.Itoa(findScrollConsultLimit),
+					"next":               "a find is asked once per swipe; lower maxSwipes, or scroll to the region with a structural scrollUntil and put the find on the step after it",
+				}, fmt.Errorf("scroll_until_find_limit")
+			}
+			consultations++
+			ok, err = c.findVisibleForScroll(ctx, selector, prefer)
+		} else {
+			ok, err = c.evaluateSingleConditionWithPrefer(ctx, condition, prefer)
+		}
 		if err != nil {
 			return nil, err
 		}
 		if ok {
-			return map[string]string{"swipes": strconv.Itoa(i), "direction": direction}, nil
+			fields := map[string]string{"swipes": strconv.Itoa(i), "direction": direction}
+			if consultations > 0 {
+				fields["find_consultations"] = strconv.Itoa(consultations)
+			}
+			return fields, nil
 		}
 		if i == maxSwipes {
 			break
@@ -7004,6 +7091,9 @@ func (c CLI) scrollUntilFlowConditionWithSelector(ctx context.Context, params ma
 		time.Sleep(500 * time.Millisecond)
 	}
 	fields := map[string]string{"swipes": strconv.Itoa(maxSwipes), "direction": direction}
+	if consultations > 0 {
+		fields["find_consultations"] = strconv.Itoa(consultations)
+	}
 	// uiSwipe itself re-derives a rotated direction swipe's endpoints
 	// (rotatedDirectionSwipe), so a rotated angle alone no longer means the
 	// swipes above dragged along the wrong axis -- only that re-derivation
@@ -7192,6 +7282,35 @@ func (c CLI) evaluateSingleConditionWithPrefer(ctx context.Context, condition Fl
 	}
 	if condition.ChangedFrom != "" {
 		return c.screenshotChangedFrom(ctx, condition.ChangedFrom)
+	}
+	// A condition is a CHECK, and `find` is not a way to check things.
+	//
+	// It is out of `assert`, `wait`, `waitUntil`, `when` and `whileNotVisible`
+	// on purpose, and the reason is not that it would be hard to wire — the
+	// resolution path is two lines away. It is that the three things a
+	// condition has to do, a find cannot do:
+	//
+	//   - An assertion is the INDEPENDENT half of a step. `tap: { where: {
+	//     find: ... } }` already trusts the model to pick the row; letting the
+	//     same model then rule on whether the tap worked is the judge marking
+	//     its own exam, and what comes out is not evidence.
+	//   - `find` answers with ONE element or with an abstention. A condition
+	//     has to answer true or false, and `not:` has to be able to invert
+	//     it. `find_abstained` is neither: it is "I looked and I will not
+	//     say", which under `not:` would read as a passing assertion.
+	//   - A condition must be decidable where nothing can be asked. With no
+	//     key, no network, or in CI, every find is `find_unavailable` — so a
+	//     suite would stop reporting failures and start reporting errors, on
+	//     exactly the machines that only read the summary.
+	//
+	// `assertCount` is out for a fourth reason that settles it on its own: a
+	// find resolves to one element or none, so the only counts it could ever
+	// assert are 0 and 1.
+	//
+	// So it refuses here, loudly and in one place, which is also where every
+	// nested any/all/not passes through.
+	if condition.Find != "" {
+		return false, fmt.Errorf("selector_find_unsupported")
 	}
 	cfg, err := LoadConfig(c.Root)
 	if err != nil {

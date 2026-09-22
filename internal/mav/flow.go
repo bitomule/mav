@@ -43,27 +43,34 @@ type FlowStep struct {
 }
 
 type FlowCondition struct {
-	ID             string          `yaml:"id,omitempty"`
-	Text           string          `yaml:"text,omitempty"`
-	TextContains   string          `yaml:"textContains,omitempty"`
-	TextStartsWith string          `yaml:"textStartsWith,omitempty"`
-	TextRegex      string          `yaml:"textRegex,omitempty"`
-	Value          string          `yaml:"value,omitempty"`
-	ValueContains  string          `yaml:"valueContains,omitempty"`
-	Role           string          `yaml:"role,omitempty"`
-	Enabled        *bool           `yaml:"enabled,omitempty"`
-	Selected       *bool           `yaml:"selected,omitempty"`
-	Focused        *bool           `yaml:"focused,omitempty"`
-	Visible        *bool           `yaml:"visible,omitempty"`
-	Index          *int            `yaml:"index,omitempty"`
-	Bounds         string          `yaml:"bounds,omitempty"`
-	Near           *NearSelector   `yaml:"near,omitempty"`
-	ParentOf       *Selector       `yaml:"parentOf,omitempty"`
-	ChangedFrom    string          `yaml:"changedFrom,omitempty"`
-	Stable         bool            `yaml:"stable,omitempty"`
-	Any            []FlowCondition `yaml:"any,omitempty"`
-	All            []FlowCondition `yaml:"all,omitempty"`
-	Not            *FlowCondition  `yaml:"not,omitempty"`
+	ID             string        `yaml:"id,omitempty"`
+	Text           string        `yaml:"text,omitempty"`
+	TextContains   string        `yaml:"textContains,omitempty"`
+	TextStartsWith string        `yaml:"textStartsWith,omitempty"`
+	TextRegex      string        `yaml:"textRegex,omitempty"`
+	Value          string        `yaml:"value,omitempty"`
+	ValueContains  string        `yaml:"valueContains,omitempty"`
+	Role           string        `yaml:"role,omitempty"`
+	Enabled        *bool         `yaml:"enabled,omitempty"`
+	Selected       *bool         `yaml:"selected,omitempty"`
+	Focused        *bool         `yaml:"focused,omitempty"`
+	Visible        *bool         `yaml:"visible,omitempty"`
+	Index          *int          `yaml:"index,omitempty"`
+	Bounds         string        `yaml:"bounds,omitempty"`
+	Near           *NearSelector `yaml:"near,omitempty"`
+	ParentOf       *Selector     `yaml:"parentOf,omitempty"`
+	// Find is carried so a condition can SAY it was written with words, not so
+	// it can evaluate them. Dropping it here is what made
+	// `assert: { where: { find: "..." } }` read as an empty selector and fail
+	// as "the screen does not show it" -- a silent wrong answer on a step
+	// whose whole job is to be believed. Carried, it reaches the refusal in
+	// evaluateSingleConditionWithPrefer instead.
+	Find        string          `yaml:"find,omitempty"`
+	ChangedFrom string          `yaml:"changedFrom,omitempty"`
+	Stable      bool            `yaml:"stable,omitempty"`
+	Any         []FlowCondition `yaml:"any,omitempty"`
+	All         []FlowCondition `yaml:"all,omitempty"`
+	Not         *FlowCondition  `yaml:"not,omitempty"`
 }
 
 type FlowParam struct {
@@ -113,40 +120,40 @@ type flowStepPayload struct {
 	Screen         string        `yaml:"screen"`
 	Text           flowTextField `yaml:"text"`
 	ID             string        `yaml:"id"`
-	Value          string `yaml:"value"`
-	X              string `yaml:"x"`
-	Y              string `yaml:"y"`
-	Cmd            string `yaml:"cmd"`
-	Out            string `yaml:"out"`
-	Name           string `yaml:"name"`
-	Note           string `yaml:"note"`
-	Timeout        string `yaml:"timeout"`
-	Duration       string `yaml:"duration"`
-	Hold           string `yaml:"hold"`
-	Direction      string `yaml:"direction"`
-	Contains       string `yaml:"contains"`
-	Key            string `yaml:"key"`
-	Level          string `yaml:"level"`
-	Device         string `yaml:"device"`
-	IOS            string `yaml:"ios"`
-	UDID           string `yaml:"udid"`
-	Locale         string `yaml:"locale"`
-	Language       string `yaml:"language"`
-	ChangedFrom    string `yaml:"changedFrom"`
-	MaxSwipes      string `yaml:"maxSwipes"`
-	Scale          string `yaml:"scale"`
-	PanX           string `yaml:"panX"`
-	PanY           string `yaml:"panY"`
-	Distance       string `yaml:"distance"`
-	Angle          string `yaml:"angle"`
-	Rotate         string `yaml:"rotate"`
-	Degrees        string `yaml:"degrees"`
-	File           string `yaml:"file"`
-	HAR            string `yaml:"har"`
-	Port           string `yaml:"port"`
-	PreferDriver   string `yaml:"prefer-driver"`
-	ClearState     bool   `yaml:"clearState"`
-	ClearStateDash bool   `yaml:"clear-state"`
+	Value          string        `yaml:"value"`
+	X              string        `yaml:"x"`
+	Y              string        `yaml:"y"`
+	Cmd            string        `yaml:"cmd"`
+	Out            string        `yaml:"out"`
+	Name           string        `yaml:"name"`
+	Note           string        `yaml:"note"`
+	Timeout        string        `yaml:"timeout"`
+	Duration       string        `yaml:"duration"`
+	Hold           string        `yaml:"hold"`
+	Direction      string        `yaml:"direction"`
+	Contains       string        `yaml:"contains"`
+	Key            string        `yaml:"key"`
+	Level          string        `yaml:"level"`
+	Device         string        `yaml:"device"`
+	IOS            string        `yaml:"ios"`
+	UDID           string        `yaml:"udid"`
+	Locale         string        `yaml:"locale"`
+	Language       string        `yaml:"language"`
+	ChangedFrom    string        `yaml:"changedFrom"`
+	MaxSwipes      string        `yaml:"maxSwipes"`
+	Scale          string        `yaml:"scale"`
+	PanX           string        `yaml:"panX"`
+	PanY           string        `yaml:"panY"`
+	Distance       string        `yaml:"distance"`
+	Angle          string        `yaml:"angle"`
+	Rotate         string        `yaml:"rotate"`
+	Degrees        string        `yaml:"degrees"`
+	File           string        `yaml:"file"`
+	HAR            string        `yaml:"har"`
+	Port           string        `yaml:"port"`
+	PreferDriver   string        `yaml:"prefer-driver"`
+	ClearState     bool          `yaml:"clearState"`
+	ClearStateDash bool          `yaml:"clear-state"`
 	// A single spelling on purpose: the clearState/clear-state doublet
 	// above is debt there is no reason to repeat.
 	SkipBuild      bool            `yaml:"skipBuild"`

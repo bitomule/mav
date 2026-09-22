@@ -2,6 +2,7 @@ package mav
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -204,4 +205,64 @@ func (c CLI) readElementsForFind(ctx context.Context, cfg Config, prefer string)
 		return nil, fmt.Errorf("tree_failed")
 	}
 	return ExtractElements(described.Result.Stdout), nil
+}
+
+// findScrollConsultLimit caps how many times ONE scrollUntil step may ask a
+// model.
+//
+// Every other predicate a scrollUntil can carry is re-checked for free on each
+// swipe: the tree is already being read, and matching against it costs
+// nothing. A `find` is not free — it is a model call per look, so a step
+// written `maxSwipes: 40` would quietly spend 41 of them before reporting a
+// timeout, and nobody writing `scrollUntil` expects to be billed per swipe.
+//
+// Six is the default `maxSwipes` (5) plus the look that happens before the
+// first swipe. So a default step is unchanged and pays at most what it always
+// paid in tree reads; only a deliberately long scroll is cut short, and it is
+// cut short LOUDLY, with scroll_until_find_limit and the count it spent,
+// rather than by silently looking less often than it swiped.
+const findScrollConsultLimit = 6
+
+// findVisibleForScroll answers the one question scrollUntil needs: is the
+// described element on the screen as it is right now?
+//
+// It is resolveFindElement without the action guard, because nothing is about
+// to be touched — this is a look, not a tap, and paying for the point re-read
+// and the decision ledger on each swipe would double the cost of a step that
+// is already the expensive one.
+//
+// The three ways a find can decline do NOT all mean the same thing here, and
+// collapsing them is how this step would either loop over a dead key or stop
+// on a screen it had not finished scrolling:
+//
+//   - abstained, or no candidates, or a structural predicate matching nothing:
+//     the element is not on THIS screen. That is "not yet" — swipe again.
+//   - no key, no network, jev too old, CI: nothing was judged, and swiping
+//     will not change that. Fail now rather than burning every swipe first.
+func (c CLI) findVisibleForScroll(ctx context.Context, selector Selector, prefer string) (bool, error) {
+	cfg, err := c.mustLoadConfig()
+	if err != nil {
+		return false, err
+	}
+	elements, err := c.readElementsForFind(ctx, cfg, prefer)
+	if err != nil {
+		return false, err
+	}
+	_, _, err = c.resolveFindElement(ctx, elements, selector)
+	if err == nil {
+		return true, nil
+	}
+	if err.Error() == "selector_not_found" {
+		return false, nil
+	}
+	var findErr *findSelectorError
+	if errors.As(err, &findErr) {
+		switch findErr.reason {
+		case ReasonNoKey, ReasonNoNetwork, ReasonJevTooOld, ReasonCIRefused:
+			return false, err
+		default:
+			return false, nil
+		}
+	}
+	return false, err
 }
