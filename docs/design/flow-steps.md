@@ -691,3 +691,106 @@ como fallo honesto y no como escritura falsa: `categoryNameTextField` tenía
 un flake del toque con el teclado levantado, no un problema de `goto` ni de escritura.
 
 **Cero escrituras falsas en las 40 tiradas de las dos tandas.**
+
+## 10. La segunda cinta, medida: quién actúa primero y con qué código muere el paso
+
+Lo de §9 dejaba la segunda cinta —`arrived=unverified` falla el paso— **propuesta razonando
+y sin medir**. Y las 20 tiradas del flujo mezclado **no la prueban**: allí el trabajo del
+`goto` ES abrir la hoja, así que llegar a la hoja era la respuesta correcta y el defecto no
+tenía ocasión de asomar.
+
+Medido el 22 sep 2026 sobre Boxy, `iPhone 17 Pro` / iOS 26.3, slot-4 de simpool. `load1`
+4,79–10,55 y `load5` 4,29–5,81 de principio a fin, las dos siempre por debajo de 15. Canario
+de toque —md5 de la huella ordenada de `(id,label,role)` alrededor de un toque conocido—
+verde antes y después de cada tanda: `18AFFBC9 → 5D6D0C21`. Comprobado **leyendo el árbol**,
+nunca por el código de salida.
+
+### El slot F81D81A1, que el canario cazó
+
+La primera petición al pool devolvió `slot-1`, `F81D81A1`, que estaba caliente y por eso
+ganaba siempre. El canario dio la misma huella antes y después del toque y la tanda abortó
+ahí, sin medir nada. **No se reinició**: se aparcó con una reserva propia y el trabajo se
+llevó a `slot-4`, donde el mismo canario pasó a la primera. La huella idéntica en los dos
+slots (`18AFFBC9`) confirma de paso que la huella es determinista y que lo que falló fue el
+toque, no la lectura.
+
+### Carril A — objetivo de acción con el efecto exigido
+
+`testdata/flows/boxy-goto-objetivo-de-accion.yaml`: objetivo `create a category called
+Kitchen Stuff`, criterio `text:"Kitchen Stuff"`. El bucle de `goto` sólo toca, nunca escribe,
+así que ese criterio le es inalcanzable por construcción.
+
+**5 de 5 el paso FALLA**, en `step=1`, con `outcome=stuck` y
+`route="screen=categories-view title=Crear categoria"` — o sea que llegó a la hoja y ahí se
+quedó, que es exactamente el sitio donde `goto` suelto mentía. Ninguna tirada creó nada:
+`EXACT:0` para la etiqueta exacta `Kitchen Stuff` y `EXACT:0` para `Test Category` en las
+cinco, leído del árbol después de cada una. **Cero escrituras falsas.**
+
+El código con el que muere no es el que esperábamos:
+
+```
+fail code=goto_did_not_arrive arrived=false criterion="text:\"Kitchen Stuff\"" criterion_source=explicit outcome=stuck step=1 steps=3
+```
+
+**`goto_did_not_arrive`, no `goto_arrival_unverified`.** Con el criterio escrito el bucle
+contesta `arrived=false`, no `unverified`: el criterio simplemente no se cumple. Lo que tapa
+este carril es el criterio obligatorio de la primera cinta, no la segunda.
+
+### Quién actúa primero, y por qué la puerta de la #123 no llega
+
+La #123 clasifica el objetivo en el paso cero como **sitio** o **acción** y, si es acción,
+nunca afirma llegada. Esa puerta está **detrás de `criterion.IsZero()`**, y dentro de un
+flujo el criterio es obligatorio, así que **el objetivo no se clasifica nunca y la puerta no
+se dispara jamás dentro de un flujo**. En las cinco tiradas del carril A no aparece
+`goal_kind` en ninguna línea.
+
+O sea, al revés de lo que parecía: **la #123 no hace redundante la segunda cinta, es que ni
+siquiera la roza.** Fuera de un flujo protege al que escribe sin criterio; dentro de un flujo
+no hay nadie sin criterio a quien proteger.
+
+### Carril B — el único `unverified` que queda vivo dentro de un flujo
+
+Con criterio escrito, el único camino a `unverified` que queda es la **guarda de criterio
+ambiguo**: el criterio ya se cumple en la pantalla de partida y `goto` se niega, con razón, a
+cantar victoria en el paso cero sin haber tocado nada. Los demás están todos detrás de «no
+se dio criterio». Eso está fijado en test, para que un `unverified` nuevo fuera de esos dos
+sitios no aparezca en silencio.
+
+Ese `unverified` es exactamente la premisa sin comprobar de la que habla la cinta: `goto` no
+se ha movido de la rejilla y los pasos siguientes tocarían creyéndose en otra pantalla.
+
+`testdata/flows/boxy-goto-criterio-ambiguo.yaml` lo provoca a propósito: `text:` empareja por
+**contenido** y el fixture siembra `Test Category 1` y `Test Category 2`, así que
+`text:"Test Category"` se cumple en la rejilla sin que nadie toque nada. La misma colisión
+que en el carril A era la trampa a evitar, aquí es el instrumento.
+
+**5 de 5 el paso FALLA**, en 0,30 s y `steps=0`:
+
+```
+fail code=goto_arrival_unverified arrived=unverified outcome=ambiguous_criterion criterion="text:\"Test Category\"" criterion_source=explicit route=screen=categories-view step=1 steps=0
+```
+
+`EXACT:0` en las cinco para `Kitchen Stuff` y para `Test Category`. **Cero escrituras
+falsas.**
+
+### Ablación de la segunda cinta
+
+No basta con verla roja. Quitada —`gotoFlowStepVerdict` devolviendo `nil` para
+`unverified`—, el mismo carril B **pasa en verde**:
+
+```
+ok cmd=run name=goto-criterio-ambiguo elapsed=301ms steps=1
+```
+
+Salida 0, flujo aprobado, `goto` sin haberse movido de la rejilla y nada creado. Puesta otra
+vez, vuelve a morir en `goto_arrival_unverified` las dos tiradas de comprobación. Rojo →
+verde → rojo, que es lo que hacía falta.
+
+### El resumen, que es corto
+
+- La primera cinta tapa el carril que importa fuera: un objetivo de acción con el efecto
+  exigido muere en `goto_did_not_arrive`, 5/5, sin escribir nada.
+- La segunda cinta tapa el único `unverified` que un flujo puede alcanzar, muere en
+  `goto_arrival_unverified`, 5/5, y sin ella el flujo pasa en verde sobre una llegada falsa.
+- La puerta de la #123 no interviene dentro de un flujo, ni hace falta que intervenga.
+- **Cero escrituras falsas en las 12 tiradas de los tres carriles.**
