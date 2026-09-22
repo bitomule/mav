@@ -74,11 +74,50 @@ back out of the tree:
 | before | `value=VLNM`, untouched | untouched |
 | after | **`value=VLNMQ`** | untouched |
 
-So the words reached the field they named, and only it. The deletion itself does
-not show on this machine, and that is not about `find`: `mav ui erase --focused`
-on a focused field is equally inert here, because the simulator's hardware
-keyboard is disconnected and baguette's Backspace HID keys land nowhere. Same
-result with and without a find, which is what makes it a separate matter.
+So the words reached the field they named, and only it.
+
+**And that is the whole of what this change delivers, which is less than the
+name suggests: it FINDS the field and focuses it — it does not empty it.**
+`mav ui erase` deletes nothing on this simulator, with a find or without one,
+and that is a separate defect this change does not fix.
+
+### `mav ui erase` deletes nothing on a simulator, and the driver is why
+
+Found while trying to demonstrate the erase above. `mav ui erase --focused` on a
+focused field reports `ok` and leaves the value untouched — no find anywhere
+near it.
+
+It is not a missing capability and it is not a simulator setting to switch on.
+`mav ui erase` routes to **baguette**, whose HID keyboard delivers nothing at
+all: `baguette key --code Backspace` answers `{"ok":true,"action":"key"}` and
+changes nothing, and neither does `baguette key --code KeyZ`, so it is the path
+and not the keycode. **`axe key 42` — the same HID usage (keyboard page 7,
+usage 42) that baguette logs for Backspace — deletes a character on the same
+simulator.**
+
+Alternated on one focused field, iPhone 17 Pro / iOS 26.3 from a simpool slot,
+value read out of the tree each time:
+
+| | value |
+|---|---|
+| start | `a12345` |
+| after `baguette key --code Backspace` | `a12345` |
+| after `axe key 42` | `a1234` |
+| after `baguette key --code Backspace` | `a1234` |
+| after `axe key 42` | `a123` |
+
+baguette 0 of 2, axe 2 of 2.
+
+The `ConnectHardwareKeyboard = 0` on this host is a red herring: the software
+keyboard is on screen, which says the device believes no hardware keyboard is
+attached, and axe gets through anyway. Tapping that on-screen keyboard's
+`delete` key also deletes (`abcd` → `ab` in two taps), so there are two
+delivering routes and baguette is on neither.
+
+So the fix is real work, not a patch: **axe should declare `CapErase` and
+implement it**, and the router will then pick the driver that delivers. Left
+undone here on purpose — it is a driver change, not a selector one, and this
+branch is about the selector.
 
 **`longPress`** was coordinates only, so a caller who could only describe the
 target had nowhere to go. It now resolves a selector through the same route the

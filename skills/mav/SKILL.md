@@ -228,7 +228,11 @@ entirely.
    macOS the driver sets the field to the empty value, which does not depend on
    the field holding focus. `mav ui erase --find "<the field>"` names the field
    in words instead: it taps it to take focus first, because no driver can be
-   told which field to empty. `mav ui hideKeyboard` dismisses the keyboard via
+   told which field to empty. **Check that it actually emptied the field**, by
+   reading `value=` out of the tree rather than the `ok` line: measured 22 sep
+   on iPhone 17 Pro / iOS 26.3, `erase` reported `ok` and deleted nothing,
+   because baguette's HID keyboard delivers nothing there while `axe key 42` —
+   the same keycode — deletes. `mav ui hideKeyboard` dismisses the keyboard via
    baguette on simulator and is a successful no-op on macOS. Both
    return structured errors on a physical device (`erase_unsupported_on_device`,
    `hide_keyboard_unsupported_on_device`). Use `scrollUntil` before tapping
