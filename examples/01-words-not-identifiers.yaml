@@ -1,0 +1,51 @@
+# Every button on this screen has an accessibility identifier. None of them is
+# usable.
+#
+#   createCategoryButton  is two nodes on the category grid -- a group and the
+#                         button inside it -- so `mav ui tap --id createCategoryButton`
+#                         refuses before it starts: "Multiple (2) accessibility
+#                         elements matched ... No tap performed". Open the form
+#                         and it becomes FOUR: the two on the toolbar underneath,
+#                         which OPEN the form, and two in the form's own navigation
+#                         bar, which SAVE it. Same identifier, opposite meanings,
+#                         on screen at the same time.
+#
+#   category_D1FDDFD9-... the categories are identified by the UUID of the row in
+#                         the database. It is generated when the data is created,
+#                         so it is different on every machine, every install and
+#                         every run. There is no script you can write against it.
+#
+# So this flow does not name elements. It describes them, and mav resolves each
+# description against the screen that is actually in front of it.
+#
+# The text is NOT one of those descriptions. It is declared in `inputs`, and the
+# model never sees it: the model is asked which element, never what to write.
+name: words_not_identifiers
+inputs:
+  name: Winter Clothes
+steps:
+  - tap:
+      where:
+        find: the button that creates a new category
+      # The form arrives as a sheet that slides up. Typing into a screen that is
+      # still moving loses the focus and the text goes nowhere, so wait for it to
+      # settle first.
+      after:
+        wait:
+          stable: true
+  - type:
+      where:
+        find: the text field where the new category's name is typed
+      text:
+        from: name
+      # The save button starts DISABLED and the app enables it when the name
+      # field has text. `stable` hashes the screen, waits 200ms, hashes it
+      # again, and goes on when the two match -- so the next step never reads a
+      # screen that is still settling. It is not a sleep: it costs what the app
+      # takes and no more.
+      after:
+        wait:
+          stable: true
+  - tap:
+      where:
+        find: the button that confirms and saves the new category

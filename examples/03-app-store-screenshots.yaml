@@ -1,0 +1,43 @@
+# App Store screenshots, light and dark, with the clock at 9:41 and the battery
+# full -- and nobody wrote a UI test.
+#
+# The status bar is the part people do by hand and then redo every release. Here
+# it is one line: `preset: appstore` is 9:41, full battery, full signal, which is
+# what Apple's own marketing shots show and what a real simulator clock never is.
+#
+# The appearance is another line, and the SAME steps run in both. Screenshots in
+# light and dark stop being two jobs.
+#
+# And the navigation is a sentence. This matters more than it looks for
+# screenshots specifically: the categories on this screen are identified by the
+# UUID of their database row, generated fresh on every install, so a screenshot
+# script pinned to an identifier breaks the first time the demo data is
+# regenerated. "the Moving Boxes category" does not.
+name: app_store_screenshots
+steps:
+  - sim.statusbar.set:
+      preset: appstore
+
+  - sim.appearance:
+      appearance: light
+  - delay:
+      duration: 1s
+  - capture:
+      name: home-light
+
+  - tap:
+      where:
+        find: the Moving Boxes category
+  - delay:
+      duration: 1s
+  - capture:
+      name: category-light
+
+  - sim.appearance:
+      appearance: dark
+  - delay:
+      duration: 1s
+  - capture:
+      name: category-dark
+
+  - sim.statusbar.clear: {}

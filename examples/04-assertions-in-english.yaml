@@ -1,0 +1,28 @@
+# The check is a question, not a selector.
+#
+# "Is there a box here that would hold kitchen crockery?" is not something you
+# can write as an assertion. There is no element called that. The boxes on this
+# screen are named "Office cables", "Garage tools", "Bathroom", "Bedroom linen",
+# "Books N-Z", "Books A-M", "Kitchen pans", "Kitchen plates" -- and answering
+# takes understanding what the names MEAN, not matching them.
+#
+# So `verify` reads the screen and asks. And it can fail: a `no` fails the step
+# with verify_rejected, which is what separates a check from a log line.
+# Measured on this screen, both directions, deliberately including a question
+# whose honest answer is no:
+#
+#   "a box that would hold kitchen crockery"   -> yes, step passes   5/5
+#   "a box that would hold live animals"       -> no, step FAILS     5/5
+#
+# What it is NOT allowed to decide is whether the flow got anywhere. Arrival and
+# "did the screen change" are settled in code against the accessibility tree,
+# never by asking. A judge whose mistakes correlate with the thing being judged
+# is not a judge.
+name: assertions_in_english
+steps:
+  - tap:
+      where:
+        find: the Moving Boxes category
+
+  - verify:
+      ask: is there a box in this list that would hold kitchen crockery?

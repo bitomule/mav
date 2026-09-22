@@ -1,0 +1,50 @@
+# The route is not written down. Only the destination is.
+#
+# `goto` is handed a sentence describing where to end up, and it finds its own
+# way there: it reads the screen, decides what to tap, taps it, and reads again.
+# What it is NOT allowed to do is decide it has arrived on a feeling --
+# `arrivedWhen` is checked in code, against the tree, and if it does not hold
+# the flow fails instead of carrying on into the wrong screen.
+#
+# Then the written steps take over. The split is deliberate: navigating is the
+# part that changes when the app changes, so it is described; doing the thing is
+# the part that must be exact, so it is declared.
+#
+# Note where the name comes from. `inputs` -> `text.from`. The model is asked
+# which element, and only that. It never writes anything into the app.
+name: take_me_there_then_do_this
+inputs:
+  name: Winter Clothes
+steps:
+  - goto:
+      goal: the form where a new category is given its name, colour and icon
+      arrivedWhen: 'title:"Create Category"'
+      # Arrival and settling are two different things: the title is in the tree
+      # while the sheet is still sliding up, and typing into a screen that is
+      # still moving loses the focus.
+      after:
+        wait:
+          stable: true
+
+  - type:
+      where:
+        find: the text field where the new category's name is typed
+      text:
+        from: name
+      # The save button starts DISABLED and the app enables it when the name
+      # field has text. Without this wait, one run in ten read the screen while
+      # it was still disabled -- `find` correctly refused to offer a disabled
+      # button, so the step failed with nothing to tap. Measured 22/25 without
+      # this wait and 15/15 with it; the numbers and the ablation are in
+      # MEASURED.md.
+      #
+      # `stable` is not a sleep. It hashes the screen, waits 200ms, hashes it
+      # again, and goes on when the two match -- so it costs what the app takes
+      # and no more.
+      after:
+        wait:
+          stable: true
+
+  - tap:
+      where:
+        find: the button that confirms and saves the new category
