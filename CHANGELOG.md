@@ -191,6 +191,57 @@ from `goto`, which shares the path and for which that answer is correct.
 So it stays open, deliberately. If your phrase names a screen or a container by
 name, `find` will hand you that container. Name the thing.
 
+### `goto` is a flow step now, and inside a flow it has to prove it arrived
+
+`goto` navigates; the declared steps do the work. A flow can now mix them in one
+file: `goto` walks to the screen, and `tap` / `type` press the buttons once
+there. It carries no selector, so `goal`, `arrivedWhen`, `maxSteps` and
+`timeout` sit at the top level of the step, next to `where` rather than inside
+it.
+
+Two rules hold inside a flow and nowhere else.
+
+**`arrivedWhen` is mandatory.** A `goto` step without one is a lint error,
+caught by `mav flow lint` before anything runs.
+
+**`arrived=unverified` fails the step.** On the command line `unverified` is an
+honest answer — goto says it cannot confirm arrival and whoever reads it
+decides. Inside a flow it is an unchecked premise the following steps are going
+to act on, and a flow that carries on over a false arrival touches where it
+should not. A flow that fails is annoying; one that does strange things in
+somebody's app is something else.
+
+There is a measured reason behind both: `goto` can declare arrival on opening
+the screen an action lives on, without having done the action. It knows how to
+check that it reached a PLACE, not that it did a THING. With a criterion
+required, that inferred-arrival route is never taken inside a flow.
+
+Both belts are now measured under load, on the one flow that can tell them
+apart — a `goto` asked for an ACTION and held to the EFFECT, which the loop
+cannot reach because it only taps and never writes.
+
+| lane | flow | verdict | false writes |
+|---|---|---|---|
+| criterion unreachable | `create a category called Kitchen Stuff`, `text:"Kitchen Stuff"` | `goto_did_not_arrive` **5/5** | 0 |
+| criterion already true at the start | same goal, `text:"Test Category"` | `goto_arrival_unverified` **5/5** | 0 |
+
+The first lane dies on the mandatory criterion: with one written the loop
+answers `arrived=false`, not `unverified`, so the code is
+`goto_did_not_arrive`. The second is the only road to `unverified` a flow can
+still reach — the guard that refuses a criterion already holding where the run
+starts — and that is the one the second belt catches. Remove the belt and that
+same flow passes **green** with `goto` never off the starting grid and nothing
+created; put it back and it dies again.
+
+**The action-goal gate of the previous entry never fires inside a flow.** It is
+asked only when no criterion was given, and inside a flow a criterion is
+mandatory, so the goal is never classified there. It does not make the second
+belt redundant — the two do not meet.
+
+Measured on Boxy, iPhone 17 Pro / iOS 26.3, simpool slot-4. `load1` 4.8–10.6
+and `load5` 4.3–5.8 throughout, both always under 15. Touch canary green around
+every batch. Judged by reading the tree, never by the exit code.
+
 ## v0.28.0
 
 ### `goto` says it arrived without being told what to expect

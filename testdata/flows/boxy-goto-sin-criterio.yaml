@@ -1,0 +1,11 @@
+# La primera cinta, en un fichero: el mismo objetivo de acción que el flujo
+# adversario, sin `arrivedWhen`.
+#
+# Esto NO debe lintar. Sin criterio, `goto` sólo puede contestar `unverified`, y
+# dentro de un flujo eso es una premisa sin comprobar sobre la que actuarían los
+# pasos siguientes. El error es de carga, así que salta en `mav flow lint` antes
+# de que nada toque la pantalla.
+name: goto-sin-criterio
+steps:
+  - goto:
+      goal: create a category called Kitchen Stuff

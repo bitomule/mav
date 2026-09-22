@@ -1,0 +1,33 @@
+# goto navigates, the declared steps do the work.
+#
+# Why goto's destination is the create form and not the grid it is opened
+# from: the app lands on the grid. goto refuses, by design, to accept a
+# criterion that already holds on the screen it starts from -- it would be
+# declaring victory at step zero without tapping anything -- so a goto aimed at
+# the grid from the grid reports arrived=unverified and, inside a flow, fails.
+# The sheet is a real journey; the grid is not.
+#
+# It is also the exact journey where goto's inferred arrival lied. Measured on
+# this fixture, `mav goto "create a category called Test Category"` with no
+# --arrived-when reports arrived=true after tapping the toolbar button three
+# times: the sheet is open, the name field still shows its placeholder, and no
+# category called Test Category exists. goto knows how to check it reached a
+# PLACE, not that it did a THING. So the place is goto's, and the thing is
+# written down.
+name: crear-categoria-mezclado
+inputs:
+  nombre: Test Category
+steps:
+  - goto:
+      goal: the form where a new category is given its name, colour and icon
+      arrivedWhen: 'title:"Create Category"'
+
+  - type:
+      where:
+        find: the field where the name of the new category is typed
+      text:
+        from: nombre
+
+  - tap:
+      where:
+        find: the button that confirms creating the new category

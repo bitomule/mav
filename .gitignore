@@ -6,3 +6,4 @@ dist/
 
 # Captures and leases crabbox leaves behind when running against a VM.
 .crabbox/
+bin/

@@ -5921,6 +5921,8 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 			}
 		}
 		return fields, stepErr
+	case "goto":
+		return c.executeGotoFlowStep(ctx, opts, step)
 	case "when":
 		return c.executeWhenFlowStepBoundWithOptions(ctx, opts, run, index, step, nil)
 	case "whileNotVisible":

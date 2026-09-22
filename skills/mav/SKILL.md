@@ -491,6 +491,22 @@ aliases for their object forms:
 - sleep: { duration: 500ms }
 ```
 
+Use `goto` when you know the screen but not the route. It navigates; the
+declared steps do the work once there. It carries no selector, so its
+parameters sit at the top level of the step:
+
+```yaml
+- goto:
+    goal: the screen that lists every category
+    arrivedWhen: 'screen:categoriesView'
+- tap: { where: { find: the button that creates a new category } }
+```
+
+Inside a flow, `arrivedWhen` is mandatory (a `goto` step without one is a lint
+error) and `arrived=unverified` fails the step. On the command line
+`unverified` is an honest answer and you decide what to do with it; inside a
+flow it is an unchecked premise the next steps would act on.
+
 Use `when` to guard optional UI. It checks once and skips the `do` block without
 failing when the condition is not visible. Keep `open` and `exec` as top-level
 steps; they are not valid inside `do` blocks.

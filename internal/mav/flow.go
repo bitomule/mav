@@ -209,10 +209,17 @@ type flowStepPayload struct {
 	DirectionDebug string          `yaml:"debugDirection"`
 	Kind           string          `yaml:"kind"`
 	Ask            string          `yaml:"ask"`
-	Kill           bool            `yaml:"kill"`
-	Points         []FlowPathPoint `yaml:"points"`
-	From           *FlowCoordinate `yaml:"from"`
-	To             *FlowCoordinate `yaml:"to"`
+	// goto's own parameters. It carries no selector -- it is handed a goal in
+	// prose, not an element -- so they sit at the top level of the step, which
+	// is where every parameter that is not a selector lives.
+	Goal              string          `yaml:"goal"`
+	ArrivedWhen       string          `yaml:"arrivedWhen"`
+	MaxSteps          string          `yaml:"maxSteps"`
+	DismissPermission string          `yaml:"dismissPermission"`
+	Kill              bool            `yaml:"kill"`
+	Points            []FlowPathPoint `yaml:"points"`
+	From              *FlowCoordinate `yaml:"from"`
+	To                *FlowCoordinate `yaml:"to"`
 }
 
 func LoadFlow(path string) (Flow, error) {
@@ -394,6 +401,10 @@ func parseFlowStepNode(node yaml.Node) (FlowStep, error) {
 	put("debugDirection", payload.DirectionDebug)
 	put("kind", payload.Kind)
 	put("ask", payload.Ask)
+	put("goal", payload.Goal)
+	put("arrivedWhen", payload.ArrivedWhen)
+	put("maxSteps", payload.MaxSteps)
+	put("dismissPermission", payload.DismissPermission)
 	if payload.From != nil {
 		put("startX", payload.From.X)
 		put("startY", payload.From.Y)
@@ -720,6 +731,11 @@ func validateFlowSteps(steps []FlowStep) error {
 				return fmt.Errorf("steps[%d].type.text.ask: the flow declares no inputs to choose from", index)
 			}
 		}
+		if step.Action == "goto" {
+			if err := validateGotoFlowStep(index, step); err != nil {
+				return err
+			}
+		}
 		if step.Params["regex"] != "" {
 			if _, err := regexp.Compile(step.Params["regex"]); err != nil {
 				return fmt.Errorf("steps[%d].%s.regex: %w", index, step.Action, err)
@@ -769,9 +785,55 @@ func validateFlowCondition(condition FlowCondition) error {
 	return nil
 }
 
+// validateGotoFlowStep is where the arrival criterion stops being optional.
+//
+// Outside a flow, `arrived=unverified` is an honest answer -- the command says
+// it cannot confirm and whoever reads it decides. Inside a flow it is an
+// unchecked premise the following steps are going to act on, and a flow that
+// carries on over a false arrival touches where it should not. A flow that
+// fails is annoying; one that does strange things in somebody's app is
+// something else.
+//
+// There is a measured reason behind it too: goto can declare arrival on
+// opening the screen an action lives on, without having done the action. It
+// knows how to check that it reached a PLACE, not that it did a THING. With a
+// mandatory criterion that route -- the inferred arrival -- is never taken
+// inside a flow.
+func validateGotoFlowStep(index int, step FlowStep) error {
+	if strings.TrimSpace(step.Params["goal"]) == "" {
+		return fmt.Errorf("steps[%d].goto.goal: a goto step needs a goal to navigate towards", index)
+	}
+	if strings.TrimSpace(step.Params["arrivedWhen"]) == "" {
+		return fmt.Errorf("steps[%d].goto.arrivedWhen: an arrival criterion is mandatory inside a flow; without one goto can only report unverified, which the steps after it would act on as if it were an arrival", index)
+	}
+	criterion, err := ParseArrivalCriterion(step.Params["arrivedWhen"])
+	if err != nil {
+		return fmt.Errorf("steps[%d].goto.arrivedWhen: %w", index, err)
+	}
+	if criterion.IsZero() {
+		return fmt.Errorf("steps[%d].goto.arrivedWhen: %q names nothing to check arrival against", index, step.Params["arrivedWhen"])
+	}
+	if !step.Where.IsZero() {
+		return fmt.Errorf("steps[%d].goto.where: goto navigates towards a goal, it does not resolve a selector", index)
+	}
+	if raw := step.Params["maxSteps"]; raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n <= 0 || n > gotoMaxSteps {
+			return fmt.Errorf("steps[%d].goto.maxSteps: expected 1..%d, got %q", index, gotoMaxSteps, raw)
+		}
+	}
+	if raw := step.Params["timeout"]; raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil || d <= 0 || d > gotoDefaultTimeout {
+			return fmt.Errorf("steps[%d].goto.timeout: expected a duration up to %s, got %q", index, gotoDefaultTimeout, raw)
+		}
+	}
+	return nil
+}
+
 func isSupportedFlowAction(action string) bool {
 	switch action {
-	case "open", "when", "whileNotVisible", "go", "tree", "tap", "type", "erase", "hideKeyboard", "swipe", "longPress", "pinch", "rotate", "twoFingerPan", "actions",
+	case "open", "goto", "when", "whileNotVisible", "go", "tree", "tap", "type", "erase", "hideKeyboard", "swipe", "longPress", "pinch", "rotate", "twoFingerPan", "actions",
 		"doubleTap", "drag", "dragPath", "toggle", "press",
 		"app.list", "app.kill", "openURL", "location.set", "location.reset", "clipboard.copy", "clipboard.read",
 		"sim.appearance", "sim.statusbar.set", "sim.statusbar.clear", "sim.language.set",
