@@ -1,5 +1,49 @@
 # Changelog
 
+## v0.30.0
+
+**A flow no longer has to ask the screen to hold still.**
+
+`after: { wait: { stable: true } }` was four words deep to say "wait", and the
+person writing the flow had to know to say it. They could not: what they were
+waiting for is a save button the app enables a beat after the field it guards
+gets text, and a sheet still sliding up when the next step types into it.
+Neither is knowable from outside the app, and both were measured, on Boxy, with
+a screenshot of the failure.
+
+So it happens on its own, before any step that acts on an element.
+
+**It cannot hang**, which is the objection that matters. It is bounded: three
+reads, then it gives up and lets the step act on whatever is on screen. A screen
+that never settles — a spinner, a running timer, an animation in a loop — costs
+the budget and carries on. It never fails a step. That is the shape `goto` has
+used since `gotoSettle`, for the same reason. The declared form, by contrast,
+goes through the condition waiter and **fails on timeout** — so the option was
+the dangerous one, not the safe one.
+
+It does not run before the first acting step of a flow: nothing has moved yet,
+the app has just launched and `mav run` already waited for it. That single
+exclusion is the difference between costing more than writing the waits by hand
+and costing the same.
+
+Measured on Boxy, iPhone 17 Pro / iOS 26.3, 12 runs a lane, interleaved, clean
+database every run, truth read from the accessibility tree:
+
+| | median | |
+|---|---|---|
+| no waits at all | **7.02s** | 22/25 on a larger batch |
+| the two waits written by hand | **8.65s** | 25/25 |
+| **automatic, and the file says nothing** | **8.88s** | 12/12 |
+
+0.23s apart, and a flow file loses eight lines it should never have carried.
+The declared form still works and is untouched; this removes the reason to
+write it.
+
+**A tap canary ran before and after every batch above.** Earlier the same day a
+simulator went deaf mid-run — every tap answering `ok` while the screen never
+moved — and a first set of numbers was thrown away because of it. A lane
+measured through a deaf simulator is not a lane.
+
 ## v0.29.0
 
 `goto` navigates and declared steps act — that split is now what the tool
