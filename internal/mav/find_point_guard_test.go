@@ -197,3 +197,60 @@ func TestLiteralResolutionPaysNoGuard(t *testing.T) {
 		t.Fatalf("the literal route must not pay for a guard, got %d point reads: %v", got, runner.commands)
 	}
 }
+
+// The search field of Boxy's bottom bar sits at y=803 and jumps to y=484 when
+// it expands. Same id, same label, same role: the identity the guard compares
+// is unchanged, and only the frame moved.
+const guardPointTreeLow = `[{"AXUniqueId":"searchField","AXLabel":"Buscar","type":"TextField","enabled":true,"AXFrame":"{{0, 100}, {200, 50}}"}]`
+
+// The same field after it expanded: identical identity, frame 400 points up.
+const guardPointTreeHigh = `[{"AXUniqueId":"searchField","AXLabel":"Buscar","type":"TextField","enabled":true,"AXFrame":"{{0, 500}, {200, 50}}"}]`
+
+// What the hit test finds at the coordinate the field has left.
+const guardPointVacatedHit = `{"AXUniqueId":"tabBar","AXLabel":"Pestanas","type":"Other","enabled":true,"AXFrame":"{{0, 100}, {200, 50}}"}`
+
+func TestAMovedElementComesBackWithTheCoordinateItMovedTo(t *testing.T) {
+	fakeJev(t, "1", 10)
+	c, cfg, runner := guardPointConfig(t)
+	runner.seq["axe describe-ui --udid "+guardPointUDID] = []string{guardPointTreeLow, guardPointTreeHigh}
+	runner.out["axe describe-ui --point 100,125 --udid "+guardPointUDID] = guardPointVacatedHit
+
+	el, err := c.resolveFindForAction(t.Context(), cfg, Selector{Find: "el campo de busqueda"}, "auto")
+	if err != nil {
+		t.Fatalf("the field is still on the screen, so the step must not fail: %v", err)
+	}
+	if el.ID != "searchField" {
+		t.Fatalf("wrong element came back: %+v", el)
+	}
+	x, y, ok := TapPoint(el)
+	if !ok {
+		t.Fatalf("no tap point on %+v", el)
+	}
+	if x != 100 || y != 525 {
+		t.Fatalf("tap point is the one the field LEFT, not the one it moved to: got %d,%d want 100,525", x, y)
+	}
+}
+
+// Two elements the identity cannot tell apart. Nothing says which one the
+// choice was, so there is no coordinate to hand back and the step resolves
+// again rather than picking one.
+const guardPointTwinsTree = `[{"AXUniqueId":"","AXLabel":"","type":"search text field","AXValue":"Buscar","enabled":true,"AXFrame":"{{0, 500}, {200, 50}}"},{"AXUniqueId":"","AXLabel":"","type":"search text field","AXValue":"Buscar","enabled":true,"AXFrame":"{{0, 700}, {200, 50}}"}]`
+
+const guardPointOneTwinTree = `[{"AXUniqueId":"","AXLabel":"","type":"search text field","AXValue":"Buscar","enabled":true,"AXFrame":"{{0, 100}, {200, 50}}"}]`
+
+func TestAnIdentityThatIsNotUniqueInTheFreshTreeResolvesAgain(t *testing.T) {
+	fakeJev(t, "1", 10)
+	c, cfg, runner := guardPointConfig(t)
+	runner.seq["axe describe-ui --udid "+guardPointUDID] = []string{guardPointOneTwinTree, guardPointTwinsTree}
+	runner.out["axe describe-ui --point 100,125 --udid "+guardPointUDID] = guardPointVacatedHit
+
+	_, err := c.resolveFindForAction(t.Context(), cfg, Selector{Find: "el campo de busqueda"}, "auto")
+	if err != nil && err.Error() != "element_moved" {
+		t.Fatalf("unexpected failure: %v", err)
+	}
+	// Whatever it answered, it did not answer from the stale copy: the second
+	// resolution ran, which is one more question than the held path asks.
+	if got := countCalls(runner.commands, "describe-ui --udid"); got != 2 {
+		t.Fatalf("expected the re-read and no more, got %d: %v", got, runner.commands)
+	}
+}
