@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+### `tap --find` tapped where the element used to be
+
+The guard around a model-resolved `find` captures the identity of the chosen
+element — id, label, role, value, enabled — and re-checks it against a read of
+the one point the caller is about to touch. It leaves the frame out on purpose:
+two reads of a perfectly still screen disagree on coordinates by fractions of a
+point, and a guard that compared them would fire on screens where nothing
+happened.
+
+That is what let the element move. When the point read said no, the guard
+re-read the whole tree, found the same identity still on it, and handed back
+the element object from the FIRST read — the one carrying the coordinate the
+element had left. An element that only MOVED holds under an identity check, so
+the slow path treated it as a false alarm and tapped the old point.
+
+Measured in Boxy on iPhone 17 Pro / iOS 26.3. The bottom-bar search field sits
+at y=803 and at y=484 while the search is open, with no id, no label, role
+`search text field`, value `Buscar` throughout — identical identity, frame 319
+points apart. `mav ui tap --find "the search field"` with the field moving
+inside the model's round trip, 10 runs, verdict read from the tree:
+
+| | tapped | field afterwards |
+|---|---|---|
+| before | y=503, the point it left, 10/10 | closed, 10/10 |
+| after | y=822, the point it moved to, 10/10 | open, 10/10 |
+
+Every one of those ten `before` runs printed `ok`.
+
+**The re-read now hands back the element it just read, not the copy the
+decision was made from.** Nothing compares frames anywhere, so there is no
+tolerance to get wrong: an element that did not move comes back with the fresh
+reading of its own frame and taps the same pixel. When the identity matches
+more than once in the fresh tree there is no saying which copy was chosen, and
+the step resolves again rather than picking.
+
+The control — a category card that does not move — is 10/10 unchanged, with no
+`element_moved`, mean 1588 ms before against 1618 ms after over ten taps each:
+the held path does exactly the work it did, and no read was added.
+
 ### `mav ui erase` answered `ok` and deleted nothing
 
 `mav ui erase` routed to baguette, and baguette's HID keyboard delivers no

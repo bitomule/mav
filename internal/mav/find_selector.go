@@ -147,8 +147,23 @@ func (c CLI) resolveFindForAction(ctx context.Context, cfg Config, selector Sele
 	if !ok {
 		return Element{}, fmt.Errorf("find_decision_consumed")
 	}
-	if guard.Holds(fresh) {
-		return chosen, nil
+	// The element is still on the screen - but `chosen` is the copy that came
+	// out of the FIRST read, and the guard compares identity with the frame
+	// left out on purpose. So an element that only MOVED holds here, and
+	// handing `chosen` back taps the coordinate it has left. Measured in
+	// Boxy: the bottom-bar search field sits at y=803 and jumps to y=484 when
+	// it expands; same id, same label, same role, and `tap --find` answered
+	// ok having tapped 803. What the caller gets is the fresh copy, carrying
+	// the coordinate the element is at now.
+	//
+	// Nothing compares frames anywhere, so there is no tolerance to get
+	// wrong: an element that did not move comes back with the fresh reading
+	// of its own frame, which differs from the old one by the fractions of a
+	// point two reads of a still screen always differ by, and taps the same
+	// pixel. When the identity is not unique in the fresh tree there is no
+	// saying which copy was chosen, and the re-resolution below decides.
+	if moved, ok := guard.Unique(fresh); ok {
+		return moved, nil
 	}
 	rechosen, _, err := c.resolveFindElement(ctx, fresh, selector)
 	if err != nil {

@@ -188,6 +188,29 @@ func (g elementGuard) Holds(elements []Element) bool {
 	return false
 }
 
+// Unique is Holds plus the element itself, and it answers no when the identity
+// matches more than once.
+//
+// The element matters because the guard is deliberately blind to the frame,
+// so a caller that has just confirmed its choice is still on the screen still
+// does not know WHERE it is - and the copy it is holding came from an older
+// read. The one it gets back here came from the read that just answered.
+//
+// Two matches is not an answer: nothing in the identity separates them, so
+// there is no saying which one the choice was, and a caller that needs a
+// coordinate has to resolve again rather than pick.
+func (g elementGuard) Unique(elements []Element) (Element, bool) {
+	var found Element
+	seen := 0
+	for _, el := range elements {
+		if guardFor(el) == g {
+			found = el
+			seen++
+		}
+	}
+	return found, seen == 1
+}
+
 // isReadOnlyFlowAction names the steps that cannot move the screen. Everything
 // else dirties the cache, which is the safe direction: a gesture wrongly
 // called read-only serves a stale tree to the step after it, while a read
