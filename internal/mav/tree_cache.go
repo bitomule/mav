@@ -98,6 +98,19 @@ func (t *treeCache) invalidate() {
 	t.gen++
 }
 
+// generation is how many times anything has dirtied this cache. It answers one
+// question and only one: has something already moved in this run? A flow's
+// first acting step is standing on a screen nobody has touched since the app
+// finished launching, so there is nothing for it to wait to settle.
+func (t *treeCache) generation() uint64 {
+	if t == nil {
+		return 0
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.gen
+}
+
 // choiceLedger holds the element a find chose and has not acted on yet.
 // remember writes it, consume takes it away, and consume answers no the second
 // time: the decision is spent BEFORE anything moves, so nothing can act twice

@@ -5979,6 +5979,9 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 	// what it is acting on, and that read describes the screen BEFORE the
 	// gesture: without the second invalidation it would be served to the step
 	// after it as if it were current.
+	// Read before invalidating: this says whether anything has moved EARLIER in
+	// the run, which is what decides whether there is anything to settle.
+	somethingMovedEarlier := c.trees.generation() > 0
 	if !isReadOnlyFlowAction(step.Action) {
 		c.trees.invalidate()
 		defer c.trees.invalidate()
@@ -5986,6 +5989,12 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 	prefer, preferErr := c.flowStepPreferDriver(opts, step)
 	if preferErr != nil {
 		return copyParams(step.Params), preferErr
+	}
+	// goto settles on its own, inside its own loop, and it reads many times
+	// between its own taps -- settling it from out here would pay for a read it
+	// is about to invalidate.
+	if step.Action != "goto" && somethingMovedEarlier {
+		c.settleBeforeFlowStep(ctx, step, prefer)
 	}
 	switch step.Action {
 	case "open":
