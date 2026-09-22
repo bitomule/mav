@@ -74,7 +74,6 @@ func TestProvidesAdvertisesSupportedCapsOnly(t *testing.T) {
 		drivers.CapSwipe,
 		drivers.CapTreeSystem,
 		drivers.CapHideKeyboard,
-		drivers.CapErase,
 	} {
 		if !caps.Has(want) {
 			t.Errorf("expected baguette to provide %s on sim", want)
@@ -84,6 +83,7 @@ func TestProvidesAdvertisesSupportedCapsOnly(t *testing.T) {
 	for _, banned := range []drivers.Capability{
 		drivers.CapRotate,
 		drivers.CapW3CActions,
+		drivers.CapErase,
 	} {
 		if caps.Has(banned) {
 			t.Errorf("did not expect baguette to advertise %s — CLI does not expose it", banned)
@@ -326,18 +326,18 @@ func TestScreenshotBuildsArgs(t *testing.T) {
 	}
 }
 
-func TestEraseSendsBackspaceKeys(t *testing.T) {
-	exec := newFake()
-	d := New(exec)
-	if err := d.Erase(context.Background(), simTarget(), drivers.TextSpec{Text: "hola", Focused: true}); err != nil {
-		t.Fatal(err)
+// baguette must not offer to erase. Its HID keyboard delivers nothing into a
+// focused simulator field (measured 2026-09-22: `baguette key --code
+// Backspace` twice against value="a12345" left it at "a12345", while `axe key
+// 42` took it to "a1234" then "a123"), so claiming the capability only bought
+// callers an ok for work that did not happen.
+func TestDoesNotClaimErase(t *testing.T) {
+	d := New(newFake())
+	if d.Provides(simTarget()).Has(drivers.CapErase) {
+		t.Fatal("baguette must not declare CapErase: its HID keyboard delivers no keystroke")
 	}
-	if len(exec.calls) != 32 {
-		t.Fatalf("expected 32 backspaces, got %d", len(exec.calls))
-	}
-	want := "baguette key --udid " + simUDID + " --code Backspace"
-	if exec.calls[0] != want {
-		t.Fatalf("got=%q want=%q", exec.calls[0], want)
+	if _, ok := any(d).(drivers.EraseDriver); ok {
+		t.Fatal("baguette must not implement EraseDriver")
 	}
 }
 

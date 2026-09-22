@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+### `mav ui erase` answered `ok` and deleted nothing
+
+`mav ui erase` routed to baguette, and baguette's HID keyboard delivers no
+keystroke into a focused simulator text field. Measured on 2026-09-22 over one
+Boxy search field, alternating the two paths and reading `value=` back out of
+the accessibility tree each time:
+
+| | `value` |
+|---|---|
+| start | `a12345` |
+| `baguette key --code Backspace` | `a12345` |
+| `axe key 42` | `a1234` |
+| `baguette key --code Backspace` | `a1234` |
+| `axe key 42` | `a123` |
+
+baguette 0 of 2, axe 2 of 2 — same simulator, same window, same focused field,
+and HID usage 42 on the keyboard page is exactly what baguette registers under
+the name `Backspace`. `baguette key --code KeyZ` typed nothing either, so it is
+the transport and not the key name. Every one of those baguette calls exited 0,
+and `mav ui erase` printed `ok cmd=ui.erase driver=baguette` over a field that
+still read `a12345`.
+
+**AXe now declares and serves `erase` on simulators**, one `axe key 42` per
+character. **baguette no longer declares the capability and no longer has an
+`Erase` method at all**: with AXe absent, `erase` now fails to route rather
+than finding a driver that will accept the work and not do it.
+
+**And erase no longer reports anything it has not seen.** It reads the editable
+fields out of the tree before and after every round of deletions and keeps
+going until the value stops shrinking, so a whole field empties instead of
+stopping at a guessed 32 characters. A first round that changes nothing is
+ambiguous — an already-empty field and a dead delete path look identical from
+the tree — so it is measured rather than assumed: one probe character is typed
+and deleted again. Both halves moving means the field was simply empty
+(`ok ... already_empty=true`); a field that will not take the character answers
+`ui_erase_no_focus`; one that takes it and will not give it back answers
+`ui_erase_ineffective` with the value that survived. A tree it cannot read
+answers `ui_erase_unverifiable`, and a screen with no editable field in it
+answers `ui_erase_no_field` naming the driver that read the tree.
+
+Measured after the change, same field, reading `value=` from the tree:
+`MudanzaCocina2026` → `erase` → the placeholder, in 3 rounds, reported
+`ok cmd=ui.erase driver=axe rounds=3`. The device path is unchanged: there is
+still no erase on a physical device and it still answers
+`erase_unsupported_on_device`.
+
 ### `goto` said it had arrived at work it had not done
 
 Measured on Boxy, 20 runs out of 20: `mav goto "create a category called Test

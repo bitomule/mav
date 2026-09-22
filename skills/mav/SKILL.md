@@ -224,9 +224,11 @@ entirely.
 
    Use `mav ui tap/type/erase/hideKeyboard/swipe/longPress/wait/scrollUntil`
    for manual exploration. Prefer accessibility identifiers first (`--id`).
-   `mav ui erase --focused` clears a focused field: baguette on simulator, and on
-   macOS the driver sets the field to the empty value, which does not depend on
-   the field holding focus. `mav ui hideKeyboard` dismisses the keyboard via
+   `mav ui erase --focused` clears a focused field: AXe on simulator, sending
+   Backspace once per character and re-reading the field from the tree until it
+   stops shrinking, so it fails (`ui_erase_ineffective`) rather than report an
+   ok for a field that never changed. On macOS the driver sets the field to the
+   empty value, which does not depend on the field holding focus. `mav ui hideKeyboard` dismisses the keyboard via
    baguette on simulator and is a successful no-op on macOS. Both
    return structured errors on a physical device (`erase_unsupported_on_device`,
    `hide_keyboard_unsupported_on_device`). Use `scrollUntil` before tapping

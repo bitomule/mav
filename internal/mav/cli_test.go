@@ -2383,7 +2383,7 @@ func TestHideKeyboardOnDeviceFailsWithStructuredError(t *testing.T) {
 	}
 }
 
-func TestEraseAndHideKeyboardUseBaguetteOnSimulator(t *testing.T) {
+func TestHideKeyboardUsesBaguetteOnSimulator(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
 	cfg.SimulatorUDID = "SIM"
@@ -2394,20 +2394,145 @@ func TestEraseAndHideKeyboardUseBaguetteOnSimulator(t *testing.T) {
 	runner := &sequenceRecordingRunner{tools: cfg.Tools}
 	var out bytes.Buffer
 	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
-	if err := cli.Run(context.Background(), []string{"ui", "erase", "--focused"}); err != nil {
-		t.Fatal(err)
-	}
 	if err := cli.Run(context.Background(), []string{"ui", "hideKeyboard"}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "ok cmd=ui.erase") || !strings.Contains(out.String(), "ok cmd=ui.hideKeyboard") {
+	if !strings.Contains(out.String(), "ok cmd=ui.hideKeyboard") {
 		t.Fatalf("output=%q", out.String())
-	}
-	if !containsCall(runner.commands, "baguette key --udid SIM --code Backspace") {
-		t.Fatalf("commands=%v", runner.commands)
 	}
 	if !containsCall(runner.commands, "baguette key --udid SIM --code Escape") {
 		t.Fatalf("commands=%v", runner.commands)
+	}
+}
+
+func eraseTreeWithValue(value string) string {
+	return `[{"type":"TextField","role_description":"search text field","AXValue":"` + value + `","frame":{"x":0,"y":0,"width":10,"height":10}}]`
+}
+
+func newEraseCLI(t *testing.T, trees []string) (CLI, *sequenceRecordingRunner, *bytes.Buffer) {
+	t.Helper()
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.SimulatorUDID = "SIM"
+	cfg.Tools = map[string]bool{"axe": true, "baguette": true}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runner := &sequenceRecordingRunner{
+		tools: cfg.Tools,
+		seq:   map[string][]string{"axe describe-ui --udid SIM": trees},
+		calls: map[string]int{},
+	}
+	out := &bytes.Buffer{}
+	return CLI{Runner: runner, Root: root, Stdout: out, Stderr: &bytes.Buffer{}}, runner, out
+}
+
+// Erase goes to axe, and it goes there as HID usage 42 on the keyboard page.
+// baguette registers the same usage under the name "Backspace" and delivers
+// nothing with it: measured 2026-09-22 alternating both paths over one
+// focused Boxy search field, baguette left value="a12345" untouched twice
+// while axe took it to "a1234" and then "a123".
+func TestEraseUsesAxeAndDeletesWhatTheFieldHolds(t *testing.T) {
+	cli, runner, out := newEraseCLI(t, []string{
+		eraseTreeWithValue("a12345"),
+		eraseTreeWithValue(""),
+	})
+	if err := cli.Run(context.Background(), []string{"ui", "erase", "--focused"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "ok cmd=ui.erase") || !strings.Contains(out.String(), "driver=axe") {
+		t.Fatalf("output=%q", out.String())
+	}
+	keys := 0
+	for _, command := range runner.commands {
+		if command == "axe key 42 --udid SIM" {
+			keys++
+		}
+	}
+	if keys != 6 {
+		t.Fatalf("expected one deletion per character of \"a12345\", got %d: %v", keys, runner.commands)
+	}
+	if containsCall(runner.commands, "baguette key --udid SIM --code Backspace") {
+		t.Fatalf("erase must not reach baguette: %v", runner.commands)
+	}
+}
+
+// The regression this whole change exists for: a driver that accepts the
+// deletions and changes nothing used to print `ok cmd=ui.erase`. It has to
+// fail, and it has to say so in the value it read back.
+//
+// The tree sequence is the four reads erase makes: the field before, the
+// field after a round of deletions (unchanged), the field after the probe
+// character (changed, so something is focused and typing works), and the
+// field after deleting that one character (unchanged, so deletion does not).
+func TestEraseFailsLoudWhenDeletionDoesNothing(t *testing.T) {
+	cli, _, out := newEraseCLI(t, []string{
+		eraseTreeWithValue("a12345"),
+		eraseTreeWithValue("a12345"),
+		eraseTreeWithValue("a12345x"),
+		eraseTreeWithValue("a12345x"),
+	})
+	allowFail(t, cli.Run(context.Background(), []string{"ui", "erase", "--focused"}))
+	if !strings.Contains(out.String(), "fail code=ui_erase_ineffective") {
+		t.Fatalf("output=%q", out.String())
+	}
+	if !strings.Contains(out.String(), "a12345") {
+		t.Fatalf("the failure must name the value that survived: %q", out.String())
+	}
+}
+
+// A field that will not even take the probe character is not a broken delete
+// path, it is nothing focused, and saying so sends the caller somewhere
+// useful instead of to `mav doctor`.
+func TestEraseFailsLoudWhenNothingIsFocused(t *testing.T) {
+	cli, _, out := newEraseCLI(t, []string{eraseTreeWithValue("a12345")})
+	allowFail(t, cli.Run(context.Background(), []string{"ui", "erase", "--focused"}))
+	if !strings.Contains(out.String(), "fail code=ui_erase_no_focus") {
+		t.Fatalf("output=%q", out.String())
+	}
+}
+
+// An already-empty field reads the same as a dead delete path: a value that
+// does not change. The probe tells them apart, and this one has to come back
+// ok — a flow that erases before typing must not break on a field that was
+// empty to begin with.
+func TestEraseSucceedsOnAFieldThatWasAlreadyEmpty(t *testing.T) {
+	cli, _, out := newEraseCLI(t, []string{
+		eraseTreeWithValue("Buscar"),
+		eraseTreeWithValue("Buscar"),
+		eraseTreeWithValue("Buscarx"),
+		eraseTreeWithValue("Buscar"),
+	})
+	if err := cli.Run(context.Background(), []string{"ui", "erase", "--focused"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "ok cmd=ui.erase") || !strings.Contains(out.String(), "already_empty=true") {
+		t.Fatalf("output=%q", out.String())
+	}
+}
+
+// A field whose placeholder reappears once the text is gone stops changing,
+// and that is what empty looks like from the tree. It must not be read as a
+// driver that stopped working.
+func TestEraseStopsWhenThePlaceholderComesBack(t *testing.T) {
+	cli, _, out := newEraseCLI(t, []string{
+		eraseTreeWithValue("a12345"),
+		eraseTreeWithValue("Buscar"),
+		eraseTreeWithValue("Buscar"),
+	})
+	if err := cli.Run(context.Background(), []string{"ui", "erase", "--focused"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "ok cmd=ui.erase") || !strings.Contains(out.String(), "rounds=2") {
+		t.Fatalf("output=%q", out.String())
+	}
+}
+
+func TestEraseFailsWhenNoEditableFieldIsOnScreen(t *testing.T) {
+	cli, _, out := newEraseCLI(t, []string{`[{"type":"Button","AXLabel":"Ajustes"}]`})
+	allowFail(t, cli.Run(context.Background(), []string{"ui", "erase", "--focused"}))
+	if !strings.Contains(out.String(), "fail code=ui_erase_no_field") {
+		t.Fatalf("output=%q", out.String())
 	}
 }
 

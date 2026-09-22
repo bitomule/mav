@@ -74,7 +74,7 @@ func TestRouterPicksBaguetteForSimulatorSystemTreeAndKeyboard(t *testing.T) {
 
 	router := drivers.NewRouter(reg, NewExecutor(runner), nil)
 	target := drivers.Target{Kind: drivers.KindSim}
-	for _, cap := range []drivers.Capability{drivers.CapTreeSystem, drivers.CapErase, drivers.CapHideKeyboard} {
+	for _, cap := range []drivers.Capability{drivers.CapTreeSystem, drivers.CapHideKeyboard} {
 		picked, _, err := router.Route(context.Background(), cap, target, "")
 		if err != nil {
 			t.Fatalf("route %s failed: %v", cap, err)
@@ -82,6 +82,28 @@ func TestRouterPicksBaguetteForSimulatorSystemTreeAndKeyboard(t *testing.T) {
 		if picked.ID() != "baguette" {
 			t.Fatalf("cap %s: expected baguette, got %s", cap, picked.ID())
 		}
+	}
+
+	// Erase is not among them, and with axe absent it has no driver at all.
+	// That is the whole point: a routing failure an agent can read beats
+	// baguette answering ok for a field it never touched.
+	if picked, _, err := router.Route(context.Background(), drivers.CapErase, target, ""); err == nil {
+		t.Fatalf("erase must not route with only baguette available, got %s", picked.ID())
+	}
+}
+
+func TestRouterPicksAxeForSimulatorErase(t *testing.T) {
+	reg := drivers.NewRegistry()
+	runner := fakeRunner{tools: map[string]bool{"axe": true, "baguette": true}}
+	RegisterDefaultDrivers(reg, NewExecutor(runner))
+
+	router := drivers.NewRouter(reg, NewExecutor(runner), nil)
+	picked, _, err := router.Route(context.Background(), drivers.CapErase, drivers.Target{Kind: drivers.KindSim}, "")
+	if err != nil {
+		t.Fatalf("route erase failed: %v", err)
+	}
+	if picked.ID() != "axe" {
+		t.Fatalf("expected axe to serve erase, got %s", picked.ID())
 	}
 }
 
