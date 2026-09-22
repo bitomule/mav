@@ -225,10 +225,23 @@ entirely.
    Use `mav ui tap/type/erase/hideKeyboard/swipe/longPress/wait/scrollUntil`
    for manual exploration. Prefer accessibility identifiers first (`--id`).
    `mav ui erase --focused` clears a focused field: AXe on simulator, sending
-   Backspace once per character and re-reading the field from the tree until it
-   stops shrinking, so it fails (`ui_erase_ineffective`) rather than report an
-   ok for a field that never changed. On macOS the driver sets the field to the
-   empty value, which does not depend on the field holding focus. `mav ui hideKeyboard` dismisses the keyboard via
+   Backspace once per character and re-reading the field from the tree between
+   rounds until it stops shrinking, so a whole field empties rather than half
+   of it. On macOS the driver sets the field to the empty value, which does not
+   depend on the field holding focus. `mav ui erase --find "<the field>"` names
+   the field in words instead: it taps it to take focus first, because no
+   driver can be told which field to empty.
+
+   **`erase` now checks its own work, so the `ok` line is evidence.** It used
+   to report `ok` and delete nothing — measured 22 sep on iPhone 17 Pro / iOS
+   26.3, because baguette's HID keyboard delivers nothing there while `axe key
+   42`, the same keycode, deletes. baguette no longer offers the capability and
+   erase no longer reports what it has not read back: a field that will not
+   take a probe character answers `ui_erase_no_focus`, one that takes it and
+   will not give it back answers `ui_erase_ineffective` with the surviving
+   value, an unreadable tree answers `ui_erase_unverifiable`, and a screen with
+   no editable field answers `ui_erase_no_field`. A field that was already
+   empty answers `ok ... already_empty=true`. `mav ui hideKeyboard` dismisses the keyboard via
    baguette on simulator and is a successful no-op on macOS. Both
    return structured errors on a physical device (`erase_unsupported_on_device`,
    `hide_keyboard_unsupported_on_device`). Use `scrollUntil` before tapping
@@ -487,6 +500,22 @@ aliases for their object forms:
 - sleep: { duration: 500ms }
 ```
 
+Use `goto` when you know the screen but not the route. It navigates; the
+declared steps do the work once there. It carries no selector, so its
+parameters sit at the top level of the step:
+
+```yaml
+- goto:
+    goal: the screen that lists every category
+    arrivedWhen: 'screen:categoriesView'
+- tap: { where: { find: the button that creates a new category } }
+```
+
+Inside a flow, `arrivedWhen` is mandatory (a `goto` step without one is a lint
+error) and `arrived=unverified` fails the step. On the command line
+`unverified` is an honest answer and you decide what to do with it; inside a
+flow it is an unchecked premise the next steps would act on.
+
 Use `when` to guard optional UI. It checks once and skips the `do` block without
 failing when the condition is not visible. Keep `open` and `exec` as top-level
 steps; they are not valid inside `do` blocks.
@@ -612,6 +641,26 @@ takes one, so `find` is not a new shape — it is a new field in the slot that w
 already there. The braces above are YAML's compact style, not structure; write
 it expanded, as here.
 
+**Which actions take it, and which will not.** `tap`, `doubleTap`, `type`,
+`toggle`, `erase`, `longPress` and `scrollUntil` take `find`. The checks —
+`assert`, `assertCount`, `wait`, `waitUntil`, `when`, `whileNotVisible` — refuse
+it with `selector_find_unsupported`, and `mav flow lint` refuses it before the
+run. An assertion is the independent half of a step, and a model that has
+already chosen where to tap cannot also be the one ruling on whether the tap
+worked; on top of that a find answers with an element or an abstention, and
+`not:` has nothing to invert. Assert on what the element leaves behind — an id,
+a text, a value.
+
+`scrollUntil` asks once per swipe, so it is capped at **6 consultations** per
+step (the default `maxSwipes` plus the look before the first swipe). Past that
+it fails with `scroll_until_find_limit` rather than asking quietly forever.
+
+**`find` will not abstain while your words name something that is on the
+screen**, even as the container of what you want: `"the box inside Test Category
+2"` on the category grid returns the `Test Category 2` button, 5/5, while
+`"the box inside this category"` — same screen, same meaning, no name —
+abstains 5/5. Name the thing you want, or reach it in two steps.
+
 The other selector fields are structural and run **first**: they cut the
 candidates down, and the words only choose among what survived. What cannot be
 acted on — disabled, invisible — is never offered. If the model declines, the
@@ -666,7 +715,8 @@ than tapping where the row used to be.
 
 ## Gestures
 
-`mav ui longPress --x X --y Y [--duration 800ms]` holds one finger down. It is
+`mav ui longPress (--x X --y Y | --id ID | --find "...") [--duration 800ms]` holds
+one finger down, on a point or on whatever the selector names. It is
 not multitouch, so it works on a physical device as well as on a simulator: on
 a device the hold goes out through idb.
 

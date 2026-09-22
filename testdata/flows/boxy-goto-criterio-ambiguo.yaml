@@ -1,0 +1,26 @@
+# La segunda cinta, puesta bajo carga: el único `unverified` que queda vivo
+# dentro de un flujo.
+#
+# Con un criterio escrito —y dentro de un flujo lo está siempre, porque la
+# primera cinta lo exige— `goto` sólo puede contestar `unverified` por un
+# camino: la guarda de criterio ambiguo, que se dispara cuando el criterio YA se
+# cumple en la pantalla de partida. `goto` se niega, con razón, a cantar victoria
+# en el paso cero sin haber tocado nada. Los demás caminos a `unverified` están
+# todos detrás de `criterion.IsZero()`, incluida la puerta de objetivo-acción,
+# así que ninguno alcanza a un flujo.
+#
+# Ese `unverified` es exactamente la premisa sin comprobar de la que habla la
+# segunda cinta: `goto` no se ha movido de la rejilla, y sin la cinta el paso
+# pasaría en verde y los pasos siguientes tocarían creyéndose en otra pantalla.
+#
+# `text:` empareja por CONTENIDO, y el fixture siembra `Test Category 1` y
+# `Test Category 2`, así que `text:"Test Category"` se cumple en la rejilla de
+# partida sin que nadie haya tocado nada. Esa colisión, que en el flujo
+# adversario era la trampa a evitar, aquí es el instrumento.
+#
+# Lo que tiene que pasar: el paso FALLA con `goto_arrival_unverified`.
+name: goto-criterio-ambiguo
+steps:
+  - goto:
+      goal: create a category called Kitchen Stuff
+      arrivedWhen: 'text:"Test Category"'

@@ -42,6 +42,23 @@ and deleted again. Both halves moving means the field was simply empty
 answers `ui_erase_unverifiable`, and a screen with no editable field in it
 answers `ui_erase_no_field` naming the driver that read the tree.
 
+`erase --find "<the field>"` is now a complete move — find it, focus it, empty
+it. It was two halves in two branches until today: `--find` reached `erase` but
+`erase` deleted nothing. Measured on the trunk with `--find` merged, six runs
+over the Boxy search bar, each one filling the field and erasing it: `ok
+cmd=ui.erase` six times out of six and the value only ever grew, because each
+run's text was appended to text the previous run had never removed
+(`ZZZCocina` → `ZZZCocinaCocina` → …). With the change: three of five emptied
+the field, two of five answered `ui_erase_no_focus` and left it alone. None of
+the five reported success it had not delivered.
+
+Those two are a defect in the `--find` focus tap, not in erase, and erase is
+now what makes it visible. Boxy's search field sits at y=803 in the bottom bar
+and moves to y=484 when it expands; `--find` reads the coordinate, then taps,
+and a tap that crosses that move lands where the field was. Measured on its
+own, without erase in it at all: `mav ui tap --find` followed by `mav ui type
+"Z"` moved the value in three runs of six.
+
 Measured after the change, same field, reading `value=` from the tree:
 `MudanzaCocina2026` → `erase` → the placeholder, in 3 rounds, reported
 `ok cmd=ui.erase driver=axe rounds=3`. The device path is unchanged: there is
@@ -90,6 +107,203 @@ otherwise have made. A run with `--arrived-when` is never asked at all, because
 a caller who wrote one has already said what arriving means.
 
 `goal_kind` is on the `ok` line and in the JSON when the question was put.
+
+### `find` reaches `erase`, `longPress` and `scrollUntil`
+
+The `find` selector — naming an element in your own words — was taken by `tap`,
+`type`, `toggle` and `doubleTap`, and refused by everything else. Three more
+accept it now.
+
+**`erase` is the one that was missing.** You could find a field and type into it,
+and you could not find it and empty it first — so a flow that fills in a form
+with something already in it could not be written. And the refusal was not even
+loud: `mav ui erase --find "..."` reported `ok` having deleted nothing, because
+`--find` was read by nobody on that path.
+
+Emptying takes two moves, and they are the two `type` already makes: no driver
+has semantic targeting for erase (baguette clears whatever holds focus and
+ignores the selector outright), so the words have to become FOCUS before
+anything is deleted. The tap is `uiTap`'s, so the find decision is still spent
+once per step, through the same ledger.
+
+Measured on Boxy's new-box sheet, iPhone 17 Pro / iOS 26.3 from a simpool slot.
+Two text fields on screen, neither focused, the code field reading `VLNM`. Same
+two commands under each binary — `ui erase --find "el campo del código de caja"`
+then a bare `ui type "QQ"`, which goes wherever focus is — and the value read
+back out of the tree:
+
+| | `boxIdentifierTextField` | the other text field |
+|---|---|---|
+| before | `value=VLNM`, untouched | untouched |
+| after | **`value=VLNMQ`** | untouched |
+
+So the words reached the field they named, and only it.
+
+**And that is the whole of what this change delivers, which is less than the
+name suggests: it FINDS the field and focuses it — it does not empty it.**
+`mav ui erase` deletes nothing on this simulator, with a find or without one,
+and that is a separate defect this change does not fix.
+
+### `mav ui erase` deletes nothing on a simulator, and the driver is why
+
+Found while trying to demonstrate the erase above. `mav ui erase --focused` on a
+focused field reports `ok` and leaves the value untouched — no find anywhere
+near it.
+
+It is not a missing capability and it is not a simulator setting to switch on.
+`mav ui erase` routes to **baguette**, whose HID keyboard delivers nothing at
+all: `baguette key --code Backspace` answers `{"ok":true,"action":"key"}` and
+changes nothing, and neither does `baguette key --code KeyZ`, so it is the path
+and not the keycode. **`axe key 42` — the same HID usage (keyboard page 7,
+usage 42) that baguette logs for Backspace — deletes a character on the same
+simulator.**
+
+Alternated on one focused field, iPhone 17 Pro / iOS 26.3 from a simpool slot,
+value read out of the tree each time:
+
+| | value |
+|---|---|
+| start | `a12345` |
+| after `baguette key --code Backspace` | `a12345` |
+| after `axe key 42` | `a1234` |
+| after `baguette key --code Backspace` | `a1234` |
+| after `axe key 42` | `a123` |
+
+baguette 0 of 2, axe 2 of 2.
+
+The `ConnectHardwareKeyboard = 0` on this host is a red herring: the software
+keyboard is on screen, which says the device believes no hardware keyboard is
+attached, and axe gets through anyway. Tapping that on-screen keyboard's
+`delete` key also deletes (`abcd` → `ab` in two taps), so there are two
+delivering routes and baguette is on neither.
+
+So the fix is real work, not a patch: **axe should declare `CapErase` and
+implement it**, and the router will then pick the driver that delivers. Left
+undone here on purpose — it is a driver change, not a selector one, and this
+branch is about the selector.
+
+**`longPress`** was coordinates only, so a caller who could only describe the
+target had nowhere to go. It now resolves a selector through the same route the
+other gestures take, which brings `--find` and every structural predicate with
+it. Live on the same slot: `mav ui longPress --find "la categoría Cocina"`
+lands on `x=104 y=212`, the centre of that cell; the same command before the
+change is `fail code=gesture_invalid error=x_missing`.
+
+**`scrollUntil`** asks per swipe, so the question was never whether it could ask
+but how often. It consults a model at most **6 times** per step — the default
+`maxSwipes` plus the look before the first swipe — so a default step is
+unchanged and only a deliberately long scroll is cut short, loudly, with
+`scroll_until_find_limit` and the count it spent. A find that cannot be asked at
+all (no key, no network, CI) stops the scroll immediately instead of burning
+every swipe first; an abstention means "not on this screen" and swipes again.
+
+### `assert`, `assertCount` and the waits refuse `find`, out loud
+
+They are left out on purpose, and the silent version was worse than the refusal:
+a condition dropped the words on the way in, so `assert: { where: { find: "..."
+} }` read as an empty selector and reported *the screen does not show it* — a
+wrong answer from the one step whose job is to be believed.
+
+Four reasons, and the first three are why it is not a wiring job:
+
+- An assertion is the INDEPENDENT half of a step. A `tap` with `find` already
+  trusts the model to pick the row; letting the same model then rule on whether
+  the tap worked is the judge marking its own exam.
+- `find` answers with one element or with an abstention. A condition has to
+  answer true or false, and `not:` has to invert it. `find_abstained` is
+  neither.
+- A condition must be decidable where nothing can be asked. With no key, or in
+  CI, every find is `find_unavailable` — a suite would stop reporting failures
+  and start reporting errors, on exactly the machines that only read the summary.
+- `assertCount` settles on its own: a find resolves to one element or none, so
+  the only counts it could assert are 0 and 1.
+
+`mav flow lint` now catches it before a run spends a simulator.
+
+### The two Boxy cells where `find` returns the category button: still open
+
+Asked for `"the box inside Test Category 2"` on a screen with no box on it,
+`find` returns the **`Test Category 2` button**, 5/5. One more fix was measured
+and it did not work, so that is six.
+
+It was the best candidate there has been, because it was not a hunch: v0.28.0
+measured that the single sentence naming the goal was costing `goto` a fifth of
+its choices. `find` still says *"what they want to **tap**"* — an ACTION frame,
+and tapping the category IS the action that opens the box inside. Moving it to
+an identity frame (*"the element they are looking for"* / *"which numbered
+element IS that element"*) measured **identical, cell for cell and pick for
+pick**, across all eight bench cells.
+
+And `goto.md` §14's ordinal poisoning does not rescue the earlier discards
+here: it poisons `"la primera caja"`, which carries an ordinal. **These two
+carry none.**
+
+What the bench does now say, sharply, is a better rule than the one in the docs:
+
+| same screen, same candidates | names a row that is on screen | result |
+|---|---|---|
+| `"the box inside Test Category 2"` | yes | returns it, 5/5 |
+| `"open the box in Test Category 2"` | yes | returns it, 5/5 |
+| `"the box inside this category"` | no | **abstains 5/5** |
+
+All three mean the same thing. **`find` will not abstain while the goal names
+something that is on the screen**, even when it names it as the container of
+what is wanted — and that cannot be taken out of the question without taking it
+from `goto`, which shares the path and for which that answer is correct.
+
+So it stays open, deliberately. If your phrase names a screen or a container by
+name, `find` will hand you that container. Name the thing.
+
+### `goto` is a flow step now, and inside a flow it has to prove it arrived
+
+`goto` navigates; the declared steps do the work. A flow can now mix them in one
+file: `goto` walks to the screen, and `tap` / `type` press the buttons once
+there. It carries no selector, so `goal`, `arrivedWhen`, `maxSteps` and
+`timeout` sit at the top level of the step, next to `where` rather than inside
+it.
+
+Two rules hold inside a flow and nowhere else.
+
+**`arrivedWhen` is mandatory.** A `goto` step without one is a lint error,
+caught by `mav flow lint` before anything runs.
+
+**`arrived=unverified` fails the step.** On the command line `unverified` is an
+honest answer — goto says it cannot confirm arrival and whoever reads it
+decides. Inside a flow it is an unchecked premise the following steps are going
+to act on, and a flow that carries on over a false arrival touches where it
+should not. A flow that fails is annoying; one that does strange things in
+somebody's app is something else.
+
+There is a measured reason behind both: `goto` can declare arrival on opening
+the screen an action lives on, without having done the action. It knows how to
+check that it reached a PLACE, not that it did a THING. With a criterion
+required, that inferred-arrival route is never taken inside a flow.
+
+Both belts are now measured under load, on the one flow that can tell them
+apart — a `goto` asked for an ACTION and held to the EFFECT, which the loop
+cannot reach because it only taps and never writes.
+
+| lane | flow | verdict | false writes |
+|---|---|---|---|
+| criterion unreachable | `create a category called Kitchen Stuff`, `text:"Kitchen Stuff"` | `goto_did_not_arrive` **5/5** | 0 |
+| criterion already true at the start | same goal, `text:"Test Category"` | `goto_arrival_unverified` **5/5** | 0 |
+
+The first lane dies on the mandatory criterion: with one written the loop
+answers `arrived=false`, not `unverified`, so the code is
+`goto_did_not_arrive`. The second is the only road to `unverified` a flow can
+still reach — the guard that refuses a criterion already holding where the run
+starts — and that is the one the second belt catches. Remove the belt and that
+same flow passes **green** with `goto` never off the starting grid and nothing
+created; put it back and it dies again.
+
+**The action-goal gate of the previous entry never fires inside a flow.** It is
+asked only when no criterion was given, and inside a flow a criterion is
+mandatory, so the goal is never classified there. It does not make the second
+belt redundant — the two do not meet.
+
+Measured on Boxy, iPhone 17 Pro / iOS 26.3, simpool slot-4. `load1` 4.8–10.6
+and `load5` 4.3–5.8 throughout, both always under 15. Touch canary green around
+every batch. Judged by reading the tree, never by the exit code.
 
 ## v0.28.0
 

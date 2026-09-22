@@ -142,6 +142,16 @@ func lintFlowStep(index int, step FlowStep, cfg Config) []flowLintIssue {
 			add("error", "exec_requires_allow_shell", "exec steps require allow_shell: true in .mav/config.yaml")
 		}
 	}
+	// A check is not something `find` can do, and the run says so too --- but
+	// a lint error is read before a flow has spent a simulator, and it is the
+	// only place there is room to say what to write instead.
+	switch step.Action {
+	case "wait", "waitUntil", "assert", "assertCount", "when", "whileNotVisible":
+		if step.Where.Find != "" {
+			add("error", "find_unsupported_in_condition",
+				step.Action+" is a check, and find answers with an element or an abstention, not with true or false; assert on what the element leaves on the screen (id, text, value) instead")
+		}
+	}
 	if (step.Action == "wait" || step.Action == "when" || step.Action == "whileNotVisible") &&
 		step.Params["id"] == "" && step.Params["text"] == "" && step.Params["value"] == "" && len(step.Any) == 0 {
 		add("error", "wait_target_missing", "wait-like steps require id, text, value, or any")

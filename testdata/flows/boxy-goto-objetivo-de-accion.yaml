@@ -1,0 +1,24 @@
+# El flujo adversario: un `goto` al que se le pide una ACCIÓN y se le exige el
+# EFECTO.
+#
+# La tanda de 19/20 del flujo mezclado no prueba que las dos cintas tapen el
+# defecto: allí el trabajo del `goto` ES abrir la hoja, así que llegar a la hoja
+# era la respuesta correcta y el defecto no tenía ocasión de asomar.
+#
+# Aquí sí. El objetivo es el mismo que hizo mentir a `goto` suelto —crear una
+# categoría—, y el criterio no se cumple por abrir ninguna pantalla: exige que
+# exista en el árbol algo con el nombre de la categoría. El bucle de `goto` sólo
+# toca, nunca escribe, así que ese criterio le es inalcanzable por construcción.
+# Lo que tiene que pasar es que el paso FALLE.
+#
+# El nombre NO es `Test Category`, y no es un detalle de estilo. `text:` empareja
+# por CONTENIDO, no por igualdad, y el fixture siembra `Test Category 1` y
+# `Test Category 2`: `text:"Test Category"` se cumpliría en la pantalla de
+# partida, saltaría la guarda de criterio ambiguo y el paso fallaría por el
+# motivo equivocado. Es la misma familia de colisión que el ordinal contra el
+# número del nombre. `Kitchen Stuff` no colisiona con nada de lo que hay.
+name: goto-objetivo-de-accion
+steps:
+  - goto:
+      goal: create a category called Kitchen Stuff
+      arrivedWhen: 'text:"Kitchen Stuff"'

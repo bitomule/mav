@@ -65,6 +65,94 @@ func (c CLI) gotoScreen(ctx context.Context, opts GlobalOptions, cfg Config, arg
 	})
 }
 
+// executeGotoFlowStep runs the same loop the command runs, and judges its
+// result by the stricter rule a flow needs.
+//
+// Outside a flow, `arrived=unverified` is an honest answer -- the command says
+// it cannot confirm and whoever reads it decides. Inside a flow it is an
+// unchecked premise the following steps are going to act on, and a flow that
+// carries on over a false arrival touches where it should not. A flow that
+// fails is annoying; one that does strange things in somebody's app is
+// something else. So unverified FAILS the step; it does not pass it.
+//
+// The criterion itself is mandatory, and rejected at lint time rather than
+// here (validateGotoFlowStep). This is the second half of the same guarantee:
+// even with a criterion written, a run that cannot confirm arrival against it
+// stops the flow instead of handing the next step a place it never checked.
+func (c CLI) executeGotoFlowStep(ctx context.Context, opts GlobalOptions, step FlowStep) (map[string]string, error) {
+	cfg, cfgErr := c.mustLoadConfig()
+	if cfgErr != nil {
+		return flowStepTargetFailure(step, cfgErr)
+	}
+
+	goal := strings.TrimSpace(step.Params["goal"])
+	criterion, criterionErr := ParseArrivalCriterion(step.Params["arrivedWhen"])
+	if criterionErr != nil {
+		return map[string]string{"goal": goal, "criterion": step.Params["arrivedWhen"]}, criterionErr
+	}
+	maxSteps := gotoMaxSteps
+	if raw := step.Params["maxSteps"]; raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 && n <= gotoMaxSteps {
+			maxSteps = n
+		}
+	}
+	timeout := gotoDefaultTimeout
+	if raw := step.Params["timeout"]; raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil && d > 0 && d <= gotoDefaultTimeout {
+			timeout = d
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// The loop writes its own fail lines; inside a flow the step's line is the
+	// one the run prints, so its output goes to a sink and only the code and
+	// the first line survive as fields.
+	var sink strings.Builder
+	result, err := c.withStdout(&sink).runGotoLoop(ctx, cfg, opts, goal, criterion, maxSteps, step.Params["dismissPermission"])
+
+	fields := map[string]string{
+		"goal":             goal,
+		"arrived":          result.Arrived,
+		"outcome":          result.Outcome,
+		"criterion":        criterion.String(),
+		"criterion_source": result.CriterionSource,
+		"steps":            strconv.Itoa(len(result.Steps)),
+	}
+	if !result.RouteFinal.IsZero() {
+		fields["route"] = result.RouteFinal.String()
+	}
+	if result.Next != "" {
+		fields["next"] = result.Next
+	}
+	for _, d := range result.Dismissed {
+		fields["dismissed_permission"] = d.Modal
+		fields["dismissed_action"] = d.Action
+	}
+	if err != nil {
+		if detail := firstLine(strings.TrimSpace(sink.String())); detail != "" {
+			fields["detail"] = detail
+		}
+		return fields, err
+	}
+
+	return fields, gotoFlowStepVerdict(result.Arrived)
+}
+
+// gotoFlowStepVerdict turns what the loop reported into the step's verdict.
+// Only a confirmed arrival passes: `unverified` is a premise nobody checked,
+// and the steps after this one would act on it as if it were an arrival.
+func gotoFlowStepVerdict(arrived string) error {
+	switch arrived {
+	case "true":
+		return nil
+	case "unverified":
+		return errors.New("goto_arrival_unverified")
+	default:
+		return errors.New("goto_did_not_arrive")
+	}
+}
+
 func (c CLI) runGotoLoop(ctx context.Context, cfg Config, opts GlobalOptions,
 	goal string, criterion ArrivalCriterion, maxSteps int, dismiss string) (GotoResult, error) {
 
@@ -440,7 +528,30 @@ func (c CLI) gotoSettle(ctx context.Context, cfg Config, opts GlobalOptions) ([]
 	return last, nil
 }
 
+// gotoReadScreen always reads. Never the cache, and this is the one caller for
+// which that is not an optimisation to weigh but a correctness rule.
+//
+// The tree cache is armed for the length of a `mav run`, and a flow step
+// invalidates it on the way in and on the way out. That is exactly right for
+// every other step, which reads, acts, and hands the screen to the next step.
+// goto is the one step that taps and re-reads MANY times inside itself, and
+// nothing between its own tap and its own next read dirties the cache -- so
+// every read after the first was served the screen as it looked before the
+// first tap.
+//
+// Measured, because it cost a whole 20-run batch: on Boxy the loop tapped the
+// button that opens the create-category sheet, was handed back the pre-tap
+// grid, recorded changed=false, tapped again, was handed the same tree again,
+// and reported outcome=stuck with the sheet plainly open on screen. 0/20, every
+// run identical. The same goal outside a flow works, because outside a flow
+// there is no cache to be served by.
+//
+// gotoSettle was broken the same way and worse: it decides a screen has
+// finished drawing by reading it twice and comparing, and two reads of one
+// cache entry are equal by construction, so it declared every screen settled
+// immediately.
 func (c CLI) gotoReadScreen(ctx context.Context, cfg Config, opts GlobalOptions) ([]Element, error) {
+	c.trees.invalidate()
 	prefer, err := c.normalizePreferDriver(opts.PreferDriver)
 	if err != nil {
 		prefer = "auto"
