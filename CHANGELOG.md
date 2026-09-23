@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.31.0
+
+**`mav flow lint` stopped leasing a simulator to read a YAML file.**
+
+Every command's ok line resolved the target -- including running
+`target_command` (a pool manager like simpool) -- purely to report which
+simulator it acted on. `flow lint` is a static check of a flow file and never
+acts on one, but it went through the same path: leasing a slot, booting a
+cold simulator, and leaving a lease renewing against a lint that had already
+finished. On 2026-09-18 that left three other agents on the same pool waiting
+to upgrade it, because its status looked like someone was mid-run.
+
+`flow lint`, `setup`, and `install-skills` no longer resolve a target at all.
+`doctor` still does, deliberately: diagnosing `target_command` is its job.
+
 ## v0.30.0
 
 **A flow no longer has to ask the screen to hold still.**
