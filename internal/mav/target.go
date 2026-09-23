@@ -107,6 +107,9 @@ func (c CLI) withResolvedTarget(fields map[string]string) map[string]string {
 	if _, ok := fields["udid"]; ok {
 		return fields
 	}
+	if c.skipTargetResolution {
+		return fields
+	}
 	cfg, err := LoadConfig(c.Root)
 	if err != nil {
 		return fields
