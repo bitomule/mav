@@ -73,6 +73,15 @@ type CLI struct {
 	// cache that never hits, so a command that was never given one reads the
 	// screen exactly as often as it always did.
 	trees *treeCache
+
+	// skipTargetResolution is set once per invocation, before dispatch, for
+	// a command that never sends anything to a simulator or device (see
+	// commandNeedsTarget). Without it, c.OK's withResolvedTarget resolves
+	// the target -- including running target_command -- purely to decorate
+	// an ok line, so `mav flow lint` (a static check of a YAML file) leased
+	// a simpool slot and started a cold simulator just to report a udid
+	// nobody asked for.
+	skipTargetResolution bool
 }
 
 func (c CLI) withSkipBuild(skip bool) CLI {
@@ -179,6 +188,7 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 		return Fail("vm_unavailable", vmFailureFields(err)).Write(c.Stdout)
 	}
 	defer detachVM()
+	c.skipTargetResolution = !commandNeedsTarget(rest[0])
 	switch rest[0] {
 	case "__worker":
 		return c.runInternalWorker(ctx, rest[1:])

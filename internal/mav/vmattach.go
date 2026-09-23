@@ -26,6 +26,23 @@ func commandNeedsVM(command string) bool {
 	return false
 }
 
+// commandNeedsTarget says whether this command's own work ever dispatches
+// against a simulator or device. `doctor` is deliberately NOT here: it
+// exists to diagnose target_command itself, so running it is the point.
+// Everything else that isn't listed either never touches a target (flow
+// lint is a static read of a YAML file; setup and install-skills manage
+// local tooling) or already resolves the target itself further down for a
+// reason of its own. This gates only the automatic resolution that
+// c.OK/withResolvedTarget does purely to decorate an ok line -- a command
+// with real work to do still resolves its target the way it always has.
+func commandNeedsTarget(command string) bool {
+	switch command {
+	case "flow", "setup", "install-skills":
+		return false
+	}
+	return true
+}
+
 // withVM returns a CLI whose Runner executes on the leased machine, plus
 // the func that tears the attachment down. Called once per invocation,
 // before dispatch, so no individual command has to know it is remote.

@@ -106,6 +106,54 @@ func TestTargetCommandInvokedOncePerRun(t *testing.T) {
 	}
 }
 
+// TestFlowLintDoesNotInvokeTargetCommand is the regression for the simpool
+// incident of 2026-09-18: `mav flow lint` is a static read of a YAML file,
+// but it used to resolve the target like every other command just to
+// decorate its ok line, which ran target_command (simpool lease) and left a
+// lease renewing against a lint that never touched a simulator. `mav logs`
+// is exercised alongside it as the control case -- a command whose ok line
+// legitimately reports the resolved target -- to prove the fix didn't also
+// silence target_command for commands that need it.
+func TestFlowLintDoesNotInvokeTargetCommand(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.TargetCommand = "echo TC-FLOW-LINT-UDID"
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	flowPath := filepath.Join(root, "flow.yaml")
+	if err := os.WriteFile(flowPath, []byte("steps:\n  - evidence.step: { note: ok }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	key := targetCommandKey(root, "echo TC-FLOW-LINT-UDID")
+	runner := fakeRunner{results: map[string]CommandResult{key: {Stdout: "TC-FLOW-LINT-UDID\n"}}, calls: map[string]int{}}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"flow", "lint", flowPath}); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.Contains(got, "ok cmd=flow.lint") {
+		t.Fatalf("got %q, want a successful lint", got)
+	}
+	if got := runner.calls[key]; got != 0 {
+		t.Fatalf("target_command calls=%d, want 0 (flow lint never touches a simulator)", got)
+	}
+
+	_, runID := newTargetCommandRun(t, cfg)
+	var logsOut bytes.Buffer
+	cli = CLI{Runner: runner, Root: root, Stdout: &logsOut, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"logs", "--run", runID}); err != nil {
+		t.Fatal(err)
+	}
+	if got := runner.calls[key]; got != 1 {
+		t.Fatalf("target_command calls=%d after logs, want 1 (a command that reports a real target must still resolve it)", got)
+	}
+	if !strings.Contains(logsOut.String(), "udid=TC-FLOW-LINT-UDID") {
+		t.Fatalf("got %q, want logs to report the resolved udid", logsOut.String())
+	}
+}
+
 // TestTargetCommandLosesToPinnedSimulatorUDID: simulator_udid already pinned
 // in config.yaml (e.g. via `mav sim select`) is already-resolved explicit
 // state, so it must win over a configured target_command without ever
