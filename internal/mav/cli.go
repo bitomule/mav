@@ -442,7 +442,13 @@ With --install it installs tools and configures nothing.
   mav sim statusbar clear
   mav sim language set --language fr-FR [--locale fr_FR]
   mav sim language get
+  mav sim hinge [closed|open|flat] [--angle DEG] [--duration S]
+  mav sim heal [--force]
 `
+	case "sim hinge":
+		return simHingeUsage + "\n"
+	case "sim heal":
+		return simHealUsage + "\n"
 	case "sim list":
 		return "Usage: mav sim list\n\nLists available iOS simulators.\n"
 	case "sim select":
@@ -885,7 +891,14 @@ func (c CLI) setup(ctx context.Context, opts GlobalOptions, args []string) error
 	if install == "" {
 		return c.setupProject(opts, args)
 	}
-	tools := strings.Fields(install)
+	var tools []string
+	for _, tool := range strings.Fields(install) {
+		if tool == "deps" {
+			tools = append(tools, setupCoreDeps...)
+			continue
+		}
+		tools = append(tools, tool)
+	}
 	if len(tools) == 0 {
 		return Fail("setup_install_missing", nil).Write(c.Stdout)
 	}
@@ -958,6 +971,7 @@ func (c CLI) setup(ctx context.Context, opts GlobalOptions, args []string) error
 		if !ok {
 			return Fail("setup_unknown_tool", map[string]string{"tool": tool}).Write(c.Stdout)
 		}
+		c.trustBrewTap(ctx, opts, cmd)
 		if opts.Verbose {
 			fmt.Fprintln(c.Stderr, strings.Join(cmd, " "))
 		}
@@ -1012,6 +1026,31 @@ func (c CLI) setupLLDBDAP(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
+// setupCoreDeps is what `mav setup --install deps` installs: the three tools
+// every simulator and device command routes through.
+var setupCoreDeps = []string{"axe", "idb", "baguette"}
+
+// trustBrewTap lets Homebrew 7 load a formula from a third-party tap, which it
+// refuses until the tap is trusted ("Refusing to load formula ... from
+// untrusted tap"). Asking mav to install the tool is the consent. An older
+// brew without `trust` fails here harmlessly and loads the tap as it always
+// did. `brew install` itself upgrades a formula that is installed but
+// outdated, which is how a rerun lifts an old install over mav's floors.
+func (c CLI) trustBrewTap(ctx context.Context, opts GlobalOptions, cmd []string) {
+	if len(cmd) < 3 || cmd[0] != "brew" || cmd[1] != "install" {
+		return
+	}
+	parts := strings.Split(cmd[2], "/")
+	if len(parts) != 3 {
+		return
+	}
+	trust := []string{"brew", "trust", "--tap", parts[0] + "/" + parts[1]}
+	if opts.Verbose {
+		fmt.Fprintln(c.Stderr, strings.Join(trust, " "))
+	}
+	c.Runner.Run(ctx, trust[0], trust[1:]...)
+}
+
 func (c CLI) setupIDB(ctx context.Context, opts GlobalOptions) (bool, error) {
 	if _, err := c.Runner.LookPath("pipx"); err == nil {
 		python := ""
@@ -1023,7 +1062,10 @@ func (c CLI) setupIDB(ctx context.Context, opts GlobalOptions) (bool, error) {
 		if python == "" {
 			return false, Fail("setup_failed", map[string]string{"tool": "idb", "stderr": "supported Python missing", "next": "install Python 3.12, then rerun mav setup --install idb"}).Write(c.Stdout)
 		}
-		cmd := []string{"pipx", "install", "--python", python, "fb-idb"}
+		// --force reinstalls the latest fb-idb over an old one; a plain install
+		// of an installed package is a no-op, which left 1.1.7 clients talking
+		// to a 1.6.4 companion.
+		cmd := []string{"pipx", "install", "--force", "--python", python, "fb-idb"}
 		if opts.Verbose {
 			fmt.Fprintln(c.Stderr, strings.Join(cmd, " "))
 		}
@@ -1032,7 +1074,10 @@ func (c CLI) setupIDB(ctx context.Context, opts GlobalOptions) (bool, error) {
 			return false, Fail("setup_failed", map[string]string{"tool": "idb", "stderr": firstLine(result.Stderr), "next": "pipx install --python python3.12 fb-idb"}).Write(c.Stdout)
 		}
 	}
-	cmd := []string{"brew", "install", "idb-companion"}
+	// Fully qualified: idb-companion lives in facebook/fb, not homebrew-core,
+	// so the bare name only ever worked where that tap was already added.
+	cmd := []string{"brew", "install", "facebook/fb/idb-companion"}
+	c.trustBrewTap(ctx, opts, cmd)
 	if opts.Verbose {
 		fmt.Fprintln(c.Stderr, strings.Join(cmd, " "))
 	}
@@ -1266,9 +1311,13 @@ func displayPromptDefault(value string) string {
 
 func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 	if len(args) == 0 {
-		return Fail("sim_command_missing", map[string]string{"usage": "mav sim list|select|boot|appearance|statusbar|language"}).Write(c.Stdout)
+		return Fail("sim_command_missing", map[string]string{"usage": "mav sim list|select|boot|appearance|statusbar|language|hinge|heal"}).Write(c.Stdout)
 	}
 	switch args[0] {
+	case "hinge":
+		return c.simHinge(ctx, args[1:])
+	case "heal":
+		return c.simHeal(ctx, args[1:])
 	case "appearance":
 		return c.simAppearance(ctx, args[1:])
 	case "statusbar":
@@ -1391,8 +1440,23 @@ func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 		if !wasBooted {
 			clearDeclaredOrientation(c.Root, cfg.SimulatorUDID)
 			clearScreenCache(c.Root, cfg.SimulatorUDID)
+			clearDeclaredHinge(c.Root, cfg.SimulatorUDID)
 		}
-		return c.OK("sim.boot", map[string]string{"udid": cfg.SimulatorUDID, "name": cfg.SimulatorName}).Write(c.Stdout)
+		fields := map[string]string{"udid": cfg.SimulatorUDID, "name": cfg.SimulatorName}
+		// Device Hub attaches to every booted simulator and its dtuhidd tears
+		// down the input services every driver uses: taps ack and land
+		// nowhere. Healing restarts SpringBoard, which only costs nothing
+		// here, before any app is running -- so boot does it, and a gesture
+		// never does.
+		if inputShadowed(ctx, c.Runner, cfg.SimulatorUDID) == shadowYes {
+			if _, healErr := c.healInput(ctx, target); healErr != nil {
+				fields["input"] = "shadowed"
+				fields["next"] = "mav sim heal: Device Hub shadows this simulator's input and taps will land nowhere"
+			} else {
+				fields["input"] = "healed"
+			}
+		}
+		return c.OK("sim.boot", fields).Write(c.Stdout)
 	default:
 		return Fail("sim_unknown_command", map[string]string{"command": args[0]}).Write(c.Stdout)
 	}
@@ -2880,6 +2944,19 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			return c.uiTap(ctx, opts, cfg, append(onlyFastPathArgs(args),
 				"--x", strconv.Itoa(int(mx+mw/2)), "--y", strconv.Itoa(int(my+mh/2))))
 		}
+		// On an open foldable the AXe tap lands on the dark cover, so the
+		// element is read from the tree, which does describe the inner panel,
+		// and its centre goes out through the coordinate path below.
+		if c.foldableOpen(cfg) && routerPrefer(prefer) == "" {
+			matched, matchErr := c.resolveOnOpenFoldable(ctx, cfg, selector, prefer)
+			if matchErr != nil {
+				return selectorFail(selector, matched, matchErr).Write(c.Stdout)
+			}
+			if x, y, ok := TapPoint(matched); ok {
+				return c.uiTap(ctx, opts, cfg, append(onlyFastPathArgs(args),
+					"--x", strconv.Itoa(x), "--y", strconv.Itoa(y)))
+			}
+		}
 		target := targetFromConfig(cfg)
 		driver, _, err := c.router().Route(ctx, drivers.CapSemanticTap, target, routerPrefer(prefer))
 		if err != nil {
@@ -2927,6 +3004,9 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		fields["driver"] = driver.ID()
 		if verify {
 			fields["verified"] = c.verifyTapChangedSomething(ctx, cfg, before)
+			if fields["verified"] == "unchanged" {
+				c.shadowedInputNext(ctx, cfg, fields)
+			}
 		}
 		c.appendCurrentCommand(command, result)
 		return c.writeFastPathResult(ctx, cfg, args, "ui.tap", fields)
@@ -2967,6 +3047,13 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		coordPrefer := "axe"
 		if targetKind(cfg) == drivers.KindMac {
 			coordPrefer = ""
+		}
+		// Measured on iPhone Duo / iOS 27.1, open flat, tapping Settings'
+		// Accessibility row from a clean launch: idb 1.6.4 navigated 2 of 2;
+		// AXe (physical), AXe by label and baguette 0.2.1 delivered 0 of 4,
+		// all reporting success. They send to the cover's digitizer.
+		if c.foldableOpen(cfg) {
+			coordPrefer = "idb"
 		}
 		coordMissing := func() map[string]string {
 			if targetKind(cfg) == drivers.KindMac {
@@ -3052,6 +3139,7 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			// switching to a selector, which does work.
 			if effect == "unchanged" {
 				coordFields["next"] = "the driver reported the tap and the screen did not change; on a simulator the coordinate path can swallow it silently — tap the element by selector (`mav ui tap --text ...`) rather than by point"
+				c.shadowedInputNext(ctx, cfg, coordFields)
 			}
 		} else {
 			// `ok` on this line means the driver accepted the point, and on
@@ -3922,6 +4010,7 @@ func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args [
 		fields["verified"] = effect
 		if effect == "unchanged" {
 			fields["next"] = "the driver reported the swipe and the screen did not change; the gesture did not reach the app — do not treat this as 'already at the end of the list'"
+			c.shadowedInputNext(ctx, cfg, fields)
 		}
 	} else {
 		fields["delivered"] = "unconfirmed"
@@ -5116,6 +5205,13 @@ func (c CLI) captureScreenshotWith(ctx context.Context, cfg Config, path, prefer
 	// capture_tool_missing.
 	if prefer == "" && targetKind(cfg) == drivers.KindDevice {
 		prefer = "idb"
+	}
+	// Every screenshot driver captures the primary display, and on an open
+	// iPhone Duo that is the cover: dark, a black PNG.
+	if prefer == "" && targetKind(cfg) == drivers.KindSim && isFoldableSimulator(c.Runner, target.UDID) {
+		if _, err := c.captureLitPanel(ctx, target.UDID, path); err == nil {
+			return CommandResult{}, nil
+		}
 	}
 	driver, _, err := c.router().Route(ctx, drivers.CapScreenshot, target, prefer)
 	if err != nil {
@@ -6374,6 +6470,16 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 	case "location.reset":
 		err := c.withStdout(io.Discard).location(ctx, GlobalOptions{}, []string{"reset"})
 		return map[string]string{}, outputErr(err, "location_reset_failed")
+	case "sim.hinge":
+		err := c.withStdout(io.Discard).sim(ctx, GlobalOptions{}, append([]string{"hinge"}, hingeFlowArgs(step.Params)...))
+		return copyParams(step.Params), outputErr(err, "hinge_failed")
+	case "sim.heal":
+		args := []string{"heal"}
+		if step.Params["force"] == "true" {
+			args = append(args, "--force")
+		}
+		err := c.withStdout(io.Discard).sim(ctx, GlobalOptions{}, args)
+		return copyParams(step.Params), outputErr(err, "heal_failed")
 	case "sim.appearance":
 		err := c.withStdout(io.Discard).sim(ctx, GlobalOptions{}, []string{"appearance", step.Params["appearance"]})
 		return copyParams(step.Params), outputErr(err, "appearance_set_failed")

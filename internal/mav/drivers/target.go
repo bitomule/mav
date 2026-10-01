@@ -139,6 +139,20 @@ type ScreenshotSpec struct {
 	OutPath string // absolute path; drivers write the PNG here
 }
 
+// HingeSpec moves a foldable's hinge to a named pose or an angle. Both empty
+// reads the hinge without moving it.
+type HingeSpec struct {
+	Pose     string   // closed | open | flat
+	Angle    *float64 // 0–180 degrees
+	Duration float64  // seconds the sweep takes; 0 is the driver's default
+}
+
+// HingeState is the hinge as read back. Angle is nil when the device would not
+// say, which happens for a while after its input was healed.
+type HingeState struct {
+	Angle *float64
+}
+
 // LogStreamSpec configures a tail of device/sim logs.
 type LogStreamSpec struct {
 	OutPath  string

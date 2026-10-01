@@ -7,12 +7,12 @@
 // on device targets so the router never picks it; cli.go must surface a
 // structured `gesture_unsupported_on_device` error in that case.
 //
-// CLI shape (verified against v0.1.97, September 2026):
+// CLI shape (verified against v0.2.1, October 2026):
 //
 //	baguette tap          --udid UDID --x X --y Y --width W --height H [--duration S]
 //	baguette double-tap   --udid UDID --x X --y Y --width W --height H [--interval S] [--duration S]
 //	baguette swipe        --udid UDID --start-x X1 --start-y Y1 --end-x X2 --end-y Y2 --width W --height H
-//	baguette pinch        --udid UDID --cx CX --cy CY --startSpread S1 --endSpread S2 --width W --height H
+//	baguette pinch        --udid UDID --cx CX --cy CY --start-spread S1 --end-spread S2 --width W --height H
 //	baguette pan          --udid UDID --x1 X --y1 Y --x2 X --y2 Y --dx DX --dy DY --width W --height H
 //	baguette type         --udid UDID --text TEXT
 //	baguette key          --udid UDID --code <KeyA..ArrowRight> [--modifiers] [--duration S]
@@ -21,10 +21,12 @@
 //	baguette orientation  --udid UDID (portrait|landscape-left|landscape-right|portrait-upside-down)
 //	baguette screenshot   --udid UDID [--output PATH]
 //	baguette list         [--json]
+//	baguette chrome layout --udid UDID
+//	baguette hinge        --udid UDID [--pose closed|open|flat] [--angle DEG]
+//	baguette heal         --udid UDID
 //
-// Width/Height are the logical point dimensions of the device's screen and are
-// REQUIRED on every gesture. Callers supply them via TapSpec.Width/Height etc;
-// when zero the driver falls back to a sane default and logs a warning.
+// Width/Height are the lit panel's size in points and are REQUIRED on every
+// gesture: baguette divides each point by them. They come from `chrome layout`.
 //
 // What baguette does NOT do (and what we therefore advertise/SUPPORT here):
 //   - No W3C Actions: baguette has a `input` streaming JSON protocol instead;
@@ -41,6 +43,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/bitomule/mav/internal/mav/drivers"
 )
@@ -48,9 +51,12 @@ import (
 // ID is the registry key for this driver.
 const ID = "baguette"
 
-// defaultGestureSize is the fallback (logical points) used when the caller
-// did not supply Width/Height. iPhone 17 Pro at the time of writing; a small
-// over-estimate is harmless because baguette normalises coordinates.
+// defaultGestureSize is the last resort when `chrome layout` cannot answer.
+// It is NOT harmless, whatever this comment used to claim: baguette divides
+// every point by width/height (`point.x / size.width` in IndigoHIDInput.swift)
+// and multiplies back by the real panel, so a wrong size moves the gesture. On
+// iPhone Duo's cover (466×678) the centre of a 402×874 screen lands at
+// (233, 263), not (233, 339).
 const (
 	defaultGestureWidth  = 402
 	defaultGestureHeight = 874
@@ -60,6 +66,9 @@ const (
 type Driver struct {
 	exec drivers.Executor
 	path string // resolved binary path, populated by Probe
+
+	sizeMu sync.Mutex
+	sizes  map[string][2]int
 }
 
 // New constructs a Driver.
@@ -99,11 +108,66 @@ func (d *Driver) Provides(target drivers.Target) drivers.CapabilitySet {
 		drivers.CapScreenshot,
 		drivers.CapTreeSystem,
 		drivers.CapHideKeyboard,
+		drivers.CapHinge,
+		drivers.CapInputHeal,
 	)
 }
 
+// Hinge moves a foldable's hinge, or only reads it when spec names neither a
+// pose nor an angle. A move drops the cached panel size: folding lights the
+// other panel, and every later gesture has to be scaled to that one.
+func (d *Driver) Hinge(ctx context.Context, target drivers.Target, spec drivers.HingeSpec) (drivers.HingeState, error) {
+	args := []string{"hinge", "--udid", target.UDID}
+	moving := spec.Pose != "" || spec.Angle != nil
+	if spec.Pose != "" {
+		args = append(args, "--pose", spec.Pose)
+	}
+	if spec.Angle != nil {
+		args = append(args, "--angle", strconv.FormatFloat(*spec.Angle, 'f', -1, 64))
+	}
+	if spec.Duration > 0 {
+		args = append(args, "--duration", strconv.FormatFloat(spec.Duration, 'f', -1, 64))
+	}
+	res := d.exec.Run(ctx, "baguette", args...)
+	if moving {
+		d.ForgetScreenSize(target.UDID)
+	}
+	if res.Err != nil {
+		return drivers.HingeState{}, fmt.Errorf("baguette hinge: %s", firstLine(res.Stderr))
+	}
+	var out struct {
+		OK           bool     `json:"ok"`
+		AngleDegrees *float64 `json:"angleDegrees"`
+		Error        string   `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(lastJSONLine(res.Stdout)), &out); err != nil {
+		return drivers.HingeState{}, fmt.Errorf("baguette hinge: unreadable answer %q", firstLine(res.Stdout))
+	}
+	if !out.OK {
+		return drivers.HingeState{}, fmt.Errorf("baguette hinge: %s", out.Error)
+	}
+	return drivers.HingeState{Angle: out.AngleDegrees}, nil
+}
+
+// HealInput restarts backboardd so the legacy input services Device Hub's
+// dtuhidd tore down come back. It kills running apps; SpringBoard is back in
+// about four seconds.
+func (d *Driver) HealInput(ctx context.Context, target drivers.Target) error {
+	return d.runOK(ctx, "heal", []string{"heal", "--udid", target.UDID})
+}
+
+func lastJSONLine(out string) string {
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if l := strings.TrimSpace(lines[i]); strings.HasPrefix(l, "{") {
+			return l
+		}
+	}
+	return ""
+}
+
 func (d *Driver) DoubleTap(ctx context.Context, target drivers.Target, spec drivers.TapSpec) error {
-	w, h := defaultGestureSize()
+	w, h := d.gestureSize(ctx, target)
 	args := []string{
 		"double-tap", "--udid", target.UDID,
 		"--x", strconv.Itoa(spec.X), "--y", strconv.Itoa(spec.Y),
@@ -116,7 +180,7 @@ func (d *Driver) DoubleTap(ctx context.Context, target drivers.Target, spec driv
 }
 
 func (d *Driver) Drag(ctx context.Context, target drivers.Target, spec drivers.DragSpec) error {
-	w, h := defaultGestureSize()
+	w, h := d.gestureSize(ctx, target)
 	args := []string{
 		"swipe", "--udid", target.UDID,
 		"--start-x", strconv.Itoa(spec.StartX), "--start-y", strconv.Itoa(spec.StartY),
@@ -137,7 +201,7 @@ func (d *Driver) DragPath(ctx context.Context, target drivers.Target, spec drive
 	if !ok {
 		return fmt.Errorf("baguette: input executor unavailable")
 	}
-	w, h := defaultGestureSize()
+	w, h := d.gestureSize(ctx, target)
 	lines := make([]string, 0, len(spec.Points)+1)
 	for i, point := range spec.Points {
 		kind := "touch1-move"
@@ -195,17 +259,26 @@ func (d *Driver) Probe(ctx context.Context, p drivers.Probe) drivers.HealthRepor
 	}
 	d.path = path
 
-	// Sanity probe: `baguette list` enumerates simulators without touching
-	// SimulatorKit's HID path, so a clean exit is decent evidence the binary
-	// is callable. A full HID-shape test would need a real boot and is left
-	// to the first gesture call.
-	res := d.exec.Run(ctx, "baguette", "list", "--json")
+	// `--version` is both the sanity call (the binary runs) and the floor. It
+	// costs what the `list --json` it replaced cost: 140ms on a loaded machine.
+	res := d.exec.Run(ctx, "baguette", "--version")
 	if res.Err != nil {
 		return drivers.HealthReport{
 			State:  drivers.HealthDegraded,
-			Detail: "baguette installed but `list` failed: " + firstLine(res.Stderr),
-			Next:   "check https://github.com/tddworks/baguette",
+			Detail: "baguette installed but `--version` failed: " + firstLine(res.Stderr),
+			Next:   "mav setup --install baguette",
 			Tools:  map[string]string{"baguette": path},
+		}
+	}
+	got := strings.TrimSpace(res.Stdout)
+	if got != "" && got[0] >= '0' && got[0] <= '9' && !drivers.VersionAtLeast(got, MinVersion) {
+		return drivers.HealthReport{
+			State: drivers.HealthBroken,
+			Detail: fmt.Sprintf("baguette %s is installed and mav needs %s or newer: older builds "+
+				"have no `heal`, so on Xcode 27 every gesture acks once Device Hub attaches and lands "+
+				"nowhere, and no `hinge` or lit-panel input for iPhone Duo", got, MinVersion),
+			Next:  "mav setup --install baguette",
+			Tools: map[string]string{"baguette": path},
 		}
 	}
 	return drivers.HealthReport{
@@ -213,6 +286,11 @@ func (d *Driver) Probe(ctx context.Context, p drivers.Probe) drivers.HealthRepor
 		Tools: map[string]string{"baguette": path},
 	}
 }
+
+// MinVersion is the oldest baguette mav drives. 0.2.1 is the first with all of
+// `heal` (Device Hub's input shadowing), `hinge`, and taps bound to the lit
+// panel of a foldable.
+const MinVersion = "0.2.1"
 
 // Warm has no async work to do.
 func (d *Driver) Warm(_ context.Context, _ drivers.Target) <-chan error {
@@ -230,7 +308,7 @@ func (d *Driver) Tap(ctx context.Context, target drivers.Target, spec drivers.Ta
 	if !spec.Selector.IsZero() {
 		return drivers.TapResult{}, fmt.Errorf("baguette: semantic taps go through axe; received Selector=%+v", spec.Selector)
 	}
-	w, h := defaultGestureSize()
+	w, h := d.gestureSize(ctx, target)
 	args := []string{
 		"tap",
 		"--udid", target.UDID,
@@ -251,7 +329,7 @@ func (d *Driver) Tap(ctx context.Context, target drivers.Target, spec drivers.Ta
 // Swipe dispatches a single-finger swipe between (StartX, StartY) and
 // (EndX, EndY). Direction is currently a hint only; coordinates are required.
 func (d *Driver) Swipe(ctx context.Context, target drivers.Target, spec drivers.SwipeSpec) error {
-	w, h := defaultGestureSize()
+	w, h := d.gestureSize(ctx, target)
 	args := []string{
 		"swipe",
 		"--udid", target.UDID,
@@ -283,14 +361,14 @@ func (d *Driver) Pinch(ctx context.Context, target drivers.Target, spec drivers.
 	const baselineSpread = 120.0
 	startSpread := baselineSpread
 	endSpread := baselineSpread * spec.Scale
-	w, h := defaultGestureSize()
+	w, h := d.gestureSize(ctx, target)
 	args := []string{
 		"pinch",
 		"--udid", target.UDID,
 		"--cx", strconv.Itoa(spec.X),
 		"--cy", strconv.Itoa(spec.Y),
-		"--startSpread", strconv.FormatFloat(startSpread, 'f', 1, 64),
-		"--endSpread", strconv.FormatFloat(endSpread, 'f', 1, 64),
+		"--start-spread", strconv.FormatFloat(startSpread, 'f', 1, 64),
+		"--end-spread", strconv.FormatFloat(endSpread, 'f', 1, 64),
 		"--width", strconv.Itoa(w),
 		"--height", strconv.Itoa(h),
 	}
@@ -314,7 +392,7 @@ func (d *Driver) TwoFingerPan(ctx context.Context, target drivers.Target, spec d
 	y1 := spec.Y
 	x2 := spec.X + fingerOffset
 	y2 := spec.Y
-	w, h := defaultGestureSize()
+	w, h := d.gestureSize(ctx, target)
 	args := []string{
 		"pan",
 		"--udid", target.UDID,
@@ -399,7 +477,53 @@ func (d *Driver) Screenshot(ctx context.Context, target drivers.Target, spec dri
 // defaultGestureSize is the screen width/height baguette needs for every
 // gesture. We pass it on every call; if MAV ever needs per-device values we
 // can plumb them through Target.
-func defaultGestureSize() (int, int) { return defaultGestureWidth, defaultGestureHeight }
+// gestureSize is the lit panel's size in points, from the same `chrome layout`
+// baguette itself binds input to. It is read once per simulator per process:
+// on a loaded machine one read took 3.6s, because it asks devicectl for the
+// hinge. ForgetScreenSize drops it when mav moves the hinge.
+func (d *Driver) gestureSize(ctx context.Context, target drivers.Target) (int, int) {
+	d.sizeMu.Lock()
+	defer d.sizeMu.Unlock()
+	if s, ok := d.sizes[target.UDID]; ok {
+		return s[0], s[1]
+	}
+	w, h, ok := d.readScreenSize(ctx, target)
+	if !ok {
+		return defaultGestureWidth, defaultGestureHeight
+	}
+	if d.sizes == nil {
+		d.sizes = map[string][2]int{}
+	}
+	d.sizes[target.UDID] = [2]int{w, h}
+	return w, h
+}
+
+// ForgetScreenSize drops the cached panel size, for when the lit panel changes.
+func (d *Driver) ForgetScreenSize(udid string) {
+	d.sizeMu.Lock()
+	defer d.sizeMu.Unlock()
+	delete(d.sizes, udid)
+}
+
+func (d *Driver) readScreenSize(ctx context.Context, target drivers.Target) (int, int, bool) {
+	res := d.exec.Run(ctx, "baguette", "chrome", "layout", "--udid", target.UDID)
+	if res.Err != nil {
+		return 0, 0, false
+	}
+	var layout struct {
+		Screen struct {
+			Width  float64 `json:"width"`
+			Height float64 `json:"height"`
+		} `json:"screen"`
+	}
+	if err := json.Unmarshal([]byte(res.Stdout), &layout); err != nil {
+		return 0, 0, false
+	}
+	if layout.Screen.Width <= 0 || layout.Screen.Height <= 0 {
+		return 0, 0, false
+	}
+	return int(layout.Screen.Width + 0.5), int(layout.Screen.Height + 0.5), true
+}
 
 // baguetteButtonName maps the driver-neutral HardwareButton to baguette's
 // `press --button` vocabulary. baguette uses camelCase for the volume buttons

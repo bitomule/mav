@@ -109,6 +109,11 @@ func lintFlowStep(index int, step FlowStep, cfg Config) []flowLintIssue {
 		if !isFlowBinding(appearance) && appearance != "light" && appearance != "dark" {
 			add("error", "appearance_invalid", fmt.Sprintf("sim.appearance requires appearance: light|dark, got %q", appearance))
 		}
+	case "sim.hinge":
+		literal, bound := unboundParams(step.Params)
+		if problem := hingeFlowProblem(literal, bound); problem != "" {
+			add("error", "hinge_invalid", problem)
+		}
 	case "sim.language.set":
 		// A bare subtag ("fr") is not rejected by simctl -- iOS takes it and
 		// falls back to English -- so the only place it can be caught is

@@ -8,10 +8,11 @@ import (
 )
 
 type Simulator struct {
-	UDID    string
-	Name    string
-	Runtime string
-	State   string
+	UDID       string
+	Name       string
+	Runtime    string
+	State      string
+	DeviceType string
 }
 
 func ListSimulators(runner Runner) ([]Simulator, error) {
@@ -25,6 +26,7 @@ func ListSimulators(runner Runner) ([]Simulator, error) {
 			Name        string `json:"name"`
 			State       string `json:"state"`
 			IsAvailable bool   `json:"isAvailable"`
+			DeviceType  string `json:"deviceTypeIdentifier"`
 		} `json:"devices"`
 	}
 	if err := json.Unmarshal([]byte(result.Stdout), &parsed); err != nil {
@@ -37,10 +39,11 @@ func ListSimulators(runner Runner) ([]Simulator, error) {
 				continue
 			}
 			sims = append(sims, Simulator{
-				UDID:    device.UDID,
-				Name:    device.Name,
-				Runtime: runtime,
-				State:   device.State,
+				UDID:       device.UDID,
+				Name:       device.Name,
+				Runtime:    runtime,
+				State:      device.State,
+				DeviceType: device.DeviceType,
 			})
 		}
 	}

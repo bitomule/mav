@@ -48,6 +48,8 @@ const (
 	CapAppearance     Capability = "device.appearance"      // light/dark user interface style
 	CapStatusBar      Capability = "device.status_bar"      // status bar override for screenshots
 	CapSystemLanguage Capability = "device.system_language" // simulator-wide language/region, what SpringBoard renders with
+	CapHinge          Capability = "device.hinge"           // fold a foldable simulator
+	CapInputHeal      Capability = "device.input_heal"      // undo Device Hub's input shadowing
 	CapDebug          Capability = "debug.dap"
 
 	// Evidence / observation

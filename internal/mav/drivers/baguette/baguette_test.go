@@ -100,15 +100,31 @@ func TestProbeMissing(t *testing.T) {
 	}
 }
 
-func TestProbeRunsListSanity(t *testing.T) {
+func TestProbeAcceptsTheMinimumVersion(t *testing.T) {
 	exec := newFake()
+	exec.responses["baguette --version"] = drivers.ExecResult{Stdout: "0.2.1\n"}
 	d := New(exec)
 	report := d.Probe(context.Background(), exec)
 	if report.State != drivers.HealthOK {
 		t.Fatalf("expected OK, got %s (%s)", report.State, report.Detail)
 	}
-	if len(exec.calls) != 1 || exec.calls[0] != "baguette list --json" {
-		t.Fatalf("expected single `baguette list --json` call, got %v", exec.calls)
+	if len(exec.calls) != 1 {
+		t.Fatalf("expected a single `baguette --version` call, got %v", exec.calls)
+	}
+}
+
+// 0.1.97 is what this machine had when Device Hub shipped: its gestures acked
+// and landed nowhere, and it could not fold an iPhone Duo.
+func TestProbeRefusesABaguetteOlderThanTheFloor(t *testing.T) {
+	exec := newFake()
+	exec.responses["baguette --version"] = drivers.ExecResult{Stdout: "0.1.97\n"}
+	d := New(exec)
+	report := d.Probe(context.Background(), exec)
+	if report.IsHealthy() {
+		t.Fatalf("expected baguette 0.1.97 to be refused, got %s", report.State)
+	}
+	if report.Next != "mav setup --install baguette" || !strings.Contains(report.Detail, "0.2.1") {
+		t.Fatalf("expected the floor and the upgrade command, got detail=%q next=%q", report.Detail, report.Next)
 	}
 }
 
@@ -119,7 +135,7 @@ func TestTapBuildsCoordArgsWithWidthHeight(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := exec.calls[0]
+	got := exec.calls[len(exec.calls)-1]
 	for _, want := range []string{
 		"baguette tap",
 		"--udid " + simUDID,
@@ -157,7 +173,7 @@ func TestSwipeUsesTheHyphenatedEndpointFlags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := exec.calls[0]
+	got := exec.calls[len(exec.calls)-1]
 	for _, want := range []string{
 		"baguette swipe",
 		"--start-x 100 --start-y 200",
@@ -185,7 +201,7 @@ func TestDragUsesTheHyphenatedEndpointFlags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := exec.calls[0]
+	got := exec.calls[len(exec.calls)-1]
 	for _, want := range []string{
 		"baguette swipe",
 		"--start-x 100 --start-y 200",
@@ -200,7 +216,10 @@ func TestDragUsesTheHyphenatedEndpointFlags(t *testing.T) {
 	}
 }
 
-func TestPinchUsesSpreadModel(t *testing.T) {
+// The camelCase spelling this test used to pin is what baguette answers with
+// "Missing expected argument '--start-spread'": every `mav ui pinch` failed
+// with exit 64, measured on 2026-10-01 against baguette 0.1.97 and 0.2.1.
+func TestPinchUsesTheHyphenatedSpreadFlags(t *testing.T) {
 	exec := newFake()
 	d := New(exec)
 	err := d.Pinch(context.Background(), simTarget(), drivers.PinchSpec{
@@ -209,16 +228,67 @@ func TestPinchUsesSpreadModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := exec.calls[0]
+	got := exec.calls[len(exec.calls)-1]
 	for _, want := range []string{
 		"baguette pinch",
 		"--cx 200 --cy 400",
-		"--startSpread 120.0 --endSpread 240.0",
+		"--start-spread 120.0 --end-spread 240.0",
 		"--width 402 --height 874",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("expected %q in %q", want, got)
 		}
+	}
+	if strings.Contains(got, "--startSpread") || strings.Contains(got, "--endSpread") {
+		t.Errorf("the camelCase spelling baguette rejects is still being sent: %q", got)
+	}
+}
+
+const duoCoverLayout = `{"composite":{"height":715,"width":532},"identifier":"phone15","screen":{"height":678,"width":466,"x":35,"y":23}}`
+
+// baguette divides every point by width/height, so the size has to be the lit
+// panel's. iPhone Duo's cover is 466×678; sending iPhone 17 Pro's 402×874 put
+// a tap at y=339 on y=263.
+func TestGesturesUseTheLitPanelSizeFromChromeLayout(t *testing.T) {
+	exec := newFake()
+	exec.responses["baguette chrome layout --udid "+simUDID] = drivers.ExecResult{Stdout: duoCoverLayout}
+	d := New(exec)
+	if _, err := d.Tap(context.Background(), simTarget(), drivers.TapSpec{X: 233, Y: 339}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Swipe(context.Background(), simTarget(), drivers.SwipeSpec{StartX: 1, StartY: 2, EndX: 3, EndY: 4}); err != nil {
+		t.Fatal(err)
+	}
+	layouts := 0
+	for _, call := range exec.calls {
+		if strings.HasPrefix(call, "baguette chrome layout") {
+			layouts++
+			continue
+		}
+		if !strings.Contains(call, "--width 466 --height 678") {
+			t.Errorf("expected the cover's 466×678 in %q", call)
+		}
+	}
+	if layouts != 1 {
+		t.Errorf("expected one chrome layout read for two gestures, got %d", layouts)
+	}
+}
+
+func TestForgetScreenSizeReadsTheLayoutAgain(t *testing.T) {
+	exec := newFake()
+	key := "baguette chrome layout --udid " + simUDID
+	exec.responses[key] = drivers.ExecResult{Stdout: duoCoverLayout}
+	d := New(exec)
+	if _, err := d.Tap(context.Background(), simTarget(), drivers.TapSpec{X: 1, Y: 1}); err != nil {
+		t.Fatal(err)
+	}
+	exec.responses[key] = drivers.ExecResult{Stdout: `{"screen":{"height":951,"width":669}}`}
+	d.ForgetScreenSize(simUDID)
+	if _, err := d.Tap(context.Background(), simTarget(), drivers.TapSpec{X: 1, Y: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if got := exec.calls[len(exec.calls)-1]; !strings.Contains(got, "--width 669 --height 951") {
+		t.Errorf("expected the unfolded panel's 669×951 after forgetting, got %q", got)
 	}
 }
 
@@ -238,7 +308,7 @@ func TestTwoFingerPanBuildsPanArgs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := exec.calls[0]
+	got := exec.calls[len(exec.calls)-1]
 	for _, want := range []string{
 		"baguette pan",
 		"--x1 140 --y1 400",

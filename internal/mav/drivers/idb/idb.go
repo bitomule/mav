@@ -132,7 +132,54 @@ func (d *Driver) Probe(_ context.Context, p drivers.Probe) drivers.HealthReport 
 		return drivers.HealthReport{State: drivers.HealthMissing, Detail: "idb not on PATH", Next: "mav setup --install idb"}
 	}
 	d.path = path
+	if got := companionVersion(p); got != "" && !drivers.VersionAtLeast(got, MinCompanionVersion) {
+		return drivers.HealthReport{
+			State: drivers.HealthBroken,
+			Detail: fmt.Sprintf("idb_companion %s is installed and mav needs %s or newer: before 1.5.0 it "+
+				"loads SimulatorKit from Developer/Library/PrivateFrameworks, which Xcode 27 moved to "+
+				"SharedFrameworks, so every simulator tap fails with \"SimulatorKit is required for HID "+
+				"interactions\"", got, MinCompanionVersion),
+			Next:  "mav setup --install idb",
+			Tools: map[string]string{"idb": path},
+		}
+	}
 	return drivers.HealthReport{State: drivers.HealthOK, Tools: map[string]string{"idb": path}}
+}
+
+// MinCompanionVersion is the idb_companion mav drives. SimulatorKit's Xcode 27
+// location arrived in 1.5.0; 1.6.4 is the release this floor was measured on.
+const MinCompanionVersion = "1.6.4"
+
+// resolveLink is filepath.EvalSymlinks, swappable in tests.
+var resolveLink = filepath.EvalSymlinks
+
+// companionVersion reads the version out of Homebrew's Cellar path, e.g.
+// /opt/homebrew/Cellar/idb-companion/1.1.8/bin/idb_companion. It runs nothing:
+// `idb_companion --version` prints only a build date and took 1.25s, and this
+// probe runs on every coordinate tap. An install outside Homebrew reads as ""
+// and is not refused; a version we cannot read is not one we can refuse on.
+func companionVersion(p drivers.Probe) string {
+	path, err := p.LookPath("idb_companion")
+	if err != nil {
+		return ""
+	}
+	real, err := resolveLink(path)
+	if err != nil {
+		return ""
+	}
+	const marker = "/idb-companion/"
+	i := strings.LastIndex(real, marker)
+	if i < 0 {
+		return ""
+	}
+	rest := real[i+len(marker):]
+	if j := strings.IndexByte(rest, '/'); j >= 0 {
+		rest = rest[:j]
+	}
+	if rest == "" || rest[0] < '0' || rest[0] > '9' {
+		return ""
+	}
+	return rest
 }
 
 func (d *Driver) Warm(_ context.Context, _ drivers.Target) <-chan error {

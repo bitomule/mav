@@ -1,6 +1,10 @@
 package mav
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/bitomule/mav/internal/mav/drivers"
+)
 
 // The floor is what makes removing mav's own off-menu check safe rather than
 // merely tidy, so it is pinned here: get the comparison wrong in the permissive
@@ -24,7 +28,7 @@ func TestTheFloorRefusesAJeviOlderThanTheCheckItReliesOn(t *testing.T) {
 		// way round.
 		{"0.4.0-rc1", true, "a pre-release of the floor still carries the fix"},
 	} {
-		if got := versionAtLeast(tc.installed, jevMinVersion); got != tc.allowed {
+		if got := drivers.VersionAtLeast(tc.installed, jevMinVersion); got != tc.allowed {
 			t.Errorf("jevi %s: allowed=%v, want %v (%s)", tc.installed, got, tc.allowed, tc.why)
 		}
 	}

@@ -179,6 +179,8 @@ type flowStepPayload struct {
 	Latitude       string          `yaml:"latitude"`
 	Longitude      string          `yaml:"longitude"`
 	Appearance     string          `yaml:"appearance"`
+	Pose           string          `yaml:"pose"`
+	Force          string          `yaml:"force"`
 	Preset         string          `yaml:"preset"`
 	Time           string          `yaml:"time"`
 	DataNetwork    string          `yaml:"dataNetwork"`
@@ -373,6 +375,8 @@ func parseFlowStepNode(node yaml.Node) (FlowStep, error) {
 	put("latitude", payload.Latitude)
 	put("longitude", payload.Longitude)
 	put("appearance", payload.Appearance)
+	put("pose", payload.Pose)
+	put("force", payload.Force)
 	put("preset", payload.Preset)
 	put("time", payload.Time)
 	put("dataNetwork", payload.DataNetwork)
@@ -836,7 +840,7 @@ func isSupportedFlowAction(action string) bool {
 	case "open", "goto", "when", "whileNotVisible", "go", "tree", "tap", "type", "erase", "hideKeyboard", "swipe", "longPress", "pinch", "rotate", "twoFingerPan", "actions",
 		"doubleTap", "drag", "dragPath", "toggle", "press",
 		"app.list", "app.kill", "openURL", "location.set", "location.reset", "clipboard.copy", "clipboard.read",
-		"sim.appearance", "sim.statusbar.set", "sim.statusbar.clear", "sim.language.set",
+		"sim.appearance", "sim.statusbar.set", "sim.statusbar.clear", "sim.language.set", "sim.hinge", "sim.heal",
 		"time.freeze", "time.travel", "time.scale", "time.status", "time.reset",
 		"debug.attach", "debug.wait", "debug.break", "debug.eval", "debug.step", "debug.detach",
 		"delay", "sleep", "wait", "assert", "assertCount", "waitUntil", "scrollUntil", "capture", "extract", "verify",
