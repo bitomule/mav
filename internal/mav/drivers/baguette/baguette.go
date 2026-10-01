@@ -108,7 +108,62 @@ func (d *Driver) Provides(target drivers.Target) drivers.CapabilitySet {
 		drivers.CapScreenshot,
 		drivers.CapTreeSystem,
 		drivers.CapHideKeyboard,
+		drivers.CapHinge,
+		drivers.CapInputHeal,
 	)
+}
+
+// Hinge moves a foldable's hinge, or only reads it when spec names neither a
+// pose nor an angle. A move drops the cached panel size: folding lights the
+// other panel, and every later gesture has to be scaled to that one.
+func (d *Driver) Hinge(ctx context.Context, target drivers.Target, spec drivers.HingeSpec) (drivers.HingeState, error) {
+	args := []string{"hinge", "--udid", target.UDID}
+	moving := spec.Pose != "" || spec.Angle != nil
+	if spec.Pose != "" {
+		args = append(args, "--pose", spec.Pose)
+	}
+	if spec.Angle != nil {
+		args = append(args, "--angle", strconv.FormatFloat(*spec.Angle, 'f', -1, 64))
+	}
+	if spec.Duration > 0 {
+		args = append(args, "--duration", strconv.FormatFloat(spec.Duration, 'f', -1, 64))
+	}
+	res := d.exec.Run(ctx, "baguette", args...)
+	if moving {
+		d.ForgetScreenSize(target.UDID)
+	}
+	if res.Err != nil {
+		return drivers.HingeState{}, fmt.Errorf("baguette hinge: %s", firstLine(res.Stderr))
+	}
+	var out struct {
+		OK           bool     `json:"ok"`
+		AngleDegrees *float64 `json:"angleDegrees"`
+		Error        string   `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(lastJSONLine(res.Stdout)), &out); err != nil {
+		return drivers.HingeState{}, fmt.Errorf("baguette hinge: unreadable answer %q", firstLine(res.Stdout))
+	}
+	if !out.OK {
+		return drivers.HingeState{}, fmt.Errorf("baguette hinge: %s", out.Error)
+	}
+	return drivers.HingeState{Angle: out.AngleDegrees}, nil
+}
+
+// HealInput restarts backboardd so the legacy input services Device Hub's
+// dtuhidd tore down come back. It kills running apps; SpringBoard is back in
+// about four seconds.
+func (d *Driver) HealInput(ctx context.Context, target drivers.Target) error {
+	return d.runOK(ctx, "heal", []string{"heal", "--udid", target.UDID})
+}
+
+func lastJSONLine(out string) string {
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if l := strings.TrimSpace(lines[i]); strings.HasPrefix(l, "{") {
+			return l
+		}
+	}
+	return ""
 }
 
 func (d *Driver) DoubleTap(ctx context.Context, target drivers.Target, spec drivers.TapSpec) error {

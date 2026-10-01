@@ -442,7 +442,13 @@ With --install it installs tools and configures nothing.
   mav sim statusbar clear
   mav sim language set --language fr-FR [--locale fr_FR]
   mav sim language get
+  mav sim hinge [closed|open|flat] [--angle DEG] [--duration S]
+  mav sim heal [--force]
 `
+	case "sim hinge":
+		return simHingeUsage + "\n"
+	case "sim heal":
+		return simHealUsage + "\n"
 	case "sim list":
 		return "Usage: mav sim list\n\nLists available iOS simulators.\n"
 	case "sim select":
@@ -1266,9 +1272,13 @@ func displayPromptDefault(value string) string {
 
 func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 	if len(args) == 0 {
-		return Fail("sim_command_missing", map[string]string{"usage": "mav sim list|select|boot|appearance|statusbar|language"}).Write(c.Stdout)
+		return Fail("sim_command_missing", map[string]string{"usage": "mav sim list|select|boot|appearance|statusbar|language|hinge|heal"}).Write(c.Stdout)
 	}
 	switch args[0] {
+	case "hinge":
+		return c.simHinge(ctx, args[1:])
+	case "heal":
+		return c.simHeal(ctx, args[1:])
 	case "appearance":
 		return c.simAppearance(ctx, args[1:])
 	case "statusbar":
@@ -1392,7 +1402,21 @@ func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 			clearDeclaredOrientation(c.Root, cfg.SimulatorUDID)
 			clearScreenCache(c.Root, cfg.SimulatorUDID)
 		}
-		return c.OK("sim.boot", map[string]string{"udid": cfg.SimulatorUDID, "name": cfg.SimulatorName}).Write(c.Stdout)
+		fields := map[string]string{"udid": cfg.SimulatorUDID, "name": cfg.SimulatorName}
+		// Device Hub attaches to every booted simulator and its dtuhidd tears
+		// down the input services every driver uses: taps ack and land
+		// nowhere. Healing restarts SpringBoard, which only costs nothing
+		// here, before any app is running -- so boot does it, and a gesture
+		// never does.
+		if inputShadowed(ctx, c.Runner, cfg.SimulatorUDID) == shadowYes {
+			if _, healErr := c.healInput(ctx, target); healErr != nil {
+				fields["input"] = "shadowed"
+				fields["next"] = "mav sim heal: Device Hub shadows this simulator's input and taps will land nowhere"
+			} else {
+				fields["input"] = "healed"
+			}
+		}
+		return c.OK("sim.boot", fields).Write(c.Stdout)
 	default:
 		return Fail("sim_unknown_command", map[string]string{"command": args[0]}).Write(c.Stdout)
 	}
@@ -2927,6 +2951,9 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		fields["driver"] = driver.ID()
 		if verify {
 			fields["verified"] = c.verifyTapChangedSomething(ctx, cfg, before)
+			if fields["verified"] == "unchanged" {
+				c.shadowedInputNext(ctx, cfg, fields)
+			}
 		}
 		c.appendCurrentCommand(command, result)
 		return c.writeFastPathResult(ctx, cfg, args, "ui.tap", fields)
@@ -3052,6 +3079,7 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			// switching to a selector, which does work.
 			if effect == "unchanged" {
 				coordFields["next"] = "the driver reported the tap and the screen did not change; on a simulator the coordinate path can swallow it silently — tap the element by selector (`mav ui tap --text ...`) rather than by point"
+				c.shadowedInputNext(ctx, cfg, coordFields)
 			}
 		} else {
 			// `ok` on this line means the driver accepted the point, and on
@@ -3922,6 +3950,7 @@ func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args [
 		fields["verified"] = effect
 		if effect == "unchanged" {
 			fields["next"] = "the driver reported the swipe and the screen did not change; the gesture did not reach the app — do not treat this as 'already at the end of the list'"
+			c.shadowedInputNext(ctx, cfg, fields)
 		}
 	} else {
 		fields["delivered"] = "unconfirmed"
@@ -6374,6 +6403,16 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 	case "location.reset":
 		err := c.withStdout(io.Discard).location(ctx, GlobalOptions{}, []string{"reset"})
 		return map[string]string{}, outputErr(err, "location_reset_failed")
+	case "sim.hinge":
+		err := c.withStdout(io.Discard).sim(ctx, GlobalOptions{}, append([]string{"hinge"}, hingeFlowArgs(step.Params)...))
+		return copyParams(step.Params), outputErr(err, "hinge_failed")
+	case "sim.heal":
+		args := []string{"heal"}
+		if step.Params["force"] == "true" {
+			args = append(args, "--force")
+		}
+		err := c.withStdout(io.Discard).sim(ctx, GlobalOptions{}, args)
+		return copyParams(step.Params), outputErr(err, "heal_failed")
 	case "sim.appearance":
 		err := c.withStdout(io.Discard).sim(ctx, GlobalOptions{}, []string{"appearance", step.Params["appearance"]})
 		return copyParams(step.Params), outputErr(err, "appearance_set_failed")

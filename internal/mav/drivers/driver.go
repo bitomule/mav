@@ -98,6 +98,19 @@ type EraseDriver interface {
 	Erase(ctx context.Context, target Target, spec TextSpec) error
 }
 
+// HingeDriver folds a foldable simulator (iPhone Duo) and reads its hinge back.
+type HingeDriver interface {
+	Driver
+	Hinge(ctx context.Context, target Target, spec HingeSpec) (HingeState, error)
+}
+
+// InputHealDriver repairs a simulator whose input Xcode 27's Device Hub has
+// shadowed: gestures ack and land nowhere until backboardd is restarted.
+type InputHealDriver interface {
+	Driver
+	HealInput(ctx context.Context, target Target) error
+}
+
 type ScreenshotDriver interface {
 	Driver
 	Screenshot(ctx context.Context, target Target, spec ScreenshotSpec) error
