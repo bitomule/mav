@@ -112,7 +112,7 @@ func (c CLI) simHinge(ctx context.Context, args []string) error {
 	}
 	driver, _, routeErr := c.router().Route(ctx, drivers.CapHinge, target, "")
 	if routeErr != nil {
-		return Fail("hinge_unsupported", map[string]string{"stderr": firstLine(routeErr.Error()), "next": "brew upgrade baguette"}).Write(c.Stdout)
+		return Fail("hinge_unsupported", map[string]string{"stderr": firstLine(routeErr.Error()), "next": "mav setup --install baguette"}).Write(c.Stdout)
 	}
 	hinge, ok := driver.(drivers.HingeDriver)
 	if !ok {
@@ -154,7 +154,7 @@ func (c CLI) simHeal(ctx context.Context, args []string) error {
 	}
 	driver, healErr := c.healInput(ctx, target)
 	if healErr != nil {
-		return Fail("heal_failed", map[string]string{"stderr": firstLine(healErr.Error()), "next": "brew upgrade baguette"}).Write(c.Stdout)
+		return Fail("heal_failed", map[string]string{"stderr": firstLine(healErr.Error()), "next": "mav setup --install baguette"}).Write(c.Stdout)
 	}
 	clearScreenCache(c.Root, target.UDID)
 	return c.OK("sim.heal", map[string]string{

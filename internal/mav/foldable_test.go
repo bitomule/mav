@@ -253,3 +253,35 @@ func TestFlowLintRefusesAHingeStepTheCommandWouldRefuse(t *testing.T) {
 		}
 	}
 }
+
+// One command has to leave a fresh Mac, and one with 2022's idb, on the
+// versions the probes demand: Homebrew 7 refuses third-party taps until they
+// are trusted, `brew install` upgrades an outdated formula, and pipx needs
+// --force to replace an installed fb-idb.
+func TestSetupInstallDepsTrustsEachTapAndUpgrades(t *testing.T) {
+	root := t.TempDir()
+	if err := SaveConfig(root, DefaultConfig(root)); err != nil {
+		t.Fatal(err)
+	}
+	runner := &sequenceRecordingRunner{tools: map[string]bool{"brew": true, "pipx": true, "python3.12": true}}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"setup", "--install", "deps"}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"brew trust --tap cameroncooke/axe",
+		"brew install cameroncooke/axe/axe",
+		"pipx install --force --python python3.12 fb-idb",
+		"brew trust --tap facebook/fb",
+		"brew install facebook/fb/idb-companion",
+		"brew trust --tap tddworks/tap",
+		"brew install tddworks/tap/baguette",
+	}
+	if strings.Join(runner.commands, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("commands:\n%s\nwant:\n%s", strings.Join(runner.commands, "\n"), strings.Join(want, "\n"))
+	}
+	if !strings.Contains(out.String(), "installed=axe,idb,baguette") {
+		t.Fatalf("output=%q", out.String())
+	}
+}

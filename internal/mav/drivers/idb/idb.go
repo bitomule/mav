@@ -139,7 +139,7 @@ func (d *Driver) Probe(_ context.Context, p drivers.Probe) drivers.HealthReport 
 				"loads SimulatorKit from Developer/Library/PrivateFrameworks, which Xcode 27 moved to "+
 				"SharedFrameworks, so every simulator tap fails with \"SimulatorKit is required for HID "+
 				"interactions\"", got, MinCompanionVersion),
-			Next:  "brew trust facebook/fb && brew upgrade idb-companion",
+			Next:  "mav setup --install idb",
 			Tools: map[string]string{"idb": path},
 		}
 	}

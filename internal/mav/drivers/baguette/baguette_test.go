@@ -123,7 +123,7 @@ func TestProbeRefusesABaguetteOlderThanTheFloor(t *testing.T) {
 	if report.IsHealthy() {
 		t.Fatalf("expected baguette 0.1.97 to be refused, got %s", report.State)
 	}
-	if report.Next != "brew upgrade baguette" || !strings.Contains(report.Detail, "0.2.1") {
+	if report.Next != "mav setup --install baguette" || !strings.Contains(report.Detail, "0.2.1") {
 		t.Fatalf("expected the floor and the upgrade command, got detail=%q next=%q", report.Detail, report.Next)
 	}
 }

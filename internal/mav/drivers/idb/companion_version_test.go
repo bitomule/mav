@@ -24,7 +24,7 @@ func TestProbeRefusesACompanionOlderThanTheFloor(t *testing.T) {
 	if report.IsHealthy() {
 		t.Fatalf("expected idb_companion 1.1.8 to be refused, got %s", report.State)
 	}
-	if !strings.Contains(report.Next, "brew upgrade idb-companion") || !strings.Contains(report.Detail, "1.6.4") {
+	if !strings.Contains(report.Next, "mav setup --install idb") || !strings.Contains(report.Detail, "1.6.4") {
 		t.Fatalf("expected the floor and the upgrade command, got detail=%q next=%q", report.Detail, report.Next)
 	}
 	if len(exec.commands) != 0 {

@@ -266,7 +266,7 @@ func (d *Driver) Probe(ctx context.Context, p drivers.Probe) drivers.HealthRepor
 		return drivers.HealthReport{
 			State:  drivers.HealthDegraded,
 			Detail: "baguette installed but `--version` failed: " + firstLine(res.Stderr),
-			Next:   "brew upgrade baguette",
+			Next:   "mav setup --install baguette",
 			Tools:  map[string]string{"baguette": path},
 		}
 	}
@@ -277,7 +277,7 @@ func (d *Driver) Probe(ctx context.Context, p drivers.Probe) drivers.HealthRepor
 			Detail: fmt.Sprintf("baguette %s is installed and mav needs %s or newer: older builds "+
 				"have no `heal`, so on Xcode 27 every gesture acks once Device Hub attaches and lands "+
 				"nowhere, and no `hinge` or lit-panel input for iPhone Duo", got, MinVersion),
-			Next:  "brew upgrade baguette",
+			Next:  "mav setup --install baguette",
 			Tools: map[string]string{"baguette": path},
 		}
 	}

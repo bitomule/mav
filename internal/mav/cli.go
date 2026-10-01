@@ -891,7 +891,14 @@ func (c CLI) setup(ctx context.Context, opts GlobalOptions, args []string) error
 	if install == "" {
 		return c.setupProject(opts, args)
 	}
-	tools := strings.Fields(install)
+	var tools []string
+	for _, tool := range strings.Fields(install) {
+		if tool == "deps" {
+			tools = append(tools, setupCoreDeps...)
+			continue
+		}
+		tools = append(tools, tool)
+	}
 	if len(tools) == 0 {
 		return Fail("setup_install_missing", nil).Write(c.Stdout)
 	}
@@ -964,6 +971,7 @@ func (c CLI) setup(ctx context.Context, opts GlobalOptions, args []string) error
 		if !ok {
 			return Fail("setup_unknown_tool", map[string]string{"tool": tool}).Write(c.Stdout)
 		}
+		c.trustBrewTap(ctx, opts, cmd)
 		if opts.Verbose {
 			fmt.Fprintln(c.Stderr, strings.Join(cmd, " "))
 		}
@@ -1018,6 +1026,31 @@ func (c CLI) setupLLDBDAP(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
+// setupCoreDeps is what `mav setup --install deps` installs: the three tools
+// every simulator and device command routes through.
+var setupCoreDeps = []string{"axe", "idb", "baguette"}
+
+// trustBrewTap lets Homebrew 7 load a formula from a third-party tap, which it
+// refuses until the tap is trusted ("Refusing to load formula ... from
+// untrusted tap"). Asking mav to install the tool is the consent. An older
+// brew without `trust` fails here harmlessly and loads the tap as it always
+// did. `brew install` itself upgrades a formula that is installed but
+// outdated, which is how a rerun lifts an old install over mav's floors.
+func (c CLI) trustBrewTap(ctx context.Context, opts GlobalOptions, cmd []string) {
+	if len(cmd) < 3 || cmd[0] != "brew" || cmd[1] != "install" {
+		return
+	}
+	parts := strings.Split(cmd[2], "/")
+	if len(parts) != 3 {
+		return
+	}
+	trust := []string{"brew", "trust", "--tap", parts[0] + "/" + parts[1]}
+	if opts.Verbose {
+		fmt.Fprintln(c.Stderr, strings.Join(trust, " "))
+	}
+	c.Runner.Run(ctx, trust[0], trust[1:]...)
+}
+
 func (c CLI) setupIDB(ctx context.Context, opts GlobalOptions) (bool, error) {
 	if _, err := c.Runner.LookPath("pipx"); err == nil {
 		python := ""
@@ -1029,7 +1062,10 @@ func (c CLI) setupIDB(ctx context.Context, opts GlobalOptions) (bool, error) {
 		if python == "" {
 			return false, Fail("setup_failed", map[string]string{"tool": "idb", "stderr": "supported Python missing", "next": "install Python 3.12, then rerun mav setup --install idb"}).Write(c.Stdout)
 		}
-		cmd := []string{"pipx", "install", "--python", python, "fb-idb"}
+		// --force reinstalls the latest fb-idb over an old one; a plain install
+		// of an installed package is a no-op, which left 1.1.7 clients talking
+		// to a 1.6.4 companion.
+		cmd := []string{"pipx", "install", "--force", "--python", python, "fb-idb"}
 		if opts.Verbose {
 			fmt.Fprintln(c.Stderr, strings.Join(cmd, " "))
 		}
@@ -1038,7 +1074,10 @@ func (c CLI) setupIDB(ctx context.Context, opts GlobalOptions) (bool, error) {
 			return false, Fail("setup_failed", map[string]string{"tool": "idb", "stderr": firstLine(result.Stderr), "next": "pipx install --python python3.12 fb-idb"}).Write(c.Stdout)
 		}
 	}
-	cmd := []string{"brew", "install", "idb-companion"}
+	// Fully qualified: idb-companion lives in facebook/fb, not homebrew-core,
+	// so the bare name only ever worked where that tap was already added.
+	cmd := []string{"brew", "install", "facebook/fb/idb-companion"}
+	c.trustBrewTap(ctx, opts, cmd)
 	if opts.Verbose {
 		fmt.Fprintln(c.Stderr, strings.Join(cmd, " "))
 	}

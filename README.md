@@ -352,10 +352,21 @@ decided and what was deliberately left out.
   version floor is `axe tap --tap-style`, which MAV passes on every semantic
   tap: AXe's default style drops taps under load and reports success anyway
   (see [Semantic taps](#semantic-taps-use-physical-touch)).
-- idb, for coordinate taps and device/simulator fallback operations.
-- Baguette, for simulator multitouch (pinch, two-finger pan), the
-  SpringBoard / system UI tree, hardware buttons, and hideKeyboard.
+- idb **1.6.4 or newer** (client and `idb_companion`), for coordinate taps,
+  device/simulator fallback operations, and taps on an open iPhone Duo. Before
+  1.5.0 the companion looks for SimulatorKit where Xcode 27 no longer keeps it,
+  and every idb tap fails.
+- Baguette **0.2.1 or newer**, for simulator multitouch (pinch, two-finger pan),
+  the SpringBoard / system UI tree, hardware buttons, hideKeyboard, healing
+  Device Hub's input shadowing, and folding iPhone Duo.
   Sim-only — device multitouch is intentionally unsupported.
+
+A driver older than its floor is not used, and `mav doctor` names the command
+that fixes it. All three install, or upgrade, in one step:
+
+```bash
+mav setup --install deps
+```
 - cua-driver, for macOS targets: accessibility tree, window capture, taps, and
   typing. Install with `mav setup --install cua-driver`.
 - axcli, for macOS input into accessory windows that cua-driver's `list_windows`
@@ -394,12 +405,16 @@ Existing explicit choices in `.mav/config.yaml` are preserved. Use
 `mav setup --non-interactive` for CI/scripts.
 
 ```bash
-mav setup --install axe idb baguette
+mav setup --install deps            # the same as: axe idb baguette
 ```
 
-`mav setup --install idb` prefers pipx with Python 3.12/3.13 for `fb-idb` and
-uses Homebrew for `idb-companion`. AXe and Baguette are installed via Homebrew
-(`cameroncooke/axe/axe` and `tddworks/baguette/baguette`).
+`mav setup --install idb` installs `fb-idb` with pipx (Python 3.12/3.13),
+replacing an older one, and `facebook/fb/idb-companion` with Homebrew. AXe and
+Baguette come from Homebrew (`cameroncooke/axe/axe` and `tddworks/tap/baguette`).
+Homebrew 7 refuses formulae from third-party taps until they are trusted, so
+setup runs `brew trust --tap` for each tap first; asking mav to install the tool
+is the consent. `brew install` upgrades a formula that is installed but outdated,
+so rerunning setup is how an old install gets over the floors.
 `mav setup --install cua-driver` runs the upstream install script
 (`curl -fsSL https://cua.ai/driver/install.sh | bash`); the binary it installs lives
 inside `/Applications/CuaDriver.app`. axcli comes from `bitomule/tap/axcli`.
@@ -410,6 +425,7 @@ With Homebrew:
 
 ```bash
 brew install bitomule/tap/mav
+mav setup --install deps            # AXe, idb and baguette at the versions mav needs
 ```
 
 Install the MAV skill globally with Vercel's Skills CLI:
@@ -1002,6 +1018,8 @@ mav sim statusbar set --preset appstore
 mav sim statusbar clear
 mav sim language get
 mav sim language set --language fr-FR
+mav sim hinge open
+mav sim heal
 ```
 
 You can also pass simulator selection flags to `mav open`:
@@ -1009,6 +1027,58 @@ You can also pass simulator selection flags to `mav open`:
 ```bash
 mav open --device "iPhone 17 Pro Max" --ios 26 --locale es_ES --language es
 ```
+
+### Xcode 27: Device Hub
+
+Xcode 27 replaced Simulator.app with Device Hub, which attaches its own input
+daemon to every booted simulator. From then on the iOS 27 runtime drops the
+input every driver uses: taps, swipes and button presses report success and
+reach nothing. `mav sim boot` repairs it unasked, because nothing is running
+yet. For a simulator booted some other way, a `--verify` that comes back
+`unchanged` says `input=shadowed`, and the repair is:
+
+```bash
+mav sim heal          # restarts SpringBoard: relaunch the app afterwards
+```
+
+Relaunching Device Hub shadows the simulator again.
+
+### iPhone Duo
+
+Xcode 27.1's foldable simulator has two panels: a 466×678 cover, lit while
+folded, and a 669×951 inner panel, lit once open, where SpringBoard turns
+landscape. Fold it with mav:
+
+```bash
+mav sim hinge open    # 130°, Device Hub's book pose
+mav sim hinge flat    # 180°
+mav sim hinge closed  # 0°, the cover
+mav sim hinge --angle 95 --duration 1.2
+mav sim hinge         # read the angle; "unknown" for a while after a heal
+```
+
+The same in a flow:
+
+```yaml
+- sim.hinge: { pose: open }
+- sim.hinge: { angle: "95" }
+- sim.heal: {}
+```
+
+Open, the cover is dark and only idb reaches the inner panel: AXe and baguette
+send to the cover's digitizer and report success. So once `mav sim hinge` has
+unfolded the device, taps (by point and by selector) go through idb, and
+`mav capture` shoots the inner panel instead of a black PNG. Folded, the Duo
+behaves like any iPhone.
+
+mav routes from the pose it applied, because nothing else reports which panel
+is lit: with the Duo flat, `devicectl` still marks the cover active and
+baguette reads the hinge as null. **Fold it with `mav sim hinge`, not from
+Device Hub's window**, or mav keeps routing to the panel it last lit.
+
+Book, laptop and tent poses combine an angle with how the device is held in
+space, and no CLI can turn the device in space yet; they are reachable only as
+an angle.
 
 ### App Store screenshots
 

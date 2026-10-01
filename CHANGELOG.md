@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.32.0
+
+**mav works with Xcode 27's Device Hub and on iPhone Duo, open or folded.**
+
+Xcode 27 replaced Simulator.app with Device Hub, and Device Hub attaches its own
+input daemon to every booted simulator. From then on the iOS 27 runtime drops
+the input every driver uses: taps, swipes and button presses report success and
+reach nothing. `mav sim boot` now repairs that unasked, and `mav sim heal` does
+it on demand. A `--verify` that comes back `unchanged` on a shadowed simulator
+says `input=shadowed` instead of suggesting a selector that would fail the same
+way.
+
+iPhone Duo folds. `mav sim hinge closed|open|flat|--angle N` folds it, and
+`sim.hinge` / `sim.heal` are flow steps. Open, the cover is dark and AXe and
+baguette still send to it: measured on iPhone Duo / iOS 27.1 from a clean launch
+each time, they delivered 0 of 4 while reporting success, and idb 1.6.4 2 of 2.
+So once mav has unfolded the device, taps by point and by selector go through
+idb, and `mav capture` shoots the inner panel; v0.31.0's capture of an open Duo
+was a black PNG.
+
+**Drivers have version floors, and one command meets them.** baguette 0.2.1 (the
+first with heal, hinge and lit-panel input) and idb 1.6.4 (before 1.5.0 its
+companion loads SimulatorKit from where Xcode 27 no longer keeps it, and every
+idb tap failed). A driver below its floor is not used and `mav doctor` names the
+fix. `mav setup --install deps` installs or upgrades AXe, idb and baguette:
+it trusts each third-party tap first, which Homebrew 7 requires, and replaces
+an old fb-idb client instead of skipping it.
+
+Also fixed: `mav ui pinch` sent `--startSpread`, which baguette rejects, so
+every pinch exited 64; and baguette gestures carried iPhone 17 Pro's 402×874
+on every device, which moved them on any other screen.
+
 ## v0.31.0
 
 **`mav flow lint` stopped leasing a simulator to read a YAML file.**
