@@ -2909,7 +2909,7 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		// element is read from the tree, which does describe the inner panel,
 		// and its centre goes out through the coordinate path below.
 		if c.foldableOpen(cfg) && routerPrefer(prefer) == "" {
-			matched, matchErr := c.resolveSelector(ctx, cfg, selector, prefer)
+			matched, matchErr := c.resolveOnOpenFoldable(ctx, cfg, selector, prefer)
 			if matchErr != nil {
 				return selectorFail(selector, matched, matchErr).Write(c.Stdout)
 			}

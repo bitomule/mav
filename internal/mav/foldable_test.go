@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -182,6 +183,48 @@ func TestAnOpenFoldableTapsATextThroughIdbAtTheElementsCentre(t *testing.T) {
 	}
 	if containsCall(runner.commands, "axe tap --tap-style physical --udid SIM --label") {
 		t.Fatalf("the label tap that lands on the cover was still sent: %v", runner.commands)
+	}
+}
+
+func treeWith(children ...string) string {
+	return `[{"AXLabel":"Ajustes","type":"Application","AXFrame":"{{0, 0}, {669, 951}}","children":[` + strings.Join(children, ",") + `]}]`
+}
+
+func element(label, role string, x, y, w, h int) string {
+	return `{"AXLabel":"` + label + `","type":"` + role + `","role":"AX` + role + `","AXFrame":"{{` +
+		strconv.Itoa(x) + `, ` + strconv.Itoa(y) + `}, {` + strconv.Itoa(w) + `, ` + strconv.Itoa(h) + `}}"}`
+}
+
+// Settings' sidebar row matches "Accesibilidad" twice: the button and its own
+// label inside it. That is one control; measured on an open Duo the strict
+// resolver refused it as ambiguous and the tap never went out.
+func TestAnOpenFoldableResolvesALabelInsideItsOwnButton(t *testing.T) {
+	root, runner := foldableRoot(t)
+	runner.tools["axe"] = true
+	runner.tools["idb"] = true
+	runner.out["axe describe-ui --udid SIM"] = treeWith(
+		element("Accesibilidad", "Button", 20, 270, 280, 36),
+		element("Accesibilidad", "StaticText", 60, 278, 120, 20),
+	)
+	writeDeclaredHinge(root, "SIM", 180)
+	out := runFoldable(t, root, runner, "ui", "tap", "--text", "Accesibilidad")
+	if !containsCall(runner.commands, "idb ui tap 160 288 --udid SIM") {
+		t.Fatalf("output=%q commands=%v", out, runner.commands)
+	}
+}
+
+func TestAnOpenFoldableStillRefusesTwoSeparateMatches(t *testing.T) {
+	root, runner := foldableRoot(t)
+	runner.tools["axe"] = true
+	runner.tools["idb"] = true
+	runner.out["axe describe-ui --udid SIM"] = treeWith(
+		element("Accesibilidad", "Button", 20, 270, 280, 36),
+		element("Accesibilidad", "Button", 360, 600, 280, 36),
+	)
+	writeDeclaredHinge(root, "SIM", 180)
+	out := runFoldable(t, root, runner, "ui", "tap", "--text", "Accesibilidad")
+	if !strings.Contains(out, "selector_ambiguous") || containsCall(runner.commands, "idb ui tap") {
+		t.Fatalf("two separate rows must stay ambiguous: output=%q commands=%v", out, runner.commands)
 	}
 }
 

@@ -156,6 +156,39 @@ func (c CLI) foldableOpen(cfg Config) bool {
 	return ok && angle >= hingePanelSwapDegrees
 }
 
+// resolveOnOpenFoldable resolves a simple selector the way `axe tap --label`
+// would have, for a tap that has to go out as a point. Settings' sidebar row
+// "Accesibilidad" matches twice -- the button and its own label inside it --
+// which is one control, not an ambiguity; measured on an open Duo, the strict
+// resolver refused it with selector_ambiguous. Matches that all sit inside the
+// first one's frame resolve to it; anything else is still ambiguous.
+func (c CLI) resolveOnOpenFoldable(ctx context.Context, cfg Config, selector Selector, prefer string) (Element, error) {
+	matched, err := c.resolveSelector(ctx, cfg, selector, prefer)
+	var ambiguous *ambiguousSelectorError
+	if !errors.As(err, &ambiguous) {
+		return matched, err
+	}
+	described, treeErr := c.describeUITree(ctx, cfg, prefer, false)
+	if treeErr != nil || described.Result.Err != nil {
+		return matched, err
+	}
+	matches, matchErr := MatchElements(ExtractElements(described.Result.Stdout), selector)
+	if matchErr != nil || len(matches) == 0 {
+		return matched, err
+	}
+	fx, fy, fw, fh, ok := parseElementFrame(matches[0].Frame)
+	if !ok {
+		return matched, err
+	}
+	for _, m := range matches[1:] {
+		x, y, ok := TapPoint(m)
+		if !ok || float64(x) < fx || float64(x) > fx+fw || float64(y) < fy || float64(y) > fy+fh {
+			return matched, err
+		}
+	}
+	return matches[0], nil
+}
+
 // litFraction samples how much of a capture is not black. A panel that is off
 // is a framebuffer of zeros.
 func litFraction(path string) float64 {
