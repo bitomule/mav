@@ -2905,6 +2905,19 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			return c.uiTap(ctx, opts, cfg, append(onlyFastPathArgs(args),
 				"--x", strconv.Itoa(int(mx+mw/2)), "--y", strconv.Itoa(int(my+mh/2))))
 		}
+		// On an open foldable the AXe tap lands on the dark cover, so the
+		// element is read from the tree, which does describe the inner panel,
+		// and its centre goes out through the coordinate path below.
+		if c.foldableOpen(cfg) && routerPrefer(prefer) == "" {
+			matched, matchErr := c.resolveSelector(ctx, cfg, selector, prefer)
+			if matchErr != nil {
+				return selectorFail(selector, matched, matchErr).Write(c.Stdout)
+			}
+			if x, y, ok := TapPoint(matched); ok {
+				return c.uiTap(ctx, opts, cfg, append(onlyFastPathArgs(args),
+					"--x", strconv.Itoa(x), "--y", strconv.Itoa(y)))
+			}
+		}
 		target := targetFromConfig(cfg)
 		driver, _, err := c.router().Route(ctx, drivers.CapSemanticTap, target, routerPrefer(prefer))
 		if err != nil {
@@ -2995,6 +3008,13 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		coordPrefer := "axe"
 		if targetKind(cfg) == drivers.KindMac {
 			coordPrefer = ""
+		}
+		// Measured on iPhone Duo / iOS 27.1, open flat, tapping Settings'
+		// Accessibility row from a clean launch: idb 1.6.4 navigated 2 of 2;
+		// AXe (physical), AXe by label and baguette 0.2.1 delivered 0 of 4,
+		// all reporting success. They send to the cover's digitizer.
+		if c.foldableOpen(cfg) {
+			coordPrefer = "idb"
 		}
 		coordMissing := func() map[string]string {
 			if targetKind(cfg) == drivers.KindMac {

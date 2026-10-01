@@ -743,6 +743,35 @@ In YAML flows, gesture steps accept the same `hold` key:
 - capture: { name: zoom-held }
 ```
 
+## Xcode 27: Device Hub and iPhone Duo
+
+Device Hub attaches its own input daemon to every booted simulator, and from
+then on every driver's taps, swipes and presses ack and land nowhere.
+`mav sim boot` repairs that unasked. On a simulator booted some other way, a
+`--verify` that comes back `unchanged` says `input=shadowed`: run
+`mav sim heal`, which restarts SpringBoard (relaunch the app after).
+
+iPhone Duo folds. Fold it with mav, never in Device Hub, because mav routes
+taps and captures from the pose it applied:
+
+```bash
+mav sim hinge open        # 130°, the inner 669×951 panel lights, landscape
+mav sim hinge flat        # 180°
+mav sim hinge closed      # the 466×678 cover
+mav sim hinge --angle 95
+mav sim hinge             # read the angle (unknown for a while after heal)
+```
+
+```yaml
+- sim.hinge: { pose: open }
+- sim.hinge: { angle: "95" }
+- sim.heal: {}
+```
+
+Open, taps go through idb (the only driver that reaches the inner panel) and
+`capture` shoots the inner panel; folded, everything is as on any iPhone.
+Needs baguette 0.2.1 and idb 1.6.4 (`mav doctor` says when they are older).
+
 ## App Store Screenshots
 
 Two simulator-wide knobs make the shots reproducible. Both are simulator-only and

@@ -138,6 +138,53 @@ func TestHingeAndHealAreFlowSteps(t *testing.T) {
 	}
 }
 
+// Measured on iPhone Duo / iOS 27.1 open flat: idb 1.6.4 navigated 2 of 2,
+// AXe and baguette 0 of 4 while reporting success.
+func TestAnOpenFoldableTapsThroughIdb(t *testing.T) {
+	for _, tc := range []struct {
+		declared *float64
+		want     string
+	}{
+		{nil, "axe tap --tap-style physical --udid SIM -x 160 -y 288"},
+		{ptr(180.0), "idb ui tap 160 288 --udid SIM"},
+		{ptr(0.0), "axe tap --tap-style physical --udid SIM -x 160 -y 288"},
+	} {
+		root, runner := foldableRoot(t)
+		runner.tools["axe"] = true
+		runner.tools["idb"] = true
+		if tc.declared != nil {
+			writeDeclaredHinge(root, "SIM", *tc.declared)
+		}
+		runFoldable(t, root, runner, "ui", "tap", "--x", "160", "--y", "288")
+		if !containsCall(runner.commands, tc.want) {
+			t.Errorf("declared=%v: missing %q in %v", tc.declared, tc.want, runner.commands)
+		}
+	}
+}
+
+func ptr(v float64) *float64 { return &v }
+
+const accessibilityRowTree = `[{"AXLabel":"Ajustes","type":"Application","AXFrame":"{{0, 0}, {669, 951}}","frame":{"x":0,"y":0,"width":669,"height":951},"children":[` +
+	`{"AXLabel":"Accesibilidad","type":"Button","role":"AXButton","AXFrame":"{{20, 270}, {280, 36}}","frame":{"x":20,"y":270,"width":280,"height":36}}]}]`
+
+// A tap by text on an open Duo used to go to `axe tap --label`, which lands on
+// the dark cover: measured 0 of 2. It now reads the element from the tree and
+// taps its centre through idb.
+func TestAnOpenFoldableTapsATextThroughIdbAtTheElementsCentre(t *testing.T) {
+	root, runner := foldableRoot(t)
+	runner.tools["axe"] = true
+	runner.tools["idb"] = true
+	runner.out["axe describe-ui --udid SIM"] = accessibilityRowTree
+	writeDeclaredHinge(root, "SIM", 180)
+	out := runFoldable(t, root, runner, "ui", "tap", "--text", "Accesibilidad")
+	if !containsCall(runner.commands, "idb ui tap 160 288 --udid SIM") {
+		t.Fatalf("output=%q commands=%v", out, runner.commands)
+	}
+	if containsCall(runner.commands, "axe tap --tap-style physical --udid SIM --label") {
+		t.Fatalf("the label tap that lands on the cover was still sent: %v", runner.commands)
+	}
+}
+
 func TestFlowLintRefusesAHingeStepTheCommandWouldRefuse(t *testing.T) {
 	cfg := DefaultConfig(t.TempDir())
 	for _, tc := range []struct {

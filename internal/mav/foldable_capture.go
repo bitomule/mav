@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/bitomule/mav/internal/mav/drivers"
 )
 
 // foldableDeviceTypes are the simulators with more than one integrated panel.
@@ -141,6 +143,17 @@ func (c CLI) captureLitPanel(ctx context.Context, udid, path string) (string, er
 		return "", errors.New("no panel could be captured")
 	}
 	return bestID, os.Rename(best, path)
+}
+
+// foldableOpen is true when mav itself unfolded this simulator past the angle
+// where SpringBoard lights the inner panel. A fold made in Device Hub is not
+// seen here; mav sim hinge records the pose it applies.
+func (c CLI) foldableOpen(cfg Config) bool {
+	if targetKind(cfg) != drivers.KindSim || cfg.SimulatorUDID == "" {
+		return false
+	}
+	angle, ok := readDeclaredHinge(c.Root, cfg.SimulatorUDID)
+	return ok && angle >= hingePanelSwapDegrees
 }
 
 // litFraction samples how much of a capture is not black. A panel that is off
