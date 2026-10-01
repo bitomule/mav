@@ -1401,6 +1401,7 @@ func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 		if !wasBooted {
 			clearDeclaredOrientation(c.Root, cfg.SimulatorUDID)
 			clearScreenCache(c.Root, cfg.SimulatorUDID)
+			clearDeclaredHinge(c.Root, cfg.SimulatorUDID)
 		}
 		fields := map[string]string{"udid": cfg.SimulatorUDID, "name": cfg.SimulatorName}
 		// Device Hub attaches to every booted simulator and its dtuhidd tears
@@ -5145,6 +5146,13 @@ func (c CLI) captureScreenshotWith(ctx context.Context, cfg Config, path, prefer
 	// capture_tool_missing.
 	if prefer == "" && targetKind(cfg) == drivers.KindDevice {
 		prefer = "idb"
+	}
+	// Every screenshot driver captures the primary display, and on an open
+	// iPhone Duo that is the cover: dark, a black PNG.
+	if prefer == "" && targetKind(cfg) == drivers.KindSim && isFoldableSimulator(c.Runner, target.UDID) {
+		if _, err := c.captureLitPanel(ctx, target.UDID, path); err == nil {
+			return CommandResult{}, nil
+		}
 	}
 	driver, _, err := c.router().Route(ctx, drivers.CapScreenshot, target, prefer)
 	if err != nil {

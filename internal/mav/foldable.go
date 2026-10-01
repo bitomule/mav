@@ -124,6 +124,11 @@ func (c CLI) simHinge(ctx context.Context, args []string) error {
 	}
 	if spec.Pose != "" || spec.Angle != nil {
 		clearScreenCache(c.Root, target.UDID)
+		declared := poseAngle(spec.Pose)
+		if spec.Angle != nil {
+			declared = *spec.Angle
+		}
+		writeDeclaredHinge(c.Root, target.UDID, declared)
 	}
 	fields := map[string]string{"udid": target.UDID, "driver": driver.ID(), "angle": "unknown"}
 	if state.Angle != nil {
