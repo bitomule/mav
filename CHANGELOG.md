@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.32.1
+
+**iPhone Duo: a swallowed tap now fails, the first `ui tree` waits for the simulator, and `sim hinge` names the pose.**
+
+- `ui tap` and `ui swipe` with `--verify` fail (`ui_tap_input_shadowed`, `ui_swipe_input_shadowed`) when Device Hub has the simulator's input and nothing changed, instead of answering `ok`.
+- `ui tree` retries up to three times when the simulator's automation session times out right after boot, and says `ui_tree_session_timeout` with a `next=` if it still does.
+- `sim hinge` reads `pose` and `pose_source` from the declared hinge or the lit panel when the angle is `unknown`.
+- A semantic tap whose point lands outside the lit display fails with `ui_tap_outside_display` and names `mav ui orientation`.
+
+Known gap: `ui tap --text` on an open Duo still does not rotate the tree frame into the inner display's space.
+
 ## v0.32.0
 
 **mav works with Xcode 27's Device Hub and on iPhone Duo, open or folded.**

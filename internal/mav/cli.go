@@ -2375,12 +2375,15 @@ func (c CLI) uiTree(ctx context.Context, opts GlobalOptions, cfg Config, args []
 			}
 		}
 	}
-	if result.Err != nil && isAutomationSessionTimeout(result.Stderr) {
-		if retry, retryErr := c.describeUITree(ctx, cfg, prefer, includeSystem); retryErr == nil {
-			described = retry
-			driver = retry.Driver
-			result = retry.Result
+	for attempt := 0; attempt < automationSessionRetries && result.Err != nil && isAutomationSessionTimeout(result.Stderr); attempt++ {
+		time.Sleep(automationSessionRetryDelay)
+		retry, retryErr := c.describeUITree(ctx, cfg, prefer, includeSystem)
+		if retryErr != nil {
+			break
 		}
+		described = retry
+		driver = retry.Driver
+		result = retry.Result
 	}
 	if result.Err != nil {
 		fields := map[string]string{"stderr": firstLine(result.Stderr)}

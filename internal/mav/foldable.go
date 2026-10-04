@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bitomule/mav/internal/mav/drivers"
 )
@@ -229,6 +230,11 @@ func (c CLI) shadowedInputNext(ctx context.Context, cfg Config, fields map[strin
 	fields["input"] = "shadowed"
 	fields["next"] = "Xcode 27's Device Hub has taken this simulator's input, so every gesture acks and lands nowhere; run `mav sim heal` (restarts SpringBoard, relaunch the app), then repeat"
 }
+
+const (
+	automationSessionRetries    = 3
+	automationSessionRetryDelay = 3 * time.Second
+)
 
 func isAutomationSessionTimeout(stderr string) bool {
 	return strings.Contains(stderr, "Timed out creating the simulator remote automation session")
