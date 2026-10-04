@@ -2,6 +2,9 @@ package mav
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -136,6 +139,11 @@ func (c CLI) simHinge(ctx context.Context, args []string) error {
 	}
 	if spec.Pose != "" {
 		fields["pose"] = spec.Pose
+	} else if state.Angle == nil {
+		if pose, source := c.litPanelPose(ctx, target.UDID); pose != "" {
+			fields["pose"] = pose
+			fields["pose_source"] = source
+		}
 	}
 	return c.OK("sim.hinge", fields).Write(c.Stdout)
 }
@@ -220,4 +228,51 @@ func (c CLI) shadowedInputNext(ctx context.Context, cfg Config, fields map[strin
 	}
 	fields["input"] = "shadowed"
 	fields["next"] = "Xcode 27's Device Hub has taken this simulator's input, so every gesture acks and lands nowhere; run `mav sim heal` (restarts SpringBoard, relaunch the app), then repeat"
+}
+
+func isAutomationSessionTimeout(stderr string) bool {
+	return strings.Contains(stderr, "Timed out creating the simulator remote automation session")
+}
+
+func withAutomationSessionNext(fields map[string]string) map[string]string {
+	fields["next"] = "the simulator's automation session was not ready; it is slow on the first use after boot, so repeat `mav ui tree`"
+	return fields
+}
+
+// litPanelPose names the pose from which panel is lit, for the moment the
+// hinge angle cannot be read. A declared hinge wins; otherwise the panels are
+// captured and the brighter one decides.
+func (c CLI) litPanelPose(ctx context.Context, udid string) (pose, source string) {
+	if angle, ok := readDeclaredHinge(c.Root, udid); ok {
+		return poseFromAngle(angle), "declared"
+	}
+	dir, err := os.MkdirTemp("", "mav-hinge-")
+	if err != nil {
+		return "", ""
+	}
+	defer os.RemoveAll(dir)
+	litID, err := c.captureLitPanel(ctx, udid, filepath.Join(dir, "panel.png"))
+	if err != nil {
+		return "", ""
+	}
+	ids := integratedScreenIDs(ctx, c.Runner, udid)
+	if len(ids) < 2 {
+		return "", ""
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		a, _ := strconv.Atoi(ids[i])
+		b, _ := strconv.Atoi(ids[j])
+		return a < b
+	})
+	if litID == ids[0] {
+		return "closed", "lit_panel"
+	}
+	return "open", "lit_panel"
+}
+
+func poseFromAngle(angle float64) string {
+	if angle >= hingePanelSwapDegrees {
+		return "open"
+	}
+	return "closed"
 }
