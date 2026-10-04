@@ -3023,9 +3023,6 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			fields["verified"] = c.verifyTapChangedSomething(ctx, cfg, before)
 			if fields["verified"] == "unchanged" {
 				c.shadowedInputNext(ctx, cfg, fields)
-				if fields["input"] == "shadowed" {
-					return Fail("ui_tap_input_shadowed", fields).Write(c.Stdout)
-				}
 			}
 		}
 		c.appendCurrentCommand(command, result)
@@ -3160,9 +3157,6 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			if effect == "unchanged" {
 				coordFields["next"] = "the driver reported the tap and the screen did not change; on a simulator the coordinate path can swallow it silently — tap the element by selector (`mav ui tap --text ...`) rather than by point"
 				c.shadowedInputNext(ctx, cfg, coordFields)
-				if coordFields["input"] == "shadowed" {
-					return Fail("ui_tap_input_shadowed", coordFields).Write(c.Stdout)
-				}
 			}
 		} else {
 			// `ok` on this line means the driver accepted the point, and on
@@ -4034,9 +4028,6 @@ func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args [
 		if effect == "unchanged" {
 			fields["next"] = "the driver reported the swipe and the screen did not change; the gesture did not reach the app — do not treat this as 'already at the end of the list'"
 			c.shadowedInputNext(ctx, cfg, fields)
-			if fields["input"] == "shadowed" {
-				return Fail("ui_swipe_input_shadowed", fields).Write(c.Stdout)
-			}
 		}
 	} else {
 		fields["delivered"] = "unconfirmed"

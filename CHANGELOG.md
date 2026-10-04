@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.32.2
+
+**A tap that changes nothing is `ok` again, not a Device Hub failure.**
+
+v0.32.1 turned every `--verify` that came back `unchanged` into `ui_tap_input_shadowed` / `ui_swipe_input_shadowed` whenever Device Hub was attached. Device Hub being attached is normal and does not drop input; measured on an iPhone Duo with only Device Hub running, taps landed 20 of 20. A tap on an item that is already selected legitimately changes nothing and was being reported as a failure. The result is `ok verified=unchanged` again, with a hint that names the usual cause before `mav sim heal`. The first-`ui tree` retry and the hinge `pose` stay.
+
 ## v0.32.1
 
 **iPhone Duo: a swallowed tap now fails, the first `ui tree` waits for the simulator, and `sim hinge` names the pose.**

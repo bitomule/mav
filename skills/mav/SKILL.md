@@ -745,10 +745,13 @@ In YAML flows, gesture steps accept the same `hold` key:
 
 ## Xcode 27: Device Hub and iPhone Duo
 
-Device Hub attaches its own input daemon to every booted simulator, and from
-then on every driver's taps, swipes and presses ack and land nowhere.
-`mav sim boot` repairs that unasked. On a simulator booted some other way, a
-`--verify` that comes back `unchanged` says `input=shadowed`: run
+Device Hub attaches its own input daemon to every booted simulator. Measured
+on 2026-10-05 with only Device Hub running (Simulator.app closed), taps and
+swipes land: 20 of 20 on an open iPhone Duo. Do not run Simulator.app from
+another Xcode next to Device Hub. A `--verify` that comes back `unchanged`
+says `input=shadowed`, but that flag is set whenever Device Hub is attached, so
+first check the tap could change anything (an item already selected changes
+nothing). Only if a tap that must change the screen did not, run
 `mav sim heal`, which restarts SpringBoard (relaunch the app after).
 
 iPhone Duo folds. Fold it with mav, never in Device Hub, because mav routes
