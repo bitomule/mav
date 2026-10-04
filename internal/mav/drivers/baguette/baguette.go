@@ -237,7 +237,9 @@ func (d *Driver) Cost(c drivers.Capability, _ drivers.Target) int {
 	switch c {
 	case drivers.CapPinch, drivers.CapTwoFingerPan, drivers.CapHardwareBtn, drivers.CapTreeSystem, drivers.CapHideKeyboard:
 		return 0
-	case drivers.CapType, drivers.CapCoordTap, drivers.CapSwipe, drivers.CapTap, drivers.CapScreenshot:
+	case drivers.CapCoordTap, drivers.CapTap:
+		return 0
+	case drivers.CapType, drivers.CapSwipe, drivers.CapScreenshot:
 		return 50
 	default:
 		return 100

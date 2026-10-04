@@ -3024,6 +3024,9 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			if fields["verified"] == "unchanged" {
 				c.shadowedInputNext(ctx, cfg, fields)
 				if fields["input"] == "shadowed" {
+					if retryErr := c.tapSelectorViaTree(ctx, opts, cfg, args, selector, "baguette", "semantic tap shadowed by Device Hub"); retryErr != errSelectorTreeFallbackUnavailable {
+						return retryErr
+					}
 					return Fail("ui_tap_input_shadowed", fields).Write(c.Stdout)
 				}
 			}
