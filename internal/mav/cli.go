@@ -2375,9 +2375,22 @@ func (c CLI) uiTree(ctx context.Context, opts GlobalOptions, cfg Config, args []
 			}
 		}
 	}
+	for attempt := 0; attempt < automationSessionRetries && result.Err != nil && isAutomationSessionTimeout(result.Stderr); attempt++ {
+		time.Sleep(automationSessionRetryDelay)
+		retry, retryErr := c.describeUITree(ctx, cfg, prefer, includeSystem)
+		if retryErr != nil {
+			break
+		}
+		described = retry
+		driver = retry.Driver
+		result = retry.Result
+	}
 	if result.Err != nil {
 		fields := map[string]string{"stderr": firstLine(result.Stderr)}
 		addSandboxNext(fields, result.Stderr)
+		if isAutomationSessionTimeout(result.Stderr) {
+			return Fail("ui_tree_session_timeout", withAutomationSessionNext(fields)).Write(c.Stdout)
+		}
 		return Fail("ui_tree_failed", fields).Write(c.Stdout)
 	}
 	if opts.Raw {
@@ -2992,6 +3005,10 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 				return Fail("ui_tap_text_no_label_match", diagnosticFields).Write(c.Stdout)
 			}
 			tapFields := map[string]string{"stderr": firstLine(result.Stderr)}
+			if strings.Contains(result.Stderr, "is outside the display's point bounds") {
+				tapFields["next"] = "the tree frame is in a different orientation than the lit display (an open iPhone Duo is landscape); run `mav ui orientation landscape-left|landscape-right`, then repeat"
+				return Fail("ui_tap_outside_display", tapFields).Write(c.Stdout)
+			}
 			// An ambiguous locator is not a tap failure: the selector
 			// describes several things and the tool refuses to choose on
 			// its own, which is correct. But the message is the tool's and
@@ -3006,6 +3023,9 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			fields["verified"] = c.verifyTapChangedSomething(ctx, cfg, before)
 			if fields["verified"] == "unchanged" {
 				c.shadowedInputNext(ctx, cfg, fields)
+				if fields["input"] == "shadowed" {
+					return Fail("ui_tap_input_shadowed", fields).Write(c.Stdout)
+				}
 			}
 		}
 		c.appendCurrentCommand(command, result)
@@ -3140,6 +3160,9 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 			if effect == "unchanged" {
 				coordFields["next"] = "the driver reported the tap and the screen did not change; on a simulator the coordinate path can swallow it silently — tap the element by selector (`mav ui tap --text ...`) rather than by point"
 				c.shadowedInputNext(ctx, cfg, coordFields)
+				if coordFields["input"] == "shadowed" {
+					return Fail("ui_tap_input_shadowed", coordFields).Write(c.Stdout)
+				}
 			}
 		} else {
 			// `ok` on this line means the driver accepted the point, and on
@@ -4011,6 +4034,9 @@ func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args [
 		if effect == "unchanged" {
 			fields["next"] = "the driver reported the swipe and the screen did not change; the gesture did not reach the app — do not treat this as 'already at the end of the list'"
 			c.shadowedInputNext(ctx, cfg, fields)
+			if fields["input"] == "shadowed" {
+				return Fail("ui_swipe_input_shadowed", fields).Write(c.Stdout)
+			}
 		}
 	} else {
 		fields["delivered"] = "unconfirmed"
