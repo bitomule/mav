@@ -228,7 +228,7 @@ func (c CLI) shadowedInputNext(ctx context.Context, cfg Config, fields map[strin
 		return
 	}
 	fields["input"] = "shadowed"
-	fields["next"] = "Xcode 27's Device Hub has taken this simulator's input, so every gesture acks and lands nowhere; run `mav sim heal` (restarts SpringBoard, relaunch the app), then repeat"
+	fields["next"] = "the screen did not change. Device Hub is attached, which is normal and does not by itself drop input; the usual cause is a tap that has no visible effect (an item already selected, a list already at its end). Check that first, and only if a tap that must change the screen did not, run `mav sim heal` (restarts SpringBoard, relaunch the app)"
 }
 
 const (
