@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.33.0
+
+**Pick the simulator when you open, not in the config.**
+
+`mav open --device "iPhone Duo" --ios 27.1` hands the model and version to `target_command` as `$MAV_DEVICE` / `$MAV_IOS`, records them on the run so every later command keeps the same simulator, and leaves `.mav/config.yaml` alone. A config only says how to get a simulator, with defaults: `target_command: simpool lease --device "${MAV_DEVICE:-iPhone 17 Pro}" --os "${MAV_IOS:-26.3}"`. A project whose base target is a physical device gets a simulator for that run. `open` refuses with `open_device_unusable` when the request would be dropped (a pinned simulator, no `target_command`, or one that does not read the variables). Without `target_command`, `--device`/`--ios` behave as before.
+
 ## v0.32.3
 
 **mav says when Simulator.app is open next to Device Hub.**

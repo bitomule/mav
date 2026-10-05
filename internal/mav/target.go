@@ -366,6 +366,12 @@ func (e *ambiguousBootedError) fields() map[string]string {
 //     through the same target_command_warn field as the failure case, since
 //     both boil down to "target_command is configured but not in effect."
 func (c CLI) resolveConfigTarget(cfg *Config) (string, error) {
+	// A run opened with --device/--ios asked for a simulator, so a project
+	// whose base target is a physical device still gets one from
+	// target_command for the length of that run.
+	if targetKind(*cfg) == drivers.KindDevice && strings.TrimSpace(cfg.TargetCommand) != "" && !c.requestedDevice().empty() {
+		cfg.TargetKind = "simulator"
+	}
 	if targetKind(*cfg) == drivers.KindMac {
 		cfg.TargetSource = targetSourceLocalhost
 		return "", nil
@@ -649,10 +655,11 @@ func (c CLI) failTargetCommand(err error) error {
 }
 
 type targetCommandCache struct {
-	UDID       string    `json:"udid"`
-	Name       string    `json:"name"`
-	Warn       string    `json:"warn,omitempty"`
-	ResolvedAt time.Time `json:"resolved_at"`
+	UDID       string        `json:"udid"`
+	Name       string        `json:"name"`
+	Warn       string        `json:"warn,omitempty"`
+	Request    deviceRequest `json:"request,omitempty"`
+	ResolvedAt time.Time     `json:"resolved_at"`
 }
 
 func targetCommandCachePath(run RunState) string {
@@ -677,8 +684,8 @@ func readTargetCommandCache(run RunState) (targetCommandCache, bool) {
 	return cache, true
 }
 
-func writeTargetCommandCache(run RunState, udid, name, warn string) {
-	data, err := json.Marshal(targetCommandCache{UDID: udid, Name: name, Warn: warn, ResolvedAt: time.Now()})
+func writeTargetCommandCache(run RunState, udid, name, warn string, request deviceRequest) {
+	data, err := json.Marshal(targetCommandCache{UDID: udid, Name: name, Warn: warn, Request: request, ResolvedAt: time.Now()})
 	if err != nil {
 		return
 	}
@@ -704,8 +711,9 @@ func (c CLI) resolveTargetCommand(root, command string, timeout time.Duration, r
 	if c.Runner == nil {
 		return "", "", "", nil
 	}
+	request := c.requestedDevice()
 	resolve := func() (string, string, string, error) {
-		udid, name, cmdErr := c.execTargetCommand(root, command, timeout)
+		udid, name, cmdErr := c.execTargetCommand(root, command, timeout, request)
 		if cmdErr != nil {
 			if required {
 				return "", "", "", cmdErr
@@ -720,14 +728,14 @@ func (c CLI) resolveTargetCommand(root, command string, timeout time.Duration, r
 		// `mav open`); resolve fresh. Rare, never the hot loop.
 		return resolve()
 	}
-	if cache, ok := readTargetCommandCache(run); ok {
+	if cache, ok := readTargetCommandCache(run); ok && cache.Request == request {
 		return cache.UDID, cache.Name, cache.Warn, nil
 	}
 	udid, name, warn, resolveErr := resolve()
 	if resolveErr != nil {
 		return "", "", "", resolveErr
 	}
-	writeTargetCommandCache(run, udid, name, warn)
+	writeTargetCommandCache(run, udid, name, warn, request)
 	return udid, name, warn, nil
 }
 
@@ -737,10 +745,12 @@ func (c CLI) resolveTargetCommand(root, command string, timeout time.Duration, r
 // mav is: print the UDID to use on stdout. It runs from the project root
 // (like launch and exec-step commands) with MAV_ROOT exported, so a project
 // can point target_command at a repo-relative script.
-func (c CLI) execTargetCommand(root, command string, timeout time.Duration) (string, string, *targetCommandError) {
+func (c CLI) execTargetCommand(root, command string, timeout time.Duration, request deviceRequest) (string, string, *targetCommandError) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	prefixed := shellEnvPrefix(map[string]string{"MAV_ROOT": root}) + " " + command
+	env := request.env()
+	env["MAV_ROOT"] = root
+	prefixed := shellEnvPrefix(env) + " " + command
 	timedOut := &targetCommandError{
 		code:    codes.TargetCommandTimeout,
 		command: command,
@@ -1073,7 +1083,7 @@ func (c CLI) startTargetCommandKeepAlive(run RunState, cfg Config, inEffect bool
 // execTargetCommand's own single-command fallback: this must never fail or
 // hang the run it's protecting.
 func (c CLI) pingTargetCommandKeepAlive(run RunState, root, command string, timeout time.Duration, originalUDID string) {
-	udid, _, cmdErr := c.execTargetCommand(root, command, timeout)
+	udid, _, cmdErr := c.execTargetCommand(root, command, timeout, readDeviceRequest(run))
 	switch {
 	case cmdErr != nil:
 		appendFile(run.LogsPath, "mav target_command keepalive: "+cmdErr.message()+"\n")

@@ -992,10 +992,40 @@ MAV sets those for the commands it runs; see "Custom launch recipes" above.
 | `MAV_TARGET_KIND` / `MAV_TARGET_UDID` | supported | Pin the target, beating both a config pin and `target_command`. Either works on its own: `MAV_TARGET_UDID=<udid> mav ui tree` pins the simulator with no kind beside it, and the `ok` line reads `target_source=env`. (Through v0.19.2 the whole overlay hung off `MAV_TARGET_KIND`, so a UDID on its own was ignored in silence.) `mav run --target ...` sets them on each matrix child. |
 | `MAV_TARGET_NAME` / `MAV_TARGET_RUNTIME` | supported, partial | Narrow the reported target, but do not select one: nothing in mav resolves a name or a runtime to a UDID. On their own the target still comes from a pin, `target_command`, or the booted simulator. |
 | `MAV_PROFILE` | supported | Selects a platform profile, below `--profile` and above `default_profile`. |
+| `MAV_DEVICE` / `MAV_IOS` | supported | The simulator model and iOS version handed to `target_command`, so it can read `"$MAV_DEVICE"` / `"$MAV_IOS"`. `mav open --device --ios` sets them and records them on the run; set them yourself to choose for a single command. |
 | `MAV_EXACT_RUN_DIR` | supported, internal | Pins run state to this exact directory instead of allocating one under `.mav/runs/`. `mav run --target ... --target ...` sets it per matrix child so each target gets an unambiguous run dir. Set it yourself only to place a run's state somewhere specific. |
 | `MAV_DRIVERS_DISABLE` | supported, internal | Comma-separated driver ids to suppress. Changes routing, so a stale export makes `mav doctor` disagree with reality. |
 | `MAV_MATRIX_CHILD` | internal, do not set | Marks a matrix child. Exporting it makes `mav run --target a --target b` stop fanning out, silently. |
 | `MAV_SKIP_BUILD` | **gone** | Was the private channel `mav run --target` used to tell its children not to rebuild. Removed in v0.16.2 and now silently ignored. The supported spelling is the `--skip-build` flag (`mav open --skip-build`, `mav run flow.yaml --skip-build`, `open: { skipBuild: true }`). |
+
+## Choosing the simulator per run, not per project
+
+Which simulator to test on (an iPhone 17 Pro on iOS 26.3, an iPhone Duo on 27.1)
+is a choice for the run, not for the repo. Put *how* to get a simulator in
+`.mav/config.yaml`, with defaults, and pick *which* one when you open:
+
+```yaml
+target_command: simpool lease --device "${MAV_DEVICE:-iPhone 17 Pro}" --os "${MAV_IOS:-26.3}"
+```
+
+```bash
+mav open --device "iPhone Duo" --ios 27.1
+mav ui tree            # same run, same Duo: no flags, no env
+mav open               # a new run goes back to the defaults
+```
+
+`open` hands the pair to `target_command` as `$MAV_DEVICE` / `$MAV_IOS`, records
+it on the run, and prints `device=` / `ios=` on its `ok` line. Every later command
+in that run asks `target_command` for the same model, including after the cached
+UDID expires. Nothing is written to `.mav/config.yaml`. A project whose base
+`target_kind` is `device` gets a simulator for that run.
+
+`open` refuses with `open_device_unusable` instead of driving some other
+simulator when the request would be dropped: a pinned simulator
+(`simulator_udid`, `MAV_TARGET_UDID`/`MAV_TARGET_KIND`), no `target_command`, or a
+`target_command` that does not read `$MAV_DEVICE` (or `$MAV_IOS` when `--ios` is
+given). Without `target_command` in the config, `--device`/`--ios` keep their old
+meaning: pick a local simulator by name, boot it and pin it in the config.
 
 ## When `target_command` cannot pick a simulator
 

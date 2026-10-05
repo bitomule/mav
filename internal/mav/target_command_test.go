@@ -957,7 +957,7 @@ func TestTargetCommandFailureMidFlowCarriesItsFieldsIntoTheStep(t *testing.T) {
 	// command itself fail: the flow's up-front resolution is served from
 	// the cache, and the step that re-resolves after the cache is dropped
 	// pays the real, failing call.
-	writeTargetCommandCache(run, "TC-UDID-GOOD", "iPhone 17", "")
+	writeTargetCommandCache(run, "TC-UDID-GOOD", "iPhone 17", "", deviceRequest{})
 
 	key := targetCommandKey(root, "print-target")
 	runner := &sequenceRecordingRunner{

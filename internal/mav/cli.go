@@ -1869,6 +1869,19 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	}
 	c = c.withSkipBuild(hasFlag(args, "--skip-build"))
 	c.resolveConfigTools(&cfg)
+	request := deviceRequest{Device: flagValue(args, "--device"), IOS: flagValue(args, "--ios")}
+	routed := !request.empty() && strings.TrimSpace(cfg.TargetCommand) != "" && flagValue(args, "--udid") == ""
+	if routed {
+		if problem := deviceRequestProblem(cfg, request); problem != nil {
+			return Fail("open_device_unusable", problem).Write(c.Stdout)
+		}
+		for name, value := range request.env() {
+			if err := os.Setenv(name, value); err != nil {
+				return err
+			}
+		}
+		args = withoutFlagValues(args, "--device", "--ios")
+	}
 	if _, err := c.resolveConfigTarget(&cfg); err != nil {
 		return c.failTargetCommand(err)
 	}
@@ -1900,6 +1913,11 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	}
 	if err != nil {
 		return err
+	}
+	if routed {
+		if err := writeDeviceRequest(run, request); err != nil {
+			return err
+		}
 	}
 	if previousRunID != "" {
 		superseding := c.withStdout(io.Discard)
@@ -2027,6 +2045,13 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	}
 	if fields["target"] == "" {
 		fields["target"] = "booted"
+	}
+	if routed {
+		for name, value := range map[string]string{"device": request.Device, "ios": request.IOS} {
+			if value != "" {
+				fields[name] = value
+			}
+		}
 	}
 	if targetKind(cfg) == drivers.KindSim {
 		c.warnSimulatorAppWithDeviceHub(ctx, fields)
@@ -8909,6 +8934,28 @@ var latinASCII = map[rune]string{
 	'ť': "t",
 	'ž': "z", 'ź': "z", 'ż': "z",
 	'æ': "ae", 'œ': "oe", 'ß': "ss",
+}
+
+func withoutFlagValues(args []string, names ...string) []string {
+	kept := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		matched := false
+		for _, name := range names {
+			if args[i] == name {
+				i++
+				matched = true
+				break
+			}
+			if strings.HasPrefix(args[i], name+"=") {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			kept = append(kept, args[i])
+		}
+	}
+	return kept
 }
 
 func flagValue(args []string, name string) string {
