@@ -254,6 +254,25 @@ func TestFlowLintRefusesAHingeStepTheCommandWouldRefuse(t *testing.T) {
 	}
 }
 
+func TestSimulatorAppNextToDeviceHubIsFlagged(t *testing.T) {
+	cases := []struct {
+		name string
+		out  map[string]string
+		want bool
+	}{
+		{"both", map[string]string{"pgrep -f " + deviceHubProcess: "69431\n", "pgrep -f " + simulatorAppProcess: "69541\n"}, true},
+		{"device hub alone", map[string]string{"pgrep -f " + deviceHubProcess: "69431\n"}, false},
+		{"neither", map[string]string{}, false},
+	}
+	for _, tc := range cases {
+		fields := map[string]string{}
+		CLI{Runner: &sequenceRecordingRunner{out: tc.out}}.warnSimulatorAppWithDeviceHub(context.Background(), fields)
+		if got := fields["warning"] == "simulator_app_with_device_hub"; got != tc.want {
+			t.Fatalf("%s: warning=%q, want flagged=%v", tc.name, fields["warning"], tc.want)
+		}
+	}
+}
+
 // One command has to leave a fresh Mac, and one with 2022's idb, on the
 // versions the probes demand: Homebrew 7 refuses third-party taps until they
 // are trusted, `brew install` upgrades an outdated formula, and pipx needs

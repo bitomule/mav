@@ -1451,11 +1451,12 @@ func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 		if inputShadowed(ctx, c.Runner, cfg.SimulatorUDID) == shadowYes {
 			if _, healErr := c.healInput(ctx, target); healErr != nil {
 				fields["input"] = "shadowed"
-				fields["next"] = "mav sim heal: Device Hub shadows this simulator's input and taps will land nowhere"
+				fields["next"] = "Device Hub is attached, which is normal; if a tap that must change the screen does not, run `mav sim heal`"
 			} else {
 				fields["input"] = "healed"
 			}
 		}
+		c.warnSimulatorAppWithDeviceHub(ctx, fields)
 		return c.OK("sim.boot", fields).Write(c.Stdout)
 	default:
 		return Fail("sim_unknown_command", map[string]string{"command": args[0]}).Write(c.Stdout)
@@ -2026,6 +2027,9 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	}
 	if fields["target"] == "" {
 		fields["target"] = "booted"
+	}
+	if targetKind(cfg) == drivers.KindSim {
+		c.warnSimulatorAppWithDeviceHub(ctx, fields)
 	}
 	return c.OK("open", fields).Write(c.Stdout)
 }
