@@ -229,6 +229,29 @@ func (c CLI) shadowedInputNext(ctx context.Context, cfg Config, fields map[strin
 	}
 	fields["input"] = "shadowed"
 	fields["next"] = "the screen did not change. Device Hub is attached, which is normal and does not by itself drop input; the usual cause is a tap that has no visible effect (an item already selected, a list already at its end). Check that first, and only if a tap that must change the screen did not, run `mav sim heal` (restarts SpringBoard, relaunch the app)"
+	c.warnSimulatorAppWithDeviceHub(ctx, fields)
+}
+
+const (
+	deviceHubProcess    = "DeviceHub.app/Contents/MacOS/DeviceHub"
+	simulatorAppProcess = "Simulator.app/Contents/MacOS/Simulator"
+)
+
+// warnSimulatorAppWithDeviceHub flags Simulator.app running next to Xcode 27's
+// Device Hub. Device Hub replaces it; with both open on 2026-10-04, taps went
+// from landing to not landing between runs and SpringBoard crashed, and with
+// Device Hub alone 20 of 20 taps landed on an open iPhone Duo.
+func (c CLI) warnSimulatorAppWithDeviceHub(ctx context.Context, fields map[string]string) {
+	if !processRunning(ctx, c.Runner, deviceHubProcess) || !processRunning(ctx, c.Runner, simulatorAppProcess) {
+		return
+	}
+	fields["warning"] = "simulator_app_with_device_hub"
+	fields["warning_next"] = "quit Simulator.app: Device Hub replaces it on Xcode 27, and with both open input becomes unreliable"
+}
+
+func processRunning(ctx context.Context, runner Runner, pattern string) bool {
+	res := runner.Run(ctx, "pgrep", "-f", pattern)
+	return res.Err == nil && strings.TrimSpace(res.Stdout) != ""
 }
 
 const (

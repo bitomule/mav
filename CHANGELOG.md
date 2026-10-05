@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.32.3
+
+**mav says when Simulator.app is open next to Device Hub.**
+
+Xcode 27's Device Hub replaces Simulator.app. With Simulator.app from another Xcode open beside it, taps went from landing to not landing between runs and SpringBoard crashed; with Device Hub alone, 20 of 20 taps landed on an open iPhone Duo. `mav sim boot`, `mav open` and a `--verify` that comes back `unchanged` now add `warning=simulator_app_with_device_hub` and say to quit Simulator.app. `mav sim boot` no longer claims that Device Hub being attached means taps land nowhere.
+
 ## v0.32.2
 
 **A tap that changes nothing is `ok` again, not a Device Hub failure.**
