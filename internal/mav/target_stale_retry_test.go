@@ -31,7 +31,7 @@ func newStaleTargetCommandRun(t *testing.T, cfg Config, cachedUDID string) (stri
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeTargetCommandCache(run, cachedUDID, "", "")
+	writeTargetCommandCache(run, cachedUDID, "", "", deviceRequest{})
 	return root, run
 }
 
