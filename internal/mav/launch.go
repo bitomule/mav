@@ -483,7 +483,11 @@ func shouldRetryInstallFromWritableCopy(result CommandResult, appPath string) bo
 		return false
 	}
 	lower := strings.ToLower(result.Stderr + "\n" + result.Stdout + "\n" + result.Err.Error())
-	return strings.Contains(lower, "permission denied") &&
+	// simctl reports the read-only bundle as a bare POSIX error 13 (EACCES),
+	// with no "permission denied" text on the line mav keeps.
+	denied := strings.Contains(lower, "permission denied") ||
+		strings.Contains(lower, "nsposixerrordomain, code=13")
+	return denied &&
 		strings.Contains(filepath.ToSlash(appPath), "bazel-out/") &&
 		filepath.Ext(appPath) == ".app"
 }
@@ -495,7 +499,14 @@ func (c CLI) retryInstallFromWritableCopy(ctx context.Context, cfg Config, run R
 		return CommandResult{Stderr: err.Error(), Err: err}, appPath
 	}
 	result := c.runDriverLifecycle(ctx, cfg, run, launchStep{Name: "install_retry"}, target)
-	return result, target
+	if result.Err != nil {
+		return result, target
+	}
+	// simctl copied the bundle into the simulator, so the copy is no longer
+	// needed; kept, it put a full app (hundreds of MB) in every run directory.
+	// The original path still exists for whatever reads MAV_APP_PATH later.
+	_ = os.RemoveAll(filepath.Dir(target))
+	return result, appPath
 }
 
 func copyDirWritable(src, dst string) error {
