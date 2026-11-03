@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.33.2
+
+**`mav doctor` notices an axe that cannot run, and the error says why.**
+
+An unsigned or damaged axe binary is on PATH but macOS kills it at launch. doctor only looked it up on PATH and said `accessibility=ok`, while every `ui tree` and semantic tap failed with `command failed`: axe writes nothing to stderr before it dies. doctor now runs `axe --version` and reports `accessibility=broken`, `semantic_actions=broken`, `axe_issue=axe_not_runnable (<how it ended>)` and `axe_next`. A silent axe failure now reads `axe printed nothing and ended with signal: killed; …reinstall axe`. Found through mise, whose GitHub backend picks AXe's unsigned `AXe-macOS-homebrew-*` asset unless told to use the universal one.
+
 ## v0.33.1
 
 **The app gets its launch arguments, and Bazel apps install.**

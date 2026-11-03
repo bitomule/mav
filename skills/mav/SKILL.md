@@ -132,6 +132,9 @@ entirely.
 1. Run `mav doctor`.
    If it reports CoreSimulator or idb sandbox/permission failures, rerun MAV
    outside the sandbox.
+   `accessibility=broken` with `axe_issue=axe_not_runnable` means axe is on
+   PATH but macOS kills it at launch (an unsigned or damaged binary): reinstall
+   axe before reading trees or tapping.
 2. If the project lacks `.mav/config.yaml`, run `mav setup` and review the
    prompts. Setup is idempotent and interactive by default: it detects app
    identity, simulator defaults, UI tools, and an editable `launch.commands`
