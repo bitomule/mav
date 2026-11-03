@@ -285,6 +285,20 @@ func (c CLI) ResolveIDBIssue(ctx context.Context) (issue, next string) {
 	return "", ""
 }
 
+// ResolveAXeIssue runs `axe --version` and reports when axe is on PATH but
+// cannot run. macOS kills an unsigned or damaged binary at launch without a
+// word, so every tree and tap then failed with an empty error while doctor,
+// which only looked the tool up on PATH, said accessibility=ok. Only doctor
+// pays for it, like ResolveIDBIssue.
+func (c CLI) ResolveAXeIssue(ctx context.Context) (issue, next string) {
+	status := c.Runner.Run(ctx, "axe", "--version")
+	if status.Err == nil {
+		return "", ""
+	}
+	return "axe_not_runnable (" + status.Err.Error() + ")",
+		"reinstall axe; macOS kills an unsigned or damaged binary at launch (with mise, use the AXe asset that is signed)"
+}
+
 func idbPythonUnsupported(text string) bool {
 	lower := strings.ToLower(text)
 	return strings.Contains(lower, "get_event_loop") ||

@@ -3293,3 +3293,23 @@ func TestAnUnstampedBuildDoesNotClaimAReleaseNumber(t *testing.T) {
 		t.Fatalf("an unstamped build reports %q", Version)
 	}
 }
+
+// An axe that macOS kills at launch (unsigned or damaged) is on PATH, so
+// looking it up said accessibility=ok while every tree and tap failed with an
+// empty error. doctor runs it once and says so.
+func TestDoctorReportsAnAxeThatCannotRun(t *testing.T) {
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{
+		tools:   map[string]bool{"xcrun": true, "axe": true, "idb": true},
+		results: map[string]CommandResult{"axe --version": {Code: -1, Err: errors.New("signal: killed")}},
+	}, Root: t.TempDir(), Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"doctor"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{"accessibility=broken", "semantic_actions=broken", "axe_issue=", "signal: killed", "axe_next="} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in %q", want, got)
+		}
+	}
+}

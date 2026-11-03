@@ -7,7 +7,9 @@ package axe
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/bitomule/mav/internal/mav/drivers"
 )
@@ -130,14 +132,14 @@ func (d *Driver) Tap(ctx context.Context, target drivers.Target, spec drivers.Ta
 	}
 	res := d.exec.Run(ctx, "axe", args...)
 	if res.Err != nil {
-		return drivers.TapResult{}, errors.New(firstLine(res.Stderr))
+		return drivers.TapResult{}, errors.New(failureText(res))
 	}
 	return drivers.TapResult{MatchedID: spec.Selector.ID, MatchedText: spec.Selector.Text, X: spec.X, Y: spec.Y}, nil
 }
 func (d *Driver) Tree(ctx context.Context, target drivers.Target, _ drivers.TreeSpec) (drivers.TreeResult, error) {
 	res := d.exec.Run(ctx, "axe", targetArgs(target, "describe-ui")...)
 	if res.Err != nil {
-		return drivers.TreeResult{}, errors.New(firstLine(res.Stderr))
+		return drivers.TreeResult{}, errors.New(failureText(res))
 	}
 	return drivers.TreeResult{JSON: []byte(res.Stdout)}, nil
 }
@@ -150,7 +152,7 @@ func (d *Driver) TreeAtPoint(ctx context.Context, target drivers.Target, x, y in
 	args := targetArgs(target, "describe-ui", "--point", strconv.Itoa(x)+","+strconv.Itoa(y))
 	res := d.exec.Run(ctx, "axe", args...)
 	if res.Err != nil {
-		return drivers.TreeResult{}, errors.New(firstLine(res.Stderr))
+		return drivers.TreeResult{}, errors.New(failureText(res))
 	}
 	return drivers.TreeResult{JSON: []byte(res.Stdout)}, nil
 }
@@ -164,7 +166,7 @@ func (d *Driver) Swipe(ctx context.Context, target drivers.Target, spec drivers.
 	)
 	res := d.exec.Run(ctx, "axe", args...)
 	if res.Err != nil {
-		return errors.New(firstLine(res.Stderr))
+		return errors.New(failureText(res))
 	}
 	return nil
 }
@@ -174,7 +176,7 @@ func (d *Driver) Screenshot(ctx context.Context, target drivers.Target, spec dri
 	}
 	res := d.exec.Run(ctx, "axe", targetArgs(target, "screenshot", "--output", spec.OutPath)...)
 	if res.Err != nil {
-		return errors.New(firstLine(res.Stderr))
+		return errors.New(failureText(res))
 	}
 	return nil
 }
@@ -184,7 +186,7 @@ func (d *Driver) Type(ctx context.Context, target drivers.Target, spec drivers.T
 	}
 	res := d.exec.Run(ctx, "axe", targetArgs(target, "type", spec.Text)...)
 	if res.Err != nil {
-		return errors.New(firstLine(res.Stderr))
+		return errors.New(failureText(res))
 	}
 	return nil
 }
@@ -221,7 +223,7 @@ func (d *Driver) Erase(ctx context.Context, target drivers.Target, spec drivers.
 	for i := 0; i < count; i++ {
 		res := d.exec.Run(ctx, "axe", targetArgs(target, "key", backspaceKeycode)...)
 		if res.Err != nil {
-			return errors.New(firstLine(res.Stderr))
+			return errors.New(failureText(res))
 		}
 	}
 	return nil
@@ -233,6 +235,25 @@ func targetArgs(target drivers.Target, args ...string) []string {
 		out = append(out, "--udid", target.UDID)
 	}
 	return out
+}
+
+// failureText is the first line axe wrote to stderr or, when it wrote
+// nothing, how it ended. An axe that macOS kills at launch (an unsigned or
+// damaged binary) prints nothing at all, and "command failed" left no way to
+// tell that apart from a real automation error.
+func failureText(res drivers.ExecResult) string {
+	if line := firstLine(res.Stderr); res.Stderr != "" && line != "" {
+		return line
+	}
+	ended := fmt.Sprintf("exit code %d", res.Code)
+	if res.Err != nil {
+		ended = res.Err.Error()
+	}
+	text := "axe printed nothing and ended with " + ended
+	if strings.Contains(ended, "signal: killed") {
+		text += "; macOS kills an unsigned or damaged binary at launch, reinstall axe (mav doctor checks it)"
+	}
+	return text
 }
 
 func firstLine(s string) string {

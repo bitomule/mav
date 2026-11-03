@@ -727,6 +727,16 @@ func (c CLI) doctor(ctx context.Context, opts GlobalOptions) error {
 	}
 	tools := caps.Tools
 	fields := caps.fields()
+	if tools["axe"] {
+		if issue, next := c.ResolveAXeIssue(ctx); issue != "" {
+			if caps.AccessibilityDriver == "axe" {
+				fields["accessibility"] = "broken"
+				fields["semantic_actions"] = "broken"
+			}
+			fields["axe_issue"] = issue
+			fields["axe_next"] = next
+		}
+	}
 	// Which target this diagnosis is ABOUT, resolved through the same
 	// profile overlay every other command sees. Without it, a doctor run
 	// with --profile mac reads exactly like one about the simulator.
