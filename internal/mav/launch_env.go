@@ -269,3 +269,52 @@ func splitAssignment(token string) (name string, value string, ok bool) {
 	}
 	return name, token[index+1:], true
 }
+
+// launchArgsAfterBundle returns the arguments a recipe writes after the bundle
+// id of a launch that mav hands to a driver, such as
+//
+//	xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID" -AppleLanguages "(en)" SkipOnboarding
+//
+// Without it the driver launched the bundle alone: the app started, and the
+// flags the recipe asked for (a language, a debug switch) never reached it,
+// with nothing in the output to say so. Values are expanded like the env
+// prefix; a shell operator or a command substitution has no meaning without a
+// shell, so it is refused instead of being delivered as literal text.
+func launchArgsAfterBundle(command string, env map[string]string) ([]string, error) {
+	_, rest, ok := recipeEnvPrefix(command)
+	if !ok {
+		return nil, nil
+	}
+	tokens, ok := shellTokens(rest)
+	if !ok {
+		return nil, nil
+	}
+	start := -1
+	for i, token := range tokens {
+		if strings.Contains(token.value, "MAV_BUNDLE_ID") {
+			start = i + 1
+			break
+		}
+	}
+	if start < 0 || start >= len(tokens) {
+		return nil, nil
+	}
+	lookup := func(key string) string {
+		if value, ok := env[key]; ok {
+			return value
+		}
+		return os.Getenv(key)
+	}
+	args := make([]string, 0, len(tokens)-start)
+	for _, token := range tokens[start:] {
+		if token.singleQuoted {
+			args = append(args, token.value)
+			continue
+		}
+		if strings.Contains(token.value, "$(") || strings.Contains(token.value, "`") || strings.ContainsAny(token.value, ";|&<>") {
+			return nil, fmt.Errorf("launch_args_need_shell: %q needs a shell, and mav hands this launch to a driver; next: move the logic into a script the launch step calls, or single-quote the argument to pass the text as written", token.value)
+		}
+		args = append(args, os.Expand(token.value, lookup))
+	}
+	return args, nil
+}

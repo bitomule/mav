@@ -274,7 +274,10 @@ func (d *Driver) Launch(ctx context.Context, target drivers.Target, spec drivers
 	if bundleID == "" {
 		bundleID = target.BundleID
 	}
-	args := targetArgs(target, "launch", "-f", bundleID)
+	// Everything after the bundle id goes to the app, so --udid has to come
+	// before it here instead of at the end where targetArgs puts it.
+	args := append(targetArgs(target, "launch"), "-f", bundleID)
+	args = append(args, spec.Args...)
 	name := "idb"
 	// idb has no flag for the app's environment: it forwards its own IDB_*
 	// variables to the app with the prefix stripped, which is the device

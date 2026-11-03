@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/bitomule/mav/internal/mav/drivers"
@@ -20,6 +21,10 @@ type launchStep struct {
 	// steps that reach a driver instead of a shell. On the shell path the
 	// prefix is still part of Command and this stays empty.
 	Env map[string]string
+
+	// Args is what the recipe writes after the bundle id, for the same
+	// driver-bound steps: the arguments the app itself receives.
+	Args []string
 }
 
 // errBuildSkippedAppMissing is what --skip-build turns "app_path failed" into.
@@ -226,6 +231,13 @@ func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clea
 				return appPath, &step, result, warn
 			}
 			step.Env = expandEnvAssignments(assignments, env)
+			args, err := launchArgsAfterBundle(commands.Launch, env)
+			if err != nil {
+				result := CommandResult{Stderr: err.Error(), Code: 1, Err: err}
+				appendCommand(run, "launch.launch args_rejected", result)
+				return appPath, &step, result, warn
+			}
+			step.Args = args
 			result = c.runDriverLifecycle(ctx, cfg, run, step, appPath)
 		} else {
 			if untranslated := untranslatedLaunchEnvWarning(commands.Launch); untranslated != "" {
@@ -364,7 +376,7 @@ func (c CLI) runDriverLifecycle(ctx context.Context, cfg Config, run RunState, s
 	case "install", "install_retry":
 		err = lifecycle.Install(ctx, target, drivers.InstallSpec{Path: appPath})
 	case "launch":
-		_, err = lifecycle.Launch(ctx, target, drivers.LaunchSpec{BundleID: cfg.BundleID, Env: step.Env})
+		_, err = lifecycle.Launch(ctx, target, drivers.LaunchSpec{BundleID: cfg.BundleID, Args: step.Args, Env: step.Env})
 	case "clear_state":
 		err = lifecycle.Uninstall(ctx, target, cfg.BundleID)
 	}
@@ -379,6 +391,9 @@ func (c CLI) runDriverLifecycle(ctx context.Context, cfg Config, run RunState, s
 	// reach the app, or did mav drop it.
 	if names := envNames(step.Env); len(names) > 0 {
 		trail += " env=" + strings.Join(names, ",")
+	}
+	if len(step.Args) > 0 {
+		trail += " args=" + strconv.Itoa(len(step.Args))
 	}
 	appendCommand(run, trail, result)
 	return result
@@ -468,7 +483,11 @@ func shouldRetryInstallFromWritableCopy(result CommandResult, appPath string) bo
 		return false
 	}
 	lower := strings.ToLower(result.Stderr + "\n" + result.Stdout + "\n" + result.Err.Error())
-	return strings.Contains(lower, "permission denied") &&
+	// simctl reports the read-only bundle as a bare POSIX error 13 (EACCES),
+	// with no "permission denied" text on the line mav keeps.
+	denied := strings.Contains(lower, "permission denied") ||
+		strings.Contains(lower, "nsposixerrordomain, code=13")
+	return denied &&
 		strings.Contains(filepath.ToSlash(appPath), "bazel-out/") &&
 		filepath.Ext(appPath) == ".app"
 }
@@ -480,7 +499,14 @@ func (c CLI) retryInstallFromWritableCopy(ctx context.Context, cfg Config, run R
 		return CommandResult{Stderr: err.Error(), Err: err}, appPath
 	}
 	result := c.runDriverLifecycle(ctx, cfg, run, launchStep{Name: "install_retry"}, target)
-	return result, target
+	if result.Err != nil {
+		return result, target
+	}
+	// simctl copied the bundle into the simulator, so the copy is no longer
+	// needed; kept, it put a full app (hundreds of MB) in every run directory.
+	// The original path still exists for whatever reads MAV_APP_PATH later.
+	_ = os.RemoveAll(filepath.Dir(target))
+	return result, appPath
 }
 
 func copyDirWritable(src, dst string) error {

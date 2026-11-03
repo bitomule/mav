@@ -901,7 +901,9 @@ Each command runs from `MAV_ROOT` with `MAV_RUN_DIR`, `MAV_TARGET_KIND`,
 `MAV_IS_DEVICE`, `MAV_UDID`, `MAV_BUNDLE_ID`, `MAV_APP_PATH`,
 `MAV_DEVICE_NAME`, `MAV_RUNTIME`, and `MAV_PLATFORM`. `app_path` must print
 exactly one `.app` path. If the app is already installed, configure only
-`launch`.
+`launch`. Arguments after `"$MAV_BUNDLE_ID"` in the launch line reach the app
+(`-AppleLanguages "(en)"`, debug switches); anything that needs a shell there
+fails with `launch_args_need_shell`.
 
 ### Giving the app its own environment
 
