@@ -1548,6 +1548,17 @@ Each command runs from `MAV_ROOT` with stable environment variables:
 `MAV_PLATFORM`. `app_path` must print one `.app` path. If the app is already
 installed, configure only `launch`.
 
+Arguments written after `"$MAV_BUNDLE_ID"` in a `simctl launch` or `idb launch`
+line are the app's own arguments and reach it (`-AppleLanguages "(en)"`, a
+debug switch the app reads from `ProcessInfo.arguments`). The trail records
+`args=<count>`. An argument that needs a shell (`;`, `|`, `$(...)`) fails with
+`launch_args_need_shell`: put that logic in a script the launch step calls.
+
+A Bazel `.app` under `bazel-out/` is read-only, and simctl refuses it with a
+permission error (`NSPOSIXErrorDomain, code=13`). mav installs it from a
+writable copy in the run directory and deletes the copy once the install
+succeeds.
+
 #### Giving the app its own environment
 
 A `launch` command can carry `NAME=value` assignments in front of it, the way a

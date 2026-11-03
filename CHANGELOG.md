@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.33.1
+
+**The app gets its launch arguments, and Bazel apps install.**
+
+- Arguments after `"$MAV_BUNDLE_ID"` in a `simctl launch` / `idb launch` recipe line reach the app. mav hands that line to a driver, and the driver used to launch the bundle alone, so switches such as `-AppleLanguages "(en)"` or a debug flag read from `ProcessInfo.arguments` were dropped without a word. The trail says `args=<count>`; an argument that needs a shell fails with `launch_args_need_shell`. `idb launch` now puts `--udid` before the bundle id, since everything after it goes to the app.
+- A read-only Bazel bundle installs again: simctl reports it as `NSPOSIXErrorDomain, code=13`, not "permission denied", so the retry from a writable copy never ran and `mav open` failed at `install`.
+- That writable copy is deleted once the install succeeds, instead of leaving a full app (538 MB for the Wallapop app) in every run directory.
+
 ## v0.33.0
 
 **Pick the simulator when you open, not in the config.**
