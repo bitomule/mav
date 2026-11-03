@@ -42,3 +42,18 @@ func TestLaunchWithoutEnvIsUnchanged(t *testing.T) {
 		t.Fatalf("got %s %v want xcrun %v", exec.name, exec.args, want)
 	}
 }
+
+// What the recipe writes after the bundle id is the app's own argv; it goes
+// after the bundle so simctl hands it to the app and not to itself.
+func TestLaunchPassesTheAppArgumentsAfterTheBundle(t *testing.T) {
+	exec := &fakeExec{}
+	target := drivers.Target{Kind: drivers.KindSim, UDID: "SIM-1", Language: "en"}
+	spec := drivers.LaunchSpec{BundleID: "com.example.app", Args: []string{"SkipOnboarding", "-Flag", "1"}}
+	if _, err := New(exec).Launch(context.Background(), target, spec); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"simctl", "launch", "SIM-1", "com.example.app", "-AppleLanguages", "(en)", "SkipOnboarding", "-Flag", "1"}
+	if exec.name != "xcrun" || !reflect.DeepEqual(exec.args, want) {
+		t.Fatalf("got %s %v want xcrun %v", exec.name, exec.args, want)
+	}
+}

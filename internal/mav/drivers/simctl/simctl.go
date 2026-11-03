@@ -229,6 +229,7 @@ func (d *Driver) Launch(ctx context.Context, target drivers.Target, spec drivers
 	}
 	args := []string{"simctl", "launch", simUDID(target), bundleID}
 	args = append(args, simctlLanguageArgs(target)...)
+	args = append(args, spec.Args...)
 	name := "xcrun"
 	// simctl does not take the app's environment as arguments: it copies
 	// its own SIMCTL_CHILD_* variables into the process it spawns. Setting

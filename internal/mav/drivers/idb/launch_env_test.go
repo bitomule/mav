@@ -16,7 +16,7 @@ func TestLaunchCarriesTheEnvironmentAsIDBPrefixed(t *testing.T) {
 	if _, err := New(exec).Launch(context.Background(), drivers.Target{UDID: "REAL-1"}, spec); err != nil {
 		t.Fatal(err)
 	}
-	want := "/usr/bin/env IDB_FOO=bar idb launch -f com.example.app --udid REAL-1"
+	want := "/usr/bin/env IDB_FOO=bar idb launch --udid REAL-1 -f com.example.app"
 	if exec.commands[0] != want {
 		t.Fatalf("command=%q want=%q", exec.commands[0], want)
 	}
@@ -59,7 +59,21 @@ func TestLaunchWithoutEnvIsUnchanged(t *testing.T) {
 	if _, err := New(exec).Launch(context.Background(), drivers.Target{UDID: "REAL-1"}, drivers.LaunchSpec{BundleID: "com.example.app"}); err != nil {
 		t.Fatal(err)
 	}
-	want := "idb launch -f com.example.app --udid REAL-1"
+	want := "idb launch --udid REAL-1 -f com.example.app"
+	if exec.commands[0] != want {
+		t.Fatalf("command=%q want=%q", exec.commands[0], want)
+	}
+}
+
+// idb passes everything after the bundle id to the app, so the target flag
+// has to come before it or the app would receive `--udid <id>` as arguments.
+func TestLaunchPassesTheAppArgumentsAfterTheBundle(t *testing.T) {
+	exec := &fakeExec{tools: map[string]bool{"idb": true}}
+	spec := drivers.LaunchSpec{BundleID: "com.example.app", Args: []string{"SkipOnboarding", "-Flag", "1"}}
+	if _, err := New(exec).Launch(context.Background(), drivers.Target{UDID: "REAL-1"}, spec); err != nil {
+		t.Fatal(err)
+	}
+	want := "idb launch --udid REAL-1 -f com.example.app SkipOnboarding -Flag 1"
 	if exec.commands[0] != want {
 		t.Fatalf("command=%q want=%q", exec.commands[0], want)
 	}

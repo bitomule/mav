@@ -111,3 +111,73 @@ func readCommandsTrail(t *testing.T, root string) string {
 	}
 	return string(data)
 }
+
+// The arguments after the bundle id are the app's switches (a language, a
+// debug flag). The driver used to launch the bundle alone, so the app started
+// without them and nothing said so.
+func TestOpenCarriesTheRecipeLaunchArgumentsIntoTheApp(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.app"
+	cfg.SimulatorUDID = "SIM"
+	cfg.Launch = LaunchConfig{Mode: "custom", Commands: LaunchCommands{
+		AppPath: "make ios-app-path",
+		Install: `xcrun simctl install "$MAV_UDID" "$MAV_APP_PATH"`,
+		Launch:  `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID" SkipOnboarding -AppleLanguages "(en)" -Run "$MAV_BUNDLE_ID"`,
+	}}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runner := &launchRecipeRunner{
+		tools:   map[string]bool{"xcrun": true},
+		results: map[string]CommandResult{"make ios-app-path": {Stdout: "/tmp/App.app\n"}},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"open"}); err != nil {
+		t.Fatal(err)
+	}
+	launch := ""
+	for _, command := range runner.commands {
+		if strings.Contains(command, "simctl launch") {
+			launch = command
+		}
+	}
+	if !strings.HasSuffix(launch, "com.example.app SkipOnboarding -AppleLanguages (en) -Run com.example.app") {
+		t.Fatalf("the app arguments must follow the bundle id: %q (all: %v)", launch, runner.commands)
+	}
+	if trail := readCommandsTrail(t, root); !strings.Contains(trail, "launch.launch driver=simctl args=5") {
+		t.Fatalf("the trail must say arguments were passed:\n%s", trail)
+	}
+}
+
+// Without a shell, `;` or `$(...)` would reach the app as literal text.
+func TestOpenRefusesLaunchArgumentsThatNeedAShell(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.BundleID = "com.example.app"
+	cfg.SimulatorUDID = "SIM"
+	cfg.Launch = LaunchConfig{Mode: "custom", Commands: LaunchCommands{
+		AppPath: "make ios-app-path",
+		Install: `xcrun simctl install "$MAV_UDID" "$MAV_APP_PATH"`,
+		Launch:  `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID" -Stamp $(date)`,
+	}}
+	if err := SaveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runner := &launchRecipeRunner{
+		tools:   map[string]bool{"xcrun": true},
+		results: map[string]CommandResult{"make ios-app-path": {Stdout: "/tmp/App.app\n"}},
+	}
+	var out bytes.Buffer
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	_ = cli.Run(context.Background(), []string{"open"})
+	if !strings.Contains(out.String(), "launch_args_need_shell") {
+		t.Fatalf("expected launch_args_need_shell, got: %s", out.String())
+	}
+	for _, command := range runner.commands {
+		if strings.Contains(command, "simctl launch") {
+			t.Fatalf("nothing must be launched: %q", command)
+		}
+	}
+}
