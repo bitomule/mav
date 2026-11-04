@@ -787,6 +787,12 @@ func (c CLI) doctor(ctx context.Context, opts GlobalOptions) error {
 	}
 	fields["mav_version"] = Version
 	addDoctorMatrixFields(fields, caps)
+	if targetKind(cfg) != drivers.KindMac {
+		if broken := c.reportUnhealthyDrivers(ctx, cfg, caps, fields); len(broken) > 0 {
+			missing = append(missing, broken...)
+			fields["next"] = "mav setup --install " + strings.Join(missing, " ")
+		}
+	}
 	c.vmDoctorFields(ctx, cfg, fields)
 	if targetKind(cfg) == drivers.KindSim && cfg.SimulatorUDID != "" {
 		if lock, locked := simulatorLockedByOther(cfg.SimulatorUDID, c.Root); locked {
