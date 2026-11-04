@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.33.3
+
+**`mav doctor` reports an idb or a baguette that mav refuses to use.**
+
+doctor read idb and baguette off PATH, so it said `coordinate_tap_driver=idb` and `multitouch=ok` with an idb_companion older than 1.6.4 or a baguette older than 0.2.1, while the router turned both down on every command: coordinate taps went to axe, and `hideKeyboard` and `ui tree --include-system` failed or fell back without saying so. doctor now runs the same probes the router runs. A baguette below the floor reads `multitouch=broken` with `baguette_issue` and `baguette_next`; an idb below it reads `device_fallback=broken` with `idb_issue` and `idb_next`, and `coordinate_tap_driver` names the driver that really takes the taps. Both go into `next`.
+
 ## v0.33.2
 
 **`mav doctor` notices an axe that cannot run, and the error says why.**

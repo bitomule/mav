@@ -272,6 +272,56 @@ func (caps Capabilities) fields() map[string]string {
 	return fields
 }
 
+// reportUnhealthyDrivers runs, for idb and baguette, the probe the router runs
+// before it hands either one a command, and corrects the fields that were read
+// off PATH. An idb_companion or a baguette older than mav needs is still on
+// PATH, so doctor said coordinate_tap_driver=idb and multitouch=ok while every
+// command routed around them: coordinate taps went to axe, and hideKeyboard
+// and the system tree failed. It returns the drivers to reinstall. Only doctor
+// pays for the probes, like ResolveIDBIssue.
+func (c CLI) reportUnhealthyDrivers(ctx context.Context, cfg Config, caps Capabilities, fields map[string]string) []string {
+	registry := c.driverRegistry()
+	probe := NewExecutor(c.Runner)
+	unhealthy := func(id string) (drivers.HealthReport, bool) {
+		driver := registry.Lookup(id)
+		if !caps.Tools[id] || driver == nil {
+			return drivers.HealthReport{}, false
+		}
+		report := driver.Probe(ctx, probe)
+		return report, !report.IsHealthy()
+	}
+	var broken []string
+	if report, bad := unhealthy("baguette"); bad {
+		broken = append(broken, "baguette")
+		fields["multitouch"] = "broken"
+		delete(fields, "multitouch_driver")
+		delete(fields, "sim_multitouch_driver")
+		fields["baguette_issue"] = report.Detail
+		fields["baguette_next"] = report.Next
+	}
+	if report, bad := unhealthy("idb"); bad {
+		broken = append(broken, "idb")
+		fields["device_fallback"] = "broken"
+		delete(fields, "device_fallback_driver")
+		delete(fields, "device_coord_tap_driver")
+		if fields["idb_issue"] == "" {
+			fields["idb_issue"] = report.Detail
+			fields["idb_next"] = report.Next
+		}
+		// The router hands coordinate taps to the next healthy driver, so
+		// report the one that actually takes them.
+		if driver, _, err := c.router().Route(ctx, drivers.CapCoordTap, targetFromConfig(cfg), ""); err == nil {
+			fields["coordinate_tap_driver"] = driver.ID()
+			fields["sim_coord_tap_driver"] = driver.ID()
+		} else {
+			fields["coordinate_tap"] = "broken"
+			delete(fields, "coordinate_tap_driver")
+			delete(fields, "sim_coord_tap_driver")
+		}
+	}
+	return broken
+}
+
 // ResolveIDBIssue asks whether idb is broken by the active Python version, and
 // is called only where the answer is about to be printed. Running it eagerly
 // cost every command 116ms for a hint that is read when a tap has ALREADY

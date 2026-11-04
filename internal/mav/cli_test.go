@@ -3313,3 +3313,40 @@ func TestDoctorReportsAnAxeThatCannotRun(t *testing.T) {
 		}
 	}
 }
+
+func TestDoctorReportsABaguetteTooOldForMav(t *testing.T) {
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{
+		tools: map[string]bool{"xcrun": true, "axe": true, "idb": true, "baguette": true},
+		out:   map[string]string{"baguette --version": "0.1.73\n"},
+	}, Root: t.TempDir(), Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"doctor"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{"multitouch=broken", "baguette_issue=", "0.1.73", "baguette_next=", "mav setup --install baguette"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in %q", want, got)
+		}
+	}
+	for _, unwanted := range []string{"multitouch=ok", "multitouch_driver=baguette", "sim_multitouch_driver=baguette"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("doctor still reports %q for a baguette mav refuses: %q", unwanted, got)
+		}
+	}
+}
+
+func TestDoctorKeepsAHealthyBaguette(t *testing.T) {
+	var out bytes.Buffer
+	cli := CLI{Runner: fakeRunner{
+		tools: map[string]bool{"xcrun": true, "axe": true, "idb": true, "baguette": true},
+		out:   map[string]string{"baguette --version": "0.2.12\n"},
+	}, Root: t.TempDir(), Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"doctor"}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "multitouch=ok") || strings.Contains(got, "baguette_issue=") {
+		t.Fatalf("a baguette mav accepts should read ok: %q", got)
+	}
+}

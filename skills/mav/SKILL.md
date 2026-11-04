@@ -135,6 +135,9 @@ entirely.
    `accessibility=broken` with `axe_issue=axe_not_runnable` means axe is on
    PATH but macOS kills it at launch (an unsigned or damaged binary): reinstall
    axe before reading trees or tapping.
+   `multitouch=broken` with `baguette_issue`, or `device_fallback=broken` with
+   `idb_issue`, means that tool is older than mav needs: run its `_next`
+   before relying on gestures, `hideKeyboard`, `--include-system` or a device.
 2. If the project lacks `.mav/config.yaml`, run `mav setup` and review the
    prompts. Setup is idempotent and interactive by default: it detects app
    identity, simulator defaults, UI tools, and an editable `launch.commands`
