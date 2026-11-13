@@ -175,10 +175,10 @@ input or a failure is printed only with `--raw`. AXe resolves a `tap` or
 `ambiguousElement` and `elementNotHittable` from those commands report
 `delivery=notSent`. The same codes from a scroll-until or a batch stay
 `uncertain`, because input may already have been sent. When AXe refuses a tap
-selector as ambiguous and every match in the tree has the same frame (a
-container that repeats its button's id), MAV taps the centre of that frame and
-says `selector_via=tree same_frame=true`. Matches in different places stay
-`ambiguousElement`.
+selector as ambiguous and the matches' frames are nested, each inside the next (a container that repeats its button's id; equal
+frames count, with 0.5 pt tolerance), MAV taps the centre of the innermost frame
+and says `selector_via=tree nested=true matches=N`. Matches side by side, or
+overlapping without containment, stay `ambiguousElement` and send no input.
 
 Evidence recording captures the display active at startup. Foreground
 `video record --follow-active-display` can follow display changes. Background

@@ -3397,9 +3397,10 @@ func (c CLI) tapSelectorViaTree(ctx context.Context, opts GlobalOptions, cfg Con
 }
 
 // coincidentTapPoint answers whether a selector AXe refused as ambiguous names
-// one place on screen: every match has the same frame, as when a container
-// repeats its button's id. AXe sent no input before refusing, so tapping the
-// shared centre is safe. Matches in different places stay ambiguous.
+// one place on screen: the matches' frames form a nesting chain, as when a
+// container repeats its button's id. AXe sent no input before refusing, so
+// tapping the centre of the innermost frame is safe. Matches side by side or
+// overlapping without containment stay ambiguous.
 func (c CLI) coincidentTapPoint(ctx context.Context, cfg Config, prefer string, selector Selector, tapErr error) (map[string]string, int, int, bool) {
 	var native *drivers.DriverError
 	if !errors.As(tapErr, &native) || native.Code != "ambiguousElement" || native.Delivery != drivers.DeliveryNotSent {
@@ -3413,25 +3414,38 @@ func (c CLI) coincidentTapPoint(ctx context.Context, cfg Config, prefer string, 
 	if err != nil || len(matches) < 2 {
 		return nil, 0, 0, false
 	}
-	mx, my, mw, mh, ok := parseElementFrame(matches[0].Frame)
-	if !ok || mw <= 0 || mh <= 0 {
-		return nil, 0, 0, false
+	type framed struct {
+		el         Element
+		x, y, w, h float64
 	}
-	for _, m := range matches[1:] {
+	chain := make([]framed, 0, len(matches))
+	for _, m := range matches {
 		x, y, w, h, ok := parseElementFrame(m.Frame)
-		if !ok || x != mx || y != my || w != mw || h != mh {
+		if !ok || w <= 0 || h <= 0 {
+			return nil, 0, 0, false
+		}
+		chain = append(chain, framed{m, x, y, w, h})
+	}
+	// Largest first; the stable sort keeps tree order for equal areas.
+	sort.SliceStable(chain, func(i, j int) bool { return chain[i].w*chain[i].h > chain[j].w*chain[j].h })
+	const tolerance = 0.5
+	for i := 1; i < len(chain); i++ {
+		outer, inner := chain[i-1], chain[i]
+		if inner.x < outer.x-tolerance || inner.y < outer.y-tolerance ||
+			inner.x+inner.w > outer.x+outer.w+tolerance || inner.y+inner.h > outer.y+outer.h+tolerance {
 			return nil, 0, 0, false
 		}
 	}
+	target := chain[len(chain)-1]
 	fields := map[string]string{
 		"selector_via":   "tree",
 		"selector_error": firstLine(tapErr.Error()),
-		"matched_id":     matches[0].ID,
-		"matched_text":   elementText(matches[0]),
+		"matched_id":     target.el.ID,
+		"matched_text":   elementText(target.el),
 		"matches":        strconv.Itoa(len(matches)),
-		"same_frame":     "true",
+		"nested":         "true",
 	}
-	return fields, int(mx + mw/2), int(my + mh/2), true
+	return fields, int(target.x + target.w/2), int(target.y + target.h/2), true
 }
 
 // tapCoincidentMatches is coincidentTapPoint for the CLI tap path.

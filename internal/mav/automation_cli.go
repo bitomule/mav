@@ -717,7 +717,7 @@ func automationFields(req Automation, driver string) map[string]string {
 }
 
 // coincidentTapAutomation turns a selector tap AXe refused as ambiguous into a
-// tap at the matches' shared centre, when they all have one frame.
+// tap at the innermost match's centre, when the matches' frames are nested.
 func (c CLI) coincidentTapAutomation(ctx context.Context, cfg Config, opts GlobalOptions, req Automation, tapErr error) (Automation, map[string]string, bool) {
 	var spec drivers.TapSpec
 	if decodeOptions(req.Options, &spec) != nil || spec.SemanticPress || spec.Selector.IsZero() {

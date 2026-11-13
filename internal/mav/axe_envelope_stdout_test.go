@@ -65,6 +65,43 @@ const separateCloseButtonsTree = `[{"AXLabel":"App","type":"Application","AXFram
 {"AXUniqueId":"navbar_close","AXLabel":"Close","type":"Button","AXFrame":"{{16, 62}, {32, 32}}"},
 {"AXUniqueId":"navbar_close","AXLabel":"Close","type":"Button","AXFrame":"{{354, 62}, {32, 32}}"}]}]`
 
+// The same nav bar with Liquid Glass on: the container is wider than the
+// button but contains it, so they are still one target.
+const nestedNavBarTree = `[{"AXLabel":"App","type":"Application","AXFrame":"{{0, 0}, {402, 874}}","children":[
+{"AXUniqueId":"navbar_close","AXLabel":"Close","type":"Group","AXFrame":"{{20, 66}, {36, 36}}","children":[
+{"AXUniqueId":"navbar_close","AXLabel":"Close","type":"Button","AXFrame":"{{24, 66}, {28, 36}}"}]}]}]`
+
+// Overlapping without containment is two targets.
+const overlappingCloseButtonsTree = `[{"AXLabel":"App","type":"Application","AXFrame":"{{0, 0}, {402, 874}}","children":[
+{"AXUniqueId":"navbar_close","AXLabel":"Close","type":"Button","AXFrame":"{{20, 66}, {36, 36}}"},
+{"AXUniqueId":"navbar_close","AXLabel":"Close","type":"Button","AXFrame":"{{40, 66}, {36, 36}}"}]}]`
+
+func TestTapByIDTapsTheInnermostOfNestedMatches(t *testing.T) {
+	c, r, _, out := nativeCLI(t, "simulator")
+	ambiguousTapRunner(r, nestedNavBarTree)
+	_ = c.Run(context.Background(), []string{"ui", "tap", "--id", "navbar_close"})
+	got := out.String()
+	if !strings.HasPrefix(got, "ok cmd=ui.tap") || !strings.Contains(got, "nested=true") || !strings.Contains(got, "matches=2") {
+		t.Fatalf("nested matches are one target and must be tapped:\n%s", got)
+	}
+	taps := coordinateTaps(r)
+	if len(taps) != 1 || !strings.Contains(taps[0], "-x 38 -y 84") {
+		t.Fatalf("want one tap at the innermost frame's centre, got %v", taps)
+	}
+}
+
+func TestTapByIDStaysAmbiguousWhenMatchesOverlapWithoutNesting(t *testing.T) {
+	c, r, _, out := nativeCLI(t, "simulator")
+	ambiguousTapRunner(r, overlappingCloseButtonsTree)
+	_ = c.Run(context.Background(), []string{"ui", "tap", "--id", "navbar_close"})
+	if !strings.HasPrefix(out.String(), "fail code=ambiguousElement") {
+		t.Fatalf("overlapping matches must stay ambiguous:\n%s", out)
+	}
+	if taps := coordinateTaps(r); len(taps) != 0 {
+		t.Fatalf("no input may be sent for a real ambiguity: %v", taps)
+	}
+}
+
 func ambiguousTapRunner(r *nativeTestRunner, tree string) {
 	r.respond = func(args []string) (CommandResult, bool) {
 		joined := strings.Join(args, " ")
@@ -105,7 +142,7 @@ func TestTapByIDTapsMatchesThatShareOneFrame(t *testing.T) {
 				t.Fatalf("matches with one frame are one target and must be tapped:\n%s", got)
 			}
 			taps := coordinateTaps(r)
-			if len(taps) != 1 || !strings.Contains(taps[0], "-x 32 -y 78") {
+			if len(taps) != 1 || !strings.Contains(taps[0], "-x 32 -y 78") || !strings.Contains(got, "nested=true") {
 				t.Fatalf("want one tap at the shared frame's centre, got %v", taps)
 			}
 			if !strings.Contains(got, "selector_via=tree") || !strings.Contains(got, "matched_id=navbar_close") {
