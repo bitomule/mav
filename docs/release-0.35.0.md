@@ -59,3 +59,21 @@ guarantees, including the limits of ordinary tree preflight.
 Read the [migration guide](https://github.com/bitomule/mav/blob/v0.35.0/docs/goal-migration.md),
 [engine contract](https://github.com/bitomule/mav/blob/v0.35.0/docs/design/goal-engine.md)
 and [controlled evaluation](https://github.com/bitomule/mav/blob/v0.35.0/docs/evaluation/goal.md).
+
+## AXe 2 command corrections
+
+Ordinary input commands keep native JSON off stdout unless `--raw` is requested;
+read commands still print their data, and flow evidence retains the envelope.
+The `ui tree` node count now matches its printed, deduplicated elements.
+
+An ambiguous ordinary ID tap can recover when a fresh AXe tree shows the same
+ID on structural ancestors and one innermost button. Type filters, active
+ancestry and containing frames are required. Other ambiguity and selected
+display/process refusals remain errors. This coordinate fallback has ordinary
+read-before-input guarantees; goal's checked reference executor does not use it.
+
+Native receipts take precedence over command error codes. Earlier delivered or
+uncertain input survives aggregation, and unknown cleanup or quarantine prevents
+replay. Without a receipt, only source-checked tap failures can prove that input
+was not sent. A slider error remains uncertain because resolution can fail after
+the drag.

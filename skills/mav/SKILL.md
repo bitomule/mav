@@ -29,7 +29,9 @@ The hard limits are 12 goal actions and 90 seconds. Modals need an exact,
 non-destructive `--dismiss-permission` button; at most three dismissals are
 separate from navigation progress. Never replay partial or unknown input, or
 repeat a goal after any delivered input just because observation failed.
-Goto remains available until the controlled comparison's retirement gate passes.
+`goto` is retired; migrate to `goal` and replace `--arrived-when` with
+`--succeeded-when`. In YAML, replace `goto` with `goal` and `arrivedWhen`
+with `succeededWhen`. Old forms fail with migration instructions before input.
 
 `mav --version` reports the binary's version, and `mav doctor` carries it as
 `mav_version`. Include it when you report a problem: behaviour differs between releases
@@ -53,8 +55,9 @@ apply portrait transforms. Selected simulator input can bind `--screen-id` and
 A failure with `delivery=sent|uncertain` and `retry=unsafe` must not be replayed.
 Inspect its receipt and observe the UI before deciding the next action.
 
-Snapshot/ref protocols and the autonomous AXe agent are outside this release.
-MAV's existing `ui tree --agent` remains its own compact tree formatter.
+Goal uses AXe simulator snapshot/ref admission for checked input. MAV owns the
+planning loop and never runs the autonomous AXe agent. `ui tree --agent`
+remains MAV's own compact tree formatter.
 
 ## Platforms
 

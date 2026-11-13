@@ -38,8 +38,8 @@ does not verify success. An initially satisfied condition reports
 `succeededWhen`; typed text comes only from quoted literals or declared inputs.
 The cap remains 12 goal actions and 90 seconds. Partial or unknown input is
 never replayed. See the [goal contract](docs/design/goal-engine.md) and
-[comparison harness](tools/goal-bench/README.md). Goto remains available until
-the comparison's retirement gate passes.
+[comparison harness](tools/goal-bench/README.md). `goto` is retired in 0.35.0;
+the [migration guide](docs/goal-migration.md) covers CLI and YAML replacements.
 
 ## Why MAV?
 

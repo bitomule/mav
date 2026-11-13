@@ -55,6 +55,12 @@ See the [migration guide](docs/goal-migration.md),
 [engine contract](docs/design/goal-engine.md) and
 [controlled evaluation](docs/evaluation/goal.md).
 
+AXe 2 input keeps native JSON off stdout unless `--raw` is requested; tree
+counts match the printed elements. Ordinary ambiguous ID taps can recover only
+from fresh, active structural ancestry ending in one button. Receipt evidence
+and uncertainty survive aggregation; slider errors without receipts remain
+uncertain. See the [release notes](docs/release-0.35.0.md) for the limits.
+
 ## v0.33.3
 
 **`mav doctor` reports an idb or a baguette that mav refuses to use.**
