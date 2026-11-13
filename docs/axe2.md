@@ -168,6 +168,18 @@ next action. Structured flow evidence retains the native receipt/envelope in the
 run directory. A successful HID receipt proves dispatch, not application-level
 success; use an assertion or a verified observation for that.
 
+Stdout carries only the `ok` / `fail` line. A read (`sim displays`, settings
+show and similar) prints its data after that line; the native envelope of an
+input or a failure is printed only with `--raw`. AXe resolves a `tap` or
+`slider` selector before it sends input, so `elementNotFound`,
+`ambiguousElement` and `elementNotHittable` from those commands report
+`delivery=notSent`. The same codes from a scroll-until or a batch stay
+`uncertain`, because input may already have been sent. When AXe refuses a tap
+selector as ambiguous and every match in the tree has the same frame (a
+container that repeats its button's id), MAV taps the centre of that frame and
+says `selector_via=tree same_frame=true`. Matches in different places stay
+`ambiguousElement`.
+
 Evidence recording captures the display active at startup. Foreground
 `video record --follow-active-display` can follow display changes. Background
 evidence recording does not use follow mode: AXe keeps that mode's output in an

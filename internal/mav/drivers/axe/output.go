@@ -74,6 +74,9 @@ func decodeOutput(res drivers.ExecResult, mutation bool) (drivers.NativeResult, 
 		code, message := "axe_command_failed", failureText(res)
 		if envelope.Error != nil {
 			code, message = envelope.Error.Code, envelope.Error.Message
+			if failedBeforeInput(envelope.Command, code) && (result.Receipt == nil || result.Receipt.EnqueuedEventCount == 0) {
+				delivery = drivers.DeliveryNotSent
+			}
 		}
 		return fail(code, message, result.Receipt)
 	}
@@ -83,6 +86,19 @@ func decodeOutput(res drivers.ExecResult, mutation bool) (drivers.NativeResult, 
 		return fail("axe_input_incomplete", "AXe input did not complete; inspect the receipt before sending more input", r)
 	}
 	return result, nil
+}
+
+// failedBeforeInput reports AXe 2.0.4 failures that end the command before
+// any HID input. tap and slider resolve their selector first; scroll-until and
+// batch can fail with the same codes after input, so they are left out.
+func failedBeforeInput(command, code string) bool {
+	switch code {
+	case "rejectedBeforeInput":
+		return command != "batch"
+	case "elementNotFound", "ambiguousElement", "elementNotHittable":
+		return command == "tap" || command == "slider"
+	}
+	return false
 }
 
 func nonNull(raw json.RawMessage) bool { return len(raw) > 0 && string(raw) != "null" }

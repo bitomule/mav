@@ -83,6 +83,10 @@ type CLI struct {
 	// a simpool slot and started a cold simulator just to report a udid
 	// nobody asked for.
 	skipTargetResolution bool
+
+	// rawOutput mirrors --raw for the paths that print a native AXe envelope
+	// but are not handed GlobalOptions, such as automationFailure.
+	rawOutput bool
 }
 
 func (c CLI) withSkipBuild(skip bool) CLI {
@@ -132,6 +136,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 func (c CLI) Run(ctx context.Context, args []string) error {
 	c.driverSession = &driverSession{}
 	opts, rest := parseGlobal(args)
+	c.rawOutput = opts.Raw
 	// --profile propagates through the environment instead of being threaded
 	// through the ~50 LoadConfig call sites. Two reasons: the documented
 	// precedence (--profile beats MAV_PROFILE) still holds because the flag
@@ -2615,16 +2620,14 @@ func (c CLI) observeUITree(cfg Config, raw, treeDriver string, _persist bool) ui
 		Driver:   treeDriver,
 		Screen:   "unknown",
 		Elements: ExtractElements(raw),
-		Nodes:    countTreeNodes(raw),
 	}
+	// nodes= reports the elements that are printed, so it matches the lines.
+	state.Nodes = len(state.Elements)
 	if id, _, ok := explicitScreenIdentity(state.Elements); ok {
 		state.Screen = id
 		state.ScreenSource = "identity"
 	} else {
 		state.ScreenSource = "identity_missing"
-	}
-	if state.Nodes == 0 {
-		state.Nodes = strings.Count(raw, "\n")
 	}
 	return state
 }
@@ -3157,6 +3160,9 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		result := CommandResult{}
 		if tapErr != nil {
 			if driver.ID() == "axe" {
+				if e := c.tapCoincidentMatches(ctx, opts, cfg, args, selector, prefer, tapErr); e != errSelectorTreeFallbackUnavailable {
+					return e
+				}
 				return c.automationFailure(tapErr)
 			}
 			result = CommandResult{Stderr: tapErr.Error(), Err: tapErr}
@@ -3388,6 +3394,60 @@ func (c CLI) tapSelectorViaTree(ctx context.Context, opts GlobalOptions, cfg Con
 	}
 	return c.withTapFallback(fallback).uiTap(ctx, opts, cfg, append(onlyFastPathArgs(args),
 		"--x", strconv.Itoa(int(mx+mw/2)), "--y", strconv.Itoa(int(my+mh/2))))
+}
+
+// coincidentTapPoint answers whether a selector AXe refused as ambiguous names
+// one place on screen: every match has the same frame, as when a container
+// repeats its button's id. AXe sent no input before refusing, so tapping the
+// shared centre is safe. Matches in different places stay ambiguous.
+func (c CLI) coincidentTapPoint(ctx context.Context, cfg Config, prefer string, selector Selector, tapErr error) (map[string]string, int, int, bool) {
+	var native *drivers.DriverError
+	if !errors.As(tapErr, &native) || native.Code != "ambiguousElement" || native.Delivery != drivers.DeliveryNotSent {
+		return nil, 0, 0, false
+	}
+	described, err := c.describeUITree(ctx, cfg, prefer, false)
+	if err != nil || described.Result.Err != nil {
+		return nil, 0, 0, false
+	}
+	matches, err := MatchElements(ExtractElements(described.Result.Stdout), selector)
+	if err != nil || len(matches) < 2 {
+		return nil, 0, 0, false
+	}
+	mx, my, mw, mh, ok := parseElementFrame(matches[0].Frame)
+	if !ok || mw <= 0 || mh <= 0 {
+		return nil, 0, 0, false
+	}
+	for _, m := range matches[1:] {
+		x, y, w, h, ok := parseElementFrame(m.Frame)
+		if !ok || x != mx || y != my || w != mw || h != mh {
+			return nil, 0, 0, false
+		}
+	}
+	fields := map[string]string{
+		"selector_via":   "tree",
+		"selector_error": firstLine(tapErr.Error()),
+		"matched_id":     matches[0].ID,
+		"matched_text":   elementText(matches[0]),
+		"matches":        strconv.Itoa(len(matches)),
+		"same_frame":     "true",
+	}
+	return fields, int(mx + mw/2), int(my + mh/2), true
+}
+
+// tapCoincidentMatches is coincidentTapPoint for the CLI tap path.
+func (c CLI) tapCoincidentMatches(ctx context.Context, opts GlobalOptions, cfg Config, args []string, selector Selector, prefer string, tapErr error) error {
+	if !c.resolveCapabilities(ctx, cfg).CoordinateTap {
+		return errSelectorTreeFallbackUnavailable
+	}
+	fallback, x, y, ok := c.coincidentTapPoint(ctx, cfg, prefer, selector, tapErr)
+	if !ok {
+		return errSelectorTreeFallbackUnavailable
+	}
+	if c.tapFallbackSink != nil {
+		*c.tapFallbackSink = fallback
+	}
+	return c.withTapFallback(fallback).uiTap(ctx, opts, cfg, append(onlyFastPathArgs(args),
+		"--x", strconv.Itoa(x), "--y", strconv.Itoa(y)))
 }
 
 // elementTapHandle is the name an already-resolved element can be tapped by,

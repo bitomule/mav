@@ -51,7 +51,9 @@ func (c CLI) automationFailure(err error) error {
 		}
 	}
 	writeErr := Fail(code, fields).Write(c.Stdout)
-	if native != nil && len(native.Details) > 0 && json.Valid(native.Details) {
+	// The fail line already carries the code, message and receipt; the native
+	// envelope is only printed when the caller asks for tool output.
+	if c.rawOutput && native != nil && len(native.Details) > 0 && json.Valid(native.Details) {
 		if _, err := fmt.Fprintln(c.Stdout, string(native.Details)); err != nil {
 			return err
 		}
@@ -443,6 +445,23 @@ func (c CLI) executeAutomation(ctx context.Context, cfg Config, prefer string, r
 }
 func (c CLI) automationOutput(ctx context.Context, cfg Config, opts GlobalOptions, req Automation) error {
 	result, driver, err := c.executeAutomation(ctx, cfg, routerPrefer(opts.PreferDriver), req)
+	if err != nil && driver == "axe" && req.Command == "tap" {
+		if point, fallback, ok := c.coincidentTapAutomation(ctx, cfg, opts, req, err); ok {
+			req = point
+			result, driver, err = c.executeAutomation(ctx, cfg, routerPrefer(opts.PreferDriver), req)
+			if err == nil {
+				fields := automationFields(req, driver)
+				for k, v := range fallback {
+					fields[k] = v
+				}
+				if result.Receipt != nil {
+					b, _ := json.Marshal(result.Receipt)
+					fields["receipt"] = string(b)
+				}
+				return c.OK("ui.tap", fields).Write(c.Stdout)
+			}
+		}
+	}
 	if err != nil {
 		return c.automationFailure(err)
 	}
@@ -454,7 +473,9 @@ func (c CLI) automationOutput(ctx context.Context, cfg Config, opts GlobalOption
 	if err = c.OK("ui."+req.Command, fields).Write(c.Stdout); err != nil {
 		return err
 	}
-	if len(result.Data) > 0 {
+	// A read returns its data here; an input's data is AXe's own completion
+	// record, which the ok line already reports.
+	if len(result.Data) > 0 && (automationIsReadOnly(req) || opts.Raw || c.rawOutput) {
 		_, err = fmt.Fprintln(c.Stdout, string(result.Data))
 	}
 	return err
@@ -693,6 +714,30 @@ func automationFields(req Automation, driver string) map[string]string {
 		}
 	}
 	return fields
+}
+
+// coincidentTapAutomation turns a selector tap AXe refused as ambiguous into a
+// tap at the matches' shared centre, when they all have one frame.
+func (c CLI) coincidentTapAutomation(ctx context.Context, cfg Config, opts GlobalOptions, req Automation, tapErr error) (Automation, map[string]string, bool) {
+	var spec drivers.TapSpec
+	if decodeOptions(req.Options, &spec) != nil || spec.SemanticPress || spec.Selector.IsZero() {
+		return req, nil, false
+	}
+	selector := Selector{ID: spec.Selector.ID, Text: spec.Selector.Text, Value: spec.Selector.Value}
+	fallback, x, y, ok := c.coincidentTapPoint(ctx, cfg, opts.PreferDriver, selector, tapErr)
+	if !ok {
+		return req, nil, false
+	}
+	options := map[string]any{}
+	for k, v := range req.Options {
+		switch normalizedOption(k) {
+		case "selector", "elementtype", "waittimeout", "pollinterval":
+			continue
+		}
+		options[k] = v
+	}
+	options["X"], options["Y"] = x, y
+	return Automation{Command: "tap", Options: options, Context: req.Context}, fallback, true
 }
 
 func automationIsReadOnly(req Automation) bool {
