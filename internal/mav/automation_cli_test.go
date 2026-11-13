@@ -17,6 +17,8 @@ type nativeTestRunner struct {
 	version  string
 	response CommandResult
 	commands [][]string
+	// respond, when set, answers a command before the fixed response does.
+	respond func(args []string) (CommandResult, bool)
 }
 
 func (r *nativeTestRunner) LookPath(name string) (string, error) {
@@ -29,6 +31,11 @@ func (r *nativeTestRunner) Run(_ context.Context, name string, args ...string) C
 	r.commands = append(r.commands, append([]string{name}, args...))
 	if name == "axe" && len(args) == 1 && args[0] == "--version" {
 		return CommandResult{Stdout: r.version}
+	}
+	if r.respond != nil {
+		if res, ok := r.respond(args); ok {
+			return res
+		}
 	}
 	return r.response
 }
