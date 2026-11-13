@@ -293,6 +293,78 @@ func sendWorkerGesture(run RunState, udid string, events []workerGestureEvent) e
 }
 
 func (c CLI) runInternalWorker(ctx context.Context, args []string) error {
+	return c.runInternalWorkerWithStartup(ctx, args, workerStartup{
+		listen: func(socket string) (*workerSocketListener, error) {
+			return listenWorkerSocket(socket, os.Chmod)
+		},
+	})
+}
+
+// workerStartup keeps startup dependencies local to one invocation. ready is
+// called only once the listener and worker state are ready to serve requests.
+type workerStartup struct {
+	listen func(string) (*workerSocketListener, error)
+	ready  func()
+}
+
+type workerSocketListener struct {
+	*net.UnixListener
+	inode    uint64
+	hasInode bool
+}
+
+// listenWorkerSocket binds the pathname without accepting connections until its
+// permissions have been set. Changing the process umask would affect unrelated
+// goroutines creating files, so permissions are applied to this socket only.
+func listenWorkerSocket(socket string, chmod func(string, os.FileMode) error) (listener *workerSocketListener, err error) {
+	// Darwin has no SOCK_CLOEXEC. Hold the fork lock until the descriptor is
+	// close-on-exec so concurrently started children cannot inherit it.
+	syscall.ForkLock.RLock()
+	fd, err := syscall.Socket(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err == nil {
+		syscall.CloseOnExec(fd)
+	}
+	syscall.ForkLock.RUnlock()
+	if err != nil {
+		return nil, os.NewSyscallError("socket", err)
+	}
+	file := os.NewFile(uintptr(fd), socket)
+	defer file.Close()
+	if err := syscall.Bind(fd, &syscall.SockaddrUnix{Name: socket}); err != nil {
+		return nil, os.NewSyscallError("bind", err)
+	}
+	inode, hasInode := socketInode(socket)
+	defer func() {
+		if err != nil {
+			current, ok := socketInode(socket)
+			if !hasInode || (ok && current == inode) {
+				_ = os.Remove(socket)
+			}
+		}
+	}()
+	if err := chmod(socket, 0o600); err != nil {
+		return nil, err
+	}
+	if current, ok := socketInode(socket); hasInode && (!ok || current != inode) {
+		return nil, fmt.Errorf("worker_socket_replaced")
+	}
+	if err := syscall.Listen(fd, syscall.SOMAXCONN); err != nil {
+		return nil, os.NewSyscallError("listen", err)
+	}
+	// FileListener duplicates fd and puts the duplicate in Go's network poller;
+	// the original descriptor is closed by the defer above on every exit path.
+	converted, err := net.FileListener(file)
+	if err != nil {
+		return nil, err
+	}
+	listener = &workerSocketListener{UnixListener: converted.(*net.UnixListener), inode: inode, hasInode: hasInode}
+	// runWorker.close checks the inode before unlinking, including when another
+	// worker has replaced the path. FileListener already defaults to no unlink.
+	listener.SetUnlinkOnClose(false)
+	return listener, nil
+}
+
+func (c CLI) runInternalWorkerWithStartup(ctx context.Context, args []string, startup workerStartup) error {
 	socket := flagValue(args, "--socket")
 	if socket == "" {
 		return fmt.Errorf("worker_socket_missing")
@@ -305,32 +377,27 @@ func (c CLI) runInternalWorker(ctx context.Context, args []string) error {
 		}
 		lease = parsed
 	}
-	// Surface a failed unlink instead of letting net.Listen report an opaque
+	// Surface a failed unlink instead of letting bind report an opaque
 	// address-in-use: if the path is held by a file this uid cannot remove,
 	// the degrade-to-direct log line should name that cause.
 	if err := os.Remove(socket); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("worker_socket_unlink: %w", err)
 	}
-	listener, err := net.Listen("unix", socket)
+	listener, err := startup.listen(socket)
 	if err != nil {
-		return err
-	}
-	if err := os.Chmod(socket, 0o600); err != nil {
-		_ = listener.Close()
 		return err
 	}
 	worker := &runWorker{
 		socket: socket, listener: listener, sessions: map[string]*baguetteInputSession{},
 		lease: lease, lastSeen: time.Now(),
+		inode: listener.inode, hasInode: listener.hasInode,
 	}
-	if ino, ok := socketInode(socket); ok {
-		worker.inode, worker.hasInode = ino, true
+	if startup.ready != nil {
+		startup.ready()
 	}
 	expired := false
 	for {
-		if unixListener, ok := listener.(*net.UnixListener); ok {
-			_ = unixListener.SetDeadline(worker.leaseDeadline())
-		}
+		_ = listener.SetDeadline(worker.leaseDeadline())
 		conn, err := listener.Accept()
 		if err != nil {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
