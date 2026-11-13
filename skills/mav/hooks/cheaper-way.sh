@@ -115,26 +115,18 @@ rule_mav_tree_without_find() {
 	return 0
 }
 
-rule_chained_taps_without_goto() {
-	# `goto` is NOT like `find`, and the difference decides when this speaks.
-	# find is worth suggesting on any tree, because it always buys context.
-	# goto only wins from the SECOND step: measured, one tap through goto is
-	# 5,012ms against 4,474ms for today's path, and two taps are 7,336ms
-	# against 9,733ms. Suggesting it for a single tap would be advice that
-	# makes things slower.
-	#
-	# So the signal has to be chained navigation, and this hook keeps no state
-	# by design — no counter, nothing that can go stale. The one chain it CAN
-	# see without state is a chain inside one command line: two or more taps
-	# issued together. That is narrow, and narrow is the right side to err on
-	# here: the alternative is a stateful "how many taps this session" that
-	# would be wrong after a compaction and would nag on every single tap.
+rule_chained_taps_without_goal() {
+	# Suggest an objective only for a chain of navigation commands. A single
+	# known control already has an explicit action; it needs no goal loop.
+	# This rule makes no latency or cost claim: the old goto measurements do
+	# not establish the performance of goal.
+	# Keep the signal local to this command, without session state.
 	case "$CMD" in
 	*"mav ui tap"* | *"mav ui swipe"*) ;;
 	*) return 1 ;;
 	esac
 	case "$CMD" in
-	*"mav goto"*) return 1 ;;
+	*"mav goal"*) return 1 ;;
 	esac
 
 	# Count the navigation commands on this line. One is not a chain.
@@ -150,11 +142,11 @@ rule_chained_taps_without_goto() {
 		return 1
 	fi
 
-	NUDGE="You chained ${TAPS} navigation steps. \`mav goto \"<the screen you want>\" --arrived-when 'title:\"<its title>\"'\` does the whole walk in one call — measured at 7.3s against 9.7s for two steps done this way, and that gap widens with each extra step because goto reads the screen once per step where this path reads it twice. It refuses to tap anything destructive and reports arrived=unverified rather than true when you give it no --arrived-when. For a SINGLE tap, keep doing what you are doing: goto is slower over one step."
+	NUDGE="You chained ${TAPS} navigation steps. For a navigation objective, \`mav goal \"<the screen you want>\" --mode navigation --succeeded-when 'title:\"<its title>\"'\` follows a bounded route and verifies the destination. It refuses destructive actions and keeps model completion reports separate from verified success. Check succeeded=true before acting on the destination. For a SINGLE tap on a known control, keep the explicit tap."
 	return 0
 }
 
-rules='rule_jevi_ask_oneoff rule_mav_tree_without_find rule_chained_taps_without_goto'
+rules='rule_jevi_ask_oneoff rule_mav_tree_without_find rule_chained_taps_without_goal'
 
 # --- emit --------------------------------------------------------------------
 

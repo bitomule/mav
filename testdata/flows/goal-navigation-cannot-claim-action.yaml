@@ -1,0 +1,9 @@
+# Negative fixture: the starting data must not contain Kitchen Stuff.
+# Navigation mode cannot type the name. Opening a create form alone must not
+# satisfy the requested category effect, so this step must fail verification.
+name: goal-navigation-cannot-claim-action
+steps:
+  - goal:
+      goal: create a category called Kitchen Stuff
+      mode: navigation
+      succeededWhen: 'text:"Kitchen Stuff"'

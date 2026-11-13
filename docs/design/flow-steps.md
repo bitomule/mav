@@ -1,5 +1,11 @@
 # El flujo con los pasos escritos
 
+> **Documento histórico anterior a MAV 0.35.0.** Conserva el diseño y las
+> mediciones de la implementación anterior; no describe la API vigente ni mide
+> el rendimiento de `goal`. MAV 0.35.0 retiró `goto`. Consulta la
+> [guía de migración](../goal-migration.md), el [contrato del motor](goal-engine.md)
+> y la [evaluación actual](../evaluation/goal.md).
+
 Diseño de los pasos de flujo que resuelven un elemento por pantalla preguntando al modelo,
 en vez de dejar que el modelo navegue libre. 21 sep 2026.
 
@@ -603,6 +609,16 @@ nunca una afirmación.
 
 ## 9. `goto` dentro del flujo: el criterio obligatorio y `unverified` como fallo
 
+> Este apartado conserva el contrato y las salidas medidos con `goto`. En MAV
+> 0.35.0, `goal` exige `succeededWhen` en los flujos y una condición ya cierta
+> devuelve `already_satisfied` con cero acciones, en lugar del rechazo histórico.
+> Los fixtures actuales son [goal-already-satisfied.yaml](../../testdata/flows/goal-already-satisfied.yaml),
+> [goal-navigation-cannot-claim-action.yaml](../../testdata/flows/goal-navigation-cannot-claim-action.yaml),
+> [goal-without-condition.yaml](../../testdata/flows/goal-without-condition.yaml),
+> [goal-and-declared-actions.yaml](../../testdata/flows/goal-and-declared-actions.yaml)
+> y [declared-navigation-baseline.yaml](../../testdata/flows/declared-navigation-baseline.yaml).
+> Las cifras de este apartado no son mediciones de esos fixtures migrados.
+
 Construido y medido el 21 sep 2026 sobre Boxy, `iPhone 17 Pro` / iOS 26.3 desde el slot-5 de
 simpool. Carga 2,1–4,5 (load1) y 3,2–4,1 (load5) de principio a fin. Canario de toque —md5 de
 la huella ordenada de `(id,label,role)` antes y después de un toque conocido— verde antes de
@@ -716,9 +732,12 @@ toque, no la lectura.
 
 ### Carril A — objetivo de acción con el efecto exigido
 
-`testdata/flows/boxy-goto-objetivo-de-accion.yaml`: objetivo `create a category called
-Kitchen Stuff`, criterio `text:"Kitchen Stuff"`. El bucle de `goto` sólo toca, nunca escribe,
-así que ese criterio le es inalcanzable por construcción.
+El equivalente actual de este carril está en
+[goal-navigation-cannot-claim-action.yaml](../../testdata/flows/goal-navigation-cannot-claim-action.yaml).
+Las medidas que siguen usaron el fixture y el contrato anteriores: objetivo
+`create a category called Kitchen Stuff`, criterio `text:"Kitchen Stuff"`.
+El bucle de `goto` sólo toca, nunca escribe, así que ese criterio le es
+inalcanzable por construcción.
 
 **5 de 5 el paso FALLA**, en `step=1`, con `outcome=stuck` y
 `route="screen=categories-view title=Crear categoria"` — o sea que llegó a la hoja y ahí se
@@ -759,10 +778,13 @@ sitios no aparezca en silencio.
 Ese `unverified` es exactamente la premisa sin comprobar de la que habla la cinta: `goto` no
 se ha movido de la rejilla y los pasos siguientes tocarían creyéndose en otra pantalla.
 
-`testdata/flows/boxy-goto-criterio-ambiguo.yaml` lo provoca a propósito: `text:` empareja por
-**contenido** y el fixture siembra `Test Category 1` y `Test Category 2`, así que
-`text:"Test Category"` se cumple en la rejilla sin que nadie toque nada. La misma colisión
-que en el carril A era la trampa a evitar, aquí es el instrumento.
+El fixture actual [goal-already-satisfied.yaml](../../testdata/flows/goal-already-satisfied.yaml)
+cubre esa condición inicial con el contrato nuevo: `already_satisfied`, cero
+acciones y éxito verificado. Las medidas de este apartado usaron `goto`, que
+la rechazaba: `text:` empareja por **contenido** y el fixture anterior siembra
+`Test Category 1` y `Test Category 2`, así que `text:"Test Category"` se cumple
+en la rejilla sin que nadie toque nada. La misma colisión que en el carril A
+era la trampa a evitar, aquí es el instrumento.
 
 **5 de 5 el paso FALLA**, en 0,30 s y `steps=0`:
 

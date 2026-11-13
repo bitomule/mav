@@ -1,5 +1,11 @@
 # `mav goto` — diseño
 
+> **Documento histórico anterior a MAV 0.35.0.** Conserva el diseño y las
+> mediciones de la implementación anterior; no describe la API vigente ni mide
+> el rendimiento de `goal`. MAV 0.35.0 retiró `goto`. Consulta la
+> [guía de migración](../goal-migration.md), el [contrato del motor](goal-engine.md)
+> y la [evaluación actual](../evaluation/goal.md).
+
 Nodo `mav-find-goto`, 19 sep 2026. **No hay código de `goto` escrito.** Esto es un diseño, y
 entra en la misma PR que `mav ui find`, que sí está construido y medido.
 

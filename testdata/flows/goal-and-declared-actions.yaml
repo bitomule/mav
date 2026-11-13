@@ -1,0 +1,18 @@
+# Navigation and declared actions share the goal engine's verified boundary.
+# The goal opens the form; explicit steps supply and confirm the category name.
+name: goal-and-declared-actions
+inputs:
+  nombre: Test Category
+steps:
+  - goal:
+      goal: the form where a new category is given its name, colour and icon
+      mode: navigation
+      succeededWhen: 'title:"Create Category"'
+  - type:
+      where:
+        find: the field where the name of the new category is typed
+      text:
+        from: nombre
+  - tap:
+      where:
+        find: the button that confirms creating the new category
