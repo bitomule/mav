@@ -25,6 +25,8 @@ const (
 )
 
 type Config struct {
+	InputContext *drivers.InputContext
+
 	ProjectName       string
 	Root              string
 	TargetKind        string

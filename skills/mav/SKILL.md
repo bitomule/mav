@@ -12,6 +12,27 @@ does not explore or repair routes by itself. The agent decides the next action.
 `mav_version`. Include it when you report a problem: behaviour differs between releases
 and a report without it starts with a guess.
 
+## AXe 2 automation
+
+MAV requires AXe 2.0.4+ for iOS; AXe 1 is rejected with upgrade instructions.
+`mav setup --install deps` installs AXe; idb and Baguette are optional.
+
+Use native MAV commands for AXe 2 features: `ui key`, `keySequence`, `keyCombo`,
+`touch`, `draw`, `slider`, `gesture`, `batch`, `turn`; `settings`; `location
+scenarios|scenario`; `sim displays|shutdown`; `device discover|doctor`; and
+`video record|stream`. Each typed operation accepts `--spec JSON` or
+`--spec @FILE`. Flows use `automation: {command: key, options: {code: 42}}`.
+See the repository's `docs/axe2.md` for the full field and platform matrix.
+
+Coordinates sent to AXe 2 are logical points in the current orientation. Do not
+apply portrait transforms. Selected simulator input can bind `--screen-id` and
+`--screen-uuid` from `mav sim displays`; stale display identity is an error.
+A failure with `delivery=sent|uncertain` and `retry=unsafe` must not be replayed.
+Inspect its receipt and observe the UI before deciding the next action.
+
+Snapshot/ref protocols and the autonomous AXe agent are outside this release.
+MAV's existing `ui tree --agent` remains its own compact tree formatter.
+
 ## Platforms
 
 `mav` drives iOS simulators, physical iOS devices, and **macOS apps**. The platform comes
@@ -152,10 +173,10 @@ entirely.
    and status bar; see **App Store Screenshots** below.
    You can also pass the same target flags to `mav open`.
    For a physical iOS device, use `mav device list`, then `mav device select
-   --udid ...` or `mav device select --name ...`. Physical devices require idb
-   for install, launch, logs, screenshots, and crashes. Multitouch, system UI,
-   and `hideKeyboard` are simulator-only and return structured errors on
-   device. Simulator crash checks use local DiagnosticReports directly.
+   --udid ...` or `mav device select --name ...`. AXe 2.0.4+ handles UI, gestures, screenshots and video on real devices.
+   CoreDevice handles install/launch; idb is optional for logs/crashes. Use
+   `mav device doctor` for pairing and developer-service readiness. System
+   UI through Baguette and `hideKeyboard` remain simulator-only.
 4. Start the app with `mav open`. Use `mav open --clear-state` for a fresh
    install. Use `mav open --skip-build` when the app is already built and the
    launch recipe's `build` step would only rebuild the same artifact --
@@ -165,7 +186,7 @@ entirely.
    `.mav/runs/<run-id>/` and starts `logs.txt`.
    MAV captures a filtered unified log stream for MAV probes and app-process
    logs when `process_name` is configured. On physical devices, generated
-   simulator install/launch recipes are mapped to idb when possible. MAV writes
+   simulator install/launch recipes use CoreDevice when the target is physical. MAV writes
    `/tmp/mav/sim-locks/<udid>.json` for simulator runs; if another worktree owns
    a fresh lock, pick a different simulator unless you are sure you own that run
    and pass `--force`.
@@ -723,11 +744,10 @@ than tapping where the row used to be.
 
 `mav ui longPress (--x X --y Y | --id ID | --find "...") [--duration 800ms]` holds
 one finger down, on a point or on whatever the selector names. It is
-not multitouch, so it works on a physical device as well as on a simulator: on
-a device the hold goes out through idb.
+not multitouch, so it works on a physical device as well as on a simulator: AXe 2 handles both targets.
 
-Multitouch gestures (pinch, rotate, two-finger pan) dispatch through baguette on
-simulator. They return `gesture_unsupported_on_device` on a physical device:
+Multitouch gestures use AXe 2 on simulators and physical devices. Richer
+compound gestures can use an explicitly selected Baguette driver on simulator:
 
 ```bash
 mav ui pinch --x 200 --y 450 --scale 0.5 --duration 800ms
@@ -762,8 +782,8 @@ first check the tap could change anything (an item already selected changes
 nothing). Only if a tap that must change the screen did not, run
 `mav sim heal`, which restarts SpringBoard (relaunch the app after).
 
-iPhone Duo folds. Fold it with mav, never in Device Hub, because mav routes
-taps and captures from the pose it applied:
+Use `mav sim hinge` to fold iPhone Duo and `mav sim displays` to observe the
+active panel and its screen identity:
 
 ```bash
 mav sim hinge open        # 130°, the inner 669×951 panel lights, landscape
@@ -779,9 +799,9 @@ mav sim hinge             # read the angle (unknown for a while after heal)
 - sim.heal: {}
 ```
 
-Open, taps go through idb (the only driver that reaches the inner panel) and
-`capture` shoots the inner panel; folded, everything is as on any iPhone.
-Needs baguette 0.2.1 and idb 1.6.4 (`mav doctor` says when they are older).
+AXe 2.0.4 handles active-panel taps and screenshots without an idb workaround.
+Coordinates stay in the current orientation. Timed hinge sweeps use the optional
+Baguette driver because AXe does not expose a sweep duration.
 
 ## App Store Screenshots
 
@@ -985,9 +1005,9 @@ Either way the run's `commands.jsonl` gets a `launch.skip_build_check` entry
 naming the path MAV looked for. On that code, rerun the same command without
 `--skip-build` once, then resume.
 
-`video.start` / `evidence.start` video recording is simulator-only in this
-release. On physical devices, use `capture` / `evidence.step` screenshots,
-crash checks, logs, and reports for evidence.
+`video.start` / `evidence.start` record MP4 through AXe 2 on simulators and
+physical devices. Stop the recording to finalize the file. `video stream`
+provides separate media stdout and diagnostic stderr.
 
 ## Environment variables MAV reads
 
@@ -1075,10 +1095,10 @@ deliberate escape hatch is `target_command_required: false` in
 `.mav/config.yaml`, which restores the warn-and-fall-back behaviour and
 reports `target_command_warn=...` on the command's success output.
 
-## Semantic taps need AXe 1.8.0
+## Semantic taps use AXe 2 physical input
 
-MAV passes `axe tap --tap-style physical` on every semantic tap, so AXe
-1.8.0 or newer is the floor. AXe's own default (`automatic`) routes anything
+MAV requires AXe 2.0.4+ and selects physical input for ordinary taps. Semantic
+press requests use the native selected route where supported. AXe's own default (`automatic`) routes anything
 that is not a switch through FBSimulator's `tapAt`, which **drops the touch
 under load and still exits 0** printing `✓ Tap ... completed successfully`.
 The symptom is a flow reporting `ok` step after step while the screen never

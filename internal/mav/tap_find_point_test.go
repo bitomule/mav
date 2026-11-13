@@ -53,14 +53,14 @@ func tapFindFlow(t *testing.T, step string) (CLI, *sequenceRecordingRunner, *byt
 func TestTapByFindTapsTheResolvedCoordinate(t *testing.T) {
 	fakeJev(t, "1", 10)
 	c, runner, out, flowPath := tapFindFlow(t, `tap: { where: { find: "la caja" } }`)
-	runner.out["axe describe-ui"] = tapFindTree
-	runner.out["axe describe-ui --point 100,125"] = tapFindHit
+	runner.out["axe --output json describe-ui"] = tapFindTree
+	runner.out["axe --output json describe-ui --point 100,125"] = tapFindHit
 
 	if err := c.Run(context.Background(), []string{"run", flowPath}); err != nil {
 		t.Fatalf("err=%v out=%s", err, out.String())
 	}
 	trail := strings.Join(runner.commands, "\n")
-	if !strings.Contains(trail, "axe tap --tap-style physical -x 100 -y 125") {
+	if !strings.Contains(trail, "axe --output json tap --tap-style physical -x 100 -y 125") {
 		t.Fatalf("a find must tap the point it resolved: %v", runner.commands)
 	}
 	// The whole saving: the label never goes back to axe to be resolved a
@@ -70,7 +70,7 @@ func TestTapByFindTapsTheResolvedCoordinate(t *testing.T) {
 	}
 	// One whole-screen read -- the one the decision was made from -- plus the
 	// one-point guard. Nothing else.
-	if got := countCalls(runner.commands, "axe describe-ui"); got != 2 {
+	if got := countCalls(runner.commands, "axe --output json describe-ui"); got != 2 {
 		t.Fatalf("expected the decision read and the point guard, got %d: %v", got, runner.commands)
 	}
 }
@@ -80,7 +80,7 @@ func TestTapBySelectorStillTapsByHandle(t *testing.T) {
 	// nothing asked the screen on its behalf, so its coordinate carries no
 	// evidence a label tap does not.
 	c, runner, out, flowPath := tapFindFlow(t, `tap: { where: { text: "Abrir caja", role: "Button" } }`)
-	runner.out["axe describe-ui"] = tapFindTree
+	runner.out["axe --output json describe-ui"] = tapFindTree
 
 	if err := c.Run(context.Background(), []string{"run", flowPath}); err != nil {
 		t.Fatalf("err=%v out=%s", err, out.String())
@@ -96,14 +96,14 @@ func TestTapByFindRefusesToTapAScreenThatKeptMoving(t *testing.T) {
 	// step fails instead of pressing a coordinate nothing stands on any more.
 	fakeJev(t, "1", 10)
 	c, runner, out, flowPath := tapFindFlow(t, `tap: { where: { find: "la caja" } }`)
-	runner.seq["axe describe-ui"] = []string{tapFindTree, tapFindMovedTree}
-	runner.out["axe describe-ui --point 100,125"] = tapFindMovedHit
+	runner.seq["axe --output json describe-ui"] = []string{tapFindTree, tapFindMovedTree}
+	runner.out["axe --output json describe-ui --point 100,125"] = tapFindMovedHit
 
 	err := c.Run(context.Background(), []string{"run", flowPath})
 	if err == nil && !strings.Contains(out.String(), "element_moved") {
 		t.Fatalf("a moving screen must fail the step: err=%v out=%s", err, out.String())
 	}
-	if strings.Contains(strings.Join(runner.commands, "\n"), "axe tap") {
+	if strings.Contains(strings.Join(runner.commands, "\n"), "axe --output json tap") {
 		t.Fatalf("nothing may be tapped once the guard said no twice: %v", runner.commands)
 	}
 }

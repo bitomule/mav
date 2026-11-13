@@ -28,7 +28,9 @@ func (r *vmHostRunner) LookPath(file string) (string, error) {
 	return "", os.ErrNotExist
 }
 
-func (r *vmHostRunner) Run(ctx context.Context, name string, args ...string) CommandResult {
+func (r *vmHostRunner) Run(ctx context.Context, name string, args ...string) (result CommandResult) {
+	name = axeFixtureName(name)
+	defer func() { result = axeFixtureResult(name, args, result) }()
 	_ = ctx
 	command := name + " " + strings.Join(args, " ")
 	r.commands = append(r.commands, command)

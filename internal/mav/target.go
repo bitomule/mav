@@ -930,6 +930,9 @@ func (c CLI) dispatchWithStaleTargetRetry(cfg Config, dispatch func(CLI, Config)
 	var buf bytes.Buffer
 	dispatch(c.withStdout(&buf), cfg)
 	out := buf.String()
+	if strings.Contains(firstLine(out), "retry=unsafe") || strings.Contains(firstLine(out), "delivery=uncertain") || strings.Contains(firstLine(out), "delivery=sent") {
+		return out
+	}
 	if !strings.HasPrefix(strings.TrimSpace(out), "fail ") {
 		return out
 	}

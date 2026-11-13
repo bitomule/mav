@@ -10,14 +10,28 @@ import (
 	"time"
 
 	"github.com/bitomule/mav/internal/mav/drivers"
+	"github.com/bitomule/mav/internal/mav/drivers/coredevice"
 )
 
 // driverRegistry builds the registry this invocation routes against.
 // Separate from router() because --prefer-driver validation needs to ask
 // WHICH drivers exist before there is anything to route.
+type driverSession struct {
+	registry *drivers.Registry
+	router   *drivers.Router
+}
+
 func (c CLI) driverRegistry() *drivers.Registry {
+	if c.driverSession != nil && c.driverSession.registry != nil {
+		return c.driverSession.registry
+	}
 	reg := drivers.NewRegistry()
 	RegisterDefaultDrivers(reg, NewExecutor(c.Runner))
+	reg.Unregister(coredevice.ID)
+	reg.Register(coredevice.New(NewExecutor(c.Runner), filepath.Join(c.Root, ".mav", "tmp", "coredevice")))
+	if c.driverSession != nil {
+		c.driverSession.registry = reg
+	}
 	return reg
 }
 
@@ -25,8 +39,15 @@ func (c CLI) driverRegistry() *drivers.Registry {
 // receiver everywhere, so the router is built once per call site that needs it
 // rather than cached on CLI. That keeps the existing shape simple.
 func (c CLI) router() *drivers.Router {
+	if c.driverSession != nil && c.driverSession.router != nil {
+		return c.driverSession.router
+	}
 	disabled := strings.Split(os.Getenv("MAV_DRIVERS_DISABLE"), ",")
-	return drivers.NewRouter(c.driverRegistry(), NewExecutor(c.Runner), disabled)
+	router := drivers.NewRouter(c.driverRegistry(), NewExecutor(c.Runner), disabled)
+	if c.driverSession != nil {
+		c.driverSession.router = router
+	}
+	return router
 }
 
 // routerWithout is router() with one more driver taken out of the running,
@@ -42,10 +63,11 @@ func (c CLI) routerWithout(driverID string) *drivers.Router {
 // targetFromConfig projects the cfg fields the drivers need onto Target.
 func targetFromConfig(cfg Config) drivers.Target {
 	target := drivers.Target{
-		Kind:     targetKind(cfg),
-		BundleID: cfg.BundleID,
-		Locale:   cfg.Locale,
-		Language: cfg.Language,
+		Kind:         targetKind(cfg),
+		InputContext: cfg.InputContext,
+		BundleID:     cfg.BundleID,
+		Locale:       cfg.Locale,
+		Language:     cfg.Language,
 	}
 	switch target.Kind {
 	case drivers.KindDevice:

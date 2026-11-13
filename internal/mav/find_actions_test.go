@@ -32,7 +32,7 @@ const findActionTreeErased = `[
 // under a working erase: the field still holds "Cocina" while find resolves
 // it and while erase reads it, and is empty on the read after the deletions.
 func shrinkTheNameField(runner *sequenceRecordingRunner) {
-	runner.seq["axe describe-ui --udid "+findActionUDID] = []string{
+	runner.seq["axe --output json describe-ui --udid "+findActionUDID] = []string{
 		findActionTree,
 		findActionTree,
 		findActionTreeErased,
@@ -63,11 +63,11 @@ func findActionCLI(t *testing.T) (CLI, *sequenceRecordingRunner, *bytes.Buffer) 
 		seq:   map[string][]string{},
 		calls: map[string]int{},
 		out: map[string]string{
-			"axe describe-ui --udid " + findActionUDID:                      findActionTree,
-			"axe describe-ui --point 100,125 --udid " + findActionUDID:      findActionNameHit,
-			"axe describe-ui --point 100,225 --udid " + findActionUDID:      findActionRowHit,
-			"baguette describe-ui --udid " + findActionUDID:                 findActionTree,
-			"baguette describe-ui --point 100,125 --udid " + findActionUDID: findActionNameHit,
+			"axe --output json describe-ui --udid " + findActionUDID:                 findActionTree,
+			"axe --output json describe-ui --point 100,125 --udid " + findActionUDID: findActionNameHit,
+			"axe --output json describe-ui --point 100,225 --udid " + findActionUDID: findActionRowHit,
+			"baguette describe-ui --udid " + findActionUDID:                          findActionTree,
+			"baguette describe-ui --point 100,125 --udid " + findActionUDID:          findActionNameHit,
 		},
 	}
 	var out bytes.Buffer
@@ -98,7 +98,7 @@ func TestEraseAcceptsFindAndFocusesTheFieldFirst(t *testing.T) {
 		if tapAt < 0 && isTapCommand(command) {
 			tapAt = i
 		}
-		if eraseAt < 0 && strings.Contains(command, "axe key 42") {
+		if eraseAt < 0 && strings.Contains(command, "axe --output json key-sequence --keycodes 42") {
 			eraseAt = i
 		}
 	}
@@ -114,9 +114,7 @@ func TestEraseAcceptsFindAndFocusesTheFieldFirst(t *testing.T) {
 	// other half of not looking at the field.
 	deletions := 0
 	for _, command := range runner.commands {
-		if strings.Contains(command, "axe key 42") {
-			deletions++
-		}
+		deletions += axeDeletionCount(command)
 	}
 	if deletions != len("Cocina") {
 		t.Fatalf("expected one deletion per character of the found field, got %d: %v", deletions, runner.commands)

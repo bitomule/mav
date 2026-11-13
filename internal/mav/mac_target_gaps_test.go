@@ -42,9 +42,7 @@ func TestUITreeToolMissingOnMacNamesTheMacDriver(t *testing.T) {
 	}
 }
 
-// TestUITreeToolMissingOnSimStillNamesAxeAndIdb: the fix is a split, not a
-// replacement; the simulator answer must not change.
-func TestUITreeToolMissingOnSimStillNamesAxeAndIdb(t *testing.T) {
+func TestUITreeToolMissingOnSimRequiresAXe2WithoutIDB(t *testing.T) {
 	root := t.TempDir()
 	writeRawConfig(t, root, "project_name: x\ntarget_kind: simulator\nbundle_id: com.example.app\nsimulator_udid: SIM\n")
 	var out bytes.Buffer
@@ -52,8 +50,8 @@ func TestUITreeToolMissingOnSimStillNamesAxeAndIdb(t *testing.T) {
 	// A structured fail line exits non-zero via CommandFailed; the output
 	// is the assertion, not the exit.
 	_ = cli.Run(context.Background(), []string{"ui", "tree"})
-	if got := out.String(); !strings.Contains(got, "mav setup --install axe idb") {
-		t.Fatalf("simulator guidance must stay: %q", got)
+	if got := out.String(); !strings.Contains(got, "axe2_required") || !strings.Contains(got, "AXe 2 is not installed") || strings.Contains(got, "install axe idb") {
+		t.Fatalf("simulator must explain the AXe 2 prerequisite: %q", got)
 	}
 }
 

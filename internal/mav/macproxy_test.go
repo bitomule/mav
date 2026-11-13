@@ -92,7 +92,9 @@ type scriptedRunner struct {
 	commands []string
 }
 
-func (r *scriptedRunner) Run(_ context.Context, name string, args ...string) CommandResult {
+func (r *scriptedRunner) Run(_ context.Context, name string, args ...string) (result CommandResult) {
+	name = axeFixtureName(name)
+	defer func() { result = axeFixtureResult(name, args, result) }()
 	command := name + " " + strings.Join(args, " ")
 	r.commands = append(r.commands, command)
 	for needle, out := range r.outputs {

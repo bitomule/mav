@@ -18,6 +18,7 @@ type recordingRunner struct {
 	tools   map[string]bool
 	command string
 	result  CommandResult
+	input   string
 }
 
 func TestSetupLLDBDAPVerifiesSelectedXcodeTool(t *testing.T) {
@@ -39,9 +40,14 @@ func (r *recordingRunner) LookPath(file string) (string, error) {
 	return "", os.ErrNotExist
 }
 
-func (r *recordingRunner) Run(ctx context.Context, name string, args ...string) CommandResult {
+func (r *recordingRunner) Run(ctx context.Context, name string, args ...string) (result CommandResult) {
+	name = axeFixtureName(name)
+	defer func() { result = axeFixtureResult(name, args, result) }()
 	_ = ctx
 	r.command = name + " " + strings.Join(args, " ")
+	if name == "axe" && len(args) == 1 && args[0] == "--version" && r.result.Err == nil {
+		return CommandResult{}
+	}
 	return r.result
 }
 
@@ -54,13 +60,18 @@ func (r *recordingRunner) Start(ctx context.Context, logPath string, name string
 }
 
 type sequenceRecordingRunner struct {
-	tools    map[string]bool
-	commands []string
-	out      map[string]string
-	err      map[string]CommandResult
-	seq      map[string][]string
-	calls    map[string]int
-	startPID int
+	tools           map[string]bool
+	commands        []string
+	out             map[string]string
+	err             map[string]CommandResult
+	seq             map[string][]string
+	calls           map[string]int
+	startPID        int
+	inputs          []string
+	mediaStartErr   error
+	mediaReadyErr   error
+	mediaLog        string
+	mediaNoArtifact bool
 }
 
 func (r *sequenceRecordingRunner) LookPath(file string) (string, error) {
@@ -70,10 +81,13 @@ func (r *sequenceRecordingRunner) LookPath(file string) (string, error) {
 	return "", os.ErrNotExist
 }
 
-func (r *sequenceRecordingRunner) Run(ctx context.Context, name string, args ...string) CommandResult {
+func (r *sequenceRecordingRunner) Run(ctx context.Context, name string, args ...string) (result CommandResult) {
+	name = axeFixtureName(name)
+	defer func() { result = axeFixtureResult(name, args, result) }()
 	_ = ctx
 	command := name + " " + strings.Join(args, " ")
 	r.commands = append(r.commands, command)
+	command = axeFixtureLookup(name, args)
 	if name == "/usr/bin/avconvert" {
 		var source, out string
 		for i := 0; i < len(args)-1; i++ {
@@ -130,8 +144,11 @@ func (r *sequenceRecordingRunner) Start(ctx context.Context, logPath string, nam
 func writeScreenshotForCommand(name string, args []string) {
 	switch name {
 	case "axe":
+		if len(args) < 3 || args[0] != "--output" || args[1] != "json" || args[2] != "screenshot" {
+			return
+		}
 		for i, arg := range args {
-			if arg == "--output" && i+1 < len(args) {
+			if arg == "--output" && i+1 < len(args) && args[i+1] != "json" {
 				_ = writeTestPNG(args[i+1])
 				return
 			}
@@ -151,6 +168,15 @@ func writeScreenshotForCommand(name string, args []string) {
 }
 
 func writeStartedArtifact(name string, args []string) {
+	if axeFixtureName(name) == "axe" && len(args) > 2 && args[2] == "record-video" {
+		for i, arg := range args {
+			if arg == "--output" && i+1 < len(args) && args[i+1] != "json" {
+				_ = os.MkdirAll(filepath.Dir(args[i+1]), 0o755)
+				_ = os.WriteFile(args[i+1], testMovieWithDuration(600, 1200), 0o644)
+				return
+			}
+		}
+	}
 	if name == "xcrun" {
 		for i, arg := range args {
 			if arg == "recordVideo" && i+1 < len(args) {
@@ -185,7 +211,12 @@ func (r errorRunner) LookPath(file string) (string, error) {
 	return "", os.ErrNotExist
 }
 
-func (r errorRunner) Run(ctx context.Context, name string, args ...string) CommandResult {
+func (r errorRunner) Run(ctx context.Context, name string, args ...string) (result CommandResult) {
+	name = axeFixtureName(name)
+	defer func() { result = axeFixtureResult(name, args, result) }()
+	if name == "axe" && len(args) == 1 && args[0] == "--version" {
+		return CommandResult{}
+	}
 	_ = ctx
 	_ = name
 	_ = args
@@ -207,13 +238,22 @@ type launchRecipeRunner struct {
 }
 
 func (r *launchRecipeRunner) LookPath(file string) (string, error) {
+	// Recipe tests isolate build/install/launch. AXe 2 is the required UI
+	// prerequisite; a test can still model its absence explicitly.
+	if file == "axe" {
+		if present, configured := r.tools[file]; !configured || present {
+			return "/usr/bin/axe", nil
+		}
+	}
 	if r.tools[file] {
 		return "/usr/bin/" + file, nil
 	}
 	return "", os.ErrNotExist
 }
 
-func (r *launchRecipeRunner) Run(ctx context.Context, name string, args ...string) CommandResult {
+func (r *launchRecipeRunner) Run(ctx context.Context, name string, args ...string) (result CommandResult) {
+	name = axeFixtureName(name)
+	defer func() { result = axeFixtureResult(name, args, result) }()
 	_ = ctx
 	command := name + " " + strings.Join(args, " ")
 	r.commands = append(r.commands, command)
@@ -233,6 +273,18 @@ func (r *launchRecipeRunner) Run(ctx context.Context, name string, args ...strin
 	for needle, result := range r.results {
 		if strings.Contains(command, needle) {
 			return result
+		}
+	}
+	if name == "xcrun" && len(args) > 0 && args[0] == "devicectl" {
+		body := `{"result":{}}`
+		if len(args) > 3 && args[1] == "device" && args[2] == "process" && args[3] == "launch" {
+			body = `{"result":{"process":{"processIdentifier":4123}}}`
+		}
+		for i, arg := range args {
+			if arg == "--json-output" && i+1 < len(args) {
+				_ = os.WriteFile(args[i+1], []byte(body), 0600)
+				break
+			}
 		}
 	}
 	return CommandResult{}
@@ -290,7 +342,9 @@ func (r *launchRetryRunner) LookPath(file string) (string, error) {
 	return "", os.ErrNotExist
 }
 
-func (r *launchRetryRunner) Run(ctx context.Context, name string, args ...string) CommandResult {
+func (r *launchRetryRunner) Run(ctx context.Context, name string, args ...string) (result CommandResult) {
+	name = axeFixtureName(name)
+	defer func() { result = axeFixtureResult(name, args, result) }()
 	_ = ctx
 	command := name + " " + strings.Join(args, " ")
 	r.commands = append(r.commands, command)
@@ -347,7 +401,7 @@ func TestDoctorDoesNotRequireMaestro(t *testing.T) {
 	}
 }
 
-func TestDoctorReportsBaguetteMultitouch(t *testing.T) {
+func TestDoctorReportsAXe2Multitouch(t *testing.T) {
 	var out bytes.Buffer
 	cli := CLI{Runner: fakeRunner{
 		tools: map[string]bool{"go": true, "bazelisk": true, "xcrun": true, "axe": true, "idb": true, "baguette": true},
@@ -356,12 +410,12 @@ func TestDoctorReportsBaguetteMultitouch(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := out.String()
-	if !strings.Contains(got, "multitouch=ok") || !strings.Contains(got, "multitouch_driver=baguette") {
+	if !strings.Contains(got, "multitouch=ok") || !strings.Contains(got, "multitouch_driver=axe") {
 		t.Fatalf("got %q", got)
 	}
 }
 
-func TestDoctorRecommendsBaguetteWhenMissing(t *testing.T) {
+func TestDoctorDoesNotRequireBaguetteForAXe2(t *testing.T) {
 	var out bytes.Buffer
 	cli := CLI{Runner: fakeRunner{
 		tools: map[string]bool{"go": true, "bazelisk": true, "xcrun": true, "axe": true, "idb": true},
@@ -370,12 +424,11 @@ func TestDoctorRecommendsBaguetteWhenMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := out.String()
-	if !strings.Contains(got, "multitouch=missing") ||
-		!strings.Contains(got, `multitouch_next="mav setup --install baguette"`) {
+	if !strings.Contains(got, "multitouch_driver=axe") || !strings.Contains(got, "device_multitouch=ok") {
 		t.Fatalf("got %q", got)
 	}
-	if !strings.Contains(got, `next="mav setup --install baguette"`) {
-		t.Fatalf("got %q", got)
+	if strings.Contains(got, `next="mav setup --install baguette"`) {
+		t.Fatalf("optional driver required: %s", got)
 	}
 }
 
@@ -420,7 +473,7 @@ func TestCoordinateTapGoesThroughAxesPhysicalTouch(t *testing.T) {
 	if !strings.Contains(out.String(), "ok cmd=ui.tap") {
 		t.Fatalf("got %q", out.String())
 	}
-	if !strings.Contains(strings.Join(runner.commands, "\n"), "axe tap --tap-style physical --udid SIM -x 10 -y 20") {
+	if !strings.Contains(strings.Join(runner.commands, "\n"), "axe --output json tap --tap-style physical -x 10 -y 20 --verbose --udid SIM") {
 		t.Fatalf("commands=%v", runner.commands)
 	}
 }
@@ -437,7 +490,7 @@ func TestUITreeUsesResolvedAxeCapability(t *testing.T) {
 	runner := &sequenceRecordingRunner{
 		tools: map[string]bool{"axe": true},
 		out: map[string]string{
-			"axe describe-ui --udid SIM": "Application, 0x1, pid 1\n  Window, 0x2\n",
+			"axe --output json describe-ui --udid SIM": "Application, 0x1, pid 1\n  Window, 0x2\n",
 		},
 	}
 	var out bytes.Buffer
@@ -448,12 +501,12 @@ func TestUITreeUsesResolvedAxeCapability(t *testing.T) {
 	if !strings.Contains(out.String(), "Application") {
 		t.Fatalf("got %q", out.String())
 	}
-	if !containsCall(runner.commands, "axe describe-ui --udid SIM") {
+	if !containsCall(runner.commands, "axe --output json describe-ui --udid SIM") {
 		t.Fatalf("commands=%v", runner.commands)
 	}
 }
 
-func TestCaptureUsesResolvedXcrunCapability(t *testing.T) {
+func TestCaptureUsesResolvedAXeCapability(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
 	cfg.SimulatorUDID = "SIM"
@@ -461,7 +514,7 @@ func TestCaptureUsesResolvedXcrunCapability(t *testing.T) {
 	if err := SaveConfig(root, cfg); err != nil {
 		t.Fatal(err)
 	}
-	runner := &sequenceRecordingRunner{tools: map[string]bool{"xcrun": true}}
+	runner := &sequenceRecordingRunner{tools: map[string]bool{"axe": true}}
 	var out bytes.Buffer
 	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
 	if err := cli.Run(context.Background(), []string{"capture", "--name", "probe"}); err != nil {
@@ -470,7 +523,7 @@ func TestCaptureUsesResolvedXcrunCapability(t *testing.T) {
 	if !strings.Contains(out.String(), "ok cmd=capture") {
 		t.Fatalf("got %q", out.String())
 	}
-	if !containsCall(runner.commands, "xcrun simctl io SIM screenshot") {
+	if !containsCall(runner.commands, "axe --output json screenshot --output") {
 		t.Fatalf("commands=%v", runner.commands)
 	}
 }
@@ -481,7 +534,7 @@ func TestOpenRefusesFreshSimulatorLockFromOtherProject(t *testing.T) {
 	cfg := DefaultConfig(root)
 	cfg.BundleID = "com.example.app"
 	cfg.SimulatorUDID = "SIM-LOCKED"
-	cfg.Tools = map[string]bool{"xcrun": true}
+	cfg.Tools = map[string]bool{"xcrun": true, "axe": true}
 	cfg.Launch = LaunchConfig{Mode: "already_installed", Commands: LaunchCommands{Launch: `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`}}
 	if err := SaveConfig(root, cfg); err != nil {
 		t.Fatal(err)
@@ -498,7 +551,7 @@ func TestOpenRefusesFreshSimulatorLockFromOtherProject(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	cli := CLI{Runner: fakeRunner{tools: map[string]bool{"xcrun": true}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	cli := CLI{Runner: fakeRunner{tools: map[string]bool{"xcrun": true, "axe": true}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
 	allowFail(t, cli.Run(context.Background(), []string{"open"}))
 	if !strings.Contains(out.String(), "fail code=sim_locked") || !strings.Contains(out.String(), "SIM-LOCKED") {
 		t.Fatalf("got %q", out.String())
@@ -695,7 +748,7 @@ func TestUITreePrintsNodeDetailsByDefault(t *testing.T) {
 	}
 	raw := `[{"AXLabel":"Largest Videos","role":"heading","AXFrame":"{{0, 10}, {200, 40}}","AXEnabled":true,"AXSubrole":"AXHeading","AXTitle":"Largest Videos","pid":123,"children":[{"AXIdentifier":"delete_button","AXLabel":"Delete","role":"button","enabled":false}]}]`
 	var out bytes.Buffer
-	cli := CLI{Runner: fakeRunner{tools: cfg.Tools, out: map[string]string{"axe describe-ui": raw}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	cli := CLI{Runner: fakeRunner{tools: cfg.Tools, out: map[string]string{"axe --output json describe-ui": raw}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
 	if err := cli.Run(context.Background(), []string{"ui", "tree"}); err != nil {
 		t.Fatal(err)
 	}
@@ -715,7 +768,7 @@ func TestTargetScreenSizeCachesPerUDID(t *testing.T) {
 	if err := SaveConfig(root, cfg); err != nil {
 		t.Fatal(err)
 	}
-	key := "axe describe-ui --udid " + cfg.SimulatorUDID
+	key := "axe --output json describe-ui --udid " + cfg.SimulatorUDID
 	first := `[{"AXLabel":"Root","role":"window","AXFrame":"{{0, 0}, {100, 200}}"}]`
 	second := `[{"AXLabel":"Root","role":"window","AXFrame":"{{0, 0}, {999, 999}}"}]`
 	runner := fakeRunner{
@@ -733,7 +786,7 @@ func TestTargetScreenSizeCachesPerUDID(t *testing.T) {
 		t.Fatalf("expected cached screen size (%d,%d), got (%d,%d)", w1, h1, w2, h2)
 	}
 	if got := runner.calls[key]; got != 1 {
-		t.Fatalf("expected axe describe-ui invoked once (cached on second call), got %d calls", got)
+		t.Fatalf("expected axe --output json describe-ui invoked once (cached on second call), got %d calls", got)
 	}
 }
 
@@ -837,7 +890,7 @@ func TestPreferDriverAcceptsRegisteredNonAxeDriver(t *testing.T) {
 	cfg := DefaultConfig(root)
 	cfg.SimulatorUDID = "SIM"
 	cfg.BundleID = "com.example.app"
-	cfg.Tools = map[string]bool{"baguette": true}
+	cfg.Tools = map[string]bool{"axe": true, "baguette": true}
 	if err := SaveConfig(root, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -869,7 +922,7 @@ func TestPreferDriverUsageListsRegisteredDrivers(t *testing.T) {
 	if !strings.Contains(got, "fail code=prefer_driver_invalid") {
 		t.Fatalf("got %q", got)
 	}
-	if !strings.Contains(got, "auto|axcli|axe|baguette|cua|idb|macsystem|mitmproxy|screencapture|simctl|simtime") {
+	if !strings.Contains(got, "auto|axcli|axe|baguette|coredevice|cua|idb|macsystem|mitmproxy|screencapture|simctl|simtime") {
 		t.Fatalf("usage field should list registered drivers, got %q", got)
 	}
 }
@@ -893,7 +946,7 @@ func TestUIScrollUntilFindsElement(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	runner := fakeRunner{tools: map[string]bool{"axe": true}, out: map[string]string{"axe describe-ui": `{"AXLabel":"Privacy Policy"}`}}
+	runner := fakeRunner{tools: map[string]bool{"axe": true}, out: map[string]string{"axe --output json describe-ui": `{"AXLabel":"Privacy Policy"}`}}
 	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
 	if err := cli.Run(context.Background(), []string{"ui", "scrollUntil", "--text", "Privacy Policy"}); err != nil {
 		t.Fatal(err)
@@ -921,7 +974,7 @@ func TestUIWaitAcceptsTextAndValue(t *testing.T) {
 				t.Fatal(err)
 			}
 			var out bytes.Buffer
-			cli := CLI{Runner: fakeRunner{tools: cfg.Tools, out: map[string]string{"axe describe-ui": tc.raw}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+			cli := CLI{Runner: fakeRunner{tools: cfg.Tools, out: map[string]string{"axe --output json describe-ui": tc.raw}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
 			if err := cli.Run(context.Background(), tc.args); err != nil {
 				t.Fatal(err)
 			}
@@ -941,7 +994,7 @@ func TestUIWaitMatchesSpecificElementFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	cli := CLI{Runner: fakeRunner{tools: cfg.Tools, out: map[string]string{"axe describe-ui": `{"AXLabel":"Email"}`}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	cli := CLI{Runner: fakeRunner{tools: cfg.Tools, out: map[string]string{"axe --output json describe-ui": `{"AXLabel":"Email"}`}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
 	allowFail(t, cli.Run(context.Background(), []string{"ui", "wait", "--value", "Email", "--timeout", "1ms"}))
 	got := out.String()
 	if !strings.Contains(got, "fail code=ui_wait_timeout") || !strings.Contains(got, "value=Email") {
@@ -949,7 +1002,7 @@ func TestUIWaitMatchesSpecificElementFields(t *testing.T) {
 	}
 }
 
-func TestUITapTextFailureReportsValueMatch(t *testing.T) {
+func TestAXe2LabelFailureDoesNotRetargetAValue(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
 	cfg.Tools = map[string]bool{"axe": true}
@@ -958,16 +1011,16 @@ func TestUITapTextFailureReportsValueMatch(t *testing.T) {
 	}
 	runner := &sequenceRecordingRunner{
 		tools: cfg.Tools,
-		out:   map[string]string{"axe describe-ui": `[{"AXValue":"Email","role":"text field"}]`},
+		out:   map[string]string{"axe --output json describe-ui": `[{"AXValue":"Email","role":"text field"}]`},
 		err: map[string]CommandResult{
-			"axe tap --tap-style physical --label Email": {Stderr: "No accessibility element matched --label 'Email'", Err: os.ErrNotExist},
+			"axe --output json tap --tap-style physical --label Email": {Stderr: "No accessibility element matched --label 'Email'", Err: os.ErrNotExist},
 		},
 	}
 	var out bytes.Buffer
 	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
 	allowFail(t, cli.Run(context.Background(), []string{"--prefer-driver", "axe", "ui", "tap", "--text", "Email"}))
 	got := out.String()
-	for _, want := range []string{"fail code=ui_tap_text_no_label_match", "matched_value=1", "matched_label=0"} {
+	for _, want := range []string{"fail code=axe_command_failed", "No accessibility element matched", "retry=unsafe"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in %q", want, got)
 		}
@@ -1005,7 +1058,7 @@ func TestOpenNoRelaunchSkipsLaunchRecipe(t *testing.T) {
 		Build:  "make mav-build",
 		Launch: `xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID"`,
 	}}
-	cfg.Tools = map[string]bool{"xcrun": true}
+	cfg.Tools = map[string]bool{"xcrun": true, "axe": true}
 	if err := SaveConfig(root, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -1029,7 +1082,7 @@ func TestOpenBootsSelectedSimulatorBeforeInstall(t *testing.T) {
 	cfg := DefaultConfig(root)
 	cfg.BundleID = "com.example.app"
 	cfg.SimulatorUDID = "SIM-1"
-	cfg.Tools = map[string]bool{"xcrun": true}
+	cfg.Tools = map[string]bool{"xcrun": true, "axe": true}
 	cfg.Launch = LaunchConfig{Mode: "custom", Commands: LaunchCommands{
 		AppPath: "./app-path",
 		Install: `xcrun simctl install "$MAV_UDID" "$MAV_APP_PATH"`,
@@ -1483,7 +1536,7 @@ func TestFlowVideoStartStopAliasesRecordVideo(t *testing.T) {
 	cfg := DefaultConfig(root)
 	cfg.BundleID = "com.example.app"
 	cfg.SimulatorUDID = "SIM"
-	cfg.Tools = map[string]bool{"xcrun": true}
+	cfg.Tools = map[string]bool{"axe": true, "xcrun": true}
 	if err := SaveConfig(root, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -1562,7 +1615,7 @@ steps:
 	runner := &sequenceRecordingRunner{
 		tools: cfg.Tools,
 		out: map[string]string{
-			"axe describe-ui --udid SIM": `[{"AXUniqueId":"HomeView","AXRole":"Application"}]`,
+			"axe --output json describe-ui --udid SIM": `[{"AXUniqueId":"HomeView","AXRole":"Application"}]`,
 		},
 	}
 	var out bytes.Buffer
@@ -1596,11 +1649,10 @@ steps:
 		t.Fatalf("expected named + final evidence steps, got valid=%d data=%s", report.ValidStepCount, data)
 	}
 	for _, want := range []string{
-		"xcrun simctl io SIM recordVideo",
+		"axe --output json record-video --output",
 		"mitmdump --listen-port 9092 --quiet --set hardump=" + filepath.Join(run.Dir, "network.har"),
-		"axe screenshot --output",
+		"axe --output json screenshot --output",
 		"kill -TERM 124",
-		"/usr/bin/avconvert",
 	} {
 		if !containsCall(runner.commands, want) {
 			t.Fatalf("missing %q in commands=%v", want, runner.commands)
@@ -1616,7 +1668,7 @@ func TestEvidenceStartWithNetworkStartsHARCapture(t *testing.T) {
 	cfg := DefaultConfig(root)
 	cfg.BundleID = "com.example.app"
 	cfg.SimulatorUDID = "SIM"
-	cfg.Tools = map[string]bool{"xcrun": true, "mitmdump": true}
+	cfg.Tools = map[string]bool{"axe": true, "xcrun": true, "mitmdump": true}
 	if err := SaveConfig(root, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -1658,7 +1710,7 @@ func TestFlowWhenExecutesDoBlockWhenVisible(t *testing.T) {
 	}
 	runner := &sequenceRecordingRunner{
 		tools: cfg.Tools,
-		out:   map[string]string{"axe describe-ui": `[{"AXUniqueId":"ToggleX","AXLabel":"Toggle"}]`},
+		out:   map[string]string{"axe --output json describe-ui": `[{"AXUniqueId":"ToggleX","AXLabel":"Toggle"}]`},
 	}
 	cli := CLI{Runner: runner, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
 	fields, err := cli.executeFlowStep(context.Background(), run, 1, FlowStep{
@@ -1672,7 +1724,7 @@ func TestFlowWhenExecutesDoBlockWhenVisible(t *testing.T) {
 	if fields["matched"] != "true" || fields["executed"] != "1" {
 		t.Fatalf("fields=%v", fields)
 	}
-	if !containsCall(runner.commands, "axe describe-ui") || !containsCall(runner.commands, "axe tap --tap-style physical --id ToggleX") {
+	if !containsCall(runner.commands, "axe --output json describe-ui") || !containsCall(runner.commands, "axe --output json tap --tap-style physical --id ToggleX") {
 		t.Fatalf("commands=%v", runner.commands)
 	}
 }
@@ -1694,7 +1746,7 @@ func TestFlowWhenSkipsDoBlockWhenNotVisible(t *testing.T) {
 	}
 	runner := &sequenceRecordingRunner{
 		tools: cfg.Tools,
-		out:   map[string]string{"axe describe-ui": `[{"AXUniqueId":"Other","AXLabel":"Other"}]`},
+		out:   map[string]string{"axe --output json describe-ui": `[{"AXUniqueId":"Other","AXLabel":"Other"}]`},
 	}
 	cli := CLI{Runner: runner, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
 	fields, err := cli.executeFlowStep(context.Background(), run, 1, FlowStep{
@@ -1708,7 +1760,7 @@ func TestFlowWhenSkipsDoBlockWhenNotVisible(t *testing.T) {
 	if fields["matched"] != "false" || fields["skipped"] != "1" {
 		t.Fatalf("fields=%v", fields)
 	}
-	if containsCall(runner.commands, "axe tap --tap-style physical --id ToggleX") {
+	if containsCall(runner.commands, "axe --output json tap --tap-style physical --id ToggleX") {
 		t.Fatalf("tap should not run: %v", runner.commands)
 	}
 }
@@ -1739,7 +1791,7 @@ steps:
 	if err := cli.Run(context.Background(), []string{"--prefer-driver", "auto", "run", flowPath}); err != nil {
 		t.Fatal(err)
 	}
-	if !containsCall(runner.commands, "axe tap --tap-style physical --label Continue") {
+	if !containsCall(runner.commands, "axe --output json tap --tap-style physical --label Continue") {
 		t.Fatalf("step override should force axe: commands=%v output=%q", runner.commands, out.String())
 	}
 }
@@ -1758,7 +1810,7 @@ func TestUISwipePreferAxeDoesNotFallbackToIDB(t *testing.T) {
 	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
 	allowFail(t, cli.Run(context.Background(), []string{"--prefer-driver", "axe", "ui", "swipe", "up"}))
 	got := out.String()
-	if !strings.Contains(got, "fail code=tool_missing") || !strings.Contains(got, "tool=axe") {
+	if !strings.Contains(got, "fail code=axe2_required") || !strings.Contains(got, "driver=axe") {
 		t.Fatalf("got %q", got)
 	}
 	if containsCall(runner.commands, "idb ui swipe") {
@@ -1792,7 +1844,7 @@ func TestOpenClearStateFailureWarnsInsteadOfBeingSilent(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &launchRecipeRunner{
-		tools: map[string]bool{"xcrun": true},
+		tools: map[string]bool{"xcrun": true, "axe": true},
 		results: map[string]CommandResult{
 			"make ios-app-path": {Stdout: "/tmp/App.app\n"},
 			`xcrun simctl uninstall SIM com.example.app`: {
@@ -1838,7 +1890,7 @@ func TestUISwipeExplicitPreferIsHonoured(t *testing.T) {
 	if !strings.Contains(got, "driver=baguette") {
 		t.Fatalf("--prefer-driver baguette must be served with baguette, not overwritten with axe: %q", got)
 	}
-	if containsCall(runner.commands, "axe swipe") {
+	if containsCall(runner.commands, "axe --output json swipe") {
 		t.Fatalf("--prefer-driver baguette must not silently run with axe: %v", runner.commands)
 	}
 }
@@ -1863,7 +1915,7 @@ func TestUISwipeExplicitPreferThatCannotServeFailsLoudly(t *testing.T) {
 	if !strings.Contains(got, "fail code=prefer_driver_unusable") || !strings.Contains(got, "driver=simtime") {
 		t.Fatalf("a prefer that cannot serve swipe must fail naming it, got %q", got)
 	}
-	if containsCall(runner.commands, "axe swipe") {
+	if containsCall(runner.commands, "axe --output json swipe") {
 		t.Fatalf("it must not silently fall to axe: %v", runner.commands)
 	}
 }
@@ -1873,7 +1925,7 @@ func TestUISwipeExplicitPreferThatCannotServeFailsLoudly(t *testing.T) {
 // capabilities (CapHardwareBtn, CapDoubleTap, CapWallClock) must not change
 // which driver actually serves the request, since that driver was already
 // the only healthy candidate.
-func TestSingleProviderCapabilitiesStayHardcodedAfterPreferDriverRemoval(t *testing.T) {
+func TestNativeCapabilitiesRouteThroughAXe2ByDefault(t *testing.T) {
 	root := t.TempDir()
 	t.Cleanup(func() { removeSimulatorLock("SIM", root) })
 	cfg := DefaultConfig(root)
@@ -1899,24 +1951,24 @@ func TestSingleProviderCapabilitiesStayHardcodedAfterPreferDriverRemoval(t *test
 		out:   map[string]string{"simtime --udid SIM --bundle com.example.app": "idle"},
 	}
 
-	t.Run("press reaches baguette", func(t *testing.T) {
+	t.Run("press reaches axe", func(t *testing.T) {
 		var out bytes.Buffer
 		cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
 		if err := cli.Run(context.Background(), []string{"ui", "press", "--button", "home"}); err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(out.String(), "driver=baguette") {
+		if !strings.Contains(out.String(), "driver=axe") {
 			t.Fatalf("got %q", out.String())
 		}
 	})
 
-	t.Run("doubleTap reaches baguette", func(t *testing.T) {
+	t.Run("doubleTap reaches axe", func(t *testing.T) {
 		var out bytes.Buffer
 		cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
 		if err := cli.Run(context.Background(), []string{"ui", "doubleTap", "--x", "1", "--y", "1"}); err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(out.String(), "driver=baguette") {
+		if !strings.Contains(out.String(), "driver=axe") {
 			t.Fatalf("got %q", out.String())
 		}
 	})
@@ -1956,7 +2008,7 @@ func TestOpenStartsOnlyProbeLogsByDefault(t *testing.T) {
 	cfg.BundleID = "com.example.app"
 	cfg.SimulatorUDID = "SIM"
 	cfg.SimulatorName = "iPhone"
-	cfg.Tools = map[string]bool{"xcrun": true, "bazelisk": true}
+	cfg.Tools = map[string]bool{"xcrun": true, "bazelisk": true, "axe": true}
 	if err := SaveConfig(root, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -1995,7 +2047,7 @@ func TestOpenRunsConfiguredLaunchRecipe(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &launchRecipeRunner{
-		tools: map[string]bool{"xcrun": true},
+		tools: map[string]bool{"xcrun": true, "axe": true},
 		results: map[string]CommandResult{
 			"make ios-app-path": {Stdout: "/tmp/App.app\n"},
 		},
@@ -2030,7 +2082,7 @@ func TestOpenClearStateRunsUninstallBeforeInstall(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &launchRecipeRunner{
-		tools: map[string]bool{"xcrun": true},
+		tools: map[string]bool{"xcrun": true, "axe": true},
 		results: map[string]CommandResult{
 			"make ios-app-path": {Stdout: "/tmp/App.app\n"},
 		},
@@ -2060,7 +2112,7 @@ func TestOpenClearStateRequiresInstallCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	cli := CLI{Runner: &launchRecipeRunner{tools: map[string]bool{"xcrun": true}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	cli := CLI{Runner: &launchRecipeRunner{tools: map[string]bool{"xcrun": true, "axe": true}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
 	allowFail(t, cli.Run(context.Background(), []string{"open", "--clear-state"}))
 	got := out.String()
 	if !strings.Contains(got, "fail code=launch_step_failed") || !strings.Contains(got, "step=clear_state") || !strings.Contains(got, "clearState requires an install command") {
@@ -2093,7 +2145,7 @@ func skipBuildProject(t *testing.T) (string, string) {
 func TestOpenSkipBuildRunsEverythingButTheBuild(t *testing.T) {
 	root, appPath := skipBuildProject(t)
 	runner := &launchRecipeRunner{
-		tools:   map[string]bool{"xcrun": true},
+		tools:   map[string]bool{"xcrun": true, "axe": true},
 		results: map[string]CommandResult{"make mav-app-path": {Stdout: appPath + "\n"}},
 	}
 	var out bytes.Buffer
@@ -2115,7 +2167,7 @@ func TestOpenSkipBuildRunsEverythingButTheBuild(t *testing.T) {
 func TestOpenWithoutSkipBuildStillBuilds(t *testing.T) {
 	root, appPath := skipBuildProject(t)
 	runner := &launchRecipeRunner{
-		tools:   map[string]bool{"xcrun": true},
+		tools:   map[string]bool{"xcrun": true, "axe": true},
 		results: map[string]CommandResult{"make mav-app-path": {Stdout: appPath + "\n"}},
 	}
 	var out bytes.Buffer
@@ -2131,7 +2183,7 @@ func TestOpenWithoutSkipBuildStillBuilds(t *testing.T) {
 func TestOpenSkipBuildReportsMissingArtifactAsItsOwnCode(t *testing.T) {
 	root, _ := skipBuildProject(t)
 	runner := &launchRecipeRunner{
-		tools: map[string]bool{"xcrun": true},
+		tools: map[string]bool{"xcrun": true, "axe": true},
 		results: map[string]CommandResult{
 			"make mav-app-path": {Stderr: "make: *** No rule to make target", Err: errors.New("exit status 2")},
 		},
@@ -2151,7 +2203,7 @@ func TestOpenSkipBuildReportsMissingArtifactAsItsOwnCode(t *testing.T) {
 func TestOpenSkipBuildRejectsAnAppPathThatIsNotOnDisk(t *testing.T) {
 	root, _ := skipBuildProject(t)
 	runner := &launchRecipeRunner{
-		tools:   map[string]bool{"xcrun": true},
+		tools:   map[string]bool{"xcrun": true, "axe": true},
 		results: map[string]CommandResult{"make mav-app-path": {Stdout: filepath.Join(root, "never-built.app") + "\n"}},
 	}
 	var out bytes.Buffer
@@ -2174,7 +2226,7 @@ func TestOpenSkipBuildRecordsTheMissingArtifactInTheCommandsTrail(t *testing.T) 
 	root, _ := skipBuildProject(t)
 	missing := filepath.Join(root, "never-built.app")
 	runner := &launchRecipeRunner{
-		tools:   map[string]bool{"xcrun": true},
+		tools:   map[string]bool{"xcrun": true, "axe": true},
 		results: map[string]CommandResult{"make mav-app-path": {Stdout: missing + "\n"}},
 	}
 	var out bytes.Buffer
@@ -2226,7 +2278,7 @@ func TestRunFlowOpenFailureCarriesTheCodeOpenSwallowed(t *testing.T) {
 // out.
 func TestOpenFlagConflictIsRejectedBeforeTheTargetIsTouched(t *testing.T) {
 	root, _ := skipBuildProject(t)
-	runner := &launchRecipeRunner{tools: map[string]bool{"xcrun": true}}
+	runner := &launchRecipeRunner{tools: map[string]bool{"xcrun": true, "axe": true}}
 	var out bytes.Buffer
 	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
 	allowFail(t, cli.Run(context.Background(), []string{"open", "--device", "iPhone 17", "--no-relaunch", "--skip-build"}))
@@ -2248,7 +2300,7 @@ func TestOpenFlagConflictIsRejectedBeforeTheTargetIsTouched(t *testing.T) {
 func TestOpenSkipBuildRejectsNoRelaunch(t *testing.T) {
 	root, _ := skipBuildProject(t)
 	var out bytes.Buffer
-	cli := CLI{Runner: &launchRecipeRunner{tools: map[string]bool{"xcrun": true}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	cli := CLI{Runner: &launchRecipeRunner{tools: map[string]bool{"xcrun": true, "axe": true}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
 	allowFail(t, cli.Run(context.Background(), []string{"open", "--no-relaunch", "--skip-build"}))
 	if got := out.String(); !strings.Contains(got, "fail code=open_flags_invalid") || !strings.Contains(got, "--skip-build") {
 		t.Fatalf("got %q", got)
@@ -2350,7 +2402,7 @@ func TestRunFlowOptionalTapSkipsCommandFailure(t *testing.T) {
 	}
 }
 
-func TestEraseOnDeviceFailsWithStructuredError(t *testing.T) {
+func TestEraseOnDeviceUsesAXe2AndVerifiesTheField(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
 	cfg.TargetKind = "device"
@@ -2359,11 +2411,21 @@ func TestEraseOnDeviceFailsWithStructuredError(t *testing.T) {
 	if err := SaveConfig(root, cfg); err != nil {
 		t.Fatal(err)
 	}
+	runner := &sequenceRecordingRunner{tools: map[string]bool{"axe": true}, seq: map[string][]string{"axe --output json describe-ui --udid REAL-1": {eraseTreeWithValue("abc"), eraseTreeWithValue("")}}, calls: map[string]int{}}
 	var out bytes.Buffer
-	cli := CLI{Runner: &sequenceRecordingRunner{tools: map[string]bool{"idb": true}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
-	allowFail(t, cli.Run(context.Background(), []string{"ui", "erase", "--focused"}))
-	if !strings.Contains(out.String(), "fail code=erase_unsupported_on_device") {
-		t.Fatalf("got %q", out.String())
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "erase", "--focused"}); err != nil {
+		t.Fatalf("err=%v output=%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "ok cmd=ui.erase") || !strings.Contains(out.String(), "driver=axe") {
+		t.Fatalf("output=%s", out.String())
+	}
+	deletions := 0
+	for _, cmd := range runner.commands {
+		deletions += axeDeletionCount(cmd)
+	}
+	if deletions != 3 {
+		t.Fatalf("expected three verified deletions, got %d: %v", deletions, runner.commands)
 	}
 }
 
@@ -2376,7 +2438,7 @@ func TestHideKeyboardOnDeviceFailsWithStructuredError(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	cli := CLI{Runner: &sequenceRecordingRunner{tools: map[string]bool{"idb": true}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	cli := CLI{Runner: &sequenceRecordingRunner{tools: map[string]bool{"axe": true, "idb": true}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
 	allowFail(t, cli.Run(context.Background(), []string{"ui", "hideKeyboard"}))
 	if !strings.Contains(out.String(), "fail code=hide_keyboard_unsupported_on_device") {
 		t.Fatalf("got %q", out.String())
@@ -2387,7 +2449,7 @@ func TestHideKeyboardUsesBaguetteOnSimulator(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
 	cfg.SimulatorUDID = "SIM"
-	cfg.Tools = map[string]bool{"baguette": true}
+	cfg.Tools = map[string]bool{"axe": true, "baguette": true}
 	if err := SaveConfig(root, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -2420,7 +2482,7 @@ func newEraseCLI(t *testing.T, trees []string) (CLI, *sequenceRecordingRunner, *
 	}
 	runner := &sequenceRecordingRunner{
 		tools: cfg.Tools,
-		seq:   map[string][]string{"axe describe-ui --udid SIM": trees},
+		seq:   map[string][]string{"axe --output json describe-ui --udid SIM": trees},
 		calls: map[string]int{},
 	}
 	out := &bytes.Buffer{}
@@ -2443,14 +2505,25 @@ func TestEraseUsesAxeAndDeletesWhatTheFieldHolds(t *testing.T) {
 	if !strings.Contains(out.String(), "ok cmd=ui.erase") || !strings.Contains(out.String(), "driver=axe") {
 		t.Fatalf("output=%q", out.String())
 	}
-	keys := 0
+	keys, batches := 0, 0
 	for _, command := range runner.commands {
-		if command == "axe key 42 --udid SIM" {
-			keys++
+		if strings.HasPrefix(command, "axe --output json key-sequence --keycodes ") {
+			fields := strings.Fields(command)
+			for i, field := range fields {
+				if field == "--keycodes" {
+					for _, code := range strings.Split(fields[i+1], ",") {
+						if code != "42" {
+							t.Fatalf("unexpected deletion key %s", code)
+						}
+						keys++
+					}
+				}
+			}
+			batches++
 		}
 	}
-	if keys != 6 {
-		t.Fatalf("expected one deletion per character of \"a12345\", got %d: %v", keys, runner.commands)
+	if keys != 6 || batches != 1 {
+		t.Fatalf("expected six deletions in one ordered session, got %d keys/%d batches: %v", keys, batches, runner.commands)
 	}
 	if containsCall(runner.commands, "baguette key --udid SIM --code Backspace") {
 		t.Fatalf("erase must not reach baguette: %v", runner.commands)
@@ -2536,7 +2609,7 @@ func TestEraseFailsWhenNoEditableFieldIsOnScreen(t *testing.T) {
 	}
 }
 
-func TestPinchOnDeviceFailsWithStructuredError(t *testing.T) {
+func TestPinchOnDeviceUsesAXe2(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
 	cfg.TargetKind = "device"
@@ -2544,11 +2617,14 @@ func TestPinchOnDeviceFailsWithStructuredError(t *testing.T) {
 	if err := SaveConfig(root, cfg); err != nil {
 		t.Fatal(err)
 	}
+	runner := &sequenceRecordingRunner{tools: map[string]bool{"axe": true}}
 	var out bytes.Buffer
-	cli := CLI{Runner: &sequenceRecordingRunner{tools: map[string]bool{"idb": true}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
-	allowFail(t, cli.Run(context.Background(), []string{"ui", "pinch", "--x", "100", "--y", "100", "--scale", "1.5"}))
-	if !strings.Contains(out.String(), "fail code=gesture_unsupported_on_device") {
-		t.Fatalf("got %q", out.String())
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"ui", "pinch", "--x", "100", "--y", "100", "--scale", "1.5"}); err != nil {
+		t.Fatalf("err=%v output=%s", err, out.String())
+	}
+	if !containsCall(runner.commands, "axe --output json gesture pinch -x 100 -y 100 --scale 1.5") || !strings.Contains(out.String(), "driver=axe") {
+		t.Fatalf("output=%s commands=%v", out.String(), runner.commands)
 	}
 }
 
@@ -2557,7 +2633,7 @@ func TestPinchOnDeviceFailsWithStructuredError(t *testing.T) {
 // gesture_unsupported_on_device ("use sim for multitouch") even though idb --
 // the only tap driver a physical device has -- holds there exactly as it does
 // on a simulator.
-func TestLongPressOnDeviceHoldsThroughIDB(t *testing.T) {
+func TestLongPressOnDeviceHoldsThroughAXe2(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
 	cfg.TargetKind = "device"
@@ -2566,7 +2642,7 @@ func TestLongPressOnDeviceHoldsThroughIDB(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	runner := &sequenceRecordingRunner{tools: map[string]bool{"idb": true}}
+	runner := &sequenceRecordingRunner{tools: map[string]bool{"axe": true}}
 	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
 	if err := cli.Run(context.Background(), []string{"ui", "longPress", "--x", "100", "--y", "200"}); err != nil {
 		t.Fatalf("err=%v out=%s", err, out.String())
@@ -2574,8 +2650,8 @@ func TestLongPressOnDeviceHoldsThroughIDB(t *testing.T) {
 	if strings.Contains(out.String(), "gesture_unsupported_on_device") {
 		t.Fatalf("a long press was refused on a device: %q", out.String())
 	}
-	if !containsCall(runner.commands, "idb ui tap 100 200 --udid REAL-1 --duration 0.800") {
-		t.Fatalf("the hold never reached idb: %v", runner.commands)
+	if !containsCall(runner.commands, "axe --output json tap --tap-style physical -x 100 -y 200 --hold 0.8") {
+		t.Fatalf("the hold never reached AXe: %v", runner.commands)
 	}
 }
 
@@ -2590,11 +2666,11 @@ func TestLongPressReportsTheDriverThatRan(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	cli := CLI{Runner: &sequenceRecordingRunner{tools: map[string]bool{"idb": true}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	cli := CLI{Runner: &sequenceRecordingRunner{tools: map[string]bool{"axe": true}}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
 	if err := cli.Run(context.Background(), []string{"ui", "longPress", "--x", "100", "--y", "200"}); err != nil {
 		t.Fatalf("err=%v out=%s", err, out.String())
 	}
-	if !strings.Contains(out.String(), "driver=idb") {
+	if !strings.Contains(out.String(), "driver=axe") {
 		t.Fatalf("got %q", out.String())
 	}
 }
@@ -2604,7 +2680,7 @@ func TestUITreeIncludeSystemOnDeviceFailsWithStructuredError(t *testing.T) {
 	cfg := DefaultConfig(root)
 	cfg.TargetKind = "device"
 	cfg.DeviceUDID = "REAL-1"
-	cfg.Tools = map[string]bool{"idb": true}
+	cfg.Tools = map[string]bool{"axe": true}
 	if err := SaveConfig(root, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -2620,7 +2696,7 @@ func TestUITreeIncludeSystemUsesBaguetteOnSimulator(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
 	cfg.SimulatorUDID = "SIM"
-	cfg.Tools = map[string]bool{"baguette": true}
+	cfg.Tools = map[string]bool{"axe": true, "baguette": true}
 	if err := SaveConfig(root, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -2651,13 +2727,13 @@ func TestLaunchLanguageArgs(t *testing.T) {
 }
 
 func TestDeviceListParsesDevicectlJSONOutputFile(t *testing.T) {
-	devices := `{"result":{"devices":[{"identifier":"REAL-1","name":"David iPhone"}]}}`
+	devices := `{"result":{"devices":[{"hardwareProperties":{"udid":"REAL-1"},"name":"Test iPhone"}]}}`
 	var out bytes.Buffer
 	cli := CLI{Runner: deviceListRunner{tools: map[string]bool{"xcrun": true}, devices: devices}, Root: t.TempDir(), Stdout: &out, Stderr: &bytes.Buffer{}}
 	if err := cli.Run(context.Background(), []string{"device", "list"}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "ok cmd=device.list count=1") || !strings.Contains(out.String(), `device udid=REAL-1 name="David iPhone"`) {
+	if !strings.Contains(out.String(), "ok cmd=device.list count=1") || !strings.Contains(out.String(), `device udid=REAL-1 name="Test iPhone"`) {
 		t.Fatalf("got %q", out.String())
 	}
 }
@@ -2669,7 +2745,7 @@ func TestDeviceSelectPersistsPhysicalTarget(t *testing.T) {
 	if err := SaveConfig(root, cfg); err != nil {
 		t.Fatal(err)
 	}
-	devices := `{"result":{"devices":[{"identifier":"REAL-1","name":"David iPhone"}]}}`
+	devices := `{"result":{"devices":[{"hardwareProperties":{"udid":"REAL-1"},"name":"Test iPhone"}]}}`
 	var out bytes.Buffer
 	cli := CLI{Runner: deviceListRunner{tools: map[string]bool{"xcrun": true}, devices: devices}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
 	if err := cli.Run(context.Background(), []string{"device", "select", "--udid", "REAL-1"}); err != nil {
@@ -2679,7 +2755,7 @@ func TestDeviceSelectPersistsPhysicalTarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.TargetKind != "device" || loaded.DeviceUDID != "REAL-1" || loaded.DeviceName != "David iPhone" {
+	if loaded.TargetKind != "device" || loaded.DeviceUDID != "REAL-1" || loaded.DeviceName != "Test iPhone" {
 		t.Fatalf("loaded=%+v output=%s", loaded, out.String())
 	}
 }
@@ -2689,7 +2765,7 @@ func TestDeviceSelectReportsNotFound(t *testing.T) {
 	if err := SaveConfig(root, DefaultConfig(root)); err != nil {
 		t.Fatal(err)
 	}
-	devices := `{"result":{"devices":[{"identifier":"REAL-1","name":"David iPhone"}]}}`
+	devices := `{"result":{"devices":[{"hardwareProperties":{"udid":"REAL-1"},"name":"Test iPhone"}]}}`
 	var out bytes.Buffer
 	cli := CLI{Runner: deviceListRunner{tools: map[string]bool{"xcrun": true}, devices: devices}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
 	allowFail(t, cli.Run(context.Background(), []string{"device", "select", "--udid", "MISSING"}))
@@ -2772,13 +2848,13 @@ func TestSimBootToleratesAlreadyBootingState(t *testing.T) {
 	}
 }
 
-func TestDeviceLaunchRecipeUsesIDB(t *testing.T) {
+func TestDeviceLaunchRecipeUsesCoreDevice(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
 	cfg.TargetKind = "device"
 	cfg.DeviceUDID = "REAL-1"
 	cfg.BundleID = "com.example.app"
-	cfg.Tools["idb"] = true
+	cfg.Tools["xcrun"] = true
 	cfg.Launch = LaunchConfig{Mode: "custom", Commands: LaunchCommands{
 		Build:   "make build-ios",
 		AppPath: "make ios-app-path",
@@ -2789,7 +2865,7 @@ func TestDeviceLaunchRecipeUsesIDB(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &launchRecipeRunner{
-		tools: map[string]bool{"idb": true},
+		tools: map[string]bool{"xcrun": true},
 		results: map[string]CommandResult{
 			"make ios-app-path": {Stdout: "/tmp/Demo.app\n"},
 		},
@@ -2800,7 +2876,7 @@ func TestDeviceLaunchRecipeUsesIDB(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(runner.commands, "\n")
-	for _, want := range []string{"idb uninstall", "idb install", "idb launch"} {
+	for _, want := range []string{"devicectl device uninstall app", "devicectl device install app", "devicectl device process launch"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing %q in commands:\n%s\noutput=%s", want, joined, out.String())
 		}
@@ -2831,17 +2907,17 @@ func TestStartProbeLogsUsesIDBForDevice(t *testing.T) {
 	}
 }
 
-func TestCaptureScreenshotUsesIDBForDevice(t *testing.T) {
+func TestCaptureScreenshotUsesAXe2ForDevice(t *testing.T) {
 	cfg := DefaultConfig(t.TempDir())
 	cfg.TargetKind = "device"
 	cfg.DeviceUDID = "REAL-1"
-	cfg.Tools["idb"] = true
-	runner := &recordingRunner{tools: map[string]bool{"idb": true}}
+	cfg.Tools["axe"] = true
+	runner := &recordingRunner{tools: map[string]bool{"axe": true}}
 	cli := CLI{Runner: runner, Root: t.TempDir(), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
 	if _, err := cli.captureScreenshot(context.Background(), cfg, filepath.Join(t.TempDir(), "screen.png")); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(runner.command, "idb screenshot ") || !strings.Contains(runner.command, "--udid REAL-1") {
+	if !strings.Contains(runner.command, "axe --output json screenshot ") || !strings.Contains(runner.command, "--udid REAL-1") {
 		t.Fatalf("command=%q", runner.command)
 	}
 }
@@ -2851,11 +2927,11 @@ func TestCaptureCommandAllowedOnPhysicalDevice(t *testing.T) {
 	cfg := DefaultConfig(root)
 	cfg.TargetKind = "device"
 	cfg.DeviceUDID = "REAL-1"
-	cfg.Tools = map[string]bool{"idb": true}
+	cfg.Tools = map[string]bool{"axe": true, "idb": true}
 	if err := SaveConfig(root, cfg); err != nil {
 		t.Fatal(err)
 	}
-	runner := &sequenceRecordingRunner{tools: map[string]bool{"idb": true}}
+	runner := &sequenceRecordingRunner{tools: map[string]bool{"axe": true, "idb": true}}
 	var out bytes.Buffer
 	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
 	if err := cli.Run(context.Background(), []string{"capture", "--name", "probe"}); err != nil {
@@ -2890,11 +2966,12 @@ func TestCrashesUsesDeviceUDID(t *testing.T) {
 	}
 }
 
-func TestVideoStartUnsupportedOnDevice(t *testing.T) {
+func TestVideoStartRecordsPhysicalDeviceWithAXe2(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
 	cfg.TargetKind = "device"
 	cfg.DeviceUDID = "REAL-1"
+	cfg.Tools = map[string]bool{"axe": true}
 	if err := SaveConfig(root, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -2906,10 +2983,33 @@ func TestVideoStartUnsupportedOnDevice(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	cli := CLI{Runner: &sequenceRecordingRunner{}, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
-	allowFail(t, cli.Run(context.Background(), []string{"evidence", "start"}))
-	if !strings.Contains(out.String(), "fail code=video_unsupported") || !strings.Contains(out.String(), "target=device") {
+	runner := &sequenceRecordingRunner{tools: cfg.Tools}
+	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
+	if err := cli.Run(context.Background(), []string{"evidence", "start"}); err != nil {
+		t.Fatalf("start: %v (%s)", err, out.String())
+	}
+	if !strings.Contains(out.String(), "ok cmd=evidence.start") {
 		t.Fatalf("got %q", out.String())
+	}
+	if !containsCall(runner.commands, "axe --output json record-video --output") || !containsCall(runner.commands, "--udid REAL-1") {
+		t.Fatalf("commands=%v", runner.commands)
+	}
+	if strings.Contains(strings.Join(runner.commands, "\n"), "--follow-active-display") {
+		t.Fatalf("simulator display flag leaked to hardware: %v", runner.commands)
+	}
+	data, err := os.ReadFile(filepath.Join(run.Dir, "video-driver.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state recordingIdentity
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Driver != "axe" || state.Target.UDID != "REAL-1" || !strings.HasSuffix(state.Path, "video.mp4") {
+		t.Fatalf("recording identity=%+v", state)
+	}
+	if err := awaitFixtureRecording(context.Background(), state.Path, filepath.Join(run.Dir, "video.log")); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -3090,7 +3190,7 @@ func fixtureConfigRoot(t *testing.T) string {
 func TestFixtureRunsBetweenInstallAndLaunch(t *testing.T) {
 	root := fixtureConfigRoot(t)
 	runner := &launchRecipeRunner{
-		tools:   map[string]bool{"xcrun": true},
+		tools:   map[string]bool{"xcrun": true, "axe": true},
 		results: map[string]CommandResult{"make ios-app-path": {Stdout: "/tmp/App.app\n"}},
 	}
 	var out bytes.Buffer
@@ -3116,7 +3216,7 @@ func TestFixtureRunsBetweenInstallAndLaunch(t *testing.T) {
 func TestFixtureNotFoundFailsListingAvailable(t *testing.T) {
 	root := fixtureConfigRoot(t)
 	runner := &launchRecipeRunner{
-		tools:   map[string]bool{"xcrun": true},
+		tools:   map[string]bool{"xcrun": true, "axe": true},
 		results: map[string]CommandResult{"make ios-app-path": {Stdout: "/tmp/App.app\n"}},
 	}
 	var out bytes.Buffer
@@ -3133,7 +3233,7 @@ func TestFixtureNotFoundFailsListingAvailable(t *testing.T) {
 
 func TestFixtureRejectedWithNoRelaunch(t *testing.T) {
 	root := fixtureConfigRoot(t)
-	runner := &launchRecipeRunner{tools: map[string]bool{"xcrun": true}}
+	runner := &launchRecipeRunner{tools: map[string]bool{"xcrun": true, "axe": true}}
 	var out bytes.Buffer
 	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
 	allowFail(t, cli.Run(context.Background(), []string{"open", "--no-relaunch", "--fixture", "seeded"}))
@@ -3148,7 +3248,7 @@ func TestFixtureRejectedWithNoRelaunch(t *testing.T) {
 func TestFixtureFailureAbortsNamingTheStep(t *testing.T) {
 	root := fixtureConfigRoot(t)
 	runner := &launchRecipeRunner{
-		tools: map[string]bool{"xcrun": true},
+		tools: map[string]bool{"xcrun": true, "axe": true},
 		results: map[string]CommandResult{
 			"make ios-app-path": {Stdout: "/tmp/App.app\n"},
 			"seeding-two":       {Stderr: "boom", Code: 1, Err: errors.New("exit status 1")},
@@ -3169,7 +3269,7 @@ func TestFixtureFailureAbortsNamingTheStep(t *testing.T) {
 func TestNoFixtureRunsNothing(t *testing.T) {
 	root := fixtureConfigRoot(t)
 	runner := &launchRecipeRunner{
-		tools:   map[string]bool{"xcrun": true},
+		tools:   map[string]bool{"xcrun": true, "axe": true},
 		results: map[string]CommandResult{"make ios-app-path": {Stdout: "/tmp/App.app\n"}},
 	}
 	var out bytes.Buffer
@@ -3233,7 +3333,7 @@ func TestCaptureHonoursPreferDriver(t *testing.T) {
 	cfg := DefaultConfig(t.TempDir())
 	cfg.Tools["idb"] = true
 	cfg.Tools["simctl"] = true
-	runner := &recordingRunner{tools: map[string]bool{"idb": true, "xcrun": true, "simctl": true}}
+	runner := &recordingRunner{tools: map[string]bool{"axe": true, "idb": true, "xcrun": true, "simctl": true}}
 	cli := CLI{Runner: runner, Root: t.TempDir(), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
 	if _, err := cli.captureScreenshotWith(context.Background(), cfg, filepath.Join(t.TempDir(), "s.png"), "simctl"); err != nil {
 		t.Fatal(err)
@@ -3324,12 +3424,12 @@ func TestDoctorReportsABaguetteTooOldForMav(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := out.String()
-	for _, want := range []string{"multitouch=broken", "baguette_issue=", "0.1.73", "baguette_next=", "mav setup --install baguette"} {
+	for _, want := range []string{"multitouch_driver=axe", "baguette_issue=", "0.1.73", "baguette_next=", "mav setup --install baguette"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in %q", want, got)
 		}
 	}
-	for _, unwanted := range []string{"multitouch=ok", "multitouch_driver=baguette", "sim_multitouch_driver=baguette"} {
+	for _, unwanted := range []string{"multitouch=broken", "multitouch_driver=baguette", "sim_multitouch_driver=baguette"} {
 		if strings.Contains(got, unwanted) {
 			t.Fatalf("doctor still reports %q for a baguette mav refuses: %q", unwanted, got)
 		}

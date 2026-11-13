@@ -29,7 +29,7 @@ func TestAmbiguousSelectorSaysHowToChooseBetweenTheMatches(t *testing.T) {
 
 	var out bytes.Buffer
 	runner := fakeRunner{tools: cfg.Tools, out: map[string]string{
-		"axe describe-ui --udid SIM-AMBIGUOUS": fourIdenticalRowsTree,
+		"axe --output json describe-ui --udid SIM-AMBIGUOUS": fourIdenticalRowsTree,
 	}}
 	cli := CLI{Runner: runner, Root: root, Stdout: &out, Stderr: &bytes.Buffer{}}
 	_ = cli.Run(context.Background(), []string{"ui", "tap",

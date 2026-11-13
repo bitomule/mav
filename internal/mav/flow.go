@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bitomule/mav/internal/mav/drivers"
 	"gopkg.in/yaml.v3"
 )
 
@@ -24,6 +25,8 @@ type Flow struct {
 }
 
 type FlowStep struct {
+	Automation *Automation
+
 	Action    string
 	Params    map[string]string
 	Where     Selector
@@ -312,6 +315,23 @@ func parseFlowStepNode(node yaml.Node) (FlowStep, error) {
 		return FlowStep{}, fmt.Errorf("step_action_missing")
 	}
 	action := node.Content[0].Value
+	if action == "automation" {
+		var payload struct {
+			Command   string                `yaml:"command"`
+			Options   map[string]any        `yaml:"options"`
+			Context   *drivers.InputContext `yaml:"context"`
+			OnFailure FailurePolicy         `yaml:"onFailure"`
+			After     *FlowAfter            `yaml:"after"`
+		}
+		if err := decodeKnownNode(node.Content[1], &payload); err != nil {
+			return FlowStep{}, err
+		}
+		req := Automation{Command: payload.Command, Options: payload.Options, Context: payload.Context}
+		if err := validateAutomation(req); err != nil {
+			return FlowStep{}, err
+		}
+		return FlowStep{Action: action, Automation: &req, OnFailure: payload.OnFailure, After: payload.After, Params: map[string]string{}}, nil
+	}
 	if action == "include" {
 		return parseIncludeFlowStepNode(node.Content[1])
 	}
@@ -704,6 +724,14 @@ func expandFlowSteps(steps []FlowStep, baseDir string, env map[string]string, st
 
 func validateFlowSteps(steps []FlowStep) error {
 	for index, step := range steps {
+		if step.Action == "automation" {
+			if step.Automation == nil {
+				return fmt.Errorf("steps[%d]: automation request missing", index)
+			}
+			if err := validateAutomation(*step.Automation); err != nil {
+				return fmt.Errorf("steps[%d]: %w", index, err)
+			}
+		}
 		if !isSupportedFlowAction(step.Action) {
 			return fmt.Errorf("steps[%d]: unknown_step action=%s", index, step.Action)
 		}
@@ -837,7 +865,7 @@ func validateGotoFlowStep(index int, step FlowStep) error {
 
 func isSupportedFlowAction(action string) bool {
 	switch action {
-	case "open", "goto", "when", "whileNotVisible", "go", "tree", "tap", "type", "erase", "hideKeyboard", "swipe", "longPress", "pinch", "rotate", "twoFingerPan", "actions",
+	case "automation", "open", "goto", "when", "whileNotVisible", "go", "tree", "tap", "type", "erase", "hideKeyboard", "swipe", "longPress", "pinch", "rotate", "twoFingerPan", "actions",
 		"doubleTap", "drag", "dragPath", "toggle", "press",
 		"app.list", "app.kill", "openURL", "location.set", "location.reset", "clipboard.copy", "clipboard.read",
 		"sim.appearance", "sim.statusbar.set", "sim.statusbar.clear", "sim.language.set", "sim.hinge", "sim.heal",
@@ -854,6 +882,14 @@ func isSupportedFlowAction(action string) bool {
 }
 
 func expandFlowStepEnv(step FlowStep, baseDir string, env map[string]string, stack []string, nestedInWhen bool) (FlowStep, error) {
+	if step.Automation != nil {
+		req, e := transformAutomationStrings(*step.Automation, func(value string) (string, error) { return expandEnvString(value, env) })
+		if e != nil {
+			return FlowStep{}, e
+		}
+		step.Automation = &req
+	}
+
 	if nestedInWhen && (step.Action == "open" || step.Action == "exec") {
 		return FlowStep{}, fmt.Errorf("when_child_unsupported action=%s", step.Action)
 	}

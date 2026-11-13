@@ -139,52 +139,10 @@ func TestHingeAndHealAreFlowSteps(t *testing.T) {
 	}
 }
 
-// Measured on iPhone Duo / iOS 27.1 open flat: idb 1.6.4 navigated 2 of 2,
-// AXe and baguette 0 of 4 while reporting success.
-func TestAnOpenFoldableTapsThroughIdb(t *testing.T) {
-	for _, tc := range []struct {
-		declared *float64
-		want     string
-	}{
-		{nil, "axe tap --tap-style physical --udid SIM -x 160 -y 288"},
-		{ptr(180.0), "idb ui tap 160 288 --udid SIM"},
-		{ptr(0.0), "axe tap --tap-style physical --udid SIM -x 160 -y 288"},
-	} {
-		root, runner := foldableRoot(t)
-		runner.tools["axe"] = true
-		runner.tools["idb"] = true
-		if tc.declared != nil {
-			writeDeclaredHinge(root, "SIM", *tc.declared)
-		}
-		runFoldable(t, root, runner, "ui", "tap", "--x", "160", "--y", "288")
-		if !containsCall(runner.commands, tc.want) {
-			t.Errorf("declared=%v: missing %q in %v", tc.declared, tc.want, runner.commands)
-		}
-	}
-}
-
 func ptr(v float64) *float64 { return &v }
 
 const accessibilityRowTree = `[{"AXLabel":"Ajustes","type":"Application","AXFrame":"{{0, 0}, {669, 951}}","frame":{"x":0,"y":0,"width":669,"height":951},"children":[` +
 	`{"AXLabel":"Accesibilidad","type":"Button","role":"AXButton","AXFrame":"{{20, 270}, {280, 36}}","frame":{"x":20,"y":270,"width":280,"height":36}}]}]`
-
-// A tap by text on an open Duo used to go to `axe tap --label`, which lands on
-// the dark cover: measured 0 of 2. It now reads the element from the tree and
-// taps its centre through idb.
-func TestAnOpenFoldableTapsATextThroughIdbAtTheElementsCentre(t *testing.T) {
-	root, runner := foldableRoot(t)
-	runner.tools["axe"] = true
-	runner.tools["idb"] = true
-	runner.out["axe describe-ui --udid SIM"] = accessibilityRowTree
-	writeDeclaredHinge(root, "SIM", 180)
-	out := runFoldable(t, root, runner, "ui", "tap", "--text", "Accesibilidad")
-	if !containsCall(runner.commands, "idb ui tap 160 288 --udid SIM") {
-		t.Fatalf("output=%q commands=%v", out, runner.commands)
-	}
-	if containsCall(runner.commands, "axe tap --tap-style physical --udid SIM --label") {
-		t.Fatalf("the label tap that lands on the cover was still sent: %v", runner.commands)
-	}
-}
 
 func treeWith(children ...string) string {
 	return `[{"AXLabel":"Ajustes","type":"Application","AXFrame":"{{0, 0}, {669, 951}}","children":[` + strings.Join(children, ",") + `]}]`
@@ -193,39 +151,6 @@ func treeWith(children ...string) string {
 func element(label, role string, x, y, w, h int) string {
 	return `{"AXLabel":"` + label + `","type":"` + role + `","role":"AX` + role + `","AXFrame":"{{` +
 		strconv.Itoa(x) + `, ` + strconv.Itoa(y) + `}, {` + strconv.Itoa(w) + `, ` + strconv.Itoa(h) + `}}"}`
-}
-
-// Settings' sidebar row matches "Accesibilidad" twice: the button and its own
-// label inside it. That is one control; measured on an open Duo the strict
-// resolver refused it as ambiguous and the tap never went out.
-func TestAnOpenFoldableResolvesALabelInsideItsOwnButton(t *testing.T) {
-	root, runner := foldableRoot(t)
-	runner.tools["axe"] = true
-	runner.tools["idb"] = true
-	runner.out["axe describe-ui --udid SIM"] = treeWith(
-		element("Accesibilidad", "Button", 20, 270, 280, 36),
-		element("Accesibilidad", "StaticText", 60, 278, 120, 20),
-	)
-	writeDeclaredHinge(root, "SIM", 180)
-	out := runFoldable(t, root, runner, "ui", "tap", "--text", "Accesibilidad")
-	if !containsCall(runner.commands, "idb ui tap 160 288 --udid SIM") {
-		t.Fatalf("output=%q commands=%v", out, runner.commands)
-	}
-}
-
-func TestAnOpenFoldableStillRefusesTwoSeparateMatches(t *testing.T) {
-	root, runner := foldableRoot(t)
-	runner.tools["axe"] = true
-	runner.tools["idb"] = true
-	runner.out["axe describe-ui --udid SIM"] = treeWith(
-		element("Accesibilidad", "Button", 20, 270, 280, 36),
-		element("Accesibilidad", "Button", 360, 600, 280, 36),
-	)
-	writeDeclaredHinge(root, "SIM", 180)
-	out := runFoldable(t, root, runner, "ui", "tap", "--text", "Accesibilidad")
-	if !strings.Contains(out, "selector_ambiguous") || containsCall(runner.commands, "idb ui tap") {
-		t.Fatalf("two separate rows must stay ambiguous: output=%q commands=%v", out, runner.commands)
-	}
 }
 
 func TestFlowLintRefusesAHingeStepTheCommandWouldRefuse(t *testing.T) {
@@ -273,11 +198,9 @@ func TestSimulatorAppNextToDeviceHubIsFlagged(t *testing.T) {
 	}
 }
 
-// One command has to leave a fresh Mac, and one with 2022's idb, on the
-// versions the probes demand: Homebrew 7 refuses third-party taps until they
-// are trusted, `brew install` upgrades an outdated formula, and pipx needs
-// --force to replace an installed fb-idb.
-func TestSetupInstallDepsTrustsEachTapAndUpgrades(t *testing.T) {
+// Dependency setup installs the required AXe input stack without installing
+// the former idb companion or Python environment.
+func TestSetupDepsInstallsAXeWithoutIDB(t *testing.T) {
 	root := t.TempDir()
 	if err := SaveConfig(root, DefaultConfig(root)); err != nil {
 		t.Fatal(err)
@@ -291,16 +214,24 @@ func TestSetupInstallDepsTrustsEachTapAndUpgrades(t *testing.T) {
 	want := []string{
 		"brew trust --tap cameroncooke/axe",
 		"brew install cameroncooke/axe/axe",
-		"pipx install --force --python python3.12 fb-idb",
-		"brew trust --tap facebook/fb",
-		"brew install facebook/fb/idb-companion",
-		"brew trust --tap tddworks/tap",
-		"brew install tddworks/tap/baguette",
 	}
 	if strings.Join(runner.commands, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("commands:\n%s\nwant:\n%s", strings.Join(runner.commands, "\n"), strings.Join(want, "\n"))
 	}
-	if !strings.Contains(out.String(), "installed=axe,idb,baguette") {
+	if !strings.Contains(out.String(), "installed=axe") {
 		t.Fatalf("output=%q", out.String())
+	}
+}
+
+func TestTimedHingeKeepsTheDriverThatSupportsDuration(t *testing.T) {
+	root, runner := foldableRoot(t)
+	runner.tools["axe"] = true
+	runner.out["baguette hinge --udid SIM --pose open --duration 1.2"] = `{"ok":true,"angleDegrees":130}`
+	out := runFoldable(t, root, runner, "sim", "hinge", "open", "--duration", "1.2")
+	if !strings.Contains(out, "ok cmd=sim.hinge") || !strings.Contains(out, "driver=baguette") || !containsCall(runner.commands, "baguette hinge --udid SIM --pose open --duration 1.2") {
+		t.Fatalf("out=%s commands=%v", out, runner.commands)
+	}
+	if containsCall(runner.commands, "axe --output json hinge") {
+		t.Fatalf("unsupported timed hinge reached AXe: %v", runner.commands)
 	}
 }

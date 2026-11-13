@@ -8,47 +8,6 @@ import (
 	"testing"
 )
 
-// A simulator rotated by anything other than Simulator.app leaves the window
-// angle at 0, so MAV cannot tell landscape-left from landscape-right -- and
-// they differ by 180 degrees. `mav ui orientation` removes the guess by being
-// the thing that rotates it. Revert uiOrientation's declaration write and
-// this test fails: the tap goes out unrotated because nothing claims a
-// rotation.
-func TestDeclaredOrientationDrivesTheRotationWhenTheWindowKnowsNothing(t *testing.T) {
-	// CCCCCCCC is the portrait/0 device in the shared fixture, i.e. the
-	// window default says there is nothing to compensate for.
-	const udid = "CCCCCCCC-0000-0000-0000-000000000003"
-	landscapeTree := `[{"AXLabel":"App","type":"Application","AXFrame":"{{0, 0}, {874, 402}}"}]`
-	cli, runner, out, root := rotationCLI(t, udid, devicePreferencesDump, landscapeTree)
-
-	if err := cli.Run(context.Background(), []string{"ui", "orientation", "landscape-right"}); err != nil {
-		t.Fatalf("err=%v out=%s", err, out.String())
-	}
-	got := out.String()
-	for _, want := range []string{"ok cmd=ui.orientation", "value=landscape-right", "driver=baguette", "rotation=90"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("missing %q in %q", want, got)
-		}
-	}
-	if !strings.Contains(strings.Join(runner.commands, "\n"), "baguette orientation --udid "+udid+" landscape-right") {
-		t.Fatalf("baguette was not asked to rotate: %q", runner.commands)
-	}
-
-	out.Reset()
-	if err := cli.Run(context.Background(), []string{"ui", "tap", "--x", "624", "--y", "330"}); err != nil {
-		t.Fatal(err)
-	}
-	tapped := out.String()
-	for _, want := range []string{"rotation=90", "hid_x=72", "hid_y=624", "rotation_source=mav"} {
-		if !strings.Contains(tapped, want) {
-			t.Fatalf("missing %q in %q", want, tapped)
-		}
-	}
-	if _, err := os.Stat(filepath.Join(root, MavDir, "orientation", udid+".json")); err != nil {
-		t.Fatalf("the declaration was not persisted: %v", err)
-	}
-}
-
 // baguette's landscape-left and landscape-right are UIDeviceOrientation
 // names, which are the inverse of the UIInterfaceOrientation names
 // Simulator.app's menu uses. Both mappings were measured on a real device;

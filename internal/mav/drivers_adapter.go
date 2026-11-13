@@ -1,10 +1,8 @@
 package mav
 
 import (
-	"bytes"
 	"context"
-	"os/exec"
-	"strings"
+	"fmt"
 
 	"github.com/bitomule/mav/internal/mav/drivers"
 )
@@ -23,19 +21,14 @@ func (a runnerAdapter) LookPath(name string) (string, error) {
 }
 
 func (a runnerAdapter) RunInput(ctx context.Context, input string, name string, args ...string) drivers.ExecResult {
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Stdin = strings.NewReader(input)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-	code := 0
-	if exitErr, ok := err.(*exec.ExitError); ok {
-		code = exitErr.ExitCode()
-	} else if err != nil {
-		code = 1
+	runner, ok := a.r.(interface {
+		RunInput(context.Context, string, string, ...string) CommandResult
+	})
+	if !ok {
+		return drivers.ExecResult{Code: 1, Err: fmt.Errorf("input_stream_unsupported: runner does not support stdin")}
 	}
-	return drivers.ExecResult{Stdout: stdout.String(), Stderr: stderr.String(), Code: code, Err: err}
+	result := runner.RunInput(ctx, input, name, args...)
+	return drivers.ExecResult{Stdout: result.Stdout, Stderr: result.Stderr, Code: result.Code, Err: result.Err}
 }
 
 func (a runnerAdapter) Run(ctx context.Context, name string, args ...string) drivers.ExecResult {

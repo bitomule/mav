@@ -24,7 +24,7 @@ const gotoCacheSheetTree = `[{"AXUniqueId":"categoriesView","AXLabel":"Categorie
 
 func TestGotoReadScreenNeverServesACachedTree(t *testing.T) {
 	c, cfg, runner := guardPointConfig(t)
-	describe := "axe describe-ui --udid " + guardPointUDID
+	describe := "axe --output json describe-ui --udid " + guardPointUDID
 	runner.seq[describe] = []string{gotoCacheGridTree, gotoCacheSheetTree}
 
 	first, err := c.gotoReadScreen(t.Context(), cfg, GlobalOptions{})
@@ -58,7 +58,7 @@ func TestGotoReadScreenNeverServesACachedTree(t *testing.T) {
 // half-drawn one, which is the single thing it exists to rule out.
 func TestGotoSettleReadsTheScreenAgainRatherThanTheCache(t *testing.T) {
 	c, cfg, runner := guardPointConfig(t)
-	describe := "axe describe-ui --udid " + guardPointUDID
+	describe := "axe --output json describe-ui --udid " + guardPointUDID
 	runner.seq[describe] = []string{gotoCacheGridTree, gotoCacheSheetTree, gotoCacheSheetTree}
 
 	settled, err := c.gotoSettle(t.Context(), cfg, GlobalOptions{})

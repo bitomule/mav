@@ -53,7 +53,8 @@ func mkShortRoot(t *testing.T) string {
 // so probe-logs gets a real OS PID a `kill -0` can observe; every other
 // invocation (boot/bootstatus/shutdown/...) is a no-op success. This keeps
 // the tests hermetic -- no real simulator involved -- while still exercising
-// the real fork/exec/Setpgid path startProbeLogs relies on.
+// the real fork/exec/Setpgid path startProbeLogs relies on. The directory also
+// provides AXe 2, so the required version probe cannot reach a host install.
 func writeFakeXcrun(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -68,6 +69,26 @@ func writeFakeXcrun(t *testing.T) string {
 		"exit 0\n"
 	path := filepath.Join(dir, "xcrun")
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	axe := `#!/bin/sh
+if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then
+  printf '2.0.4\n'
+  exit 0
+fi
+if [ "$#" -ge 3 ] && [ "$1" = "--output" ] && [ "$2" = "json" ]; then
+  shift 2
+  case "$1" in
+    describe-ui)
+      printf '%s\n' '{"schema":"axe.output.command-result","schemaVersion":"1","didError":false,"data":{"result":[]}}'
+      exit 0
+      ;;
+  esac
+fi
+printf '%s\n' '{"schema":"axe.output.command-result","schemaVersion":"1","didError":true,"error":{"code":"invalidArguments","message":"unsupported AXe test invocation"}}'
+exit 1
+`
+	if err := os.WriteFile(filepath.Join(dir, "axe"), []byte(axe), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return dir
@@ -592,7 +613,7 @@ func TestFlowOpenIgnoresStaleCurrentRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &launchRecipeRunner{
-		tools:   map[string]bool{"xcrun": true},
+		tools:   map[string]bool{"xcrun": true, "axe": true},
 		results: map[string]CommandResult{"echo /tmp/App.app": {Stdout: "/tmp/App.app\n"}},
 	}
 	var out bytes.Buffer

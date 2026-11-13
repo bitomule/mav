@@ -4,6 +4,7 @@ import "time"
 
 // TapResult is the output of a tap. Drivers populate the fields they can prove.
 type TapResult struct {
+	Native       *NativeResult
 	MatchedID    string
 	MatchedText  string
 	MatchedValue string
@@ -15,7 +16,8 @@ type TapResult struct {
 // structures; the driver-side adapter projects to []byte JSON so the caller
 // (cli.go) feeds it straight into ExtractElements.
 type TreeResult struct {
-	JSON []byte // canonical JSON array of elements
+	Native *NativeResult
+	JSON   []byte // canonical JSON array of elements
 }
 
 // LogStreamResult is the metadata of a started log tail.

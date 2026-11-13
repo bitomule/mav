@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -14,7 +15,12 @@ type PhysicalDevice struct {
 }
 
 func ListPhysicalDevices(ctx context.Context, runner Runner) ([]PhysicalDevice, error) {
-	file, err := os.CreateTemp("", "mav-devices-*.json")
+	// Keep the result in the project rather than the host's shared temp dir.
+	tempRoot := filepath.Join(".mav", "tmp", "devices")
+	if err := os.MkdirAll(tempRoot, 0700); err != nil {
+		return nil, err
+	}
+	file, err := os.CreateTemp(tempRoot, "mav-devices-*.json")
 	if err != nil {
 		return nil, err
 	}
@@ -33,51 +39,62 @@ func ListPhysicalDevices(ctx context.Context, runner Runner) ([]PhysicalDevice, 
 	if err != nil {
 		return nil, err
 	}
-	return parsePhysicalDevicesJSON(data), nil
+	devices := parsePhysicalDevicesJSON(data)
+	if devices == nil {
+		return nil, fmt.Errorf("devicectl device list result is unreadable")
+	}
+	return devices, nil
 }
 
 func parsePhysicalDevicesJSON(data []byte) []PhysicalDevice {
-	var root any
+	var root struct {
+		Result struct {
+			Devices []map[string]any `json:"devices"`
+		} `json:"result"`
+		Devices []map[string]any `json:"devices"`
+	}
 	if err := json.Unmarshal(data, &root); err != nil {
 		return nil
 	}
 	devices := []PhysicalDevice{}
 	seen := map[string]bool{}
-	var walk func(any)
-	walk = func(value any) {
-		switch v := value.(type) {
-		case map[string]any:
-			if device := physicalDeviceFromMap(v); device.UDID != "" {
-				if !seen[device.UDID] {
-					seen[device.UDID] = true
-					devices = append(devices, device)
-				}
-			}
-			for _, child := range v {
-				walk(child)
-			}
-		case []any:
-			for _, child := range v {
-				walk(child)
-			}
+	rows := root.Result.Devices
+	if rows == nil {
+		rows = root.Devices
+	}
+	if rows == nil {
+		return nil
+	}
+	for _, row := range rows {
+		device := physicalDeviceFromMap(row)
+		if device.UDID != "" && !seen[device.UDID] {
+			seen[device.UDID] = true
+			devices = append(devices, device)
 		}
 	}
-	walk(root)
 	return devices
 }
 
 func physicalDeviceFromMap(m map[string]any) PhysicalDevice {
+	// CoreDevice also lists same-machine simulators and companion platforms.
+	// Offline iPhones/iPads remain visible so readiness can explain their state.
+	transport := firstStringField(m, "properties.connection.transportType", "connectionProperties.transportType")
+	if strings.EqualFold(transport, "sameMachine") {
+		return PhysicalDevice{}
+	}
+	deviceType := firstStringField(m, "properties.hardware.deviceType", "hardwareProperties.deviceType")
+	if deviceType != "" && !strings.EqualFold(deviceType, "iPhone") && !strings.EqualFold(deviceType, "iPad") {
+		return PhysicalDevice{}
+	}
 	udid := firstStringField(m,
+		"properties.hardware.udid",
+		"hardwareProperties.udid",
 		"udid",
 		"UDID",
-		"identifier",
-		"Identifier",
-		"deviceIdentifier",
-		"deviceIdentifier.identifier",
-		"hardwareProperties.udid",
-		"hardwareProperties.serialNumber",
 	)
-	name := firstStringField(m, "name", "Name", "deviceName", "properties.name")
+	// CoreDevice's identifier is its own UUID, not the hardware UDID AXe
+	// takes. Serial numbers and identifiers of nested objects are not devices.
+	name := firstStringField(m, "properties.device.name", "deviceProperties.name", "name", "Name", "deviceName", "properties.name")
 	if udid == "" {
 		return PhysicalDevice{}
 	}
@@ -109,13 +126,17 @@ func nestedStringField(value any, path ...string) string {
 }
 
 func selectPhysicalDevice(devices []PhysicalDevice, udid, name string) (PhysicalDevice, bool) {
+	var match PhysicalDevice
+	matches := 0
 	for _, device := range devices {
-		if udid != "" && device.UDID == udid {
-			return device, true
-		}
-		if name != "" && device.Name == name {
-			return device, true
+		if udid != "" {
+			if device.UDID == udid {
+				return device, true
+			}
+		} else if name != "" && device.Name == name {
+			match = device
+			matches++
 		}
 	}
-	return PhysicalDevice{}, false
+	return match, matches == 1
 }

@@ -72,7 +72,8 @@ type CLI struct {
 	// withStdout and friends make all share one, and nil - the default - is a
 	// cache that never hits, so a command that was never given one reads the
 	// screen exactly as often as it always did.
-	trees *treeCache
+	trees         *treeCache
+	driverSession *driverSession
 
 	// skipTargetResolution is set once per invocation, before dispatch, for
 	// a command that never sends anything to a simulator or device (see
@@ -129,6 +130,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 }
 
 func (c CLI) Run(ctx context.Context, args []string) error {
+	c.driverSession = &driverSession{}
 	opts, rest := parseGlobal(args)
 	// --profile propagates through the environment instead of being threaded
 	// through the ~50 LoadConfig call sites. Two reasons: the documented
@@ -218,6 +220,10 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 		return c.app(ctx, opts, rest[1:])
 	case "openURL":
 		return c.openURL(ctx, opts, rest[1:])
+	case "video":
+		return c.videoCommand(ctx, opts, rest[1:])
+	case "settings":
+		return c.automationCommand(ctx, opts, "settings", rest[1:])
 	case "location":
 		return c.location(ctx, opts, rest[1:])
 	case "clipboard":
@@ -335,6 +341,13 @@ func (c CLI) help(opts GlobalOptions, topic string) error {
 func helpText(topic string) string {
 	topic = normalizeHelpTopic(topic)
 	switch topic {
+	case "settings":
+		return "Usage: mav settings [--appearance light|dark] [--text-size SIZE] [--reduce-motion true|false] [--spec JSON|@FILE]\n\nReads settings without options. Xcode 27+ is required for simulator settings.\n"
+	case "video":
+		return "Usage: mav video record --out PATH [--fps N --quality N --scale N --follow-active-display] | stream --format mjpeg|raw|ffmpeg|bgra|h264\n\nStop foreground capture with Ctrl-C. Streaming stdout contains media only. h264 is native physical-device streaming.\n"
+	case "ui key", "ui keySequence", "ui keyCombo", "ui touch", "ui draw", "ui slider", "ui gesture", "ui batch", "ui turn", "ui settings", "ui statusbar", "ui displays", "ui readiness", "ui shutdown":
+		return "Usage: mav " + topic + " [--spec JSON|@FILE] [--selected --screen-id N --screen-uuid UUID]\n\nSee docs/axe2.md for portable typed options and YAML flow examples.\n"
+
 	case "", "mav":
 		return `mav - Mobile Agent Verifier for iOS apps
 
@@ -353,6 +366,8 @@ Commands:
   open        Build, install, launch, and start run logs.
   ui          Inspect and control the current UI.
   capture     Capture the current screen.
+  settings    Read or change iOS appearance and accessibility settings.
+  video       Record MP4 or stream screen frames.
   app         List or terminate apps.
   openURL     Open a URL on the target.
   location    Set or reset simulated location.
@@ -586,9 +601,9 @@ Refuses to consult a model when CI is set.
 Prefer accessibility ids. Use coordinates only when the tree is insufficient and a screenshot makes the target unambiguous.
 `
 	case "ui type":
-		return "Usage: mav ui type TEXT [--prefer-driver auto|axe]\n"
+		return "Usage: mav ui type TEXT | --stdin | --file PATH [--prefer-driver auto|axe]\n"
 	case "ui erase":
-		return "Usage: mav ui erase [--id ID | --text TEXT | --value VALUE | --find \"...\" | --focused true]\n\nSimulator-backed through AXe, and it verifies the field emptied by reading the tree. Physical devices return erase_unsupported_on_device.\n"
+		return "Usage: mav ui erase [--id ID | --text TEXT | --value VALUE | --find \"...\" | --focused true]\n\nUses AXe 2 on simulators and physical devices and verifies the field emptied by reading the tree.\n"
 	case "ui hideKeyboard":
 		return "Usage: mav ui hideKeyboard\n\nSimulator-backed through baguette. Physical devices return hide_keyboard_unsupported_on_device.\n"
 	case "ui swipe":
@@ -729,7 +744,7 @@ func (c CLI) doctor(ctx context.Context, opts GlobalOptions) error {
 	fields := caps.fields()
 	if tools["axe"] {
 		if issue, next := c.ResolveAXeIssue(ctx); issue != "" {
-			if caps.AccessibilityDriver == "axe" {
+			if targetKind(cfg) != drivers.KindMac {
 				fields["accessibility"] = "broken"
 				fields["semantic_actions"] = "broken"
 			}
@@ -773,20 +788,21 @@ func (c CLI) doctor(ctx context.Context, opts GlobalOptions) error {
 			missing = append(missing, "cua-driver")
 		}
 	} else {
-		for _, tool := range []string{"axe", "idb"} {
+		for _, tool := range []string{"axe"} {
 			if !tools[tool] {
 				missing = append(missing, tool)
 			}
-		}
-		if !tools["baguette"] {
-			missing = append(missing, "baguette")
 		}
 	}
 	if len(missing) > 0 {
 		fields["next"] = "mav setup --install " + strings.Join(missing, " ")
 	}
 	fields["mav_version"] = Version
-	addDoctorMatrixFields(fields, caps)
+	if targetKind(cfg) == drivers.KindMac {
+		addDoctorMatrixFields(fields, caps)
+	} else {
+		c.routedDoctorMatrix(ctx, cfg, fields)
+	}
 	if targetKind(cfg) != drivers.KindMac {
 		if broken := c.reportUnhealthyDrivers(ctx, cfg, caps, fields); len(broken) > 0 {
 			missing = append(missing, broken...)
@@ -1042,9 +1058,9 @@ func (c CLI) setupLLDBDAP(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-// setupCoreDeps is what `mav setup --install deps` installs: the three tools
+// setupCoreDeps is what `mav setup --install deps` installs: the required tool
 // every simulator and device command routes through.
-var setupCoreDeps = []string{"axe", "idb", "baguette"}
+var setupCoreDeps = []string{"axe"}
 
 // trustBrewTap lets Homebrew 7 load a formula from a third-party tap, which it
 // refuses until the tap is trusted ("Refusing to load formula ... from
@@ -1330,6 +1346,8 @@ func (c CLI) sim(ctx context.Context, opts GlobalOptions, args []string) error {
 		return Fail("sim_command_missing", map[string]string{"usage": "mav sim list|select|boot|appearance|statusbar|language|hinge|heal"}).Write(c.Stdout)
 	}
 	switch args[0] {
+	case "displays", "shutdown":
+		return c.automationCommand(ctx, opts, args[0], args[1:])
 	case "hinge":
 		return c.simHinge(ctx, args[1:])
 	case "heal":
@@ -1812,6 +1830,10 @@ func (c CLI) device(ctx context.Context, opts GlobalOptions, args []string) erro
 		return Fail("device_command_missing", map[string]string{"usage": "mav device list|select"}).Write(c.Stdout)
 	}
 	switch args[0] {
+	case "doctor":
+		return c.automationCommand(ctx, opts, "readiness", args[1:])
+	case "discover":
+		return c.automationCommand(ctx, opts, "discover", args[1:])
 	case "list":
 		devices, err := ListPhysicalDevices(ctx, c.Runner)
 		if err != nil {
@@ -1885,6 +1907,9 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 	}
 	c = c.withSkipBuild(hasFlag(args, "--skip-build"))
 	c.resolveConfigTools(&cfg)
+	if err := c.requireAXe2(ctx, cfg); err != nil {
+		return c.automationFailure(err)
+	}
 	request := deviceRequest{Device: flagValue(args, "--device"), IOS: flagValue(args, "--ios")}
 	routed := !request.empty() && strings.TrimSpace(cfg.TargetCommand) != "" && flagValue(args, "--udid") == ""
 	if routed {
@@ -1945,8 +1970,8 @@ func (c CLI) open(ctx context.Context, opts GlobalOptions, args []string) error 
 			return err
 		}
 	}
-	if targetKind(cfg) == drivers.KindDevice && !hasTool(cfg, "idb") {
-		return Fail("tool_missing", map[string]string{"tool": "idb", "target": "device", "next": "mav setup --install idb"}).Write(c.Stdout)
+	if err := c.requireAXe2(ctx, cfg); err != nil {
+		return c.automationFailure(err)
 	}
 	if err := c.ensureOpenSimulatorBooted(ctx, cfg, run); err != nil {
 		return Fail("sim_boot_failed", map[string]string{"run": run.ID, "logs": run.LogsPath, "stderr": err.Error()}).Write(c.Stdout)
@@ -2250,7 +2275,7 @@ func (c CLI) startProbeLogs(ctx context.Context, cfg Config, run RunState) (int,
 	}
 	if targetKind(cfg) == drivers.KindDevice {
 		if !hasTool(cfg, "idb") {
-			return 0, fmt.Errorf("idb_missing")
+			return 0, nil
 		}
 		args := []string{"log"}
 		if cfg.DeviceUDID != "" {
@@ -2348,7 +2373,32 @@ func (c CLI) ui(ctx context.Context, opts GlobalOptions, args []string) error {
 // retry) against two different cfg values without re-parsing args or
 // re-resolving the target a caller already resolved.
 func (c CLI) dispatchUICommand(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
+	if err := c.requireAXe2(ctx, cfg); err != nil {
+		return c.automationFailure(err)
+	}
+	if args[0] != "tree" {
+		binding, rest, e := splitInputContext(args[1:])
+		if e != nil {
+			return c.automationFailure(e)
+		}
+		cfg.InputContext = binding
+		args = append([]string{args[0]}, rest...)
+		if e := validateOperationContext(args[0], binding); e != nil {
+			return c.automationFailure(e)
+		}
+		if contextRequested(binding) && opts.PreferDriver != "" && opts.PreferDriver != "auto" && opts.PreferDriver != "axe" {
+			return c.automationFailure(contextUnsupported("the preferred driver cannot enforce selected input"))
+		}
+
+	}
+
 	switch args[0] {
+	case "key", "keySequence", "keyCombo", "touch", "draw", "slider", "gesture", "batch", "turn", "settings", "statusbar", "displays", "readiness", "shutdown", "clipboard":
+		req, err := c.prepareAutomation(args[0], args[1:])
+		if err != nil {
+			return c.automationFailure(err)
+		}
+		return c.automationOutput(ctx, cfg, opts, req)
 	case "tree":
 		return c.uiTree(ctx, opts, cfg, args[1:])
 	case "find":
@@ -2395,6 +2445,68 @@ func (c CLI) dispatchUICommand(ctx context.Context, opts GlobalOptions, cfg Conf
 }
 
 func (c CLI) uiTree(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
+	if err := c.requireAXe2(ctx, cfg); err != nil {
+		return c.automationFailure(err)
+	}
+	contextArgs := []string{}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--selected":
+			contextArgs = append(contextArgs, args[i])
+		case "--screen-id", "--screen-uuid", "--expected-pid":
+			if i+1 >= len(args) {
+				return c.automationFailure(fmt.Errorf("%s needs a value", args[i]))
+			}
+			contextArgs = append(contextArgs, args[i], args[i+1])
+			i++
+		}
+	}
+	binding, e := automationCLI("readiness", contextArgs)
+	if e != nil {
+		return c.automationFailure(e)
+	}
+	cfg.InputContext = binding.Context
+	if e := validateOperationContext("tree", cfg.InputContext); e != nil {
+		return c.automationFailure(e)
+	}
+	if contextRequested(cfg.InputContext) && hasFlag(args, "--include-system") {
+		return c.automationFailure(contextUnsupported("selected system-tree reads are unavailable"))
+	}
+	if raw := flagValue(args, "--point"); raw != "" {
+		pair := strings.Split(raw, ",")
+		if len(pair) != 2 {
+			return c.automationFailure(fmt.Errorf("point must be x,y"))
+		}
+		x, e := strconv.Atoi(pair[0])
+		if e != nil {
+			return c.automationFailure(e)
+		}
+		y, e := strconv.Atoi(pair[1])
+		if e != nil {
+			return c.automationFailure(e)
+		}
+		target := targetFromConfig(cfg)
+		d, _, e := c.router().Route(ctx, drivers.CapTreeAX, target, routerPrefer(opts.PreferDriver))
+		if e != nil {
+			return c.automationFailure(e)
+		}
+		if e := validateContextDriver(d, target); e != nil {
+			return c.automationFailure(e)
+		}
+		point, ok := d.(drivers.PointTreeDriver)
+		if !ok {
+			return c.automationFailure(fmt.Errorf("point tree unsupported"))
+		}
+		r, e := point.TreeAtPoint(ctx, target, x, y)
+		if e != nil {
+			return c.automationFailure(e)
+		}
+		if e = c.OK("ui.tree", map[string]string{"driver": d.ID(), "point": raw}).Write(c.Stdout); e != nil {
+			return e
+		}
+		return writeElementLines(c.Stdout, ExtractElements(string(r.JSON)))
+	}
+
 	prefer, err := c.normalizePreferDriver(opts.PreferDriver)
 	if err != nil {
 		return Fail("prefer_driver_invalid", map[string]string{"usage": c.preferDriverUsage()}).Write(c.Stdout)
@@ -2541,7 +2653,7 @@ func treeToolMissingFields(cfg Config) map[string]string {
 	if targetKind(cfg) == drivers.KindMac {
 		return map[string]string{"tool": "cua-driver", "next": "mav setup --install cua-driver"}
 	}
-	return map[string]string{"tool": "axe|idb", "next": "mav setup --install axe idb"}
+	return map[string]string{"tool": "axe >= 2.0.4", "next": "mav setup --install axe"}
 }
 
 func screenConfidence(source string) string {
@@ -2609,6 +2721,9 @@ func (c CLI) describeUITreeUncached(ctx context.Context, cfg Config, prefer stri
 	driver, _, err := c.router().Route(ctx, drivers.CapTreeAX, target, routerPrefer(prefer))
 	if err != nil {
 		return describedUITree{}, err
+	}
+	if e := validateContextDriver(driver, target); e != nil {
+		return describedUITree{}, e
 	}
 	treeDriver, ok := driver.(drivers.TreeDriver)
 	if !ok {
@@ -2914,6 +3029,9 @@ func tapToolMissingFields(cfg Config) map[string]string {
 }
 
 func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
+	if handled, err := c.tryNativeUI(ctx, opts, cfg, "tap", args); handled {
+		return err
+	}
 	selector, selectorErr := selectorFromCLI(args)
 	if selectorErr != nil {
 		return Fail("selector_invalid", map[string]string{"error": selectorErr.Error()}).Write(c.Stdout)
@@ -3005,7 +3123,7 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		// On an open foldable the AXe tap lands on the dark cover, so the
 		// element is read from the tree, which does describe the inner panel,
 		// and its centre goes out through the coordinate path below.
-		if c.foldableOpen(cfg) && routerPrefer(prefer) == "" {
+		if c.foldableOpen(cfg) && routerPrefer(prefer) != "" && routerPrefer(prefer) != "axe" {
 			matched, matchErr := c.resolveOnOpenFoldable(ctx, cfg, selector, prefer)
 			if matchErr != nil {
 				return selectorFail(selector, matched, matchErr).Write(c.Stdout)
@@ -3031,9 +3149,12 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		if verify {
 			before = c.snapshotForVerification(ctx, cfg)
 		}
-		_, tapErr := td.Tap(ctx, target, drivers.TapSpec{Selector: drivers.ElementSelector{ID: id, Text: text}})
+		_, tapErr := td.Tap(ctx, target, drivers.TapSpec{Selector: drivers.ElementSelector{ID: id, Text: text, Value: value}})
 		result := CommandResult{}
 		if tapErr != nil {
+			if driver.ID() == "axe" {
+				return c.automationFailure(tapErr)
+			}
 			result = CommandResult{Stderr: tapErr.Error(), Err: tapErr}
 			// The tree is the other way to reach the same element, and it
 			// keeps working when the tool's own selector resolution does
@@ -3114,9 +3235,7 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		// Accessibility row from a clean launch: idb 1.6.4 navigated 2 of 2;
 		// AXe (physical), AXe by label and baguette 0.2.1 delivered 0 of 4,
 		// all reporting success. They send to the cover's digitizer.
-		if c.foldableOpen(cfg) {
-			coordPrefer = "idb"
-		}
+
 		coordMissing := func() map[string]string {
 			if targetKind(cfg) == drivers.KindMac {
 				return tapToolMissingFields(cfg)
@@ -3152,7 +3271,10 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		if verify {
 			before = c.snapshotForVerification(ctx, cfg)
 		}
-		hid := c.hidPoint(ctx, cfg, xi, yi)
+		hid := hidResult{X: xi, Y: yi}
+		if driver.ID() != "axe" {
+			hid = c.hidPoint(ctx, cfg, xi, yi)
+		}
 		hidX, hidY, rotation, detectedAngle := hid.X, hid.Y, hid.Rotation, hid.Detected
 		if rotation != 0 && treeShapeContradictsRotation(before, rotation) {
 			// The screen cache only re-probes on an angle change, so a
@@ -3177,6 +3299,9 @@ func (c CLI) uiTap(ctx context.Context, opts GlobalOptions, cfg Config, args []s
 		_, tapErr = td.Tap(ctx, target, drivers.TapSpec{X: hidX, Y: hidY})
 		result := CommandResult{}
 		if tapErr != nil {
+			if driver.ID() == "axe" {
+				return c.automationFailure(tapErr)
+			}
 			result = CommandResult{Stderr: tapErr.Error(), Err: tapErr}
 			// No ambiguous-locator hint here: this branch dispatches a
 			// point, never a selector, so the tool has nothing to call
@@ -3430,6 +3555,15 @@ func onlyFastPathArgs(args []string) []string {
 }
 
 func (c CLI) writeFastPathResult(ctx context.Context, cfg Config, args []string, command string, fields map[string]string) error {
+	postInputFailure := func(code string, fields map[string]string) Output {
+		if fields == nil {
+			fields = map[string]string{}
+		}
+		fields["delivery"] = "sent"
+		fields["retry"] = "unsafe"
+		return Fail(code, fields)
+	}
+
 	waitID := flagValue(args, "--wait-id")
 	waitText := flagValue(args, "--wait-text")
 	waitValue := flagValue(args, "--wait-value")
@@ -3442,11 +3576,11 @@ func (c CLI) writeFastPathResult(ctx context.Context, cfg Config, args []string,
 	switch observe {
 	case "none", "agent", "tree", "delta":
 	default:
-		return Fail("observe_invalid", map[string]string{"observe": observe}).Write(c.Stdout)
+		return postInputFailure("observe_invalid", map[string]string{"observe": observe}).Write(c.Stdout)
 	}
 	timeout := parseFlowDuration(flagValue(args, "--wait-timeout"), 5*time.Second)
 	if timeout <= 0 {
-		return Fail("wait_timeout_invalid", nil).Write(c.Stdout)
+		return postInputFailure("wait_timeout_invalid", nil).Write(c.Stdout)
 	}
 	if waitID != "" || waitText != "" || waitValue != "" || waitChanged != "" || waitStable {
 		deadline := time.Now().Add(timeout)
@@ -3503,7 +3637,7 @@ func (c CLI) writeFastPathResult(ctx context.Context, cfg Config, args []string,
 					}
 					diagnostics["candidates"] = strings.Join(candidates, ",")
 				}
-				return Fail("wait_timeout", diagnostics).Write(c.Stdout)
+				return postInputFailure("wait_timeout", diagnostics).Write(c.Stdout)
 			}
 			time.Sleep(200 * time.Millisecond)
 		}
@@ -3515,7 +3649,7 @@ func (c CLI) writeFastPathResult(ctx context.Context, cfg Config, args []string,
 	}
 	described, err := c.describeUITree(ctx, cfg, "auto", false)
 	if err != nil || described.Result.Err != nil {
-		return Fail("tree_failed", fields).Write(c.Stdout)
+		return postInputFailure("tree_failed", fields).Write(c.Stdout)
 	}
 	elements := ExtractElements(described.Result.Stdout)
 	fields["observe"] = observe
@@ -3636,6 +3770,11 @@ func (c CLI) appendCurrentCommand(command string, result CommandResult) {
 }
 
 func (c CLI) uiType(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
+	if hasFlag(args, "--spec") || hasFlag(args, "--stdin") || hasFlag(args, "--file") {
+		if handled, e := c.tryNativeUI(ctx, opts, cfg, "type", args); handled {
+			return e
+		}
+	}
 	if len(args) == 0 {
 		return Fail("type_text_missing", nil).Write(c.Stdout)
 	}
@@ -3686,7 +3825,10 @@ func (c CLI) uiType(ctx context.Context, opts GlobalOptions, cfg Config, args []
 	if !ok {
 		return Fail("tool_missing", map[string]string{"tool": "axe"}).Write(c.Stdout)
 	}
-	if err := td.Type(ctx, target, drivers.TextSpec{Text: text}); err != nil {
+	if err := td.Type(ctx, target, drivers.TextSpec{Text: text, Selector: drivers.ElementSelector{ID: selector.ID}}); err != nil {
+		if driver.ID() == "axe" {
+			return c.automationFailure(err)
+		}
 		return Fail("ui_type_failed", map[string]string{"stderr": firstLine(err.Error())}).Write(c.Stdout)
 	}
 	fields := map[string]string{
@@ -3726,20 +3868,35 @@ func isSelectorCLIFlag(value string) bool {
 }
 
 func (c CLI) uiErase(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
+	inputSent := false
+	eraseFailure := func(code string, fields map[string]string) Output {
+		if inputSent {
+			if fields == nil {
+				fields = map[string]string{}
+			}
+			fields["delivery"] = "sent"
+			fields["retry"] = "unsafe"
+		}
+		return Fail(code, fields)
+	}
+
+	if hasFlag(args, "--spec") {
+		if handled, e := c.tryNativeUI(ctx, opts, cfg, "erase", args); handled {
+			return e
+		}
+	}
 	_ = opts
 	// macOS can: the driver empties the field by setting the empty value,
 	// which depends neither on guessing how many deletions to send nor on
 	// the field having focus. On a real iPhone there is still no path.
-	if kind := targetKind(cfg); kind != drivers.KindSim && kind != drivers.KindMac {
-		return Fail("erase_unsupported_on_device", map[string]string{"next": "device erase is not supported; tap and retype the field"}).Write(c.Stdout)
-	}
+
 	id := flagValue(args, "--id")
 	text := flagValue(args, "--text")
 	value := flagValue(args, "--value")
 	focused := flagValue(args, "--focused") == "true" || hasFlag(args, "--focused")
 	selector, selectorErr := selectorFromCLI(args)
 	if selectorErr != nil {
-		return Fail("selector_invalid", map[string]string{"error": selectorErr.Error()}).Write(c.Stdout)
+		return eraseFailure("selector_invalid", map[string]string{"error": selectorErr.Error()}).Write(c.Stdout)
 	}
 	// `--find` names the field in words. Emptying a field you can only
 	// describe is the common half of "fill in a form that already has
@@ -3760,7 +3917,7 @@ func (c CLI) uiErase(ctx context.Context, opts GlobalOptions, cfg Config, args [
 		var tapOutput bytes.Buffer
 		if err := c.withStdout(&tapOutput).uiTap(ctx, opts, cfg, selectorCLIArgs(selector)); err != nil ||
 			strings.HasPrefix(strings.TrimSpace(tapOutput.String()), "fail ") {
-			return Fail("ui_erase_target_failed", map[string]string{"result": firstLine(tapOutput.String())}).Write(c.Stdout)
+			return eraseFailure("ui_erase_target_failed", map[string]string{"result": firstLine(tapOutput.String())}).Write(c.Stdout)
 		}
 		focused = true
 		// The selector's own --text is a predicate for the tap, not a hint
@@ -3781,13 +3938,13 @@ func (c CLI) uiErase(ctx context.Context, opts GlobalOptions, cfg Config, args [
 	// value='a12345'. Nothing here trusts a driver's own word again.
 	before, err := c.readEraseSnapshot(ctx, cfg)
 	if err != nil {
-		return Fail("ui_erase_unverifiable", map[string]string{
+		return eraseFailure("ui_erase_unverifiable", map[string]string{
 			"stderr": firstLine(err.Error()),
 			"next":   "erase will not report success it cannot check; fix the accessibility tree read first (`mav ui tree`)",
 		}).Write(c.Stdout)
 	}
 	if before.Fields == 0 {
-		return Fail("ui_erase_no_field", map[string]string{
+		return eraseFailure("ui_erase_no_field", map[string]string{
 			"tree_driver": before.Driver,
 			"next":        "no editable field is in the tree that " + before.Driver + " read; tap the field first (`mav ui tap --text ...`), or check that this driver can see the app's fields",
 		}).Write(c.Stdout)
@@ -3808,11 +3965,18 @@ func (c CLI) uiErase(ctx context.Context, opts GlobalOptions, cfg Config, args [
 			driverID = served
 		}
 		if eraseErr != nil {
-			return Fail("ui_erase_failed", map[string]string{"driver": driverID, "stderr": firstLine(eraseErr.Error())}).Write(c.Stdout)
+			if served == "axe" {
+				if inputSent {
+					eraseErr = afterInputError(eraseErr)
+				}
+				return c.automationFailure(eraseErr)
+			}
+			return eraseFailure("ui_erase_failed", map[string]string{"driver": driverID, "stderr": firstLine(eraseErr.Error())}).Write(c.Stdout)
 		}
+		inputSent = true
 		after, readErr := c.readEraseSnapshot(ctx, cfg)
 		if readErr != nil {
-			return Fail("ui_erase_unverifiable", map[string]string{
+			return eraseFailure("ui_erase_unverifiable", map[string]string{
 				"driver": driverID,
 				"stderr": firstLine(readErr.Error()),
 				"next":   "the deletions were sent but the result could not be read back; re-read the tree (`mav ui tree`)",
@@ -3833,7 +3997,7 @@ func (c CLI) uiErase(ctx context.Context, opts GlobalOptions, cfg Config, args [
 					current = probed
 					rounds = 0
 				case verdict == eraseProbeNoFocus:
-					return Fail("ui_erase_no_focus", map[string]string{
+					return eraseFailure("ui_erase_no_focus", map[string]string{
 						"driver": driverID,
 						"value":  before.Values,
 						"next":   "the field did not take a character, so nothing here is focused; tap the field first (`mav ui tap --text ...`)",
@@ -3847,7 +4011,7 @@ func (c CLI) uiErase(ctx context.Context, opts GlobalOptions, cfg Config, args [
 					if probeErr != nil {
 						failure["stderr"] = firstLine(probeErr.Error())
 					}
-					return Fail("ui_erase_ineffective", failure).Write(c.Stdout)
+					return eraseFailure("ui_erase_ineffective", failure).Write(c.Stdout)
 				}
 				break
 			}
@@ -3857,7 +4021,7 @@ func (c CLI) uiErase(ctx context.Context, opts GlobalOptions, cfg Config, args [
 		current = after
 	}
 	if current.Values != before.Values && rounds >= maxEraseRounds {
-		return Fail("ui_erase_incomplete", map[string]string{
+		return eraseFailure("ui_erase_incomplete", map[string]string{
 			"driver": driverID,
 			"rounds": strconv.Itoa(rounds),
 			"value":  current.Values,
@@ -3906,6 +4070,9 @@ func (c CLI) uiHideKeyboard(ctx context.Context, opts GlobalOptions, cfg Config,
 }
 
 func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
+	if handled, err := c.tryNativeUI(ctx, opts, cfg, "swipe", args); handled {
+		return err
+	}
 	prefer, err := c.normalizePreferDriver(opts.PreferDriver)
 	if err != nil {
 		return Fail("prefer_driver_invalid", map[string]string{"usage": c.preferDriverUsage()}).Write(c.Stdout)
@@ -4116,6 +4283,9 @@ func (c CLI) uiSwipe(ctx context.Context, opts GlobalOptions, cfg Config, args [
 }
 
 func (c CLI) uiDoubleTap(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
+	if handled, err := c.tryNativeUI(ctx, opts, cfg, "doubleTap", args); handled {
+		return err
+	}
 	if targetKind(cfg) == drivers.KindMac {
 		return c.macDoubleTap(ctx, opts, cfg, args)
 	}
@@ -4276,6 +4446,9 @@ func (c CLI) actionCoordinates(ctx context.Context, cfg Config, opts GlobalOptio
 }
 
 func (c CLI) uiDrag(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
+	if handled, err := c.tryNativeUI(ctx, opts, cfg, "drag", args); handled {
+		return err
+	}
 	_ = opts
 	if targetKind(cfg) != drivers.KindSim {
 		return Fail("drag_unsupported_on_device", nil).Write(c.Stdout)
@@ -4345,6 +4518,9 @@ func (c CLI) uiDrag(ctx context.Context, opts GlobalOptions, cfg Config, args []
 }
 
 func (c CLI) uiDragPath(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
+	if handled, err := c.tryNativeUI(ctx, opts, cfg, "dragPath", args); handled {
+		return err
+	}
 	_ = opts
 	if targetKind(cfg) != drivers.KindSim {
 		return Fail("drag_path_unsupported_on_device", nil).Write(c.Stdout)
@@ -4626,6 +4802,9 @@ func elementToggleState(el Element) (bool, bool) {
 }
 
 func (c CLI) uiPress(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
+	if handled, err := c.tryNativeUI(ctx, opts, cfg, "press", args); handled {
+		return err
+	}
 	_ = opts
 	if targetKind(cfg) != drivers.KindSim {
 		return Fail("press_unsupported_on_device", nil).Write(c.Stdout)
@@ -4663,6 +4842,9 @@ func (c CLI) uiPress(ctx context.Context, opts GlobalOptions, cfg Config, args [
 const longPressUsage = `mav ui longPress (--x X --y Y | --id ID | --find "...") [--duration 800ms]`
 
 func (c CLI) uiLongPress(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
+	if handled, err := c.tryNativeUI(ctx, opts, cfg, "longPress", args); handled {
+		return err
+	}
 	x := flagValue(args, "--x")
 	y := flagValue(args, "--y")
 	durationText := flagValue(args, "--duration")
@@ -4706,17 +4888,12 @@ func (c CLI) uiLongPress(ctx context.Context, opts GlobalOptions, cfg Config, ar
 	// baguette consumes the same native-portrait point space idb does,
 	// measured side by side on a rotated simulator, so a multitouch gesture
 	// needs the same transform a tap does.
+	if targetKind(cfg) != drivers.KindMac && (opts.PreferDriver == "" || opts.PreferDriver == "auto" || opts.PreferDriver == "axe") {
+		return c.automationOutput(ctx, cfg, opts, Automation{Command: "longPress", Options: map[string]any{"X": int(xv), "Y": int(yv), "Duration": durationMs}})
+	}
 	hid := c.hidPoint(ctx, cfg, int(xv), int(yv))
 	spec := drivers.TapSpec{X: hid.X, Y: hid.Y, Duration: durationMs}
-	// A long press is a coordinate tap, which AXe ties for and wins on
-	// alphabetical order -- but AXe cannot dispatch a coordinate tap at all
-	// (it requires an id/text selector), rotated or not. Take it out of the
-	// running unconditionally: keying this on hid.Rotation != 0 left every
-	// detected-but-unapplied case (a 180 angle, a failed screen probe, the
-	// bounds guard) routed straight into AXe's selector error instead of
-	// falling back to a raw dispatch with rotation_unavailable.
-	pressRouter := c.routerWithout("axe")
-	pressDriver, pressErr := baguetteTapDriver(ctx, pressRouter, target, spec)
+	pressDriver, pressErr := baguetteTapDriver(ctx, c.routerWithout("axe"), target, spec)
 	if pressErr != nil {
 		return c.writeGestureError(pressErr)
 	}
@@ -4732,6 +4909,9 @@ func (c CLI) uiLongPress(ctx context.Context, opts GlobalOptions, cfg Config, ar
 }
 
 func (c CLI) uiPinch(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
+	if handled, err := c.tryNativeUI(ctx, opts, cfg, "pinch", args); handled {
+		return err
+	}
 	_ = opts
 	if targetKind(cfg) != drivers.KindSim {
 		return Fail("gesture_unsupported_on_device", map[string]string{"gesture": "pinch", "next": "use sim for multitouch"}).Write(c.Stdout)
@@ -4775,7 +4955,7 @@ func (c CLI) uiPinch(ctx context.Context, opts GlobalOptions, cfg Config, args [
 	hid := c.hidPoint(ctx, cfg, int(x), int(y))
 	hidPanX, hidPanY := hidVector(int(panX), int(panY), hid.Rotation)
 	spec := drivers.PinchSpec{X: hid.X, Y: hid.Y, Scale: scale, PanX: hidPanX, PanY: hidPanY, DurationMs: durationMs}
-	if err := baguettePinch(ctx, c.router(), target, spec); err != nil {
+	if err := baguettePinch(ctx, c.routerWithout("axe"), target, spec); err != nil {
 		return c.writeGestureError(err)
 	}
 	fields := map[string]string{
@@ -4795,6 +4975,9 @@ func (c CLI) uiPinch(ctx context.Context, opts GlobalOptions, cfg Config, args [
 }
 
 func (c CLI) uiRotate(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
+	if handled, err := c.tryNativeUI(ctx, opts, cfg, "rotate", args); handled {
+		return err
+	}
 	_ = opts
 	if targetKind(cfg) != drivers.KindSim {
 		return Fail("gesture_unsupported_on_device", map[string]string{"gesture": "rotate", "next": "use sim for multitouch"}).Write(c.Stdout)
@@ -4825,7 +5008,7 @@ func (c CLI) uiRotate(ctx context.Context, opts GlobalOptions, cfg Config, args 
 	// coordinate frame does not change how far the fingers turn about it.
 	hid := c.hidPoint(ctx, cfg, int(x), int(y))
 	spec := drivers.RotateSpec{X: hid.X, Y: hid.Y, Degrees: degrees, DurationMs: durationMs}
-	if err := baguetteRotate(ctx, c.router(), target, spec); err != nil {
+	if err := baguetteRotate(ctx, c.routerWithout("axe"), target, spec); err != nil {
 		return c.writeGestureError(err)
 	}
 	fields := map[string]string{
@@ -4841,6 +5024,9 @@ func (c CLI) uiRotate(ctx context.Context, opts GlobalOptions, cfg Config, args 
 }
 
 func (c CLI) uiTwoFingerPan(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
+	if handled, err := c.tryNativeUI(ctx, opts, cfg, "twoFingerPan", args); handled {
+		return err
+	}
 	_ = opts
 	if targetKind(cfg) != drivers.KindSim {
 		return Fail("gesture_unsupported_on_device", map[string]string{"gesture": "twoFingerPan", "next": "use sim for multitouch"}).Write(c.Stdout)
@@ -4876,7 +5062,7 @@ func (c CLI) uiTwoFingerPan(ctx context.Context, opts GlobalOptions, cfg Config,
 	hid := c.hidPoint(ctx, cfg, int(x), int(y))
 	hidPanX, hidPanY := hidVector(int(panX), int(panY), hid.Rotation)
 	spec := drivers.TwoFingerPanSpec{X: hid.X, Y: hid.Y, PanX: hidPanX, PanY: hidPanY, DurationMs: durationMs, HoldMs: holdMs}
-	if err := baguetteTwoFingerPan(ctx, c.router(), target, spec); err != nil {
+	if err := baguetteTwoFingerPan(ctx, c.routerWithout("axe"), target, spec); err != nil {
 		return c.writeGestureError(err)
 	}
 	fields := map[string]string{
@@ -5073,6 +5259,41 @@ func (c CLI) location(ctx context.Context, opts GlobalOptions, args []string) er
 	if cfgErr != nil {
 		return c.failTargetCommand(cfgErr)
 	}
+	if targetKind(cfg) != drivers.KindMac {
+		action := args[0]
+		if action == "reset" {
+			action = "clear"
+		}
+		req := Automation{Command: "location", Options: map[string]any{"Action": action}}
+		switch args[0] {
+		case "set":
+			if len(args) != 3 {
+				return c.automationFailure(fmt.Errorf("location set needs latitude and longitude"))
+			}
+			lat, e := strconv.ParseFloat(args[1], 64)
+			if e != nil {
+				return c.automationFailure(e)
+			}
+			lon, e := strconv.ParseFloat(args[2], 64)
+			if e != nil {
+				return c.automationFailure(e)
+			}
+			req.Options["Latitude"] = lat
+			req.Options["Longitude"] = lon
+		case "scenario":
+			if len(args) != 2 {
+				return c.automationFailure(fmt.Errorf("location scenario needs a name"))
+			}
+			req.Options["Scenario"] = args[1]
+		case "reset", "scenarios":
+			if len(args) != 1 {
+				return c.automationFailure(fmt.Errorf("unexpected location arguments"))
+			}
+		default:
+			return c.automationFailure(fmt.Errorf("unknown location action %q", args[0]))
+		}
+		return c.automationOutput(ctx, cfg, opts, req)
+	}
 	target := targetFromConfig(cfg)
 	if targetKind(cfg) == drivers.KindDevice && len(args) > 0 && args[0] == "reset" {
 		return Fail("location_reset_unsupported_on_device", nil).Write(c.Stdout)
@@ -5144,6 +5365,9 @@ func (c CLI) clipboard(ctx context.Context, opts GlobalOptions, args []string) e
 	}
 	switch args[0] {
 	case "copy":
+		if hasFlag(args[1:], "--stdin") || hasFlag(args[1:], "--file") {
+			return c.automationCommand(ctx, opts, "clipboard", args[1:])
+		}
 		if len(args) < 2 {
 			return Fail("clipboard_text_missing", nil).Write(c.Stdout)
 		}
@@ -5173,6 +5397,11 @@ func (c CLI) capture(ctx context.Context, opts GlobalOptions, args []string) err
 		return c.failConfig(err)
 	}
 	c.resolveConfigTools(&cfg)
+	binding, _, bindErr := splitInputContext(args)
+	if bindErr != nil {
+		return c.automationFailure(bindErr)
+	}
+	cfg.InputContext = binding
 	if _, err := c.resolveConfigTarget(&cfg); err != nil {
 		return c.failTargetCommand(err)
 	}
@@ -5191,6 +5420,10 @@ func (c CLI) capture(ctx context.Context, opts GlobalOptions, args []string) err
 	path := uniqueCapturePath(run, flagValue(args, "--name"))
 	result, err := c.captureScreenshotWith(ctx, cfg, path, routerPrefer(prefer))
 	if err != nil {
+		var native *drivers.DriverError
+		if errors.As(err, &native) {
+			return c.automationFailure(err)
+		}
 		return Fail("tool_missing", captureToolMissingFields(cfg)).Write(c.Stdout)
 	}
 	if result.Err != nil {
@@ -5254,30 +5487,23 @@ func (c CLI) captureScreenshot(ctx context.Context, cfg Config, path string) (Co
 // prefer-less version exists because most calls are internal (failure fast
 // path, flow steps) and there is no user flag to respect there.
 func (c CLI) captureScreenshotWith(ctx context.Context, cfg Config, path, prefer string) (CommandResult, error) {
+	if err := c.requireAXe2(ctx, cfg); err != nil {
+		return CommandResult{}, err
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return CommandResult{}, err
 	}
 	target := targetFromConfig(cfg)
-	// A driver is only named for device, where idb is canonical by explicit
-	// decision. For the rest the router decides by cost: the hasTool
-	// cascade that used to live here replicated that worse, because it
-	// looked at PATH presence instead of health, and it also shut out any
-	// non-iOS target. On macOS it ended up naming axe, which does not even
-	// provide the capability there, and the capture died with
-	// capture_tool_missing.
-	if prefer == "" && targetKind(cfg) == drivers.KindDevice {
-		prefer = "idb"
+	if e := validateOperationContext("screenshot", target.InputContext); e != nil {
+		return CommandResult{}, e
 	}
-	// Every screenshot driver captures the primary display, and on an open
-	// iPhone Duo that is the cover: dark, a black PNG.
-	if prefer == "" && targetKind(cfg) == drivers.KindSim && isFoldableSimulator(c.Runner, target.UDID) {
-		if _, err := c.captureLitPanel(ctx, target.UDID, path); err == nil {
-			return CommandResult{}, nil
-		}
-	}
+
 	driver, _, err := c.router().Route(ctx, drivers.CapScreenshot, target, prefer)
 	if err != nil {
 		return CommandResult{}, fmt.Errorf("capture_tool_missing")
+	}
+	if e := validateContextDriver(driver, target); e != nil {
+		return CommandResult{}, e
 	}
 	sd, ok := driver.(drivers.ScreenshotDriver)
 	if !ok {
@@ -5595,6 +5821,14 @@ func substituteExecBindingsInAfter(after *FlowAfter, bindings flowExecBindings) 
 
 func substituteExecBindingsInStepFields(step FlowStep, bindings flowExecBindings, includeDo bool) (FlowStep, error) {
 	prepared := step
+	if step.Automation != nil {
+		req, e := transformAutomationStrings(*step.Automation, func(value string) (string, error) { return substituteExecBindings(value, bindings) })
+		if e != nil {
+			return FlowStep{}, e
+		}
+		prepared.Automation = &req
+	}
+
 	var err error
 	if step.Params != nil {
 		prepared.Params = make(map[string]string, len(step.Params))
@@ -5904,10 +6138,17 @@ func (c CLI) executeFlowStepBoundWithOptions(ctx context.Context, opts GlobalOpt
 					fields["after_"+key] = value
 				}
 				err = afterErr
+				if err != nil && !isReadOnlyFlowAction(step.Action) {
+					fields["delivery"] = "sent"
+					fields["retry"] = "unsafe"
+				}
 			}
 			if err == nil {
 				return fields, nil
 			}
+		}
+		if !inputRetrySafe(err) || fields["retry"] == "unsafe" {
+			break
 		}
 		if policy.Strategy == "skip" {
 			if fields == nil {
@@ -5917,7 +6158,7 @@ func (c CLI) executeFlowStepBoundWithOptions(ctx context.Context, opts GlobalOpt
 			fields["error"] = err.Error()
 			return fields, nil
 		}
-		if policy.Strategy != "retry" || !retryPolicyMatches(policy, err) || attempt == attempts {
+		if fields["retry"] == "unsafe" || !inputRetrySafe(err) || policy.Strategy != "retry" || !retryPolicyMatches(policy, err) || attempt == attempts {
 			break
 		}
 		appendFlowStep(run, index, step.Action+".retry", 0, "retry", map[string]string{
@@ -6165,6 +6406,41 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 		c.settleBeforeFlowStep(ctx, step, prefer)
 	}
 	switch step.Action {
+	case "automation":
+		cfg, err := c.mustLoadConfig()
+		if err != nil {
+			return flowStepTargetFailure(step, err)
+		}
+		result, driver, err := c.executeAutomation(ctx, cfg, prefer, *step.Automation)
+		fields := map[string]string{"driver": driver}
+		if result.Receipt != nil {
+			b, _ := json.Marshal(result.Receipt)
+			fields["receipt"] = string(b)
+		}
+		if len(result.Envelope) > 0 {
+			path := filepath.Join(run.Dir, fmt.Sprintf("step-%d-automation.json", index))
+			if e := os.WriteFile(path, result.Envelope, 0600); e != nil {
+				fields["evidence_error"] = e.Error()
+				if err == nil && !automationIsReadOnly(*step.Automation) {
+					return fields, &drivers.DriverError{Code: "evidence_write_failed", Message: e.Error(), Delivery: drivers.DeliverySent}
+				}
+				if err == nil {
+					return fields, e
+				}
+			}
+			fields["evidence"] = path
+		}
+		if err != nil {
+			var native *drivers.DriverError
+			if errors.As(err, &native) {
+				fields["delivery"] = string(native.Delivery)
+				if native.Delivery != drivers.DeliveryNotSent {
+					fields["retry"] = "unsafe"
+				}
+			}
+		}
+		return fields, err
+
 	case "open":
 		args := flowArgs(step.Params, "--device", "device", "--ios", "ios", "--udid", "udid", "--locale", "locale", "--language", "language", "--fixture", "fixture")
 		if step.Params["clearState"] == "true" {
@@ -6918,14 +7194,30 @@ func (c CLI) runEvidenceFlowCommand(run RunState, code string, invoke func(CLI) 
 	return fields, stepErr
 }
 
+type flowCommandError struct {
+	code  string
+	cause error
+}
+
+func (e *flowCommandError) Error() string { return e.code }
+func (e *flowCommandError) Unwrap() error { return e.cause }
 func commandOutputErr(err error, out, code string) error {
-	if err != nil {
-		return fmt.Errorf("%s", code)
+	if err == nil && !strings.HasPrefix(strings.TrimSpace(out), "fail code=") {
+		return nil
 	}
-	if strings.HasPrefix(strings.TrimSpace(out), "fail code=") {
-		return fmt.Errorf("%s", code)
+	// Preserve delivery evidence when a line-oriented command is embedded in a
+	// flow. Its public step code stays stable, but retry sees the native cause.
+	delivery := drivers.DeliveryNotSent
+	if strings.Contains(firstLine(out), "delivery=uncertain") || strings.Contains(firstLine(out), "retry=unsafe") {
+		delivery = drivers.DeliveryUncertain
 	}
-	return nil
+	if strings.Contains(firstLine(out), "delivery=sent") {
+		delivery = drivers.DeliverySent
+	}
+	if delivery != drivers.DeliveryNotSent {
+		return &flowCommandError{code: code, cause: &drivers.DriverError{Code: code, Message: firstLine(out), Delivery: delivery}}
+	}
+	return &flowCommandError{code: code, cause: err}
 }
 
 // writeElementLines prints every element it is given. It does not cap, and
@@ -7129,7 +7421,9 @@ func stopVideoRecording(runner Runner, run RunState) {
 	if err != nil {
 		return
 	}
-	_ = stopRunProcess(runner, pid)
+	if err := stopRunProcess(runner, pid); err != nil {
+		return
+	}
 	_ = os.Remove(filepath.Join(run.Dir, "video.pid"))
 	removeProcess(run, pid)
 }
@@ -7143,7 +7437,7 @@ func stopVideoRecording(runner Runner, run RunState) {
 // hold a simulator the run's owner can no longer release.
 func (c CLI) reapAbandonedRun(ctx context.Context, run RunState) {
 	_ = c.withStdout(io.Discard).stop(ctx, GlobalOptions{}, []string{"--run", run.ID})
-	stopVideoRecording(c.Runner, run)
+	c.stopAbandonedVideo(ctx, run)
 	// The crash case the VM lease exists to survive: nobody renewed, so
 	// nobody is coming back to call `mav stop`, and a machine left leased
 	// here is one of the two the next run will not get.
@@ -8233,7 +8527,13 @@ func (c CLI) evidenceStop(ctx context.Context, opts GlobalOptions, args []string
 	// file cut off without one is a plausible-looking video no player will
 	// open, which is worse than no video at all.
 	videoStopWarn := c.stopVideoThroughDriver(ctx, cfg, run, pid)
-	_ = stopRunProcess(c.Runner, pid)
+	if videoStopWarn != "" && fileExists(filepath.Join(run.Dir, "video-driver.json")) {
+		return Fail("video_stop_failed", map[string]string{"run": run.ID, "error": videoStopWarn, "next": "the recorder remains tracked; retry mav evidence stop"}).Write(c.Stdout)
+	}
+
+	if !fileExists(filepath.Join(run.Dir, "video-driver.json")) {
+		_ = stopRunProcess(c.Runner, pid)
+	}
 	_ = os.Remove(filepath.Join(run.Dir, "video.pid"))
 	removeProcess(run, pid)
 	// Everything below reads the video off this machine's disk, and when the
@@ -8562,10 +8862,11 @@ func isSwipeDirection(direction string) bool {
 // Mac's produces H.264, and reportVideo/transcodeEvidenceVideo both branch
 // on which one they are looking at.
 func evidenceVideoPath(cfg Config, run RunState) string {
-	if targetKind(cfg) == drivers.KindMac {
-		return filepath.Join(run.Dir, "video.mp4")
+	legacy := filepath.Join(run.Dir, "video.mov")
+	if fileExists(legacy) {
+		return legacy
 	}
-	return filepath.Join(run.Dir, "video.mov")
+	return filepath.Join(run.Dir, "video.mp4")
 }
 
 // startMacVideoRecording routes CapVideo instead of naming a tool, which is
@@ -8596,52 +8897,35 @@ func (c CLI) startVideoRecording(ctx context.Context, cfg Config, run RunState) 
 	if targetKind(cfg) == drivers.KindMac {
 		return c.startMacVideoRecording(ctx, cfg, run)
 	}
-	if targetKind(cfg) != drivers.KindSim {
+	if err := c.requireAXe2(ctx, cfg); err != nil {
+		return "", 0, err
+	}
+	target := targetFromConfig(cfg)
+	d, _, err := c.router().Route(ctx, drivers.CapVideo, target, "")
+	if err != nil {
+		return "", 0, err
+	}
+	recorder, ok := d.(drivers.VideoDriver)
+	if !ok {
 		return "", 0, fmt.Errorf("video_unsupported")
 	}
-	if !hasTool(cfg, "xcrun") {
-		return "", 0, fmt.Errorf("xcrun_missing")
+	path := evidenceVideoPath(cfg, run)
+	result, err := recorder.VideoStart(ctx, target, drivers.VideoSpec{OutPath: path, LogPath: filepath.Join(run.Dir, "video.log"), FollowActiveDisplay: false})
+	if result.PID > 0 {
+		appendProcess(run, "video", result.PID, "video."+d.ID())
+		c.ensureRunWorker(run)
 	}
-	target := cfg.SimulatorUDID
-	if target == "" {
-		target = "booted"
-	}
-	videoPath := filepath.Join(run.Dir, "video.mov")
-	logPath := filepath.Join(run.Dir, "video.log")
-	args := []string{"simctl", "io", target, "recordVideo", "--codec=h264", videoPath}
-	pid, err := c.Runner.Start(ctx, logPath, "xcrun", args...)
 	if err != nil {
-		return videoPath, pid, err
+		return path, result.PID, err
 	}
-	appendProcess(run, "video", pid, "xcrun "+strings.Join(args, " "))
-	c.ensureRunWorker(run)
-	if err := c.awaitVideoRecording(ctx, logPath); err != nil {
-		// Leaving the recorder alive here would strand exactly the kind of
-		// process the run-death cleanup exists to collect: it holds the
-		// simulator's single recording slot, so every later attempt on that
-		// simulator dies with "Host recording is already in progress" while
-		// its own run is long gone.
-		_ = stopRunProcess(c.Runner, pid)
-		// Dropped from the run's process list only once it is actually gone.
-		// A recorder that ignored the stop is still this run's to collect,
-		// and forgetting it here would take it out of reach of the worker's
-		// lease-expiry reap -- trading one leak for a quieter one.
-		if !processAlive(pid) {
-			removeProcess(run, pid)
-			// Stopping the recorder is how simctl is asked to finalize, so a
-			// recorder that began capturing between the last poll and the
-			// signal writes its file on the way out. Left behind, that file
-			// is not evidence of anything -- the step it belonged to failed
-			// -- and it makes video_exists refuse every retry on this run,
-			// naming a file no step reported creating. It is safe to delete
-			// precisely here: existingEvidenceIssue proved the path was
-			// empty before this attempt, so whatever is there now is this
-			// attempt's.
-			_ = os.Remove(videoPath)
-		}
-		return videoPath, 0, err
+	// Capture identity is retained independently of later config/target changes.
+	state := recordingIdentity{Driver: d.ID(), Target: target, Path: path}
+	data, _ := json.Marshal(state)
+	if err = os.WriteFile(filepath.Join(run.Dir, "video-driver.json"), data, 0600); err != nil {
+		_ = recorder.VideoStop(ctx, target, result.PID)
+		return path, result.PID, err
 	}
-	return videoPath, pid, nil
+	return path, result.PID, nil
 }
 
 // awaitVideoRecording blocks until `xcrun simctl io ... recordVideo` has

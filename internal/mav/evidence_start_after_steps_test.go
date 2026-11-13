@@ -21,7 +21,7 @@ func TestEvidenceStartAcceptsRunWithEarlierScreenshotSteps(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
 	cfg.SimulatorUDID = "SIM"
-	cfg.Tools = map[string]bool{"xcrun": true}
+	cfg.Tools = map[string]bool{"xcrun": true, "axe": true}
 	if err := SaveConfig(root, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestFlowVideoStartAcceptsRunWithEarlierScreenshotSteps(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
 	cfg.SimulatorUDID = "SIM"
-	cfg.Tools = map[string]bool{"xcrun": true}
+	cfg.Tools = map[string]bool{"xcrun": true, "axe": true}
 	if err := SaveConfig(root, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestEvidenceStartStillRejectsRunWithLiveRecorder(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
 	cfg.SimulatorUDID = "SIM"
-	cfg.Tools = map[string]bool{"xcrun": true}
+	cfg.Tools = map[string]bool{"xcrun": true, "axe": true}
 	if err := SaveConfig(root, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestFlowEvidenceStepsCarryTheInnerFailure(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
 	cfg.SimulatorUDID = "SIM"
-	cfg.Tools = map[string]bool{"xcrun": true}
+	cfg.Tools = map[string]bool{"xcrun": true, "axe": true}
 	if err := SaveConfig(root, cfg); err != nil {
 		t.Fatal(err)
 	}

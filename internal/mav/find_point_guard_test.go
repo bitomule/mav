@@ -53,8 +53,8 @@ func countCalls(commands []string, substr string) int {
 func TestGuardChecksOnePointAndNotTheWholeTree(t *testing.T) {
 	fakeJev(t, "1", 10)
 	c, cfg, runner := guardPointConfig(t)
-	runner.out["axe describe-ui --udid "+guardPointUDID] = guardPointTree
-	runner.out["axe describe-ui --point 100,125 --udid "+guardPointUDID] = guardPointHit
+	runner.out["axe --output json describe-ui --udid "+guardPointUDID] = guardPointTree
+	runner.out["axe --output json describe-ui --point 100,125 --udid "+guardPointUDID] = guardPointHit
 
 	el, err := c.resolveFindForAction(t.Context(), cfg, Selector{Find: "la caja"}, "auto")
 	if err != nil {
@@ -79,8 +79,8 @@ func TestGuardFallsBackToTheTreeWhenThePointDisagrees(t *testing.T) {
 	// the tree - which still has the element - is what decides.
 	fakeJev(t, "1", 10)
 	c, cfg, runner := guardPointConfig(t)
-	runner.out["axe describe-ui --udid "+guardPointUDID] = guardPointTree
-	runner.out["axe describe-ui --point 100,125 --udid "+guardPointUDID] = guardPointMovedHit
+	runner.out["axe --output json describe-ui --udid "+guardPointUDID] = guardPointTree
+	runner.out["axe --output json describe-ui --point 100,125 --udid "+guardPointUDID] = guardPointMovedHit
 
 	el, err := c.resolveFindForAction(t.Context(), cfg, Selector{Find: "la caja"}, "auto")
 	if err != nil {
@@ -100,8 +100,8 @@ func TestGuardFailsWithElementMovedWhenTheScreenKeepsMoving(t *testing.T) {
 	// screen is still moving, and the step has to fail rather than tap.
 	fakeJev(t, "1", 10)
 	c, cfg, runner := guardPointConfig(t)
-	runner.seq["axe describe-ui --udid "+guardPointUDID] = []string{guardPointTree, guardPointMovedTree}
-	runner.out["axe describe-ui --point 100,125 --udid "+guardPointUDID] = guardPointMovedHit
+	runner.seq["axe --output json describe-ui --udid "+guardPointUDID] = []string{guardPointTree, guardPointMovedTree}
+	runner.out["axe --output json describe-ui --point 100,125 --udid "+guardPointUDID] = guardPointMovedHit
 
 	_, err := c.resolveFindForAction(t.Context(), cfg, Selector{Find: "la caja"}, "auto")
 	if err == nil {
@@ -133,8 +133,8 @@ func TestACacheLessCLIStillResolvesAFind(t *testing.T) {
 		calls: map[string]int{},
 		out:   map[string]string{},
 	}
-	runner.out["axe describe-ui --udid "+guardPointUDID] = guardPointTree
-	runner.out["axe describe-ui --point 100,125 --udid "+guardPointUDID] = guardPointHit
+	runner.out["axe --output json describe-ui --udid "+guardPointUDID] = guardPointTree
+	runner.out["axe --output json describe-ui --point 100,125 --udid "+guardPointUDID] = guardPointHit
 
 	c := CLI{Runner: runner, Root: root}
 	el, err := c.resolveFindForAction(t.Context(), cfg, Selector{Find: "la caja"}, "auto")
@@ -153,8 +153,8 @@ func TestACacheLessCLIStillResolvesAFind(t *testing.T) {
 func TestASpentDecisionCannotBeActedOnTwice(t *testing.T) {
 	fakeJev(t, "1", 10)
 	c, cfg, runner := guardPointConfig(t)
-	runner.out["axe describe-ui --udid "+guardPointUDID] = guardPointTree
-	runner.out["axe describe-ui --point 100,125 --udid "+guardPointUDID] = guardPointHit
+	runner.out["axe --output json describe-ui --udid "+guardPointUDID] = guardPointTree
+	runner.out["axe --output json describe-ui --point 100,125 --udid "+guardPointUDID] = guardPointHit
 
 	if _, err := c.resolveFindForAction(t.Context(), cfg, Selector{Find: "la caja"}, "auto"); err != nil {
 		t.Fatalf("the first resolution had to succeed: %v", err)
@@ -169,8 +169,8 @@ func TestASpentDecisionCannotBeActedOnTwice(t *testing.T) {
 func TestTheReResolvedDecisionIsSpentAsWell(t *testing.T) {
 	fakeJev(t, "1", 10)
 	c, cfg, runner := guardPointConfig(t)
-	runner.out["axe describe-ui --udid "+guardPointUDID] = guardPointTree
-	runner.seq["axe describe-ui --point 100,125 --udid "+guardPointUDID] = []string{guardPointMovedHit, guardPointHit}
+	runner.out["axe --output json describe-ui --udid "+guardPointUDID] = guardPointTree
+	runner.seq["axe --output json describe-ui --point 100,125 --udid "+guardPointUDID] = []string{guardPointMovedHit, guardPointHit}
 
 	if _, err := c.resolveFindForAction(t.Context(), cfg, Selector{Find: "la caja"}, "auto"); err != nil {
 		t.Fatalf("the element never left the screen, so this had to succeed: %v", err)
@@ -184,7 +184,7 @@ func TestLiteralResolutionPaysNoGuard(t *testing.T) {
 	// Nobody was asked, so there is no round trip for the screen to move in.
 	t.Setenv("CI", "1")
 	c, cfg, runner := guardPointConfig(t)
-	runner.out["axe describe-ui --udid "+guardPointUDID] = guardPointTree
+	runner.out["axe --output json describe-ui --udid "+guardPointUDID] = guardPointTree
 
 	el, err := c.resolveFindForAction(t.Context(), cfg, Selector{Find: "Abrir caja"}, "auto")
 	if err != nil {
@@ -212,8 +212,8 @@ const guardPointVacatedHit = `{"AXUniqueId":"tabBar","AXLabel":"Pestanas","type"
 func TestAMovedElementComesBackWithTheCoordinateItMovedTo(t *testing.T) {
 	fakeJev(t, "1", 10)
 	c, cfg, runner := guardPointConfig(t)
-	runner.seq["axe describe-ui --udid "+guardPointUDID] = []string{guardPointTreeLow, guardPointTreeHigh}
-	runner.out["axe describe-ui --point 100,125 --udid "+guardPointUDID] = guardPointVacatedHit
+	runner.seq["axe --output json describe-ui --udid "+guardPointUDID] = []string{guardPointTreeLow, guardPointTreeHigh}
+	runner.out["axe --output json describe-ui --point 100,125 --udid "+guardPointUDID] = guardPointVacatedHit
 
 	el, err := c.resolveFindForAction(t.Context(), cfg, Selector{Find: "el campo de busqueda"}, "auto")
 	if err != nil {
@@ -241,8 +241,8 @@ const guardPointOneTwinTree = `[{"AXUniqueId":"","AXLabel":"","type":"search tex
 func TestAnIdentityThatIsNotUniqueInTheFreshTreeResolvesAgain(t *testing.T) {
 	fakeJev(t, "1", 10)
 	c, cfg, runner := guardPointConfig(t)
-	runner.seq["axe describe-ui --udid "+guardPointUDID] = []string{guardPointOneTwinTree, guardPointTwinsTree}
-	runner.out["axe describe-ui --point 100,125 --udid "+guardPointUDID] = guardPointVacatedHit
+	runner.seq["axe --output json describe-ui --udid "+guardPointUDID] = []string{guardPointOneTwinTree, guardPointTwinsTree}
+	runner.out["axe --output json describe-ui --point 100,125 --udid "+guardPointUDID] = guardPointVacatedHit
 
 	_, err := c.resolveFindForAction(t.Context(), cfg, Selector{Find: "el campo de busqueda"}, "auto")
 	if err != nil && err.Error() != "element_moved" {

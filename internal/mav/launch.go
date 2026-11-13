@@ -82,7 +82,7 @@ func (c CLI) runLaunchRecipe(ctx context.Context, cfg Config, run RunState, clea
 		//
 		// No attempt is made to distinguish "there was nothing to
 		// uninstall" from "genuinely failed": that would require reading
-		// simctl/idb's stderr, which is theirs and they can change whenever
+		// the lifecycle tool's stderr, which can change whenever
 		// they want (the same reason isSimulatorBooted asks CoreSimulator
 		// instead of guessing from the error text). It always warns and the
 		// reader decides.
@@ -290,6 +290,7 @@ func shouldUseDriverInstall(cfg Config, commands LaunchCommands) bool {
 	}
 	return command == "" ||
 		isMAVSimctlInstall(command) ||
+		isMAVCoreDeviceInstall(command) ||
 		strings.Contains(command, "idb install") && strings.Contains(command, "MAV_APP_PATH") ||
 		strings.Contains(command, "idb install") && strings.Contains(command, "$MAV_APP_PATH") ||
 		(targetKind(cfg) == drivers.KindDevice && strings.Contains(command, "simctl install"))
@@ -298,7 +299,8 @@ func shouldUseDriverInstall(cfg Config, commands LaunchCommands) bool {
 func shouldUseDriverLaunch(cfg Config, commands LaunchCommands) bool {
 	// The recipe's env prefix does not change which route the launch takes:
 	// the driver carries it into the app (SIMCTL_CHILD_* on a simulator,
-	// IDB_* on a device, the process environment on macOS), which is the
+	// CoreDevice's environment dictionary on a device, the process
+	// environment on macOS), which is the
 	// translation the operator would otherwise do by hand.
 	_, command, ok := recipeEnvPrefix(commands.Launch)
 	if !ok {
@@ -329,7 +331,7 @@ func untranslatedLaunchEnvWarning(launchCommand string) string {
 		names = append(names, assignment.Name)
 	}
 	return "launch_env_not_translated: " + strings.Join(names, ",") +
-		` was set for the launch tool, not for the app; next: use xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID" (or idb launch on a device) so mav can translate it, or set SIMCTL_CHILD_<NAME> yourself`
+		` was set for the launch tool, not for the app; next: leave launch.commands.launch empty to use mav's lifecycle driver, or use xcrun simctl launch "$MAV_UDID" "$MAV_BUNDLE_ID" so mav can translate the app environment`
 }
 
 // isDirectLaunchToolInvocation recognizes the launch-tool commands whose env
@@ -339,6 +341,8 @@ func untranslatedLaunchEnvWarning(launchCommand string) string {
 func isDirectLaunchToolInvocation(command string) bool {
 	return strings.HasPrefix(command, "xcrun simctl launch") ||
 		strings.HasPrefix(command, "simctl launch") ||
+		strings.HasPrefix(command, "xcrun devicectl device process launch") ||
+		strings.HasPrefix(command, "devicectl device process launch") ||
 		strings.HasPrefix(command, "idb launch") ||
 		strings.HasPrefix(command, "open -a")
 }
@@ -456,18 +460,24 @@ func effectiveLaunchCommands(cfg Config) LaunchCommands {
 		return commands
 	}
 	installRaw, installCommand := recipeEnvPrefixRaw(commands.Install)
-	if isMAVSimctlInstall(installCommand) || installCommand == "" && commands.AppPath != "" {
-		commands.Install = joinRawEnvPrefix(installRaw, `idb install --udid "$MAV_UDID" "$MAV_APP_PATH"`)
+	if isMAVSimctlInstall(installCommand) ||
+		strings.HasPrefix(installCommand, "idb install") && strings.Contains(installCommand, "MAV_APP_PATH") ||
+		installCommand == "" && commands.AppPath != "" {
+		commands.Install = joinRawEnvPrefix(installRaw, `xcrun devicectl device install app --device "$MAV_UDID" "$MAV_APP_PATH"`)
 	}
 	// The env prefix survives the rewrite, verbatim: the rewritten install
 	// line still runs in a shell (shouldUseDriverInstall sends any prefixed
 	// install there), so a value like $MAV_APP_PATH must stay unquoted to
 	// expand instead of being frozen into a literal by shellQuote.
-	launchRaw, launchCommand := recipeEnvPrefixRaw(commands.Launch)
-	if launchCommand == "" || isMAVSimctlLaunch(launchCommand) {
-		commands.Launch = joinRawEnvPrefix(launchRaw, `idb launch --udid "$MAV_UDID" -f "$MAV_BUNDLE_ID"`)
-	}
+	// A canonical launch already routes by target through LifecycleDriver.
+	// Keep its original tokens: rewriting the whole line used to drop the
+	// app's arguments, and a physical-device driver needs no idb command.
 	return commands
+}
+
+func isMAVCoreDeviceInstall(command string) bool {
+	return strings.HasPrefix(command, "xcrun devicectl device install app") &&
+		strings.Contains(command, "MAV_APP_PATH")
 }
 
 func isMAVSimctlInstall(command string) bool {

@@ -59,7 +59,7 @@ func TestOpenHandsDeviceAndIOSToTargetCommandForTheWholeRun(t *testing.T) {
 		root := deviceRequestRoot(t, kind, leaseCommand)
 		duo := deviceRequest{Device: "iPhone Duo", IOS: "27.1"}
 		runner := &launchRecipeRunner{
-			tools:   map[string]bool{"xcrun": true},
+			tools:   map[string]bool{"xcrun": true, "axe": true},
 			results: map[string]CommandResult{leaseKey(root, duo): {Stdout: "DUO-UDID\n"}},
 		}
 		out := runDeviceCLI(t, root, runner, "open", "--device", "iPhone Duo", "--ios", "27.1", "--no-relaunch")
@@ -113,7 +113,7 @@ func TestOpenRefusesADeviceTargetCommandWouldIgnore(t *testing.T) {
 	}
 	for _, tc := range cases {
 		root := deviceRequestRoot(t, "simulator", tc.command)
-		runner := &launchRecipeRunner{tools: map[string]bool{"xcrun": true}}
+		runner := &launchRecipeRunner{tools: map[string]bool{"xcrun": true, "axe": true}}
 		out := runDeviceCLI(t, root, runner, append([]string{"open"}, append(tc.args, "--no-relaunch")...)...)
 		if !strings.Contains(out, "code=open_device_unusable") || !strings.Contains(out, tc.reason) {
 			t.Fatalf("%s: output=%q", tc.name, out)
@@ -129,7 +129,7 @@ func TestOpenRefusesADeviceTargetCommandWouldIgnore(t *testing.T) {
 func TestOpenRefusesADeviceWhenASimulatorIsPinned(t *testing.T) {
 	root := deviceRequestRoot(t, "simulator", leaseCommand)
 	t.Setenv("MAV_TARGET_UDID", "PINNED")
-	runner := &launchRecipeRunner{tools: map[string]bool{"xcrun": true}}
+	runner := &launchRecipeRunner{tools: map[string]bool{"xcrun": true, "axe": true}}
 	out := runDeviceCLI(t, root, runner, "open", "--device", "iPhone Duo", "--no-relaunch")
 	if !strings.Contains(out, "code=open_device_unusable") || !strings.Contains(out, "pinned simulator") {
 		t.Fatalf("output=%q", out)
