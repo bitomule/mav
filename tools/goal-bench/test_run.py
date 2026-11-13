@@ -77,9 +77,11 @@ class EvaluationGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=bench.ROOT / ".scratch") as directory:
             source = pathlib.Path(directory)
             row = {"case": "absent-01", "arm": "axe", "positive": False, "acceptance": False, "verified": False, "reported": False, "false_success": False, "error": False, "latency_ms": 10, "device_id": "private-value", "prompt": "private-text"}
-            (source / "results.json").write_text(json.dumps({"metadata": {"axe_version": "v2.0.4", "device_id": "private-value"}, "rows": [row]}))
+            goal_row = {**row, "case": "form-01", "arm": "goal", "positive": True, "acceptance": True}
+            (source / "results.json").write_text(json.dumps({"metadata": {"axe_version": "v2.0.4", "device_id": "private-value"}, "rows": [row, goal_row]}))
             (source / "absent-01-axe.stdout").write_text(json.dumps({"model": "jev-test", "history": [{"operation": "TAP", "target": "Help"}]}))
             (source / "absent-01-axe-trace.json").write_text(json.dumps({"events": [{"decision": {"operation": "BLOCKED"}, "discardedAsStale": True}]}))
+            (source / "form-01-goal.stdout").write_text(json.dumps({"succeeded": "false", "reported_success": True, "outcome": "unverified"}))
             result = summarize.summarize(source)
             exported = json.dumps(result)
             self.assertNotIn("private-value", exported)
@@ -87,6 +89,9 @@ class EvaluationGateTests(unittest.TestCase):
             self.assertEqual(result["rows"][0]["abstentions"], 1)
             self.assertEqual(result["rows"][0]["discarded"], 1)
             self.assertEqual(result["rows"][0]["wrong_distractor_actions"], 1)
+            self.assertTrue(result["rows"][1]["model_reported_success"])
+            self.assertFalse(result["rows"][1]["reported"])
+            self.assertEqual(result["aggregate"]["goal"]["unverified_model_completion_reports"], 1)
 
 
 if __name__ == "__main__":

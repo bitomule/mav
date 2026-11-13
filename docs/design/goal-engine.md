@@ -42,6 +42,13 @@ executable text, driver flags, selectors or coordinates. Unsupported operations
 are absent. CUA currently supplies checked tap/scroll; its tree does not expose
 focus evidence needed to offer typing under this policy.
 
+Planning receives the current field value, insertion semantics and recent
+target/input names. Typing does not clear an existing field, and writing a
+value does not prove it was saved. The verifier may supply a pending-condition
+hint; exact expected field values are redacted. This hint is planning context
+only: it cannot replace the independent condition or make a model declaration
+pass verification.
+
 `--mode navigation` uses the same engine with a narrower menu. Navigation
 preserves goto's candidate filtering, destructive-action veto, abstention and
 cycle detection. Progress combines the current route with the referenced

@@ -220,7 +220,11 @@ def main():
     (project / ".mav").mkdir(parents=True, exist_ok=True)
     (project / ".mav/config.yaml").write_text(f"target_kind: simulator\nsimulator_udid: {args.udid}\nbundle_id: {BUNDLE}\npreferred_ui_driver: axe\n")
     metadata = {"baseline_commit": BASE, "baseline_sha256": hashlib.sha256(pathlib.Path(baseline).read_bytes()).hexdigest(),
+                "source_commit": run(["git", "-C", str(ROOT), "rev-parse", "HEAD"]).stdout.strip(),
+                "source_dirty": bool(run(["git", "-C", str(ROOT), "status", "--porcelain"]).stdout.strip()),
                 "candidate_sha256": hashlib.sha256(pathlib.Path(candidate).read_bytes()).hexdigest(),
+                "fixture_source_sha256": hashlib.sha256(pathlib.Path(__file__).with_name("Fixture.swift").read_bytes()).hexdigest(),
+                "corpus_sha256": hashlib.sha256(json.dumps(corpus(), sort_keys=True).encode()).hexdigest(),
                 "axe_version": run(["axe", "--version"]).stdout.strip(), "jevi_version": run(["jevi", "--version"]).stdout.strip(),
                 "mav_driver": "axe", "mav_provider": "same jevi binary, environment and configured MAV key for both arms",
                 "cost_note": "null means unavailable from the provider; it never means free"}
@@ -272,6 +276,7 @@ def main():
             reported = result.get("arrived") == "true" if arm == "goto" else result.get("succeeded") == "true" if arm == "goal" else result.get("status") == "completed"
             trace_metrics = axe_trace_metrics(json.loads(trace.read_text())) if arm == "axe" and trace.is_file() else {}
             rows.append({"case": case["id"], "arm": arm, "positive": case["positive"], "acceptance": case.get("acceptance", False), "verified": verified, "reported": reported,
+                         "model_reported_success": result.get("reported_success") if arm == "goal" else result.get("status") == "completed" if arm == "axe" else None,
                          "false_success": reported and not verified, "error": error, "outcome": result.get("outcome", result.get("status", "process_error")),
                          "model_calls": len(model_calls) if arm != "axe" else result.get("modelCalls"),
                          "read_commands": sum(c["read"] for c in calls), "observations": metrics.get("reads", result.get("timing", {}).get("observations")),

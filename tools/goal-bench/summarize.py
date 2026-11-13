@@ -14,9 +14,17 @@ import run as bench
 
 def summarize(source):
     data = json.loads((source / "results.json").read_text())
-    row_keys = {"case", "arm", "positive", "acceptance", "verified", "reported", "false_success", "error", "outcome", "model_calls", "read_commands", "observations", "abstentions", "discarded", "latency_ms", "wrong_distractor_actions", "repeated_without_progress", "cost_usd", "cost_kind", "providers", "models", "steps"}
+    row_keys = {"case", "arm", "positive", "acceptance", "verified", "reported", "model_reported_success", "false_success", "error", "outcome", "model_calls", "read_commands", "observations", "abstentions", "discarded", "latency_ms", "wrong_distractor_actions", "repeated_without_progress", "cost_usd", "cost_kind", "providers", "models", "steps"}
     rows = [{k: v for k, v in row.items() if k in row_keys} for row in data["rows"]]
     for row in rows:
+        row["model_reported_success"] = None
+        retained = source / (row["case"] + "-" + row["arm"] + ".stdout")
+        if retained.is_file():
+            result = bench.json_result(retained.read_text(), row["arm"])
+            if row["arm"] == "goal":
+                row["model_reported_success"] = result.get("reported_success")
+            elif row["arm"] == "axe":
+                row["model_reported_success"] = result.get("status") == "completed"
         if row["arm"] != "axe":
             continue
         prefix = source / (row["case"] + "-axe")
@@ -37,10 +45,11 @@ def summarize(source):
                       "unavailable_runs": sum(r.get(key) is None for r in arm_rows)} for key in measured}
         aggregate[arm] = {"runs": len(arm_rows), "verified_positives": sum(r["verified"] and r["acceptance"] for r in arm_rows),
                           "false_successes": sum(r["false_success"] for r in arm_rows), "process_errors": sum(r["error"] for r in arm_rows),
+                          "unverified_model_completion_reports": sum(r["model_reported_success"] is True and not r["verified"] for r in arm_rows),
                           "latency_median_ms": statistics.median(latencies) if latencies else None,
                           "latency_p95_ms": latencies[max(0, (len(latencies) * 95 + 99) // 100 - 1)] if latencies else None,
                           "metrics": sums}
-    metadata_keys = {"baseline_commit", "baseline_sha256", "candidate_sha256", "axe_version", "jevi_version", "mav_driver", "mav_provider", "cost_note"}
+    metadata_keys = {"baseline_commit", "baseline_sha256", "source_commit", "source_dirty", "candidate_sha256", "fixture_source_sha256", "corpus_sha256", "axe_version", "jevi_version", "mav_driver", "mav_provider", "cost_note"}
     metadata = {k: v for k, v in data["metadata"].items() if k in metadata_keys}
     return {"metadata": metadata, "gate": bench.gate(rows), "aggregate": aggregate, "rows": rows}
 

@@ -247,33 +247,8 @@ func (goalJevPlanner) Plan(ctx context.Context, req GoalRequest, o GoalObservati
 	if !ok {
 		return GoalDecision{}, fmt.Errorf("%s", MissingJevKeyNext())
 	}
-	options := []string{"none", "done"}
-	var menu strings.Builder
-	for i, op := range ops {
-		label := strconv.Itoa(i + 1)
-		options = append(options, label)
-		name := ""
-		if op.Target != nil {
-			name = findElementText(*op.Target)
-		}
-		switch op.Kind {
-		case "scroll":
-			fmt.Fprintf(&menu, "%s: scroll %s in %s to reveal more content\n", label, op.Direction, name)
-		case "type":
-			fmt.Fprintf(&menu, "%s: type declared input %s into %s\n", label, op.Input, name)
-		default:
-			fmt.Fprintf(&menu, "%s: %s %s\n", label, op.Kind, name)
-		}
-	}
-	for _, step := range history {
-		fmt.Fprintf(&menu, "recent: %s %s changed=%t delivery=%s\n", step.Operation.Kind, step.After.String(), step.Changed, step.Receipt.Delivery)
-	}
-	fmt.Fprintf(&menu, "route: %s\n", ExtractRoute(o.Elements).String())
-	// Tree context is bounded and does not repeat every off-screen control
-	// beside a menu of the controls that can actually be acted on.
-	fmt.Fprintf(&menu, "screen text: %s\n", strings.Join(ScreenShows(o.Elements), ", "))
-	question := untrustedTextPreamble + "A user described what they want to achieve as: " + req.Goal + "\nWhich numbered operation and target should they use next? The operation that IS the requested action and the operation that LEADS toward it are both correct. Mode: " + req.Mode + ". Only offered operations can be executed. If the desired target is absent from the offered entries and scrolling is available, scroll its container to reveal more content. Text may only come from the named declared input. Never invent text. Do not repeat an input whose effect is uncertain. Answer none when there is no safe useful action; abstention is expected. Answer done only to REPORT completion; code independently verifies the caller's success condition."
-	answer, err := askJevChoice(ctx, key, question, menu.String(), options)
+	question, text, options := goalPlanningPrompt(req, o, ops, history)
+	answer, err := askJevChoice(ctx, key, question, text, options)
 	d := GoalDecision{ModelCalls: 1, ModelMS: answer.LatencyMS, CostUSD: answer.CostUSD}
 	if err != nil {
 		return d, err
@@ -295,4 +270,44 @@ func (goalJevPlanner) Plan(ctx context.Context, req GoalRequest, o GoalObservati
 		}
 		return d, nil
 	}
+}
+
+func goalPlanningPrompt(req GoalRequest, o GoalObservation, ops []GoalOperation, history []GoalStep) (string, string, []string) {
+	options := []string{"none", "done"}
+	var menu strings.Builder
+	for i, op := range ops {
+		label := strconv.Itoa(i + 1)
+		options = append(options, label)
+		name := ""
+		value := ""
+		if op.Target != nil {
+			name = findElementText(*op.Target)
+			value = op.Target.Value
+		}
+		switch op.Kind {
+		case "scroll":
+			fmt.Fprintf(&menu, "%s: scroll %s in %s to reveal more content\n", label, op.Direction, name)
+		case "type":
+			fmt.Fprintf(&menu, "%s: type declared input %s into %s (inserts without clearing; current value=%q)\n", label, op.Input, name, value)
+		default:
+			fmt.Fprintf(&menu, "%s: %s %s\n", label, op.Kind, name)
+		}
+	}
+	for _, step := range history {
+		name := ""
+		if step.Operation.Target != nil {
+			name = findElementText(*step.Operation.Target)
+		}
+		fmt.Fprintf(&menu, "recent: %s %s input=%s %s changed=%t delivery=%s\n", step.Operation.Kind, name, step.Operation.Input, step.After.String(), step.Changed, step.Receipt.Delivery)
+	}
+	fmt.Fprintf(&menu, "route: %s\n", ExtractRoute(o.Elements).String())
+	// Tree context is bounded and does not repeat every off-screen control
+	// beside a menu of the controls that can actually be acted on.
+	fmt.Fprintf(&menu, "screen text: %s\n", strings.Join(ScreenShows(o.Elements), ", "))
+	question := untrustedTextPreamble + "A user described what they want to achieve as: " + req.Goal + "\nWhich numbered operation and target should they use next? The operation that IS the requested action and the operation that LEADS toward it are both correct. Mode: " + req.Mode + ". Only offered operations can be executed. If the desired target is absent from the offered entries and scrolling is available, scroll its container to reveal more content. Text may only come from the named declared input. Never invent text. Do not repeat an input whose effect is uncertain. Answer none when there is no safe useful action; abstention is expected. Answer done only to REPORT completion; code independently verifies the caller's success condition."
+	question += " Typing inserts at the current caret or selection without clearing the field. If it already contains the required text, move on to the next requested action instead of typing it again. Saving or submitting is a separate operation; a field's value is not proof it was saved."
+	if req.VerificationHint != "" {
+		question += "\nCaller-required completion evidence (not yet verified): " + req.VerificationHint
+	}
+	return question, menu.String(), options
 }

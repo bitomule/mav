@@ -87,6 +87,7 @@ type GoalRequest struct {
 	Timeout           time.Duration     `json:"-"`
 	Inputs            map[string]string `json:"-"` // caller-declared values; never generated
 	DismissPermission string            `json:"-"`
+	VerificationHint  string            `json:"-"` // engine-authored context; never verification authority
 }
 
 type GoalOperation struct {
@@ -193,10 +194,14 @@ func (e GoalEngine) Run(ctx context.Context, req GoalRequest) (result GoalResult
 	}
 	ctx, cancel := context.WithTimeout(ctx, req.Timeout)
 	defer cancel()
+	req.VerificationHint = ""
 	if e.Verifier.Declared() {
 		result.CriterionSource = CriterionExplicit
 		if s, ok := e.Verifier.(fmt.Stringer); ok {
 			result.Criterion = s.String()
+		}
+		if hint, ok := e.Verifier.(interface{ PlanningHint() string }); ok {
+			req.VerificationHint = hint.PlanningHint()
 		}
 	} else {
 		result.Succeeded = "unverified"

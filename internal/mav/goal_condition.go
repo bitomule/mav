@@ -40,6 +40,17 @@ func ParseSuccessCondition(spec string) (SuccessCondition, error) {
 }
 
 func (s SuccessCondition) Declared() bool { return !s.ArrivalCriterion.IsZero() || len(s.Values) > 0 }
+
+// Expected field values remain local until the caller's selected input is
+// delivered. The model gets predicate names, never a declaration's secret value.
+func (s SuccessCondition) PlanningHint() string {
+	redacted := SuccessCondition{ArrivalCriterion: s.ArrivalCriterion, Values: map[string]string{}}
+	for id := range s.Values {
+		redacted.Values[id] = "<caller-declared expected value>"
+	}
+	return redacted.String()
+}
+
 func (s SuccessCondition) String() string {
 	parts := []string{s.ArrivalCriterion.String()}
 	keys := make([]string, 0, len(s.Values))

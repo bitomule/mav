@@ -41,7 +41,7 @@ without machine IDs, paths or process IDs.
 run deliberately exits with a failing acceptance gate; it cannot authorize
 retirement. Missing arms and missing cases never count as successes.
 
-The harness records independent completion, agent-reported completion, false
+The harness records independent completion, public command completion claims, false
 success, process errors, model calls, explicit tree-read commands, logical
 observations, abstentions, discarded decisions, steps and latency. Transparent
 Jevi/AXe shims count subprocesses without logging credentials or screen text.
@@ -52,6 +52,11 @@ Explicit read commands and AXe's internal observation count are different
 measures; do not compare them as if both counted every internal native read.
 Cost is `null` when absent from provider evidence. The corpus and measurements
 are versioned tools, not a claim that an unrun comparison has passed.
+The reviewed `model_reported_success` field separately records goal's model
+declaration or AXe's model-driven completion. A goal model's premature `done`
+followed by `succeeded=unverified` is an unverified model report, not a public
+success claim. The retirement gate counts false public success claims against
+the independent oracle.
 Each trial owns a process group; timing out stops its shims and agent children
 before another trial starts. AXe abstentions and stale decisions come from its
 retained trace. `summarize.py` can re-extract those counters and wrong-action
