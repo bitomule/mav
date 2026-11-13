@@ -29,6 +29,10 @@ apply portrait transforms. Selected simulator input can bind `--screen-id` and
 `--screen-uuid` from `mav sim displays`; stale display identity is an error.
 A failure with `delivery=sent|uncertain` and `retry=unsafe` must not be replayed.
 Inspect its receipt and observe the UI before deciding the next action.
+A plain tap selector error without a receipt can prove `delivery=notSent`.
+A native receipt takes precedence; slider verification can fail after input,
+so its plain selector error remains uncertain. Input stdout contains the compact
+result line; pass `--raw` for native JSON. Reads still print their data.
 
 Snapshot/ref protocols and the autonomous AXe agent are outside this release.
 MAV's existing `ui tree --agent` remains its own compact tree formatter.

@@ -168,6 +168,31 @@ next action. Structured flow evidence retains the native receipt/envelope in the
 run directory. A successful HID receipt proves dispatch, not application-level
 success; use an assertion or a verified observation for that.
 
+Input commands print MAV's compact `ok` / `fail` line. Native JSON for input
+and failures is printed only with `--raw`; reads such as `sim displays` still
+print the requested data. Flow evidence retains the native envelope.
+
+Without a receipt, only a `tap` error with `elementNotFound`, `ambiguousElement`,
+`elementNotHittable` or `rejectedBeforeInput` proves `delivery=notSent`.
+A native receipt always takes precedence: partial input, unknown cleanup or
+quarantine cannot become safe to retry just because of an error code. A slider
+can resolve its selector again **after** dragging, so its plain selector errors
+remain `uncertain`, as do errors from scroll-until, batches and unknown commands.
+See AXe 2.0.4's [tap admission](https://github.com/cameroncooke/AXe/blob/v2.0.4/Sources/AXe/Commands/Tap.swift#L502-L556),
+[slider action and verification](https://github.com/cameroncooke/AXe/blob/v2.0.4/Sources/AXe/Commands/Slider.swift#L237-L258)
+and [selected-input failure classification](https://github.com/cameroncooke/AXe/blob/v2.0.4/Sources/AXe/Utilities/SelectedInputOutput.swift#L63-L88).
+
+After an ordinary tap selector is refused as ambiguous with no input sent, MAV
+can resolve a repeated id on a structural ancestor and its innermost button.
+The matches must form a real ancestor chain with nested frames (equal frames
+count; tolerance is 0.5 pt), and no target ancestor may be marked hidden or
+disabled. A new, uncached AXe tree supplies the point; type filters are retained.
+MAV reports `selector_via=tree nested=true matches=N`. Distinct actionable
+controls, siblings and non-containing overlaps remain ambiguous. Selected
+display/process input keeps AXe's original refusal, since ordinary coordinates
+cannot preserve that binding. This read-before-tap fallback is not atomic;
+it does not provide snapshot/ref admission or prove application-level success.
+
 Evidence recording captures the display active at startup. Foreground
 `video record --follow-active-display` can follow display changes. Background
 evidence recording does not use follow mode: AXe keeps that mode's output in an

@@ -9,7 +9,9 @@ import (
 )
 
 func rejectedAXeTapFixture() CommandResult {
-	return CommandResult{Err: os.ErrInvalid, Stdout: `{"schema":"axe.output.command-result","schemaVersion":"1","didError":true,"data":{"result":{"receipt":{"outcome":"rejectedBeforeInput","enqueuedEventCount":0,"cleanup":"complete"}}},"error":{"code":"tap_failed","message":"selector was not found before input"}}`}
+	// AXe 2.0.4 calls this notNeeded, not complete. Unknown cleanup cannot
+	// justify skipping a failed optional step or retrying it.
+	return CommandResult{Err: os.ErrInvalid, Stdout: `{"schema":"axe.output.command-result","schemaVersion":"1","didError":true,"data":{"result":{"receipt":{"outcome":"rejectedBeforeInput","enqueuedEventCount":0,"cleanup":"notNeeded"}}},"error":{"code":"tap_failed","message":"selector was not found before input"}}`}
 }
 
 // Root CLI fixtures describe trees and input failures, rather than the AXe
