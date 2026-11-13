@@ -168,17 +168,30 @@ next action. Structured flow evidence retains the native receipt/envelope in the
 run directory. A successful HID receipt proves dispatch, not application-level
 success; use an assertion or a verified observation for that.
 
-Stdout carries only the `ok` / `fail` line. A read (`sim displays`, settings
-show and similar) prints its data after that line; the native envelope of an
-input or a failure is printed only with `--raw`. AXe resolves a `tap` or
-`slider` selector before it sends input, so `elementNotFound`,
-`ambiguousElement` and `elementNotHittable` from those commands report
-`delivery=notSent`. The same codes from a scroll-until or a batch stay
-`uncertain`, because input may already have been sent. When AXe refuses a tap
-selector as ambiguous and the matches' frames are nested, each inside the next (a container that repeats its button's id; equal
-frames count, with 0.5 pt tolerance), MAV taps the centre of the innermost frame
-and says `selector_via=tree nested=true matches=N`. Matches side by side, or
-overlapping without containment, stay `ambiguousElement` and send no input.
+Input commands print MAV's compact `ok` / `fail` line. Native JSON for input
+and failures is printed only with `--raw`; reads such as `sim displays` still
+print the requested data. Flow evidence retains the native envelope.
+
+Without a receipt, only a `tap` error with `elementNotFound`, `ambiguousElement`,
+`elementNotHittable` or `rejectedBeforeInput` proves `delivery=notSent`.
+A native receipt always takes precedence: partial input, unknown cleanup or
+quarantine cannot become safe to retry just because of an error code. A slider
+can resolve its selector again **after** dragging, so its plain selector errors
+remain `uncertain`, as do errors from scroll-until, batches and unknown commands.
+See AXe 2.0.4's [tap admission](https://github.com/cameroncooke/AXe/blob/v2.0.4/Sources/AXe/Commands/Tap.swift#L502-L556),
+[slider action and verification](https://github.com/cameroncooke/AXe/blob/v2.0.4/Sources/AXe/Commands/Slider.swift#L237-L258)
+and [selected-input failure classification](https://github.com/cameroncooke/AXe/blob/v2.0.4/Sources/AXe/Utilities/SelectedInputOutput.swift#L63-L88).
+
+After an ordinary tap selector is refused as ambiguous with no input sent, MAV
+can resolve a repeated id on a structural ancestor and its innermost button.
+The matches must form a real ancestor chain with nested frames (equal frames
+count; tolerance is 0.5 pt), and no target ancestor may be marked hidden or
+disabled. A new, uncached AXe tree supplies the point; type filters are retained.
+MAV reports `selector_via=tree nested=true matches=N`. Distinct actionable
+controls, siblings and non-containing overlaps remain ambiguous. Selected
+display/process input keeps AXe's original refusal, since ordinary coordinates
+cannot preserve that binding. This read-before-tap fallback is not atomic;
+it does not provide snapshot/ref admission or prove application-level success.
 
 Evidence recording captures the display active at startup. Foreground
 `video record --follow-active-display` can follow display changes. Background

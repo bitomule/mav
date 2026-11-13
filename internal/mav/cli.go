@@ -3397,46 +3397,88 @@ func (c CLI) tapSelectorViaTree(ctx context.Context, opts GlobalOptions, cfg Con
 }
 
 // coincidentTapPoint answers whether a selector AXe refused as ambiguous names
-// one place on screen: the matches' frames form a nesting chain, as when a
-// container repeats its button's id. AXe sent no input before refusing, so
-// tapping the centre of the innermost frame is safe. Matches side by side or
-// overlapping without containment stay ambiguous.
+// one control on screen: structural ancestors repeat an innermost button's id
+// and contain its frame. A fresh ordinary tree read is not atomic admission;
+// selected input must keep AXe's original refusal instead of losing its binding.
 func (c CLI) coincidentTapPoint(ctx context.Context, cfg Config, prefer string, selector Selector, tapErr error) (map[string]string, int, int, bool) {
 	var native *drivers.DriverError
-	if !errors.As(tapErr, &native) || native.Code != "ambiguousElement" || native.Delivery != drivers.DeliveryNotSent {
+	if contextRequested(cfg.InputContext) || !errors.As(tapErr, &native) || native.Code != "ambiguousElement" || native.Delivery != drivers.DeliveryNotSent {
 		return nil, 0, 0, false
 	}
-	described, err := c.describeUITree(ctx, cfg, prefer, false)
+	// Do not reuse a prior flow read or switch the coordinate source to another driver.
+	described, err := c.describeUITreeUncached(ctx, cfg, "axe", false)
 	if err != nil || described.Result.Err != nil {
 		return nil, 0, 0, false
 	}
-	matches, err := MatchElements(ExtractElements(described.Result.Stdout), selector)
+	elements := ExtractElements(described.Result.Stdout)
+	matches, err := MatchElements(elements, selector)
 	if err != nil || len(matches) < 2 {
 		return nil, 0, 0, false
 	}
 	type framed struct {
 		el         Element
+		index      int
 		x, y, w, h float64
 	}
 	chain := make([]framed, 0, len(matches))
 	for _, m := range matches {
-		x, y, w, h, ok := parseElementFrame(m.Frame)
-		if !ok || w <= 0 || h <= 0 {
+		if !isOfferableState(m) {
 			return nil, 0, 0, false
 		}
-		chain = append(chain, framed{m, x, y, w, h})
+		index := -1
+		for i, el := range elements {
+			if el == m {
+				index = i
+				break
+			}
+		}
+		x, y, w, h, ok := parseElementFrame(m.Frame)
+		if index < 0 || !ok || w <= 0 || h <= 0 {
+			return nil, 0, 0, false
+		}
+		chain = append(chain, framed{m, index, x, y, w, h})
 	}
-	// Largest first; the stable sort keeps tree order for equal areas.
-	sort.SliceStable(chain, func(i, j int) bool { return chain[i].w*chain[i].h > chain[j].w*chain[j].h })
+	// Matching nodes are in pre-order. Geometry alone cannot distinguish two
+	// independent controls that happen to overlap, even with complete containment.
 	const tolerance = 0.5
 	for i := 1; i < len(chain); i++ {
 		outer, inner := chain[i-1], chain[i]
+		switch normalizedRole(outer.el.Role) {
+		case "group", "other", "container", "view", "navigationbar", "toolbar":
+		default:
+			return nil, 0, 0, false
+		}
+		if inner.index <= outer.index || inner.el.Depth <= outer.el.Depth {
+			return nil, 0, 0, false
+		}
+		for _, between := range elements[outer.index+1 : inner.index] {
+			if between.Depth <= outer.el.Depth {
+				return nil, 0, 0, false
+			}
+		}
 		if inner.x < outer.x-tolerance || inner.y < outer.y-tolerance ||
 			inner.x+inner.w > outer.x+outer.w+tolerance || inner.y+inner.h > outer.y+outer.h+tolerance {
 			return nil, 0, 0, false
 		}
 	}
 	target := chain[len(chain)-1]
+	if normalizedRole(target.el.Role) != "button" || ctx.Err() != nil {
+		return nil, 0, 0, false
+	}
+	// State can be inherited from an ancestor with a different identifier.
+	// Follow only the target's ancestry, not unrelated preceding siblings.
+	ancestors := []Element{}
+	for _, el := range elements[:target.index+1] {
+		for len(ancestors) > 0 && ancestors[len(ancestors)-1].Depth >= el.Depth {
+			ancestors = ancestors[:len(ancestors)-1]
+		}
+		ancestors = append(ancestors, el)
+	}
+	for _, ancestor := range ancestors {
+		if !isOfferableState(ancestor) {
+			return nil, 0, 0, false
+		}
+	}
 	fields := map[string]string{
 		"selector_via":   "tree",
 		"selector_error": firstLine(tapErr.Error()),

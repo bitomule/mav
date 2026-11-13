@@ -44,15 +44,28 @@ func decodeOutput(res drivers.ExecResult, mutation bool) (drivers.NativeResult, 
 	if len(envelope.Data.Result) > 0 {
 		values = append(values, envelope.Data.Result)
 	}
+	receiptDelivery := drivers.DeliveryNotSent
+	receiptsComplete := true
 	for _, v := range values {
 		if receipt := findReceipt(v); receipt != nil {
+			// Classify each original receipt before aggregation can replace its
+			// outcome or let a malformed negative count cancel earlier events.
+			state := nativeReceiptDelivery(receipt)
+			if state == drivers.DeliveryUncertain || receiptDelivery == drivers.DeliveryUncertain {
+				receiptDelivery = drivers.DeliveryUncertain
+			} else if state == drivers.DeliverySent {
+				receiptDelivery = drivers.DeliverySent
+			}
+			if receiptRecoveryUncertain(receipt) || receipt.EnqueuedEventCount < 0 || receipt.Outcome != "enqueuedAndDrained" {
+				receiptsComplete = false
+			}
 			if result.Receipt == nil {
 				result.Receipt = receipt
 			} else {
 				prior := result.Receipt
 				receipt.EnqueuedEventCount += prior.EnqueuedEventCount
-				if prior.Cleanup == "uncertain" {
-					receipt.Cleanup = "uncertain"
+				if receiptRecoveryUncertain(prior) {
+					receipt.Cleanup = prior.Cleanup
 				}
 				if nonNull(prior.Quarantine) {
 					receipt.Quarantine = prior.Quarantine
@@ -61,20 +74,16 @@ func decodeOutput(res drivers.ExecResult, mutation bool) (drivers.NativeResult, 
 			}
 		}
 	}
-	if receipt := result.Receipt; receipt != nil {
-		if receipt.Cleanup == "uncertain" || nonNull(receipt.Quarantine) {
-			delivery = drivers.DeliveryUncertain
-		} else if receipt.EnqueuedEventCount > 0 {
-			delivery = drivers.DeliverySent
-		} else if receipt.Outcome == "rejectedBeforeInput" || receipt.Outcome == "failedBeforeInput" || receipt.Outcome == "busy" {
-			delivery = drivers.DeliveryNotSent
-		}
+	if result.Receipt != nil {
+		delivery = receiptDelivery
 	}
 	if *envelope.DidError || res.Err != nil || res.Code != 0 {
 		code, message := "axe_command_failed", failureText(res)
 		if envelope.Error != nil {
 			code, message = envelope.Error.Code, envelope.Error.Message
-			if failedBeforeInput(envelope.Command, code) && (result.Receipt == nil || result.Receipt.EnqueuedEventCount == 0) {
+			// A native receipt is stronger evidence than a command-level code.
+			// Never erase partial delivery or uncertain recovery with this inference.
+			if result.Receipt == nil && failedBeforeInput(envelope.Command, code) {
 				delivery = drivers.DeliveryNotSent
 			}
 		}
@@ -82,23 +91,47 @@ func decodeOutput(res drivers.ExecResult, mutation bool) (drivers.NativeResult, 
 	}
 	// A valid envelope can contain a failed native receipt even if a caller
 	// neglected to propagate its exit status. Preserve that failure.
-	if r := result.Receipt; r != nil && (r.Cleanup == "uncertain" || nonNull(r.Quarantine) || strings.HasPrefix(r.Outcome, "failed") || r.Outcome == "rejectedBeforeInput" || r.Outcome == "busy") {
+	if r := result.Receipt; r != nil && !receiptsComplete {
 		return fail("axe_input_incomplete", "AXe input did not complete; inspect the receipt before sending more input", r)
 	}
 	return result, nil
 }
 
 // failedBeforeInput reports AXe 2.0.4 failures that end the command before
-// any HID input. tap and slider resolve their selector first; scroll-until and
-// batch can fail with the same codes after input, so they are left out.
+// any HID input. Slider resolves again during post-input verification; scroll,
+// batch and unknown commands can also fail after input, so they are left out.
 func failedBeforeInput(command, code string) bool {
+	if command != "tap" {
+		return false
+	}
 	switch code {
-	case "rejectedBeforeInput":
-		return command != "batch"
-	case "elementNotFound", "ambiguousElement", "elementNotHittable":
-		return command == "tap" || command == "slider"
+	case "rejectedBeforeInput", "elementNotFound", "ambiguousElement", "elementNotHittable":
+		return true
 	}
 	return false
+}
+
+func receiptRecoveryUncertain(r *drivers.InputReceipt) bool {
+	return (r.Cleanup != "released" && r.Cleanup != "notNeeded") || nonNull(r.Quarantine)
+}
+
+func nativeReceiptDelivery(r *drivers.InputReceipt) drivers.InputDelivery {
+	if receiptRecoveryUncertain(r) || r.EnqueuedEventCount < 0 {
+		return drivers.DeliveryUncertain
+	}
+	switch r.Outcome {
+	case "failedBeforeInput", "rejectedBeforeInput", "busy":
+		if r.EnqueuedEventCount == 0 {
+			return drivers.DeliveryNotSent
+		}
+	case "enqueuedAndDrained", "failedNoReplay":
+	default:
+		return drivers.DeliveryUncertain
+	}
+	if r.EnqueuedEventCount > 0 {
+		return drivers.DeliverySent
+	}
+	return drivers.DeliveryUncertain
 }
 
 func nonNull(raw json.RawMessage) bool { return len(raw) > 0 && string(raw) != "null" }

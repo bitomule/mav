@@ -445,20 +445,13 @@ func (c CLI) executeAutomation(ctx context.Context, cfg Config, prefer string, r
 }
 func (c CLI) automationOutput(ctx context.Context, cfg Config, opts GlobalOptions, req Automation) error {
 	result, driver, err := c.executeAutomation(ctx, cfg, routerPrefer(opts.PreferDriver), req)
+	var fallbackFields map[string]string
 	if err != nil && driver == "axe" && req.Command == "tap" {
 		if point, fallback, ok := c.coincidentTapAutomation(ctx, cfg, opts, req, err); ok {
 			req = point
 			result, driver, err = c.executeAutomation(ctx, cfg, routerPrefer(opts.PreferDriver), req)
 			if err == nil {
-				fields := automationFields(req, driver)
-				for k, v := range fallback {
-					fields[k] = v
-				}
-				if result.Receipt != nil {
-					b, _ := json.Marshal(result.Receipt)
-					fields["receipt"] = string(b)
-				}
-				return c.OK("ui.tap", fields).Write(c.Stdout)
+				fallbackFields = fallback
 			}
 		}
 	}
@@ -466,6 +459,9 @@ func (c CLI) automationOutput(ctx context.Context, cfg Config, opts GlobalOption
 		return c.automationFailure(err)
 	}
 	fields := automationFields(req, driver)
+	for k, v := range fallbackFields {
+		fields[k] = v
+	}
 	if result.Receipt != nil {
 		b, _ := json.Marshal(result.Receipt)
 		fields["receipt"] = string(b)
@@ -720,10 +716,11 @@ func automationFields(req Automation, driver string) map[string]string {
 // tap at the innermost match's centre, when the matches' frames are nested.
 func (c CLI) coincidentTapAutomation(ctx context.Context, cfg Config, opts GlobalOptions, req Automation, tapErr error) (Automation, map[string]string, bool) {
 	var spec drivers.TapSpec
-	if decodeOptions(req.Options, &spec) != nil || spec.SemanticPress || spec.Selector.IsZero() {
+	// Ordinary tree coordinates cannot retain a selected display/process binding.
+	if contextRequested(req.Context) || contextRequested(cfg.InputContext) || decodeOptions(req.Options, &spec) != nil || spec.SemanticPress || spec.Selector.IsZero() {
 		return req, nil, false
 	}
-	selector := Selector{ID: spec.Selector.ID, Text: spec.Selector.Text, Value: spec.Selector.Value}
+	selector := Selector{ID: spec.Selector.ID, Text: spec.Selector.Text, Value: spec.Selector.Value, Role: spec.ElementType}
 	fallback, x, y, ok := c.coincidentTapPoint(ctx, cfg, opts.PreferDriver, selector, tapErr)
 	if !ok {
 		return req, nil, false
