@@ -22,7 +22,24 @@ agent asks for intent-level operations like `ui tree`, `tap`, `pinch`,
 native backend available on that target, records what happened, and returns a
 compact result the next turn can act on.
 
-MAV is intentionally not an autonomous testing agent. It runs the command. The agent decides what to run next.
+Most MAV commands execute one concrete operation. For a bounded objective,
+`mav goal "<objective>"` can observe, choose one operation and target at a time,
+act, and verify a caller-declared success condition.
+
+```sh
+mav goal "open the project details" --mode navigation --succeeded-when 'title:"Project details"'
+mav goal 'Enter "Sample" in the Name field' --succeeded-when 'value:"name=Sample"'
+```
+
+Goal distinguishes `succeeded=true|false|unverified` from the model's
+`reported_success` and each input's delivery receipt. A model saying `done`
+does not verify success. An initially satisfied condition reports
+`already_satisfied` with zero actions. YAML `goal` steps require
+`succeededWhen`; typed text comes only from quoted literals or declared inputs.
+The cap remains 12 goal actions and 90 seconds. Partial or unknown input is
+never replayed. See the [goal contract](docs/design/goal-engine.md) and
+[comparison harness](tools/goal-bench/README.md). Goto remains available until
+the comparison's retirement gate passes.
 
 ## Why MAV?
 

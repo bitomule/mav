@@ -33,6 +33,9 @@ type jevAnswer struct {
 	// that is ours.
 	LatencyMS int64  `json:"latency_ms"`
 	Error     string `json:"error"`
+	Usage     *struct {
+		Cost *float64 `json:"cost"`
+	} `json:"usage"`
 }
 
 // jevChoice is what the caller needs out of a jev round: a verdict, a label,
@@ -41,6 +44,7 @@ type jevChoice struct {
 	Verdict   string
 	Label     string
 	LatencyMS int64
+	CostUSD   *float64
 }
 
 // errJevUnavailable means the question was never put. Distinct from an answer
@@ -106,11 +110,15 @@ func askJevChoice(ctx context.Context, key, question, text string, options []str
 	if !ok {
 		return jevChoice{}, errJevUnavailable
 	}
-	return jevChoice{
+	choice := jevChoice{
 		Verdict:   answer.Verdict,
 		Label:     answer.Label,
 		LatencyMS: doc.LatencyMS,
-	}, nil
+	}
+	if doc.Usage != nil {
+		choice.CostUSD = doc.Usage.Cost
+	}
+	return choice, nil
 }
 
 // findIsRefusedHere reports the reason find must not consult a model in this

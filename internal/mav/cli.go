@@ -212,6 +212,8 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 		return c.ui(ctx, opts, rest[1:])
 	case "jev":
 		return c.jev(ctx, opts, rest[1:])
+	case "goal":
+		return c.goalCommand(ctx, opts, rest[1:])
 	case "goto":
 		return c.gotoCommand(ctx, opts, rest[1:])
 	case "capture":
@@ -535,6 +537,8 @@ Selects a physical iOS device and switches target_kind to device.
   mav ui wait --value VALUE [--timeout 5s]
   mav ui scrollUntil --id ID [--direction up] [--max-swipes 5]
 `
+	case "goal":
+		return goalHelp
 	case "goto":
 		return `Usage: mav goto "<the screen you want>" [--arrived-when '<criteria>'] [--dismiss-permission '<button label>'] [--max-steps 12] [--timeout 90s]
 
@@ -6402,7 +6406,7 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 	// goto settles on its own, inside its own loop, and it reads many times
 	// between its own taps -- settling it from out here would pay for a read it
 	// is about to invalidate.
-	if step.Action != "goto" && somethingMovedEarlier {
+	if step.Action != "goto" && step.Action != "goal" && somethingMovedEarlier {
 		c.settleBeforeFlowStep(ctx, step, prefer)
 	}
 	switch step.Action {
@@ -6470,6 +6474,8 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 			}
 		}
 		return fields, stepErr
+	case "goal":
+		return c.executeGoalFlowStep(ctx, opts, step)
 	case "goto":
 		return c.executeGotoFlowStep(ctx, opts, step)
 	case "when":

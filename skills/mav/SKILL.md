@@ -5,8 +5,31 @@ description: Use MAV, the Mobile Agent Verifier CLI, to validate iOS and macOS a
 
 # MAV
 
-Use `mav` when validating an iOS app locally. MAV is deterministic: it
-does not explore or repair routes by itself. The agent decides the next action.
+Use `mav` when validating an iOS or macOS app locally. Ordinary commands perform
+one concrete operation. `mav goal` runs a bounded objective with independent
+success checks; choose ordinary commands when you already know the next action.
+
+## Bounded goals
+
+```sh
+mav goal "open the project details" --mode navigation --succeeded-when 'title:"Project details"'
+mav goal 'Enter "Sample" in the Name field' --succeeded-when 'value:"name=Sample"'
+```
+
+Check `succeeded`, `outcome`, `reported_success` and every input receipt.
+Only `succeeded=true` verifies the declared condition. `already_satisfied`
+means zero actions occurred. The model's `done` never proves an effect.
+Use conjunctive `title:`, `screen:`, `text:` and exact `value:"id=value"`
+predicates. YAML goal steps require `succeededWhen` and stop unless verified.
+Action mode is the default; navigation mode restricts the operation menu.
+Text comes only from literals quoted in the goal or declared inputs, selected
+with `--input name=value` or a flow's `inputs` mapping.
+
+The hard limits are 12 goal actions and 90 seconds. Modals need an exact,
+non-destructive `--dismiss-permission` button; at most three dismissals are
+separate from navigation progress. Never replay partial or unknown input, or
+repeat a goal after any delivered input just because observation failed.
+Goto remains available until the controlled comparison's retirement gate passes.
 
 `mav --version` reports the binary's version, and `mav doctor` carries it as
 `mav_version`. Include it when you report a problem: behaviour differs between releases
