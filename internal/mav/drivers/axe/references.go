@@ -64,7 +64,7 @@ func (d *Driver) referenceRun(ctx context.Context, t drivers.Target, mutation bo
 			return env, r, fmt.Errorf("axe_invalid_agent_receipt")
 		}
 		switch {
-		case a.Cleanup == "uncertain" || nonNull(a.Quarantine):
+		case (a.Cleanup != "released" && a.Cleanup != "notNeeded") || nonNull(a.Quarantine):
 			r.Delivery = "unknown"
 		case a.Outcome == "enqueuedAndDrained" && (a.Cleanup == "released" || a.Cleanup == "notNeeded"):
 			r.Delivery = "completed"

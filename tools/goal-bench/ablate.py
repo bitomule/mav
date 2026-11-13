@@ -22,6 +22,7 @@ MUTATIONS = [
     ("hidden_evidence", "goal_condition.go", "s.MatchesRoute(ExtractRoute(visible), visible)", "s.MatchesRoute(ExtractRoute(o.Elements), o.Elements)", "TestGoalHiddenTextAndHeadingCannotSatisfyCondition"),
     ("route_progress", "goal_engine.go", 'return string(route) + "|" + screenFingerprint(visible)', '_ = route; return screenFingerprint(visible)', "TestGoalNavigationCountsUnreferencedWizardTitlesAsProgress"),
     ("known_rotation", "goal_cmd.go", 'if hid.Detected != 0 && hid.Rotation == 0 {', 'if false {', "TestGoalRunRefusesKnownRotationWithoutValidatedScreenSize"),
+    ("unknown_cleanup", "drivers/axe/references.go", '(a.Cleanup != "released" && a.Cleanup != "notNeeded")', 'a.Cleanup == "uncertain"', "TestGoalUnknownReferenceCleanupNeverAllowsRetry"),
 ]
 
 
@@ -35,7 +36,8 @@ def main():
         original = path.read_text()
         if original.count(before) != 1:
             raise RuntimeError(f"{name}: expected exactly one mutation site")
-        command = ["go", "test", "./internal/mav", "-run", "^" + test + "$", "-count=1", "-v"]
+        package = "./internal/mav/drivers/axe" if file.startswith("drivers/axe/") else "./internal/mav"
+        command = ["go", "test", package, "-run", "^" + test + "$", "-count=1", "-v"]
         try:
             path.write_text(original.replace(before, after, 1))
             red = subprocess.run(command, cwd=ROOT, env=env, text=True, capture_output=True, timeout=60)

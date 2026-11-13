@@ -102,3 +102,14 @@ func TestGoalReferenceTypeDoesNotCombineFocusAndTypingOrFallback(t *testing.T) {
 		t.Fatal("unsupported target sent input")
 	}
 }
+
+func TestGoalUnknownReferenceCleanupNeverAllowsRetry(t *testing.T) {
+	for _, outcome := range []string{"failedBeforeInput", "busy", "enqueuedAndDrained"} {
+		f := fake()
+		f.result.Stdout = agentOutput(true, fmt.Sprintf(`{"cache":{"requiresRefresh":true},"action":{"kind":"tap","outcome":%q,"cleanup":"futureCleanupState","enqueuedEventCount":0,"replayed":false}}`, outcome), "")
+		r, e := New(f).ExecuteReference(t.Context(), drivers.Target{Kind: drivers.KindSim}, drivers.ReferenceSnapshot{ID: "s", PID: 101}, drivers.ReferenceOperation{Kind: "tap", Ref: "e1"})
+		if e == nil || r.Delivery != "unknown" || r.Stale {
+			t.Fatalf("unknown cleanup permitted retry: outcome=%s receipt=%+v err=%v", outcome, r, e)
+		}
+	}
+}
