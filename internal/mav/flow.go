@@ -218,6 +218,8 @@ type flowStepPayload struct {
 	// prose, not an element -- so they sit at the top level of the step, which
 	// is where every parameter that is not a selector lives.
 	Goal              string          `yaml:"goal"`
+	SucceededWhen     string          `yaml:"succeededWhen"`
+	Mode              string          `yaml:"mode"`
 	ArrivedWhen       string          `yaml:"arrivedWhen"`
 	MaxSteps          string          `yaml:"maxSteps"`
 	DismissPermission string          `yaml:"dismissPermission"`
@@ -427,6 +429,8 @@ func parseFlowStepNode(node yaml.Node) (FlowStep, error) {
 	put("ask", payload.Ask)
 	put("goal", payload.Goal)
 	put("arrivedWhen", payload.ArrivedWhen)
+	put("succeededWhen", payload.SucceededWhen)
+	put("mode", payload.Mode)
 	put("maxSteps", payload.MaxSteps)
 	put("dismissPermission", payload.DismissPermission)
 	if payload.From != nil {
@@ -763,6 +767,11 @@ func validateFlowSteps(steps []FlowStep) error {
 				return fmt.Errorf("steps[%d].type.text.ask: the flow declares no inputs to choose from", index)
 			}
 		}
+		if step.Action == "goal" {
+			if err := validateGoalFlowStep(index, step); err != nil {
+				return err
+			}
+		}
 		if step.Action == "goto" {
 			if err := validateGotoFlowStep(index, step); err != nil {
 				return err
@@ -865,7 +874,7 @@ func validateGotoFlowStep(index int, step FlowStep) error {
 
 func isSupportedFlowAction(action string) bool {
 	switch action {
-	case "automation", "open", "goto", "when", "whileNotVisible", "go", "tree", "tap", "type", "erase", "hideKeyboard", "swipe", "longPress", "pinch", "rotate", "twoFingerPan", "actions",
+	case "automation", "open", "goal", "goto", "when", "whileNotVisible", "go", "tree", "tap", "type", "erase", "hideKeyboard", "swipe", "longPress", "pinch", "rotate", "twoFingerPan", "actions",
 		"doubleTap", "drag", "dragPath", "toggle", "press",
 		"app.list", "app.kill", "openURL", "location.set", "location.reset", "clipboard.copy", "clipboard.read",
 		"sim.appearance", "sim.statusbar.set", "sim.statusbar.clear", "sim.language.set", "sim.hinge", "sim.heal",

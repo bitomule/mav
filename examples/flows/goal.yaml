@@ -1,0 +1,10 @@
+name: declared-goal
+inputs:
+  note: "Sample note"
+steps:
+  - goal:
+      goal: "Write the declared note and save it"
+      mode: action
+      succeededWhen: 'title:"Saved"'
+      maxSteps: 12
+      timeout: 90s
