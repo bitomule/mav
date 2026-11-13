@@ -351,7 +351,7 @@ app's container and preferences, not the app.
   fails with `could not create image from display`. This is why the VM recipe needs
   the broker — see [`examples/macos-vm/`](examples/macos-vm/).
 
-See the [macOS scope evaluation](docs/macos-scope-evaluation.md) for how this was
+See the [historical macOS scope evaluation](docs/macos-scope-evaluation.md) for how this was
 decided and what was deliberately left out.
 
 ## Requirements
