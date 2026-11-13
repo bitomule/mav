@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -11,6 +12,8 @@ import (
 
 	"github.com/bitomule/mav/internal/mav/drivers"
 )
+
+const gotoDefaultTimeout = 90 * time.Second
 
 const goalUsage = `mav goal "<objective>" [--succeeded-when 'title:"Settings"'] [--mode navigation|action] [--input name=value] [--max-steps 12] [--timeout 90s]`
 
@@ -43,6 +46,9 @@ reported as criterion_source=observed. CI refuses model-driven execution.
 `
 
 func validateGoalFlowStep(index int, step FlowStep) error {
+	if strings.TrimSpace(step.Params["goal"]) == "" {
+		return fmt.Errorf("steps[%d].goal.goal: a goal objective is mandatory", index)
+	}
 	if strings.TrimSpace(step.Params["succeededWhen"]) == "" {
 		return fmt.Errorf("steps[%d].goal.succeededWhen: a verifiable success condition is mandatory", index)
 	}
@@ -52,13 +58,10 @@ func validateGoalFlowStep(index int, step FlowStep) error {
 	if !step.Where.IsZero() {
 		return fmt.Errorf("steps[%d].goal.where: goal chooses operation and target from observations", index)
 	}
-	args := []string{step.Params["goal"], "--succeeded-when", step.Params["succeededWhen"]}
-	for _, p := range [][2]string{{"mode", "--mode"}, {"maxSteps", "--max-steps"}, {"timeout", "--timeout"}} {
-		if v := step.Params[p[0]]; v != "" {
-			args = append(args, p[1], v)
-		}
+	if _, err := ParseSuccessCondition(step.Params["succeededWhen"]); err != nil {
+		return fmt.Errorf("steps[%d].goal.succeededWhen: %w", index, err)
 	}
-	_, condition, err := parseGoalArgs(args)
+	_, condition, err := parseGoalArgs(goalFlowArgs(step))
 	if err != nil {
 		return fmt.Errorf("steps[%d].goal: %w", index, err)
 	}
@@ -66,6 +69,26 @@ func validateGoalFlowStep(index int, step FlowStep) error {
 		return fmt.Errorf("steps[%d].goal.succeededWhen: condition names nothing", index)
 	}
 	return nil
+}
+
+// goalFlowArgs supplies every declaration to the common parser before it
+// derives quoted inputs, so flows preserve CLI collision checks and policy.
+func goalFlowArgs(step FlowStep) []string {
+	args := []string{step.Params["goal"], "--succeeded-when", step.Params["succeededWhen"]}
+	for _, pair := range [][2]string{{"mode", "--mode"}, {"maxSteps", "--max-steps"}, {"timeout", "--timeout"}, {"dismissPermission", "--dismiss-permission"}} {
+		if v := step.Params[pair[0]]; v != "" {
+			args = append(args, pair[1], v)
+		}
+	}
+	keys := make([]string, 0, len(step.Inputs))
+	for key := range step.Inputs {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		args = append(args, "--input", key+"="+step.Inputs[key])
+	}
+	return args
 }
 
 func parseGoalArgs(args []string) (GoalRequest, SuccessCondition, error) {
@@ -242,22 +265,13 @@ func (c CLI) writeGoalResult(result GoalResult) error {
 }
 
 func (c CLI) executeGoalFlowStep(ctx context.Context, opts GlobalOptions, step FlowStep) (map[string]string, error) {
-	cfg, err := c.mustLoadConfig()
-	if err != nil {
-		return flowStepTargetFailure(step, err)
-	}
-	args := []string{step.Params["goal"], "--succeeded-when", step.Params["succeededWhen"]}
-	for _, pair := range [][2]string{{"mode", "--mode"}, {"maxSteps", "--max-steps"}, {"timeout", "--timeout"}, {"dismissPermission", "--dismiss-permission"}} {
-		if v := step.Params[pair[0]]; v != "" {
-			args = append(args, pair[1], v)
-		}
-	}
-	req, condition, err := parseGoalArgs(args)
+	req, condition, err := parseGoalArgs(goalFlowArgs(step))
 	if err != nil {
 		return nil, err
 	}
-	for k, v := range step.Inputs {
-		req.Inputs[k] = v
+	cfg, err := c.mustLoadConfig()
+	if err != nil {
+		return flowStepTargetFailure(step, err)
 	}
 	result := c.runGoal(ctx, opts, cfg, req, condition)
 	fields := map[string]string{"goal": req.Goal, "succeeded": result.Succeeded, "outcome": result.Outcome, "reported_success": strconv.FormatBool(result.ReportedSuccess), "steps": strconv.Itoa(len(result.Steps)), "criterion": condition.String()}

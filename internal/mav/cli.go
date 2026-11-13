@@ -162,6 +162,9 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 		}
 		return c.help(opts, topic)
 	}
+	if rest[0] == "goto" {
+		return c.removedGoto(opts, rest[1:])
+	}
 	if opts.Help {
 		return c.help(opts, strings.Join(rest, " "))
 	}
@@ -179,6 +182,13 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 			"command": rest[0],
 			"next":    "--target picks matrix targets and only `mav run` reads it; pin this command with MAV_TARGET_UDID=<udid>, or with simulator_udid in .mav/config.yaml",
 		}).Write(c.Stdout)
+	}
+	// Flow syntax, including retired commands, is checked before VM setup or
+	// matrix target preparation. It must be diagnosable without device tools.
+	if rest[0] == "run" && len(rest) > 1 {
+		if _, err := LoadFlow(rest[1]); err != nil {
+			return Fail("flow_invalid", map[string]string{"error": err.Error()}).Write(c.Stdout)
+		}
 	}
 	stopLeaseHeartbeat := c.keepRunLeaseAlive(rest[0])
 	defer stopLeaseHeartbeat()
@@ -214,8 +224,6 @@ func (c CLI) Run(ctx context.Context, args []string) error {
 		return c.jev(ctx, opts, rest[1:])
 	case "goal":
 		return c.goalCommand(ctx, opts, rest[1:])
-	case "goto":
-		return c.gotoCommand(ctx, opts, rest[1:])
 	case "capture":
 		return c.capture(ctx, opts, rest[1:])
 	case "app":
@@ -540,35 +548,7 @@ Selects a physical iOS device and switches target_kind to device.
 	case "goal":
 		return goalHelp
 	case "goto":
-		return `Usage: mav goto "<the screen you want>" [--arrived-when '<criteria>'] [--dismiss-permission '<button label>'] [--max-steps 12] [--timeout 90s]
-
-Navigates to a screen on its own: reads the screen, decides what to tap to get closer, taps it, reads again.
-
-It taps the point it already resolved rather than a selector, because a selector tap re-reads the tree: 786 ms by coordinate against 899 ms by label, measured on iPhone 17 Pro / iOS 26.3, 10 taps each. That is ~113 ms a tap, not the second-and-a-half an older note here claimed.
-
---arrived-when is the only way goto can assert arrival, and it is checked by code against the screen's ROUTE — the navigation title, the selected tab, any modal on top — never against free text anywhere in the tree. Terms are ` + "`title:\"...\"`" + ` and ` + "`text:\"...\"`" + `, all required:
-  mav goto "the language screen" --arrived-when 'title:"Idioma y región"'
-  mav goto "order 123" --arrived-when 'title:"Order detail" text:"123"'
-  mav goto "the box list" --arrived-when 'screen:"boxes-view"'
-
-A criterion that ALREADY holds on the screen you start from is refused (ambiguous_criterion) rather than reported as instant arrival.
-
-Without --arrived-when, goto names the destination out of the screens it ACTUALLY STOOD ON. When the walk is over it lists every distinct screen it saw — each by its title or, for a screen with no title, by its internal screen name, followed by some of the text on it — alphabetically, with no order and no marker of where it ended, and asks which of them is the destination, with "none" on the menu. Code, which alone knows which of them was the last, decides: the pick confirms arrival only when it IS the screen goto stopped on and is not the screen it started from. A pick that is neither stays unverified, so naming can only ever turn an unverified into a true, never a false.
-
-It is never asked whether it arrived, and it cannot tell which entry the answer would be. Choosing between screens it observed is not grading its own work.
-
-The question is skipped when there is nothing to answer: no --arrived-when but nothing moved, fewer than two distinct screens seen, or the screen it stopped on has neither a title nor a screen identity. The output carries criterion_source=observed, criterion_observed and observed_screens, so a criterion nobody wrote is never presented as one you wrote.
-
-An explicit --arrived-when always wins over an observed one. --arrived-when also takes screen:"..." — mav's own screen identity, compared whole, which is how a screen with no navigation-bar title is named.
-
-It never taps anything destructive, with no escape hatch — unlike ` + "`mav ui find`" + `, because nobody reads anything between the decision and the finger.
-
---dismiss-permission names the ONE button goto may press on a permission alert, and you name it because goto cannot work it out. Measured on a real three-option alert ("Permitir una vez" / "Permitir al usarse la app" / "No permitir"): two of the three grant, the one that does not was last, and there was no kTCCService marker anywhere on it. A rule guessing by position or by marker grants the permission when it guesses wrong. Naming the button is an instruction rather than a heuristic, and an instruction cannot guess wrong.
-
-It fails closed: if that exact label is not on the modal, goto stops as it always did. Matching folds case and accents and nothing else — no prefix, no substring, no nearest match — and a label naming something destructive is refused even when you declared it. Every dismissal is reported as dismissed_permission and dismissed_action, and at most 3 per run. It stops on: arrival, 12 steps, 90s, two taps that changed nothing, a screen it has already visited, two abstentions in a row, a modal on top, or a destructive element in the way. Two abstentions in a row come back as no_route when it never moved and dead_end when it walked the route first and then found nothing leading further — a dead end on the screen you asked for is not the same failure as never finding a way to start. Every run also reports criterion_source=explicit|none. The outcome says which, and the output is evidence — every step, both routes — not a verdict.
-
-Refuses to run when CI is set.
-`
+		return "goto was removed in MAV 0.35.0. Use mav goal with --mode navigation; replace --arrived-when with --succeeded-when.\n\n" + goalHelp
 	case "capture":
 		return "Usage: mav capture [--name NAME] [--run RUN_ID]\n"
 	case "ui tree":
@@ -5548,12 +5528,12 @@ func (c CLI) runFlow(ctx context.Context, opts GlobalOptions, args []string) err
 	if len(args) == 0 {
 		return Fail("flow_missing", map[string]string{"usage": "mav run flow.yaml"}).Write(c.Stdout)
 	}
-	if os.Getenv("MAV_MATRIX_CHILD") == "" && len(repeatedFlagValues(args[1:], "--target")) > 0 {
-		return c.runFlowMatrix(ctx, opts, args)
-	}
 	flow, err := LoadFlow(args[0])
 	if err != nil {
 		return Fail("flow_invalid", map[string]string{"error": err.Error()}).Write(c.Stdout)
+	}
+	if os.Getenv("MAV_MATRIX_CHILD") == "" && len(repeatedFlagValues(args[1:], "--target")) > 0 {
+		return c.runFlowMatrix(ctx, opts, args)
 	}
 	// Set on the CLI rather than forwarded per step: --skip-build is about
 	// the artifact this whole invocation runs against, so every `open` the
@@ -6387,6 +6367,9 @@ func flowStepTargetFailure(step FlowStep, err error) (map[string]string, error) 
 }
 
 func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions, run RunState, index int, step FlowStep) (map[string]string, error) {
+	if step.Action == "goto" {
+		return nil, fmt.Errorf("goto_removed: use a goal step and succeededWhen instead of arrivedWhen")
+	}
 	// Anything that is not a read dirties the tree cache, on the way in and on
 	// the way out. Both, because a gesture reads the screen itself to resolve
 	// what it is acting on, and that read describes the screen BEFORE the
@@ -6403,10 +6386,10 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 	if preferErr != nil {
 		return copyParams(step.Params), preferErr
 	}
-	// goto settles on its own, inside its own loop, and it reads many times
+	// goal verifies fresh evidence inside its own loop and reads many times
 	// between its own taps -- settling it from out here would pay for a read it
 	// is about to invalidate.
-	if step.Action != "goto" && step.Action != "goal" && somethingMovedEarlier {
+	if step.Action != "goal" && somethingMovedEarlier {
 		c.settleBeforeFlowStep(ctx, step, prefer)
 	}
 	switch step.Action {
@@ -6476,8 +6459,6 @@ func (c CLI) executeFlowStepWithOptions(ctx context.Context, opts GlobalOptions,
 		return fields, stepErr
 	case "goal":
 		return c.executeGoalFlowStep(ctx, opts, step)
-	case "goto":
-		return c.executeGotoFlowStep(ctx, opts, step)
 	case "when":
 		return c.executeWhenFlowStepBoundWithOptions(ctx, opts, run, index, step, nil)
 	case "whileNotVisible":

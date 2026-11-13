@@ -6,20 +6,10 @@ import (
 	"strings"
 )
 
-// `mav goto` is `mav ui find` in a loop: look at the screen, decide what to tap
-// to get closer, tap it, look again, until it arrives or gives up.
-//
-// A loop that presses buttons on its own is the most dangerous thing in this
-// tool, so the design starts at when it stops and what it never touches rather
-// than at how it advances. The reasoning behind each rule is in
-// docs/design/goto.md; what follows is only what the rules ARE.
-//
-// The one that is easiest to get wrong, and was: arrival is decided by CODE,
-// comparing ROUTES, and the criterion must be ABSENT from the starting route or
-// the command is refused. Checking whether the criterion text appears anywhere
-// in the tree declares victory at step zero — "Notificaciones" is already on the
-// Settings list before you tap anything, tab bar labels are in every tree, and a
-// Back button carries the previous screen's name.
+// Shared navigation policies and route predicates used by the goal engine.
+// The historical goto loop is retained only in tests. Goal owns observation,
+// planning, delivery and fresh verification; an initially satisfied condition
+// succeeds with zero actions. See docs/design/goal-engine.md for the contract.
 
 // Route is the closest thing an iOS screen has to a URL: not an address, but the
 // few elements that say WHERE you are rather than what is on offer. Read off
@@ -28,7 +18,7 @@ type Route struct {
 	// Screen is mav's own identity for the screen, read off the shallowest
 	// element whose accessibility id names a view. It is the only part of a
 	// route that survives a screen with no navigation-bar title, which on a
-	// Spanish-locale SwiftUI app is most of them — measured on Boxy, where the
+	// Spanish-locale SwiftUI app is most of them — measured on the fixture app, where the
 	// category grid and the box list both have a navigation bar and neither
 	// has a heading in it.
 	Screen string `json:"screen,omitempty"`
@@ -511,14 +501,14 @@ func parseFloat(s string) (float64, bool) {
 // THE SENTENCE THAT NAMES THE GOAL is the one that was wrong, and it took a
 // table to find out, because the suspicion was on the wrong half.
 //
-// The report was that on Boxy's category grid — Moving Boxes top-left, Test
+// The report was that on the fixture app's category grid — Moving Boxes top-left, Test
 // Category 1 to its right, Test Category 2 below — the goal "la primera
 // categoría" resolved to Test Category 1 instead of Moving Boxes, and that the
 // LEADS clause was to blame: a row literally named "1" reads as the lead to
 // "the first one". Both halves of that were measured and both are wrong.
 //
 // Measured 21 sep on origin/main, off the raw `axe describe-ui` JSON of two
-// live Boxy screens, 40 runs a cell (hits / misses / abstentions counted
+// live the fixture app screens, 40 runs a cell (hits / misses / abstentions counted
 // separately, never folded into "resolved"):
 //
 //	                               first category   box contents   box contents   goal absent
@@ -621,7 +611,7 @@ func InterpretGotoAnswer(label string, batch []Element) (*Element, string) {
 // grant a permission or accept something that cannot be taken back. That guard
 // is unchanged. What this adds is one narrow door, and the caller holds the key.
 //
-// The door exists because some routes cannot avoid an alert: Boxy asks for
+// The door exists because some routes cannot avoid an alert: the fixture app asks for
 // speech recognition on the way in, and `simctl privacy` has no service for
 // speech — measured, `revoke all` on the bundle does not suppress it — so
 // "deny it beforehand and change nothing" is not available there.
@@ -778,7 +768,7 @@ const gotoShowsCap = 12
 // Accessibility IDENTIFIERS are deliberately left out, unlike everywhere else
 // in this file where findElementText takes them. They are written for code, not
 // for reading: including them put `_TtGC7SwiftUI32NavigationStackHosting` and
-// `waveform.badge.mic` in front of the model, and — worse — Boxy's category
+// `waveform.badge.mic` in front of the model, and — worse — the fixture app's category
 // ids, which are regenerated on every launch. A menu line that changes between
 // two identical runs is not a description of a screen.
 func ScreenShows(elements []Element) []string {
@@ -817,7 +807,7 @@ func ScreenShows(elements []Element) []string {
 //
 // A screen is named by its navigation-bar title when it has one, because that
 // is the name a person would use, and by mav's own screen identity when it does
-// not. The fallback is not a nicety: on Boxy neither the category grid nor the
+// not. The fallback is not a nicety: on the fixture app neither the category grid nor the
 // box list has a heading, so a title-only menu on that route has ONE entry —
 // the destination — and a one-entry menu is a yes/no about the screen it
 // stopped on, which is the self-assessment this whole design exists to avoid.

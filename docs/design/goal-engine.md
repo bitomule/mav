@@ -100,8 +100,8 @@ means zero. Raw receipts and each action's before/after routes remain evidence.
 
 ## Evaluation and retirement
 
-Goto remains available while the [controlled comparison](../../tools/goal-bench/README.md)
-is incomplete. The retirement gate requires all three arms on the same corpus,
-zero goal false successes, at least 27/30 positive completions without falling
-below goto, and the reproduced stale-coordinate regression fixed. Numerical
+Goto is retired in MAV 0.35.0 after the [controlled comparison](../evaluation/goal.md)
+verified 30/30 positives for goal versus 20/30 for goto, with zero false goal
+success claims and the reproduced stale-coordinate regression fixed. Numerical
 results alone cannot substitute for the regression or independent verification.
+See the [migration guide](../goal-migration.md) for CLI and YAML replacements.

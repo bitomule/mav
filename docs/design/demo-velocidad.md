@@ -1,5 +1,11 @@
 # La demo de velocidad — diseño y aritmética
 
+> **Documento histórico anterior a MAV 0.35.0.** Conserva el diseño y las
+> mediciones de la implementación anterior; no describe la API vigente ni mide
+> el rendimiento de `goal`. MAV 0.35.0 retiró `goto`. Consulta la
+> [guía de migración](../goal-migration.md), el [contrato del motor](goal-engine.md)
+> y la [evaluación actual](../evaluation/goal.md).
+
 Nodo `mav-demo-velocidad`, 19 sep 2026. **Medida tomada y vídeo grabado** — §2.5 tiene los
 números y dice dónde están los ficheros. El resto es el diseño, y sobre todo la aritmética
 que hay que hacer **antes** de grabar nada, que es lo que impide montar un vídeo y
