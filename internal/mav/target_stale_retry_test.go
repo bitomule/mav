@@ -63,7 +63,7 @@ func TestUITreeRetriesOnceWhenCachedSimulatorNoLongerBooted(t *testing.T) {
 	runner := &sequenceRecordingRunner{
 		tools: map[string]bool{"axe": true},
 		err: map[string]CommandResult{
-			"axe describe-ui --udid OLD-UDID": {
+			"axe --output json describe-ui --udid OLD-UDID": {
 				Stderr: "Error: Cannot run accessibility commands against OLD-UDID as it is not booted",
 				Code:   1, Err: fmt.Errorf("exit status 1"),
 			},
@@ -71,7 +71,7 @@ func TestUITreeRetriesOnceWhenCachedSimulatorNoLongerBooted(t *testing.T) {
 		out: map[string]string{
 			targetKey:                             "NEW-UDID\n",
 			"xcrun simctl list devices booted -j": bootedJSON,
-			"axe describe-ui --udid NEW-UDID":     `[{"AXUniqueId":"HomeView","AXRole":"Application"}]`,
+			"axe --output json describe-ui --udid NEW-UDID": `[{"AXUniqueId":"HomeView","AXRole":"Application"}]`,
 		},
 	}
 	var out bytes.Buffer
@@ -92,10 +92,10 @@ func TestUITreeRetriesOnceWhenCachedSimulatorNoLongerBooted(t *testing.T) {
 	if !strings.Contains(got, "OLD-UDID") || !strings.Contains(got, "NEW-UDID") {
 		t.Fatalf("got %q, want the restale note to name both the stale and fresh udid", got)
 	}
-	if !containsCall(runner.commands, "axe describe-ui --udid OLD-UDID") {
+	if !containsCall(runner.commands, "axe --output json describe-ui --udid OLD-UDID") {
 		t.Fatalf("expected the first (failing) attempt against the stale udid; commands=%v", runner.commands)
 	}
-	if !containsCall(runner.commands, "axe describe-ui --udid NEW-UDID") {
+	if !containsCall(runner.commands, "axe --output json describe-ui --udid NEW-UDID") {
 		t.Fatalf("expected the retried attempt against the fresh udid; commands=%v", runner.commands)
 	}
 	if !containsCall(runner.commands, targetKey) {
@@ -118,7 +118,7 @@ func TestUITreeDoesNotRetryWhenSimulatorIsActuallyBooted(t *testing.T) {
 	runner := &sequenceRecordingRunner{
 		tools: map[string]bool{"axe": true},
 		err: map[string]CommandResult{
-			"axe describe-ui --udid LIVE-UDID": {
+			"axe --output json describe-ui --udid LIVE-UDID": {
 				Stderr: "Error: something unrelated broke",
 				Code:   1, Err: fmt.Errorf("exit status 1"),
 			},
@@ -160,7 +160,7 @@ func TestUITreeWithoutTargetCommandLabelsNotBootedClearly(t *testing.T) {
 	runner := &sequenceRecordingRunner{
 		tools: map[string]bool{"axe": true},
 		err: map[string]CommandResult{
-			"axe describe-ui --udid DEAD-UDID": {
+			"axe --output json describe-ui --udid DEAD-UDID": {
 				Stderr: "Error: Cannot run accessibility commands against DEAD-UDID as it is not booted",
 				Code:   1, Err: fmt.Errorf("exit status 1"),
 			},
@@ -199,7 +199,7 @@ func TestUITreeRetryNeverLoopsWhenReresolutionDoesNotHelp(t *testing.T) {
 	runner := &sequenceRecordingRunner{
 		tools: map[string]bool{"axe": true},
 		err: map[string]CommandResult{
-			"axe describe-ui --udid OLD-UDID": {
+			"axe --output json describe-ui --udid OLD-UDID": {
 				Stderr: "Error: Cannot run accessibility commands against OLD-UDID as it is not booted",
 				Code:   1, Err: fmt.Errorf("exit status 1"),
 			},
@@ -223,9 +223,9 @@ func TestUITreeRetryNeverLoopsWhenReresolutionDoesNotHelp(t *testing.T) {
 		t.Fatalf("target_command invoked %d times, want exactly 1 (no retry loop); commands=%v",
 			countCommandCalls(runner.commands, targetKey), runner.commands)
 	}
-	if countCommandCalls(runner.commands, "axe describe-ui --udid OLD-UDID") != 1 {
-		t.Fatalf("axe describe-ui invoked %d times, want exactly 1 (no useless re-dispatch); commands=%v",
-			countCommandCalls(runner.commands, "axe describe-ui --udid OLD-UDID"), runner.commands)
+	if countCommandCalls(runner.commands, "axe --output json describe-ui --udid OLD-UDID") != 1 {
+		t.Fatalf("axe --output json describe-ui invoked %d times, want exactly 1 (no useless re-dispatch); commands=%v",
+			countCommandCalls(runner.commands, "axe --output json describe-ui --udid OLD-UDID"), runner.commands)
 	}
 }
 
@@ -244,11 +244,11 @@ func TestUITreeRetriesExactlyOnceEvenIfRetryAlsoFails(t *testing.T) {
 	runner := &sequenceRecordingRunner{
 		tools: map[string]bool{"axe": true},
 		err: map[string]CommandResult{
-			"axe describe-ui --udid OLD-UDID": {
+			"axe --output json describe-ui --udid OLD-UDID": {
 				Stderr: "Error: Cannot run accessibility commands against OLD-UDID as it is not booted",
 				Code:   1, Err: fmt.Errorf("exit status 1"),
 			},
-			"axe describe-ui --udid NEW-UDID": {
+			"axe --output json describe-ui --udid NEW-UDID": {
 				Stderr: "Error: Cannot run accessibility commands against NEW-UDID as it is not booted",
 				Code:   1, Err: fmt.Errorf("exit status 1"),
 			},
@@ -272,13 +272,13 @@ func TestUITreeRetriesExactlyOnceEvenIfRetryAlsoFails(t *testing.T) {
 		t.Fatalf("target_command invoked %d times, want exactly 1; commands=%v",
 			countCommandCalls(runner.commands, targetKey), runner.commands)
 	}
-	if countCommandCalls(runner.commands, "axe describe-ui --udid OLD-UDID") != 1 {
+	if countCommandCalls(runner.commands, "axe --output json describe-ui --udid OLD-UDID") != 1 {
 		t.Fatalf("first attempt invoked %d times, want exactly 1; commands=%v",
-			countCommandCalls(runner.commands, "axe describe-ui --udid OLD-UDID"), runner.commands)
+			countCommandCalls(runner.commands, "axe --output json describe-ui --udid OLD-UDID"), runner.commands)
 	}
-	if countCommandCalls(runner.commands, "axe describe-ui --udid NEW-UDID") != 1 {
+	if countCommandCalls(runner.commands, "axe --output json describe-ui --udid NEW-UDID") != 1 {
 		t.Fatalf("retried attempt invoked %d times, want exactly 1 (no further retry loop); commands=%v",
-			countCommandCalls(runner.commands, "axe describe-ui --udid NEW-UDID"), runner.commands)
+			countCommandCalls(runner.commands, "axe --output json describe-ui --udid NEW-UDID"), runner.commands)
 	}
 }
 
@@ -299,7 +299,7 @@ func TestUITreeRetryReportsTheOriginalFailureWhenReresolutionItselfFails(t *test
 	runner := &sequenceRecordingRunner{
 		tools: map[string]bool{"axe": true},
 		err: map[string]CommandResult{
-			"axe describe-ui --udid OLD-UDID": {
+			"axe --output json describe-ui --udid OLD-UDID": {
 				Stderr: "Error: Cannot run accessibility commands against OLD-UDID as it is not booted",
 				Code:   1, Err: fmt.Errorf("exit status 1"),
 			},

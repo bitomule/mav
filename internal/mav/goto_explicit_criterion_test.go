@@ -35,7 +35,7 @@ func TestExplicitCriterionNeverBecomesAnObservedArrival(t *testing.T) {
 	// The screen the run stopped on: a sheet, with no sign anywhere of the
 	// thing the goal asked to create. That is what "the action was never
 	// performed" looks like in the tree.
-	runner.out["axe describe-ui --udid "+guardPointUDID] = gotoCacheSheetTree
+	runner.out["axe --output json describe-ui --udid "+guardPointUDID] = gotoCacheSheetTree
 
 	criterion, err := ParseArrivalCriterion(`text:"Kitchen Stuff"`)
 	if err != nil {

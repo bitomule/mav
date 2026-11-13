@@ -79,38 +79,23 @@ func (c CLI) resolveCapabilities(ctx context.Context, cfg Config) Capabilities {
 		c.resolveMacPermissions(ctx, &caps)
 		return caps
 	}
-	if tools["axe"] {
-		caps.Accessibility = true
-		caps.AccessibilityDriver = "axe"
-		caps.SemanticActions = true
-	} else if tools["idb"] {
-		caps.Accessibility = true
-		caps.AccessibilityDriver = "idb"
+	target := targetFromConfig(cfg)
+	route := func(cap drivers.Capability) (bool, string) {
+		d, _, e := c.router().Route(ctx, cap, target, "")
+		if e != nil {
+			return false, ""
+		}
+		return true, d.ID()
 	}
-	if tools["idb"] {
-		caps.CoordinateTap = true
-		caps.CoordinateTapDriver = "idb"
+	caps.Accessibility, caps.AccessibilityDriver = route(drivers.CapTreeAX)
+	caps.SemanticActions, _ = route(drivers.CapSemanticTap)
+	caps.CoordinateTap, caps.CoordinateTapDriver = route(drivers.CapCoordTap)
+	caps.Multitouch, caps.MultitouchDriver = route(drivers.CapPinch)
+	deviceTarget := target
+	deviceTarget.Kind = drivers.KindDevice
+	if driver, _, err := c.router().Route(ctx, drivers.CapCoordTap, deviceTarget, ""); err == nil {
 		caps.DeviceFallback = true
-		caps.DeviceFallbackDriver = "idb"
-		// The `idb --version` probe that used to run here is gone from this
-		// path, and the reason is a measurement: idb is a Python tool and
-		// starting it costs 116ms, which every single mav command paid.
-		// Profiled on `mav ui tap --x --y`, resolveCapabilities was 310ms of a
-		// 1,194ms tap and this probe was 192ms of that — a fifth of the
-		// command spent diagnosing a tool the command was about to use
-		// successfully.
-		//
-		// What it produced, IDBIssue and IDBNext, is read in exactly two
-		// places: the `tool_missing` failure when a coordinate tap has no
-		// driver, and `mav doctor`. Both now ask for it when they need it
-		// (ResolveIDBIssue), so the hint is identical and nobody else pays
-		// for it. CoordinateTap itself never depended on the probe — it comes
-		// from idb being on PATH, which is a LookPath and costs 2ms for all
-		// sixteen known tools together.
-	}
-	if tools["baguette"] {
-		caps.Multitouch = true
-		caps.MultitouchDriver = "baguette"
+		caps.DeviceFallbackDriver = driver.ID()
 	}
 	caps.WallClock = tools["simtime"]
 	return caps
@@ -280,46 +265,39 @@ func (caps Capabilities) fields() map[string]string {
 // and the system tree failed. It returns the drivers to reinstall. Only doctor
 // pays for the probes, like ResolveIDBIssue.
 func (c CLI) reportUnhealthyDrivers(ctx context.Context, cfg Config, caps Capabilities, fields map[string]string) []string {
-	registry := c.driverRegistry()
-	probe := NewExecutor(c.Runner)
-	unhealthy := func(id string) (drivers.HealthReport, bool) {
-		driver := registry.Lookup(id)
-		if !caps.Tools[id] || driver == nil {
-			return drivers.HealthReport{}, false
+	for _, id := range []string{"idb", "baguette"} {
+		if !caps.Tools[id] {
+			continue
 		}
-		report := driver.Probe(ctx, probe)
-		return report, !report.IsHealthy()
-	}
-	var broken []string
-	if report, bad := unhealthy("baguette"); bad {
-		broken = append(broken, "baguette")
-		fields["multitouch"] = "broken"
-		delete(fields, "multitouch_driver")
-		delete(fields, "sim_multitouch_driver")
-		fields["baguette_issue"] = report.Detail
-		fields["baguette_next"] = report.Next
-	}
-	if report, bad := unhealthy("idb"); bad {
-		broken = append(broken, "idb")
-		fields["device_fallback"] = "broken"
-		delete(fields, "device_fallback_driver")
-		delete(fields, "device_coord_tap_driver")
-		if fields["idb_issue"] == "" {
-			fields["idb_issue"] = report.Detail
-			fields["idb_next"] = report.Next
-		}
-		// The router hands coordinate taps to the next healthy driver, so
-		// report the one that actually takes them.
-		if driver, _, err := c.router().Route(ctx, drivers.CapCoordTap, targetFromConfig(cfg), ""); err == nil {
-			fields["coordinate_tap_driver"] = driver.ID()
-			fields["sim_coord_tap_driver"] = driver.ID()
-		} else {
-			fields["coordinate_tap"] = "broken"
-			delete(fields, "coordinate_tap_driver")
-			delete(fields, "sim_coord_tap_driver")
+		report := c.driverRegistry().Lookup(id).Probe(ctx, NewExecutor(c.Runner))
+		if !report.IsHealthy() {
+			fields[id+"_issue"] = report.Detail
+			fields[id+"_next"] = report.Next
 		}
 	}
-	return broken
+	return nil
+}
+
+func (c CLI) routedDoctorMatrix(ctx context.Context, cfg Config, fields map[string]string) {
+	for _, kind := range []drivers.TargetKind{drivers.KindSim, drivers.KindDevice} {
+		target := targetFromConfig(cfg)
+		target.Kind = kind
+		prefix := string(kind)
+		for _, item := range []struct {
+			name string
+			cap  drivers.Capability
+		}{{"tree", drivers.CapTreeAX}, {"semantic_tap", drivers.CapSemanticTap}, {"coord_tap", drivers.CapCoordTap}, {"multitouch", drivers.CapPinch}, {"install", drivers.CapInstall}, {"launch", drivers.CapLaunch}, {"video", drivers.CapVideo}} {
+			key := prefix + "_" + item.name
+			if d, _, err := c.router().Route(ctx, item.cap, target, ""); err == nil {
+				fields[key+"_driver"] = d.ID()
+				if item.name == "multitouch" {
+					fields[key] = "ok"
+				}
+			} else {
+				fields[key] = "missing"
+			}
+		}
+	}
 }
 
 // ResolveIDBIssue asks whether idb is broken by the active Python version, and
@@ -341,12 +319,11 @@ func (c CLI) ResolveIDBIssue(ctx context.Context) (issue, next string) {
 // which only looked the tool up on PATH, said accessibility=ok. Only doctor
 // pays for it, like ResolveIDBIssue.
 func (c CLI) ResolveAXeIssue(ctx context.Context) (issue, next string) {
-	status := c.Runner.Run(ctx, "axe", "--version")
-	if status.Err == nil {
+	report := c.driverRegistry().Lookup("axe").Probe(ctx, NewExecutor(c.Runner))
+	if report.IsHealthy() {
 		return "", ""
 	}
-	return "axe_not_runnable (" + status.Err.Error() + ")",
-		"reinstall axe; macOS kills an unsigned or damaged binary at launch (with mise, use the AXe asset that is signed)"
+	return report.Detail, report.Next
 }
 
 func idbPythonUnsupported(text string) bool {

@@ -114,7 +114,11 @@ func (c CLI) simHinge(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	driver, _, routeErr := c.router().Route(ctx, drivers.CapHinge, target, "")
+	router := c.router()
+	if spec.Duration != 0 {
+		router = c.routerWithout("axe")
+	}
+	driver, _, routeErr := router.Route(ctx, drivers.CapHinge, target, "")
 	if routeErr != nil {
 		return Fail("hinge_unsupported", map[string]string{"stderr": firstLine(routeErr.Error()), "next": "mav setup --install baguette"}).Write(c.Stdout)
 	}

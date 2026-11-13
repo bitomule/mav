@@ -24,7 +24,7 @@ func TestAttachStepTreePersistsAndDiffs(t *testing.T) {
 		Runner: fakeRunner{
 			tools: map[string]bool{"axe": true},
 			seq: map[string][]string{
-				"axe describe-ui --udid TEST-UDID": {tree1, tree2},
+				"axe --output json describe-ui --udid TEST-UDID": {tree1, tree2},
 			},
 			calls: map[string]int{},
 		},

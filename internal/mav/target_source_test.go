@@ -72,9 +72,9 @@ func TestTwoBootedSimulatorsAndNoConfigIsRefused(t *testing.T) {
 	runner := &sequenceRecordingRunner{
 		tools: map[string]bool{"axe": true},
 		out: map[string]string{
-			"xcrun simctl list devices booted -j": twoBootedJSON,
-			"axe describe-ui --udid AAAA-1111":    `[{"AXUniqueId":"HomeView","AXRole":"Application"}]`,
-			"axe describe-ui --udid BBBB-2222":    `[{"AXUniqueId":"HomeView","AXRole":"Application"}]`,
+			"xcrun simctl list devices booted -j":            twoBootedJSON,
+			"axe --output json describe-ui --udid AAAA-1111": `[{"AXUniqueId":"HomeView","AXRole":"Application"}]`,
+			"axe --output json describe-ui --udid BBBB-2222": `[{"AXUniqueId":"HomeView","AXRole":"Application"}]`,
 		},
 	}
 	var out bytes.Buffer
@@ -105,8 +105,8 @@ func TestTwoBootedSimulatorsWithPinDispatchToThePin(t *testing.T) {
 	runner := &sequenceRecordingRunner{
 		tools: map[string]bool{"axe": true},
 		out: map[string]string{
-			"xcrun simctl list devices booted -j": twoBootedJSON,
-			"axe describe-ui --udid BBBB-2222":    `[{"AXUniqueId":"HomeView","AXRole":"Application"}]`,
+			"xcrun simctl list devices booted -j":            twoBootedJSON,
+			"axe --output json describe-ui --udid BBBB-2222": `[{"AXUniqueId":"HomeView","AXRole":"Application"}]`,
 		},
 	}
 	var out bytes.Buffer

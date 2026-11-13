@@ -40,9 +40,9 @@ func TestFailLineSkippedAgreesWithRunJSON(t *testing.T) {
 	}
 	runner := &sequenceRecordingRunner{
 		tools: cfg.Tools,
-		out:   map[string]string{"axe describe-ui": `[]`},
+		out:   map[string]string{"axe --output json describe-ui": `[]`},
 		err: map[string]CommandResult{
-			"axe tap --tap-style physical --label Entendido": {Stderr: "tap_failed", Err: os.ErrInvalid},
+			"axe --output json tap --tap-style physical --label Entendido": rejectedAXeTapFixture(),
 		},
 	}
 	var out bytes.Buffer
@@ -94,10 +94,10 @@ func TestFailLineCountsRunLevelSkippedSteps(t *testing.T) {
 	}
 	runner := &sequenceRecordingRunner{
 		tools: cfg.Tools,
-		out:   map[string]string{"axe describe-ui": `[]`},
+		out:   map[string]string{"axe --output json describe-ui": `[]`},
 		err: map[string]CommandResult{
-			"axe tap --tap-style physical --label Entendido": {Stderr: "Error: DecodingError.typeMismatch", Err: os.ErrInvalid},
-			"axe tap --tap-style physical --label Required":  {Stderr: "tap_failed", Err: os.ErrInvalid},
+			"axe --output json tap --tap-style physical --label Entendido": rejectedAXeTapFixture(),
+			"axe --output json tap --tap-style physical --label Required":  rejectedAXeTapFixture(),
 		},
 	}
 	var out bytes.Buffer
@@ -145,9 +145,9 @@ func TestWhenReportsExecutedExcludingSkippedChildren(t *testing.T) {
 	}
 	runner := &sequenceRecordingRunner{
 		tools: cfg.Tools,
-		out:   map[string]string{"axe describe-ui": `[{"AXUniqueId":"Gate","AXLabel":"Gate"}]`},
+		out:   map[string]string{"axe --output json describe-ui": `[{"AXUniqueId":"Gate","AXLabel":"Gate"}]`},
 		err: map[string]CommandResult{
-			"axe tap --tap-style physical --id Gate": {Stderr: "tap_failed", Err: os.ErrInvalid},
+			"axe --output json tap --tap-style physical --id Gate": rejectedAXeTapFixture(),
 		},
 	}
 	var out bytes.Buffer
@@ -208,7 +208,7 @@ func TestWhenWithoutBindingsStillRunsItsChildren(t *testing.T) {
 	}
 	runner := &sequenceRecordingRunner{
 		tools: cfg.Tools,
-		out:   map[string]string{"axe describe-ui": `[{"AXUniqueId":"Gate","AXLabel":"Gate"}]`},
+		out:   map[string]string{"axe --output json describe-ui": `[{"AXUniqueId":"Gate","AXLabel":"Gate"}]`},
 	}
 	cli := CLI{Runner: runner, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
 	fields, err := cli.executeWhenFlowStep(context.Background(), run, 1, FlowStep{
@@ -225,7 +225,7 @@ func TestWhenWithoutBindingsStillRunsItsChildren(t *testing.T) {
 	if fields["skipped_children"] != "" {
 		t.Fatalf("nothing was skipped but fields=%v", fields)
 	}
-	if !containsCall(runner.commands, "axe tap --tap-style physical --id Gate") {
+	if !containsCall(runner.commands, "axe --output json tap --tap-style physical --id Gate") {
 		t.Fatalf("commands=%v", runner.commands)
 	}
 
@@ -236,9 +236,9 @@ func TestWhenWithoutBindingsStillRunsItsChildren(t *testing.T) {
 	// nil bindings through the bound child executor and this fails.
 	failing := &sequenceRecordingRunner{
 		tools: cfg.Tools,
-		out:   map[string]string{"axe describe-ui": `[{"AXUniqueId":"Gate","AXLabel":"Gate"}]`},
+		out:   map[string]string{"axe --output json describe-ui": `[{"AXUniqueId":"Gate","AXLabel":"Gate"}]`},
 		err: map[string]CommandResult{
-			"axe tap --tap-style physical --id Gate": {Stderr: "tap_failed", Err: os.ErrInvalid},
+			"axe --output json tap --tap-style physical --id Gate": rejectedAXeTapFixture(),
 		},
 	}
 	cli = CLI{Runner: failing, Root: root, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}

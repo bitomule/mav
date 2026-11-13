@@ -2,6 +2,7 @@ package mav
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 
@@ -20,6 +21,22 @@ import (
 // SIGINT is how it finalizes, and routing a capability just to send the
 // same signal would add a failure mode to a path that works.
 func (c CLI) stopVideoThroughDriver(ctx context.Context, cfg Config, run RunState, pid int) string {
+	if data, err := os.ReadFile(filepath.Join(run.Dir, "video-driver.json")); err == nil {
+		var state recordingIdentity
+		if json.Unmarshal(data, &state) != nil {
+			return "video_recorder_identity_invalid"
+		}
+		d := c.driverRegistry().Lookup(state.Driver)
+		recorder, ok := d.(drivers.VideoDriver)
+		if !ok {
+			return "video_recorder_unavailable"
+		}
+		if err := recorder.VideoStop(ctx, state.Target, pid); err != nil {
+			return "video_stop_failed: " + err.Error()
+		}
+		return ""
+	}
+
 	if targetKind(cfg) != drivers.KindMac {
 		return ""
 	}

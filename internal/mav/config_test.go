@@ -27,7 +27,9 @@ func (f fakeRunner) LookPath(file string) (string, error) {
 	return "", os.ErrNotExist
 }
 
-func (f fakeRunner) Run(ctx context.Context, name string, args ...string) CommandResult {
+func (f fakeRunner) Run(ctx context.Context, name string, args ...string) (result CommandResult) {
+	name = axeFixtureName(name)
+	defer func() { result = axeFixtureResult(name, args, result) }()
 	if name == "/usr/bin/avconvert" {
 		var source, out string
 		for i := 0; i < len(args)-1; i++ {
@@ -50,10 +52,7 @@ func (f fakeRunner) Run(ctx context.Context, name string, args ...string) Comman
 		}
 		return CommandResult{}
 	}
-	key := name
-	for _, arg := range args {
-		key += " " + arg
-	}
+	key := axeFixtureLookup(name, args)
 	if result, ok := f.results[key]; ok {
 		if f.calls != nil {
 			f.calls[key]++

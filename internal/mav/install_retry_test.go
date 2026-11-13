@@ -58,7 +58,7 @@ func TestOpenRemovesTheWritableCopyAfterInstalling(t *testing.T) {
 	}
 	denied := "An error was encountered processing the command (domain=NSPOSIXErrorDomain, code=13):"
 	runner := &launchRecipeRunner{
-		tools: map[string]bool{"xcrun": true},
+		tools: map[string]bool{"xcrun": true, "axe": true},
 		results: map[string]CommandResult{
 			"make ios-app-path":         {Stdout: app + "\n"},
 			"simctl install SIM " + app: {Stderr: denied, Code: 1, Err: errors.New(denied)},

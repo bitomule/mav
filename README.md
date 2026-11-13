@@ -30,17 +30,12 @@ MAV gives agents one stable API over the messy Apple toolchain. Agents ask for a
 capability; MAV picks the driver for the selected simulator or device and
 returns compact output the next turn can parse:
 
-- Accessibility tree, semantic taps, waits, and screenshots go through AXe when
-  it is healthy.
-- Simulator multitouch, system UI, hardware buttons, and hideKeyboard go
-  through Baguette.
-- Erasing a field goes through AXe, and only on a simulator. Baguette's HID
-  keyboard delivers no keystroke into a focused field, so it no longer offers
-  the capability at all.
-- Physical device install, launch, coordinate input, logs, screenshots, and
-  crashes go through idb.
-- Simulator crash checks read local DiagnosticReports directly.
-- Simulator lifecycle, video, and logs go through simctl.
+- AXe 2 provides iOS trees, semantic and coordinate input, keyboard input,
+  gestures, screenshots and video on simulators and real iPhones/iPads.
+- CoreDevice installs, launches and terminates apps on physical devices.
+- Baguette remains optional for the simulator system tree, keyboard dismissal,
+  and W3C input. idb remains an optional driver for logs and crash retrieval.
+- Simulator lifecycle and logs use simctl; crash checks read DiagnosticReports.
 - Simulator and macOS network evidence goes through mitmproxy HAR capture.
 - macOS accessibility tree, window capture, taps, and typing go through cua-driver;
   axcli delivers input to accessory windows cua-driver cannot resolve.
@@ -90,9 +85,8 @@ MAV is early and evolving. The current stable pieces are:
 - Physical device selection, install, launch, logs, screenshots, UI actions,
   crashes, and evidence screenshots.
 - AXe-first accessibility tree inspection and semantic interactions.
-- idb coordinate taps and device/simulator fallback capabilities.
-- Baguette-backed multitouch gestures, system UI tree, hardware buttons, and
-  keyboard helpers on simulator.
+- AXe 2 coordinate taps, physical-device input, video and settings.
+- Optional Baguette system UI tree and keyboard helpers on simulator.
 - Native MAV YAML flows through `mav run`.
 - Verified evidence manifests in `.mav/runs/<run-id>/report.json`; the MAV
   skill authors the visual HTML report from that data.
@@ -348,25 +342,14 @@ decided and what was deliberately left out.
 - macOS.
 - Xcode command line tools.
 - Go, for development builds.
-- AXe **1.8.0 or newer**, for accessibility tree and semantic UI actions. The
-  version floor is `axe tap --tap-style`, which MAV passes on every semantic
-  tap: AXe's default style drops taps under load and reports success anyway
-  (see [Semantic taps](#semantic-taps-use-physical-touch)).
-- idb **1.6.4 or newer** (client and `idb_companion`), for coordinate taps,
-  device/simulator fallback operations, and taps on an open iPhone Duo. Before
-  1.5.0 the companion looks for SimulatorKit where Xcode 27 no longer keeps it,
-  and every idb tap fails.
-- Baguette **0.2.1 or newer**, for simulator multitouch (pinch, two-finger pan),
-  the SpringBoard / system UI tree, hardware buttons, hideKeyboard, healing
-  Device Hub's input shadowing, and folding iPhone Duo.
-  Sim-only — device multitouch is intentionally unsupported.
+- AXe **2.0.4 or newer**, required for iOS targets. AXe 1 is rejected with an
+  upgrade command; there is no compatibility layer. Homebrew installs AXe as a
+  dependency of mav. Use `mav setup --install deps` to install or upgrade it.
+- Baguette **0.2.1 or newer**, optional for the simulator system UI tree,
+  keyboard dismissal, W3C input and input healing.
+- idb **1.6.4 or newer**, optional for device logs/crash retrieval or an
+  explicitly selected alternative driver. It is not an AXe 2 dependency.
 
-A driver older than its floor is not used, and `mav doctor` names the command
-that fixes it. All three install, or upgrade, in one step:
-
-```bash
-mav setup --install deps
-```
 - cua-driver, for macOS targets: accessibility tree, window capture, taps, and
   typing. Install with `mav setup --install cua-driver`.
 - axcli, for macOS input into accessory windows that cua-driver's `list_windows`
@@ -380,14 +363,11 @@ Check the local environment:
 mav doctor
 ```
 
-`mav doctor` reports capability availability. MAV routes commands by
-capability: accessibility and semantic actions use AXe, coordinate taps and
-device fallback use idb, multitouch and system UI use baguette on simulator.
-Physical iOS devices require idb for install, launch, logs, screenshots, and
-crashes. Simulator crash checks use local DiagnosticReports directly, avoiding
-idb_companion crash-list parser failures from unrelated malformed reports.
-Multitouch gestures, system-UI trees, and hideKeyboard return structured errors
-on device — use a simulator for those flows.
+`mav doctor` reports healthy capabilities through the same router that runs
+commands, with separate simulator and physical-device entries. AXe 2 handles
+UI, gestures and capture on both targets; CoreDevice handles physical app
+lifecycle. Simulator crash checks use local DiagnosticReports. See the
+[AXe 2 API and coverage matrix](docs/axe2.md) for platform restrictions.
 On macOS targets, `mav doctor` reports Accessibility and Screen Recording by asking
 the cua-driver daemon — the process that holds them — and the fix it prints is
 `cua-driver permissions grant`.
@@ -405,7 +385,7 @@ Existing explicit choices in `.mav/config.yaml` are preserved. Use
 `mav setup --non-interactive` for CI/scripts.
 
 ```bash
-mav setup --install deps            # the same as: axe idb baguette
+mav setup --install deps            # AXe 2, the required iOS dependency
 ```
 
 `mav setup --install idb` installs `fb-idb` with pipx (Python 3.12/3.13),
@@ -425,7 +405,7 @@ With Homebrew:
 
 ```bash
 brew install bitomule/tap/mav
-mav setup --install deps            # AXe, idb and baguette at the versions mav needs
+mav setup --install deps            # AXe 2 at the version mav needs
 ```
 
 Install the MAV skill globally with Vercel's Skills CLI:
@@ -618,11 +598,10 @@ mav ui tree
 mav ui tree --include-system
 ```
 
-MAV chooses drivers by capability. AXe is the default fast path for
-accessibility tree inspection, semantic taps, typing, swipes, waits, and
-assertions. idb is used for coordinate taps and device/simulator fallback
-operations. Baguette provides multitouch, system UI, hardware buttons, and
-hideKeyboard on simulator. AXe provides erase.
+MAV chooses healthy drivers by capability. AXe 2 is the canonical iOS input,
+tree and capture driver, including on physical devices. CoreDevice handles
+physical installs and launches. Baguette and idb remain optional alternatives
+for capabilities they provide.
 
 ### Semantic taps use physical touch
 
@@ -665,26 +644,21 @@ mav ui wait --help
 mav ui pinch --help
 ```
 
-`mav ui erase` dispatches through AXe on simulator, sending HID usage 42
+`mav ui erase` dispatches through AXe on simulators and physical devices, sending HID usage 42
 (Backspace) once per character, and reads the field back out of the
 accessibility tree between rounds until it stops shrinking. It never reports
 success it has not seen: a field that did not change answers
 `ui_erase_ineffective`, a screen with no editable field answers
 `ui_erase_no_field`, and a tree it cannot read answers
 `ui_erase_unverifiable`. `mav ui hideKeyboard` dispatches through baguette on
-simulator. On a physical device both return `erase_unsupported_on_device` and
-`hide_keyboard_unsupported_on_device` respectively. Tap and retype the field,
-or tap outside the input area to dismiss the keyboard.
+simulator. Physical devices support erase; keyboard dismissal through
+Baguette remains simulator-only. Tap outside a field to dismiss its keyboard
+on a real device.
 
-`mav ui longPress --x X --y Y [--duration 800ms]` is a single-finger hold, not
-multitouch, and runs on a simulator and on a physical device alike: baguette
-serves it on a simulator, idb on a device.
-
-True multitouch gestures that Baguette currently exposes (pinch and
-two-finger pan) go through baguette on simulator. On device they return
-`gesture_unsupported_on_device` with a remediation hint — use a simulator for
-multitouch flows. Rotate and W3C Actions remain reserved flow/CLI surfaces
-until MAV adds a reliable Baguette translation for them.
+`mav ui longPress --x X --y Y [--duration 800ms]` uses AXe 2 on either iOS
+target. Pinch, rotation and two-finger pan also use AXe 2. W3C actions remain
+an optional Baguette capability. AXe cannot express a drifting pinch; an
+explicit alternative driver can provide that operation.
 
 Observation priority:
 
@@ -1065,16 +1039,11 @@ The same in a flow:
 - sim.heal: {}
 ```
 
-Open, the cover is dark and only idb reaches the inner panel: AXe and baguette
-send to the cover's digitizer and report success. So once `mav sim hinge` has
-unfolded the device, taps (by point and by selector) go through idb, and
-`mav capture` shoots the inner panel instead of a black PNG. Folded, the Duo
-behaves like any iPhone.
-
-mav routes from the pose it applied, because nothing else reports which panel
-is lit: with the Duo flat, `devicectl` still marks the cover active and
-baguette reads the hinge as null. **Fold it with `mav sim hinge`, not from
-Device Hub's window**, or mav keeps routing to the panel it last lit.
+AXe 2.0.4 captures the active panel and uses current-orientation point
+coordinates. MAV no longer sends open-foldable taps to idb or rotates AXe
+coordinates a second time. `mav sim displays` reports screen IDs and UUIDs;
+pass both `--screen-id` and `--screen-uuid` to pin compatible operations to the
+observed active display. A changed or inactive display is refused.
 
 Book, laptop and tent poses combine an angle with how the device is held in
 space, and no CLI can turn the device in space yet; they are reachable only as
@@ -1495,33 +1464,36 @@ route the simulator, remove `simulator_udid` from `.mav/config.yaml`.
 
 ## Physical Devices
 
-List and select connected iOS devices:
-
 ```bash
 mav device list
 mav device select --udid <device-udid>
-mav device select --name "David iPhone"
+mav device select --name "Test iPhone"
+mav device doctor
+mav open
+mav ui tree
+mav capture
+mav evidence start
+# Perform the actions to record.
+mav evidence stop
 ```
 
-`mav device select` switches the active target to `target_kind: device` in
-`.mav/config.yaml`. `mav sim select` switches it back to `target_kind:
-simulator`. For physical devices, MAV uses idb for install, launch, log
-capture, screenshots, and crash listing:
+Selection persists `target_kind: device` and the hardware UDID in
+`.mav/config.yaml`. Ambiguous device names are refused. Xcode must know the
+trusted, paired device, with Developer Mode enabled and the required developer
+services available; `mav device discover` and `mav device doctor` explain
+readiness problems.
 
-```yaml
-launch:
-  mode: custom
-  commands:
-    build: ./scripts/mav-build-device.sh
-    app_path: ./scripts/mav-app-path-device.sh
-    install: idb install --udid "$MAV_UDID" "$MAV_APP_PATH"
-    launch: idb launch --udid "$MAV_UDID" -f "$MAV_BUNDLE_ID"
-```
+AXe 2 uses its own CoreDevice/RSD transport for UI and capture. MAV uses
+`xcrun devicectl` for install, launch, app listing, openURL and termination.
+No idb installation or companion is needed for that loop. If idb is installed,
+its existing log and crash capabilities remain available; lack of that optional
+tool does not block launch or UI input.
 
-The generated simulator install/launch recipe is automatically mapped to idb
-when the active target is a physical device. Video recording is simulator-only
-in this release; use `capture` / `evidence.step` screenshots for device
-evidence.
+Build a device-signed app with your existing launch recipe. Canonical simctl
+install/launch recipes are interpreted through the physical lifecycle driver,
+including environment variables and app arguments. Older canonical idb recipes
+are also migrated to that driver. Custom shell commands retain their explicit
+semantics.
 
 ## Launch Recipes
 

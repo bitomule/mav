@@ -18,13 +18,14 @@ const (
 // passing the bulky Config struct around: callers extract just what drivers
 // need.
 type Target struct {
-	Kind     TargetKind
-	UDID     string
-	Name     string
-	Runtime  string // simulator runtime (e.g. "iOS-26-2"), empty for device
-	BundleID string
-	Locale   string
-	Language string
+	Kind         TargetKind
+	UDID         string
+	Name         string
+	Runtime      string // simulator runtime (e.g. "iOS-26-2"), empty for device
+	BundleID     string
+	Locale       string
+	Language     string
+	InputContext *InputContext
 
 	// AppPath and PID identify a macOS app, which has no UDID: its
 	// identity is the .app path and the live process. They are added
@@ -48,9 +49,14 @@ func (t Target) IsMac() bool { return t.Kind == KindMac }
 // TapSpec describes a single tap. Either Coord OR Selector should be set;
 // drivers that only support one path inspect which fields are populated.
 type TapSpec struct {
-	Selector ElementSelector
-	X, Y     int // when Selector is zero-valued, the tap is by coordinate
-	Duration int // ms; 0 = default
+	Selector                  ElementSelector
+	X, Y                      int // when Selector is zero-valued, the tap is by coordinate
+	Duration                  int // ms; 0 = default
+	Count, Touches            int
+	ElementType, TapStyle     string
+	SemanticPress             bool
+	PreDelayMs, PostDelayMs   int
+	WaitTimeout, PollInterval float64
 }
 
 // ElementSelector identifies a UI element semantically. Drivers match fields
@@ -68,18 +74,22 @@ func (s ElementSelector) IsZero() bool {
 
 // SwipeSpec describes a single-finger swipe.
 type SwipeSpec struct {
-	Direction      string // "up"|"down"|"left"|"right" or empty when start/end are set
-	StartX, StartY int
-	EndX, EndY     int
-	DurationMs     int
+	Delta, PreDelayMs, PostDelayMs int
+	UntilID, UntilLabel            string
+	MaxSwipes                      int
+	Direction                      string // "up"|"down"|"left"|"right" or empty when start/end are set
+	StartX, StartY                 int
+	EndX, EndY                     int
+	DurationMs                     int
 }
 
 type DragSpec struct {
-	StartX, StartY int
-	EndX, EndY     int
-	DurationMs     int
-	PressMs        int
-	HoldMs         int
+	Steps, PreDelayMs, PostDelayMs int
+	StartX, StartY                 int
+	EndX, EndY                     int
+	DurationMs                     int
+	PressMs                        int
+	HoldMs                         int
 }
 
 type PathPoint struct {
@@ -94,6 +104,7 @@ type DragPathSpec struct {
 // PinchSpec is a two-finger pinch centred at (X, Y) with Scale > 1 to zoom in
 // and Scale < 1 to zoom out.
 type PinchSpec struct {
+	Radius     int
 	X, Y       int
 	Scale      float64
 	PanX, PanY int // optional drift during the pinch
@@ -102,6 +113,7 @@ type PinchSpec struct {
 
 // RotateSpec is a two-finger rotation around (X, Y) by Degrees.
 type RotateSpec struct {
+	Radius     int
 	X, Y       int
 	Degrees    float64
 	DurationMs int
@@ -161,7 +173,10 @@ type LogStreamSpec struct {
 
 // VideoSpec configures a video recording.
 type VideoSpec struct {
-	OutPath string
+	OutPath, LogPath    string
+	FPS, Quality        int
+	Scale               float64
+	FollowActiveDisplay bool
 }
 
 // CrashSpec scopes a crash fetch.

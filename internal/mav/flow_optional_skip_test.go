@@ -27,9 +27,9 @@ func TestRunFlowOptionalTapSkipIsVisibleAndCarriesItsReason(t *testing.T) {
 	}
 	runner := &sequenceRecordingRunner{
 		tools: cfg.Tools,
-		out:   map[string]string{"axe describe-ui": `[]`},
+		out:   map[string]string{"axe --output json describe-ui": `[]`},
 		err: map[string]CommandResult{
-			"axe tap --tap-style physical --label Entendido": {Stderr: "Error: DecodingError.typeMismatch", Err: os.ErrInvalid},
+			"axe --output json tap --tap-style physical --label Entendido": rejectedAXeTapFixture(),
 		},
 	}
 	var out bytes.Buffer
@@ -85,9 +85,9 @@ func TestWhileNotVisibleOptionalChildSkipIsVisibleInTrail(t *testing.T) {
 	}
 	runner := &sequenceRecordingRunner{
 		tools: cfg.Tools,
-		out:   map[string]string{"axe describe-ui": `[]`},
+		out:   map[string]string{"axe --output json describe-ui": `[]`},
 		err: map[string]CommandResult{
-			"axe tap --tap-style physical --label Entendido": {Stderr: "tap_failed", Err: os.ErrInvalid},
+			"axe --output json tap --tap-style physical --label Entendido": rejectedAXeTapFixture(),
 		},
 	}
 	var out bytes.Buffer
@@ -139,10 +139,10 @@ func TestRunFlowFailureStillNamesEarlierSkippedSteps(t *testing.T) {
 	}
 	runner := &sequenceRecordingRunner{
 		tools: cfg.Tools,
-		out:   map[string]string{"axe describe-ui": `[]`},
+		out:   map[string]string{"axe --output json describe-ui": `[]`},
 		err: map[string]CommandResult{
-			"axe tap --tap-style physical --label Entendido": {Stderr: "Error: DecodingError.typeMismatch", Err: os.ErrInvalid},
-			"axe tap --tap-style physical --label Required":  {Stderr: "tap_failed", Err: os.ErrInvalid},
+			"axe --output json tap --tap-style physical --label Entendido": rejectedAXeTapFixture(),
+			"axe --output json tap --tap-style physical --label Required":  rejectedAXeTapFixture(),
 		},
 	}
 	var out bytes.Buffer

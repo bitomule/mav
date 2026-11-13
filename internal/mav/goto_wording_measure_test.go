@@ -21,7 +21,7 @@ import (
 // candidates, same model; only the wording differs.
 //
 // Everything below the wording is held fixed: the same two screens, read from
-// the raw `axe describe-ui` JSON that the real path reads, the same candidate
+// the raw `axe --output json describe-ui` JSON that the real path reads, the same candidate
 // extraction, the same option list with `none` on it, the same answer
 // interpretation and the same veto. Only the QUESTION moves.
 //

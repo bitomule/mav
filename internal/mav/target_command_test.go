@@ -388,8 +388,8 @@ func TestTargetCommandFailureFallsBackToBootedUDIDForRealDispatch(t *testing.T) 
 			targetKey: {Stderr: "simpool: pool at capacity", Code: 1, Err: fmt.Errorf("exit status 1")},
 		},
 		out: map[string]string{
-			"xcrun simctl list devices booted -j":    bootedJSON,
-			"axe describe-ui --udid BOOTED-FALLBACK": `[{"AXUniqueId":"HomeView","AXRole":"Application"}]`,
+			"xcrun simctl list devices booted -j":                  bootedJSON,
+			"axe --output json describe-ui --udid BOOTED-FALLBACK": `[{"AXUniqueId":"HomeView","AXRole":"Application"}]`,
 		},
 	}
 	var out bytes.Buffer
@@ -407,7 +407,7 @@ func TestTargetCommandFailureFallsBackToBootedUDIDForRealDispatch(t *testing.T) 
 	if !strings.Contains(got, "udid=BOOTED-FALLBACK") {
 		t.Fatalf("got %q, want the fallback udid reported on success", got)
 	}
-	if !containsCall(runner.commands, "axe describe-ui --udid BOOTED-FALLBACK") {
+	if !containsCall(runner.commands, "axe --output json describe-ui --udid BOOTED-FALLBACK") {
 		t.Fatalf("axe was never invoked with the fallback udid; commands=%v", runner.commands)
 	}
 }
@@ -640,8 +640,8 @@ func TestTargetCommandFailureIsFatalByDefault(t *testing.T) {
 			targetKey: {Stderr: "simpool: pool at capacity", Code: 1, Err: fmt.Errorf("exit status 1")},
 		},
 		out: map[string]string{
-			"xcrun simctl list devices booted -j":    bootedJSON,
-			"axe describe-ui --udid BOOTED-FALLBACK": `[{"AXUniqueId":"HomeView","AXRole":"Application"}]`,
+			"xcrun simctl list devices booted -j":                  bootedJSON,
+			"axe --output json describe-ui --udid BOOTED-FALLBACK": `[{"AXUniqueId":"HomeView","AXRole":"Application"}]`,
 		},
 	}
 	var out bytes.Buffer
@@ -665,7 +665,7 @@ func TestTargetCommandFailureIsFatalByDefault(t *testing.T) {
 	if strings.Contains(got, "BOOTED-FALLBACK") {
 		t.Fatalf("got %q, want no trace of the booted simulator: it must not be resolved at all", got)
 	}
-	if containsCall(runner.commands, "axe describe-ui --udid BOOTED-FALLBACK") {
+	if containsCall(runner.commands, "axe --output json describe-ui --udid BOOTED-FALLBACK") {
 		t.Fatalf("axe was dispatched against the booted fallback; commands=%v", runner.commands)
 	}
 }
@@ -925,7 +925,7 @@ func TestTargetCommandFailureFailsAFlowBeforeAnyStepRuns(t *testing.T) {
 	if strings.Contains(got, "step=") {
 		t.Fatalf("got %q, want the run to die before any step is attempted", got)
 	}
-	if containsCall(runner.commands, "axe describe-ui") {
+	if containsCall(runner.commands, "axe --output json describe-ui") {
 		t.Fatalf("a driver was invoked before the target was resolved; commands=%v", runner.commands)
 	}
 }
@@ -991,8 +991,10 @@ func TestTargetCommandFailureMidFlowCarriesItsFieldsIntoTheStep(t *testing.T) {
 	if fields["timeout"] != "5" {
 		t.Fatalf("fields=%v, want the step's own timeout param untouched", fields)
 	}
-	if containsCall(runner.commands, "axe") {
-		t.Fatalf("axe was dispatched despite an unresolved target; commands=%v", runner.commands)
+	for _, command := range runner.commands {
+		if fields := strings.Fields(command); len(fields) > 0 && filepath.Base(fields[0]) == "axe" {
+			t.Fatalf("axe was dispatched despite an unresolved target; commands=%v", runner.commands)
+		}
 	}
 }
 

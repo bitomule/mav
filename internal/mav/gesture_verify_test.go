@@ -4,7 +4,7 @@ import "testing"
 
 // A gesture that reports success and does nothing is the failure these tests
 // exist for. Measured on 2026-09-19, iPhone 17 Pro / iOS 26.3 on a simpool
-// slot: `axe tap -x 364 -y 84` printed "✓ Tap at (364.0, 84.0) completed
+// slot: `axe --output json tap -x 364 -y 84` printed "✓ Tap at (364.0, 84.0) completed
 // successfully" with the tree byte-identical either side, on two different
 // targets, and `mav ui swipe` did the same. The verification is what turns
 // that into `verified=unchanged`, so the verification must not itself be

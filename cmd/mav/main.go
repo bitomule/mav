@@ -5,12 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/bitomule/mav/internal/mav"
 )
 
 func main() {
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	if err := mav.Run(ctx, os.Args[1:], os.Stdout, os.Stderr); err != nil {
 		var failed mav.CommandFailed
 		if errors.As(err, &failed) {

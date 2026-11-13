@@ -29,7 +29,7 @@ func TestOpenCarriesTheRecipeEnvPrefixIntoTheApp(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &launchRecipeRunner{
-		tools:   map[string]bool{"xcrun": true},
+		tools:   map[string]bool{"xcrun": true, "axe": true},
 		results: map[string]CommandResult{"make ios-app-path": {Stdout: "/tmp/App.app\n"}},
 	}
 	var out bytes.Buffer
@@ -82,7 +82,7 @@ func TestOpenWarnsWhenEnvPrefixCannotReachAHardcodedBundleLaunch(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &launchRecipeRunner{
-		tools:   map[string]bool{"xcrun": true},
+		tools:   map[string]bool{"xcrun": true, "axe": true},
 		results: map[string]CommandResult{"make ios-app-path": {Stdout: "/tmp/App.app\n"}},
 	}
 	var out bytes.Buffer
@@ -129,7 +129,7 @@ func TestOpenCarriesTheRecipeLaunchArgumentsIntoTheApp(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &launchRecipeRunner{
-		tools:   map[string]bool{"xcrun": true},
+		tools:   map[string]bool{"xcrun": true, "axe": true},
 		results: map[string]CommandResult{"make ios-app-path": {Stdout: "/tmp/App.app\n"}},
 	}
 	var out bytes.Buffer
@@ -166,7 +166,7 @@ func TestOpenRefusesLaunchArgumentsThatNeedAShell(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &launchRecipeRunner{
-		tools:   map[string]bool{"xcrun": true},
+		tools:   map[string]bool{"xcrun": true, "axe": true},
 		results: map[string]CommandResult{"make ios-app-path": {Stdout: "/tmp/App.app\n"}},
 	}
 	var out bytes.Buffer
