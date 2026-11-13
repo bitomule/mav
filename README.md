@@ -38,8 +38,8 @@ does not verify success. An initially satisfied condition reports
 `succeededWhen`; typed text comes only from quoted literals or declared inputs.
 The cap remains 12 goal actions and 90 seconds. Partial or unknown input is
 never replayed. See the [goal contract](docs/design/goal-engine.md) and
-[comparison harness](tools/goal-bench/README.md). Goto remains available until
-the comparison's retirement gate passes.
+[comparison harness](tools/goal-bench/README.md). `goto` is retired in 0.35.0;
+the [migration guide](docs/goal-migration.md) covers CLI and YAML replacements.
 
 ## Why MAV?
 
@@ -351,7 +351,7 @@ app's container and preferences, not the app.
   fails with `could not create image from display`. This is why the VM recipe needs
   the broker — see [`examples/macos-vm/`](examples/macos-vm/).
 
-See the [macOS scope evaluation](docs/macos-scope-evaluation.md) for how this was
+See the [historical macOS scope evaluation](docs/macos-scope-evaluation.md) for how this was
 decided and what was deliberately left out.
 
 ## Requirements
@@ -751,7 +751,7 @@ Supported step types:
 
 ```text
 open
-goto
+goal
 go
 tree
 tap
@@ -810,27 +810,43 @@ equivalent:
 On failure, MAV stops run-owned processes, tries to capture failure evidence,
 writes report data, and returns a compact failure line.
 
-Use `goto` to navigate to a screen without writing the route, and the declared
-steps to do the work once there. `goto` carries no selector -- it is handed a
-goal in prose, not an element -- so its parameters sit at the top level of the
-step, next to `where` rather than inside it:
+Use `mav goal "<objective>"` for navigation and action objectives. MAV owns the
+observe–plan–act–verify loop; it does not run AXe's autonomous agent. Use
+`--mode navigation` for the narrower navigation menu, or the default `action`
+mode for supported taps, scrolling and caller-declared text in focused fields:
+
+```sh
+mav goal "the settings screen" --mode navigation \
+  --succeeded-when 'title:"Settings"'
+```
+
+A YAML goal takes its objective and condition at the top level, without a
+selector:
 
 ```yaml
-- goto:
+- goal:
     goal: the screen that lists every category
-    arrivedWhen: 'screen:categoriesView'
+    mode: navigation
+    succeededWhen: 'screen:categoriesView'
     maxSteps: 6        # optional, 1..12
     timeout: 45s       # optional, up to 90s
 ```
 
-Two rules apply inside a flow and nowhere else:
+Flows require an explicit `succeededWhen` and stop unless it is verified. On
+the command line, inspect `succeeded=true|false|unverified`; a zero exit status
+alone does not establish completion. `reported_success` records the model's
+declaration separately. A condition true at entry returns `already_satisfied`
+with zero actions and does not attribute an effect to the run.
 
-- **`arrivedWhen` is mandatory.** A `goto` step without it is a lint error, not
-  a run-time surprise.
-- **`arrived=unverified` fails the step.** On the command line `unverified` is
-  an honest answer -- goto says it cannot confirm and whoever reads it decides.
-  Inside a flow it is an unchecked premise the following steps would act on,
-  and a flow that carries on over a false arrival touches where it should not.
+The limits remain 12 goal actions and 90 seconds, plus at most three exact,
+caller-named non-destructive permission dismissals. Partial or unknown input
+is never repeated. A failed flow goal cannot retry earlier delivered input.
+
+MAV 0.35.0 retires `goto`. Replace `mav goto` with `mav goal`,
+`--arrived-when` with `--succeeded-when`, YAML `goto` with `goal`, and
+`arrivedWhen` with `succeededWhen`. Old uses return migration diagnostics,
+without silently executing an alias. See the [before/after migration guide](docs/goal-migration.md)
+and [engine contract](docs/design/goal-engine.md).
 
 Use `wait` for a single `id`, `text`, or `value`. Use `waitUntil` with `any`
 when more than one result is acceptable, and use `changedFrom` after a named

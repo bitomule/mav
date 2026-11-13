@@ -1,4 +1,4 @@
-# iOS automation in MAV 0.34.0
+# iOS automation with AXe 2
 
 MAV requires AXe **2.0.4 or newer**. AXe 1 and older AXe 2 patch releases are
 rejected with installation instructions. Homebrew installs the AXe formula as a
@@ -13,9 +13,10 @@ its broker. MAV caches driver discovery and version health within one invocation
 not across processes. No external idb or idb_companion is required by AXe 2.
 MAV uses Xcode CoreDevice for physical app lifecycle.
 
-This integration covers ordinary automation. Snapshot/ref `--agent` operations
-and `axe agent <objective>` belong to the separate goal-engine work. MAV's
-existing `ui tree --agent` is still its own compact formatter.
+This guide covers ordinary automation introduced in MAV 0.34.0 and corrected
+in 0.35.0. The [goal engine](design/goal-engine.md) uses AXe simulator
+snapshot/ref admission, with MAV's own planner; it never invokes
+`axe agent <objective>`. `ui tree --agent` is MAV's compact formatter.
 
 ## API and feature coverage
 

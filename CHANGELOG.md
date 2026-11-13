@@ -1,5 +1,66 @@
 # Changelog
 
+## v0.35.0
+
+**`mav goal` handles navigation and action objectives; `goto` is retired.**
+
+MAV now owns one observe–plan–act–verify engine. It chooses supported operations
+and targets, retains the 12-action/90-second budgets and refusal policies, and
+verifies the caller's condition independently of a model's completion report.
+AXe simulator input uses checked snapshot refs. Other drivers retain their own
+guarantees; ordinary tree preflight is not atomic with input.
+
+Before:
+
+```sh
+mav goto "the settings screen" --arrived-when 'title:"Settings"'
+```
+
+After:
+
+```sh
+mav goal "the settings screen" --mode navigation \
+  --succeeded-when 'title:"Settings"'
+```
+
+YAML before:
+
+```yaml
+- goto:
+    goal: the settings screen
+    arrivedWhen: 'title:"Settings"'
+```
+
+YAML after:
+
+```yaml
+- goal:
+    goal: the settings screen
+    mode: navigation
+    succeededWhen: 'title:"Settings"'
+```
+
+Old command invocations fail with a migration command and perform no input;
+there is no silent alias. Flow lint diagnoses the old step and `arrivedWhen`.
+Flows require `succeededWhen` and stop unless it is verified. A condition true
+at entry returns `already_satisfied` with zero actions. Partial or unknown
+input is never replayed.
+
+The default action mode adds supported typing from quoted or declared text;
+it does not generate keyboard text. Inspect `succeeded` separately from
+`reported_success` and the CLI exit status. A visible field value does not
+prove that a save or remote effect completed.
+
+See the [migration guide](docs/goal-migration.md),
+[engine contract](docs/design/goal-engine.md) and
+[controlled evaluation](docs/evaluation/goal.md).
+
+AXe 2 input keeps native JSON off stdout unless `--raw` is requested; tree
+counts match the printed elements. Ordinary ambiguous ID taps can recover only
+from fresh, active structural ancestry ending in one button. Receipt evidence
+and uncertainty survive aggregation; slider errors without receipts remain
+uncertain. See the [release notes](docs/release-0.35.0.md) for the limits.
+
 ## v0.33.3
 
 **`mav doctor` reports an idb or a baguette that mav refuses to use.**

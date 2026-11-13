@@ -1,0 +1,9 @@
+# Seed the starting category list with Test Category 1 and Test Category 2.
+# The declared text condition already holds. Expect already_satisfied and zero
+# actions. This verifies the condition; it does not claim a category was created.
+name: goal-already-satisfied
+steps:
+  - goal:
+      goal: show the list containing the test categories
+      mode: navigation
+      succeededWhen: 'text:"Test Category"'

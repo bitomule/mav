@@ -1,5 +1,7 @@
 package mav
 
+// Historical MAV 0.34.0 baseline. Never compiled into the shipped CLI.
+
 import (
 	"context"
 	"encoding/json"
@@ -12,7 +14,6 @@ import (
 
 // gotoDefaultTimeout bounds the whole run, alongside the step budget. Both,
 // because a loop can burn its steps in two seconds or spend ninety on one.
-const gotoDefaultTimeout = 90 * time.Second
 
 func (c CLI) gotoScreen(ctx context.Context, opts GlobalOptions, cfg Config, args []string) error {
 	goal := strings.TrimSpace(strings.Join(gotoPositional(args), " "))
@@ -341,7 +342,7 @@ func (c CLI) runGotoLoop(ctx context.Context, cfg Config, opts GlobalOptions,
 // ONE MORE TIME before accepting that the run did not arrive.
 //
 // That second look is the fix for a measured defect: goto walked two steps into
-// Boxy, landed on the destination — `label="Test Category 2: 1000" role=heading`
+// the fixture app, landed on the destination — `label="Test Category 2: 1000" role=heading`
 // was on screen afterwards — and reported arrived=false, with both a title: and
 // a text: criterion naming exactly that.
 //
@@ -539,7 +540,7 @@ func (c CLI) gotoSettle(ctx context.Context, cfg Config, opts GlobalOptions) ([]
 // every read after the first was served the screen as it looked before the
 // first tap.
 //
-// Measured, because it cost a whole 20-run batch: on Boxy the loop tapped the
+// Measured, because it cost a whole 20-run batch: on the fixture app the loop tapped the
 // button that opens the create-category sheet, was handed back the pre-tap
 // grid, recorded changed=false, tapped again, was handed the same tree again,
 // and reported outcome=stuck with the sheet plainly open on screen. 0/20, every

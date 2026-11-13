@@ -374,43 +374,41 @@ func TestSkillPluginManifestWiresUpTheHook(t *testing.T) {
 	}
 }
 
-// The goto rule, and the asymmetry that shapes it. find is worth suggesting on
-// any tree because it always buys context. goto only wins from the SECOND step
-// — measured, one tap through goto is 5,012ms against 4,474ms for today's path,
-// two taps are 7,336ms against 9,733ms — so nudging a single tap towards it
-// would be advice that makes things slower.
+// Chained navigation can be expressed as a verified goal. This advice makes
+// no speed claim and leaves single explicit actions and existing goal calls alone.
 
-func TestChainedTapsAreNudgedTowardsGoto(t *testing.T) {
-	cmd := `mav ui tap --text "General" && sleep 1 && mav ui tap --text "Idioma y región"`
+func TestChainedTapsAreNudgedTowardsGoal(t *testing.T) {
+	cmd := `mav ui tap --text "General" && sleep 1 && mav ui tap --text "Language"`
 	got := nudgeFrom(t, runHook(t, "s-chain", cmd, "", withKey(t)...))
-	if !strings.Contains(got, "mav goto") {
-		t.Fatalf("a chain of two taps should be nudged towards goto, got %q", got)
+	for _, want := range []string{"mav goal", "--mode navigation", "--succeeded-when", "succeeded=true", "SINGLE tap"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("the navigation advice must include %q, got %q", want, got)
+		}
 	}
-	if !strings.Contains(got, "SINGLE tap") {
-		t.Fatalf("the nudge must say where goto does NOT help, got %q", got)
-	}
-}
-
-func TestASingleTapIsNotNudgedTowardsGoto(t *testing.T) {
-	// The control that matters most for this rule: goto is SLOWER over one
-	// step, so firing here would be advice that costs time. If this ever
-	// passes by accident, the rule above proves nothing.
-	if out := runHook(t, "s-single", `mav ui tap --text "General"`, "", withKey(t)...); strings.Contains(out, "mav goto") {
-		t.Fatalf("a single tap must not be pushed towards goto: %q", out)
+	for _, obsolete := range []string{"mav goto", "--arrived-when", "7.3s", "9.7s", "slower", "faster"} {
+		if strings.Contains(got, obsolete) {
+			t.Fatalf("the goal advice must not retain retired syntax or historical speed claims %q: %q", obsolete, got)
+		}
 	}
 }
 
-func TestACommandAlreadyUsingGotoIsLeftAlone(t *testing.T) {
-	cmd := `mav ui tap --text "A" && mav goto "B" && mav ui tap --text "C"`
-	if out := runHook(t, "s-using", cmd, "", withKey(t)...); strings.Contains(out, "mav goto") {
-		t.Fatalf("already using goto, should stay quiet: %q", out)
+func TestASingleTapIsNotNudgedTowardsGoal(t *testing.T) {
+	if out := runHook(t, "s-single", `mav ui tap --text "General"`, "", withKey(t)...); strings.Contains(out, "mav goal") {
+		t.Fatalf("a single known control needs no goal advice: %q", out)
 	}
 }
 
-func TestTheGotoRuleAlsoNeedsAKey(t *testing.T) {
+func TestACommandAlreadyUsingGoalIsLeftAlone(t *testing.T) {
+	cmd := `mav ui tap --text "A" && mav goal "B" --succeeded-when 'title:"B"' && mav ui tap --text "C"`
+	if out := runHook(t, "s-using", cmd, "", withKey(t)...); strings.Contains(out, "mav goal") {
+		t.Fatalf("already using goal, should stay quiet: %q", out)
+	}
+}
+
+func TestTheGoalRuleAlsoNeedsAKey(t *testing.T) {
 	env := withoutKey(t)
 	cmd := `mav ui tap --text "A" && mav ui tap --text "B"`
-	if out := runHook(t, "s-goto-nokey", cmd, "", env...); strings.TrimSpace(out) != "" {
+	if out := runHook(t, "s-goal-nokey", cmd, "", env...); strings.TrimSpace(out) != "" {
 		t.Fatalf("with no key there is nothing to recommend: %q", out)
 	}
 }

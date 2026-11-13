@@ -1,0 +1,6 @@
+# Invalid fixture: lint must reject a goal step without succeededWhen before
+# any action is sent. Model-reported completion is insufficient inside a flow.
+name: goal-without-condition
+steps:
+  - goal:
+      goal: create a category called Kitchen Stuff
