@@ -1,0 +1,10 @@
+# Explicit two-step navigation baseline. Compare goal against this route from
+# the same seeded state and verify the final screen independently.
+name: declared-navigation-baseline
+steps:
+  - tap:
+      where:
+        find: la primera categoría
+  - tap:
+      where:
+        find: la primera caja

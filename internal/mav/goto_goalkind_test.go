@@ -61,7 +61,7 @@ func TestGoalKindOptionsCarryNoAbstention(t *testing.T) {
 // ordering is what is guarded. A refactor that moves the naming call above the
 // gate reinstates the defect in silence, and this fails when it does.
 func TestActionGoalsReturnBeforeTheDestinationIsNamed(t *testing.T) {
-	src, err := os.ReadFile("goto_cmd.go")
+	src, err := os.ReadFile("goto_legacy_test.go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestActionGoalsReturnBeforeTheDestinationIsNamed(t *testing.T) {
 // reached without the caller having written --arrived-when. If a third appears,
 // the gate above stops being sufficient and nobody would notice.
 func TestArrivalIsAssertedOnlyWhereItIsGated(t *testing.T) {
-	src, err := os.ReadFile("goto_cmd.go")
+	src, err := os.ReadFile("goto_legacy_test.go")
 	if err != nil {
 		t.Fatal(err)
 	}

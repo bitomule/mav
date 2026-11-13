@@ -550,21 +550,52 @@ aliases for their object forms:
 - sleep: { duration: 500ms }
 ```
 
-Use `goto` when you know the screen but not the route. It navigates; the
-declared steps do the work once there. It carries no selector, so its
-parameters sit at the top level of the step:
+Use `mav goal "<objective>"` for navigation and action objectives. MAV runs
+its own observe–plan–act–verify engine, independently of the driver; it never
+runs AXe's autonomous agent. Use `--mode navigation` for navigation, or the
+default `action` mode for supported taps, scrolling and typing into focused
+fields. Text comes from quoted literals in the objective or declared inputs;
+the model chooses among the offered values rather than inventing text.
+
+```sh
+mav goal "the settings screen" --mode navigation \
+  --succeeded-when 'title:"Settings"'
+mav goal "Create a note saying 'Sample note' and save it" \
+  --succeeded-when 'title:"Saved"'
+```
+
+Choose a condition the app actually exposes. A `Saved` heading only proves a
+save if the app reserves it for that completed state; it does not establish
+that a remote server committed data. All condition terms must hold. Supported
+predicates are `title:`, `screen:`, `text:` and exact `value:"field-id=value"`.
+
+Goal parameters live at the top level of a YAML step, without a selector:
 
 ```yaml
-- goto:
+- goal:
     goal: the screen that lists every category
-    arrivedWhen: 'screen:categoriesView'
+    mode: navigation
+    succeededWhen: 'screen:categoriesView'
 - tap: { where: { find: the button that creates a new category } }
 ```
 
-Inside a flow, `arrivedWhen` is mandatory (a `goto` step without one is a lint
-error) and `arrived=unverified` fails the step. On the command line
-`unverified` is an honest answer and you decide what to do with it; inside a
-flow it is an unchecked premise the next steps would act on.
+Flows require `succeededWhen` and stop unless it is verified. Inspect
+`succeeded=true|false|unverified`, even after a zero CLI exit status.
+`reported_success` is the model's declaration, not verified completion.
+`already_satisfied` means the condition was already true, with zero actions;
+do not report an effect that the run did not cause.
+
+Keep the 12-action and 90-second caps. Modal dismissal requires the exact,
+caller-named non-destructive button and is limited to three. Never replay
+partial or unknown input, or retry a failed goal after earlier input was
+delivered. AXe simulator refs add native admission checks; ordinary drivers'
+fresh-tree preflight is not atomic with input.
+
+`goto` is retired in MAV 0.35.0 and returns a migration diagnostic. Use
+`mav goal --mode navigation`, `--succeeded-when`, YAML `goal` and
+`succeededWhen`. Update scripts and flows explicitly; do not treat the old
+command as an alias. See the repository's `docs/goal-migration.md` and
+`docs/design/goal-engine.md` for the complete contract.
 
 Use `when` to guard optional UI. It checks once and skips the `do` block without
 failing when the condition is not visible. Keep `open` and `exec` as top-level
