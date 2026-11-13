@@ -24,7 +24,7 @@ MUTATIONS = [
     ("known_rotation", "goal_cmd.go", 'if hid.Detected != 0 && hid.Rotation == 0 {', 'if false {', "TestGoalRunRefusesKnownRotationWithoutValidatedScreenSize"),
     ("unknown_cleanup", "drivers/axe/references.go", '(a.Cleanup != "released" && a.Cleanup != "notNeeded")', 'a.Cleanup == "uncertain"', "TestGoalUnknownReferenceCleanupNeverAllowsRetry"),
     ("typing_context", "goal_adapter.go", 'inserts without clearing; current value=%q', 'type text; existing=%q', "TestGoalPlanningContextExplainsAppendCurrentValueAndPendingSave"),
-    ("pending_condition_context", "goal_engine.go", 'req.VerificationHint = hint.PlanningHint()', 'req.VerificationHint = ""', "TestGoalPlanningHintComesFromVerifierAndCannotProveCompletion"),
+    ("pending_condition_context", "goal_engine.go", 'req.VerificationHint = hint.PlanningHint()', '_ = hint; req.VerificationHint = ""', "TestGoalPlanningHintComesFromVerifierAndCannotProveCompletion"),
     ("expected_value_redaction", "goal_condition.go", 'redacted.Values[id] = "<caller-declared expected value>"', 'redacted.Values[id] = s.Values[id]', "TestGoalPlanningHintComesFromVerifierAndCannotProveCompletion"),
 ]
 

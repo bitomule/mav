@@ -42,7 +42,7 @@ run deliberately exits with a failing acceptance gate; it cannot authorize
 retirement. Missing arms and missing cases never count as successes.
 
 The harness records independent completion, public command completion claims, false
-success, process errors, model calls, explicit tree-read commands, logical
+success, execution errors, nonzero exits, model calls, explicit tree-read commands, logical
 observations, abstentions, discarded decisions, steps and latency. Transparent
 Jevi/AXe shims count subprocesses without logging credentials or screen text.
 Wrong distractor taps and consecutive repetitions without progress are recorded
@@ -58,9 +58,16 @@ followed by `succeeded=unverified` is an unverified model report, not a public
 success claim. The retirement gate counts false public success claims against
 the independent oracle.
 Each trial owns a process group; timing out stops its shims and agent children
-before another trial starts. AXe abstentions and stale decisions come from its
-retained trace. `summarize.py` can re-extract those counters and wrong-action
-metrics from unchanged trial evidence, without rerunning or selecting trials:
+before another trial starts. AXe abstentions and discarded decisions come from its
+retained trace.
+
+Abstentions count model choices, including block confirmations. Discards are
+split into stale evidence and unchanged BLOCKED confirmations; AXe uses the same
+`discardedAsStale` field for both. Wrong-action metrics count selection of named
+distractors, rather than every possible incorrect ordering or a physical event log.
+
+`summarize.py` can re-extract those counters from unchanged trial evidence,
+without rerunning or selecting trials:
 
 ```sh
 python3 tools/goal-bench/summarize.py .scratch/goal-evaluation \
@@ -70,6 +77,11 @@ python3 tools/goal-bench/summarize.py .scratch/goal-evaluation \
 The exported JSON contains only the allowed metric and version fields. Review
 it before publishing; the original stdout, traces and machine identities remain
 local.
+Execution errors mean missing/unreadable results, uncertain observation/input,
+failed status or a failed/partial/unknown delivery receipt. Nonzero exits are
+separate: AXe also uses one for an ordinary `blocked` outcome. A harness timeout
+has no parsed result and is recorded as `process_error`, a nonzero exit and an
+execution error. It is never counted as a successful abstention.
 
 The deterministic test `TestGoalResolvesGotoStaleCoordinateRegression` gives
 the same correct model choice to both implementations while the target moves

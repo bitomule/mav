@@ -68,10 +68,16 @@ class EvaluationGateTests(unittest.TestCase):
         self.assertFalse(marker.exists(), "timed-out child survived and affected the next trial")
 
     def test_native_trace_counts_abstention_staleness_and_wrong_taps(self):
-        trace = {"events": [{"decision": {"operation": "BLOCKED"}}, {"decision": {"operation": "TAP"}, "discardedAsStale": True}]}
-        self.assertEqual(bench.axe_trace_metrics(trace), {"abstentions": 1, "discarded": 1})
+        trace = {"events": [{"decision": {"operation": "BLOCKED"}, "discardedAsStale": True, "freshness": "unchanged"}, {"decision": {"operation": "TAP"}, "discardedAsStale": True, "freshness": "stale"}]}
+        self.assertEqual(bench.axe_trace_metrics(trace), {"abstentions": 1, "discarded": 2, "stale_discards": 1, "blocked_confirmation_discards": 1})
         result = {"history": [{"operation": "TAP", "target": "Help", "pageChanged": False}] * 2}
         self.assertEqual(bench.action_metrics("axe", result), (2, 1))
+        self.assertFalse(bench.execution_error({"status": "blocked"}))
+        self.assertTrue(bench.execution_error({}))
+        self.assertTrue(bench.execution_error({"steps": [{"receipt": {"delivery": "unknown"}}]}))
+        self.assertTrue(bench.execution_error({"outcome": "uncertain"}))
+        self.assertEqual(bench.action_metrics("goto", {"arrived": "false", "steps": None}), (0, 0))
+        self.assertEqual(bench.action_metrics("goto", {}), (None, None))
 
     def test_summary_uses_retained_trace_and_exports_only_metric_fields(self):
         with tempfile.TemporaryDirectory(dir=bench.ROOT / ".scratch") as directory:

@@ -11,8 +11,10 @@ and the limits of their guarantees.
 The caller supplies `--succeeded-when` or YAML `succeededWhen`. All predicates
 must hold: `title:"..."` matches the first heading, `screen:"..."` matches an
 exact screen identity, `text:"..."` matches visible tree content as in goto,
-and `value:"field-id=exact value"` requires one visible, enabled field with
-that exact accessibility ID and value. Multiple terms are conjunctive. A bare
+and `value:"field-id=exact value"` requires one element with that exact
+accessibility ID and value, excluding nodes marked hidden or disabled.
+Missing visibility/enabled metadata is not positive proof of either state.
+Multiple terms are conjunctive. A bare
 term is a title. These are observations of the application's accessibility
 state, not a claim about a server-side effect.
 
@@ -25,12 +27,14 @@ and `dead_end`. `succeeded=true|false|unverified` and `reported_success` remain
 separate: choosing `done` reports the model's belief without changing the
 caller’s condition or proving an effect.
 
-Each attempted input keeps a receipt: `not_sent`, `completed`, `partial` or
+Recorded action attempts keep a receipt: `not_sent`, `completed`, `partial` or
 `unknown`. Completed means the driver accepted/completed its input operation;
 application success is still a separate verification. An observation error
 after input retains its receipt and ends `uncertain`. Partial/unknown input is
 never replayed, including through a YAML `onFailure` retry or skip policy.
 A completed earlier input also prevents retrying an entire failed goal step.
+A stale refusal with no input sent is counted as a discarded decision and
+replanned, without adding a delivered-action step.
 
 ## Planning and policies
 
@@ -61,8 +65,10 @@ The caps remain 12 goal actions and 90 seconds. An exact caller-named,
 non-destructive `--dismiss-permission` button can dismiss up to three modals
 separately from the goal-action budget. Unknown buttons and destructive labels
 stop the run. Two abstentions, two actions without progress and repeated
-screens stop it. A failed or exhausted path gets a final fresh verification
-before being judged, without reusing an old successful tree.
+screens stop it. The `no_route`, `dead_end`, `stuck`, `looping`, `exhausted` and
+`unverified` paths get a final fresh verification under the original context
+and deadline. Blocked, uncertain and timed-out paths cannot use that recovery
+to claim success. No path reuses an old successful tree.
 
 In navigation mode without a declared condition, the planner may name a
 destination from the distinct screens actually observed. The menu has no visit

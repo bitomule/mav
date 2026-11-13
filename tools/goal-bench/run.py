@@ -164,7 +164,11 @@ sys.stdout.buffer.write(p.stdout);sys.stderr.buffer.write(p.stderr);sys.exit(p.r
 
 
 def action_metrics(arm, result):
+    if not result:
+        return None, None
     steps = result.get("history", []) if arm == "axe" else result.get("steps", [])
+    if steps is None:
+        steps = []
     if not isinstance(steps, list):
         return None, None
     wrong, repeated, previous = 0, 0, None
@@ -188,7 +192,16 @@ def action_metrics(arm, result):
 def axe_trace_metrics(trace):
     events = trace.get("events", [])
     return {"abstentions": sum(e.get("decision", {}).get("operation") == "BLOCKED" for e in events),
-            "discarded": sum(e.get("discardedAsStale") is True for e in events)}
+            "discarded": sum(e.get("discardedAsStale") is True for e in events),
+            "stale_discards": sum(e.get("discardedAsStale") is True and e.get("freshness") == "stale" for e in events),
+            "blocked_confirmation_discards": sum(e.get("discardedAsStale") is True and e.get("freshness") == "unchanged" and e.get("decision", {}).get("operation") == "BLOCKED" for e in events)}
+
+
+def execution_error(result):
+    if not result or result.get("outcome") == "uncertain" or result.get("status") == "failed":
+        return True
+    steps = result.get("steps", [])
+    return isinstance(steps, list) and any(s.get("receipt", {}).get("delivery") in ("partial", "unknown") or s.get("receipt", {}).get("error") for s in steps)
 
 
 def main():
@@ -277,7 +290,7 @@ def main():
             trace_metrics = axe_trace_metrics(json.loads(trace.read_text())) if arm == "axe" and trace.is_file() else {}
             rows.append({"case": case["id"], "arm": arm, "positive": case["positive"], "acceptance": case.get("acceptance", False), "verified": verified, "reported": reported,
                          "model_reported_success": result.get("reported_success") if arm == "goal" else result.get("status") == "completed" if arm == "axe" else None,
-                         "false_success": reported and not verified, "error": error, "outcome": result.get("outcome", result.get("status", "process_error")),
+                         "false_success": reported and not verified, "error": error, "execution_error": bool(execution_error(result)), "outcome": result.get("outcome", result.get("status", "process_error")),
                          "model_calls": len(model_calls) if arm != "axe" else result.get("modelCalls"),
                          "read_commands": sum(c["read"] for c in calls), "observations": metrics.get("reads", result.get("timing", {}).get("observations")),
                          "abstentions": abstentions if arm != "axe" else trace_metrics.get("abstentions"), "discarded": metrics.get("discarded_decisions") if arm != "axe" else trace_metrics.get("discarded"), "latency_ms": elapsed,

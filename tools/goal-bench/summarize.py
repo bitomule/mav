@@ -17,10 +17,15 @@ def summarize(source):
     row_keys = {"case", "arm", "positive", "acceptance", "verified", "reported", "model_reported_success", "false_success", "error", "outcome", "model_calls", "read_commands", "observations", "abstentions", "discarded", "latency_ms", "wrong_distractor_actions", "repeated_without_progress", "cost_usd", "cost_kind", "providers", "models", "steps"}
     rows = [{k: v for k, v in row.items() if k in row_keys} for row in data["rows"]]
     for row in rows:
+        row["stale_discards"] = row.get("discarded") if row["arm"] == "goal" else None
+        row["blocked_confirmation_discards"] = 0 if row["arm"] == "goal" else None
         row["model_reported_success"] = None
+        row["execution_error"] = True
         retained = source / (row["case"] + "-" + row["arm"] + ".stdout")
         if retained.is_file():
             result = bench.json_result(retained.read_text(), row["arm"])
+            row["execution_error"] = bool(bench.execution_error(result))
+            row["wrong_distractor_actions"], row["repeated_without_progress"] = bench.action_metrics(row["arm"], result)
             if row["arm"] == "goal":
                 row["model_reported_success"] = result.get("reported_success")
             elif row["arm"] == "axe":
@@ -40,11 +45,12 @@ def summarize(source):
     for arm in ("goto", "goal", "axe"):
         arm_rows = [r for r in rows if r["arm"] == arm]
         latencies = sorted(r["latency_ms"] for r in arm_rows)
-        measured = ("model_calls", "read_commands", "observations", "abstentions", "discarded", "wrong_distractor_actions", "repeated_without_progress", "steps", "cost_usd")
+        measured = ("model_calls", "read_commands", "observations", "abstentions", "discarded", "stale_discards", "blocked_confirmation_discards", "wrong_distractor_actions", "repeated_without_progress", "steps", "cost_usd")
         sums = {key: {"total": sum(r[key] for r in arm_rows if isinstance(r.get(key), (int, float))),
                       "unavailable_runs": sum(r.get(key) is None for r in arm_rows)} for key in measured}
         aggregate[arm] = {"runs": len(arm_rows), "verified_positives": sum(r["verified"] and r["acceptance"] for r in arm_rows),
-                          "false_successes": sum(r["false_success"] for r in arm_rows), "process_errors": sum(r["error"] for r in arm_rows),
+                          "false_successes": sum(r["false_success"] for r in arm_rows), "nonzero_exits": sum(r["error"] for r in arm_rows),
+                          "execution_errors": sum(r["execution_error"] for r in arm_rows),
                           "unverified_model_completion_reports": sum(r["model_reported_success"] is True and not r["verified"] for r in arm_rows),
                           "latency_median_ms": statistics.median(latencies) if latencies else None,
                           "latency_p95_ms": latencies[max(0, (len(latencies) * 95 + 99) // 100 - 1)] if latencies else None,
