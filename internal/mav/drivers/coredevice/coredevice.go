@@ -99,10 +99,10 @@ func (d *Driver) launch(ctx context.Context, t drivers.Target, spec drivers.Laun
 	if payloadURL != "" {
 		args = append(args, "--payload-url", payloadURL)
 	}
-	// run inserts its own options before '--', preserving every app argument.
-	args = append(args, spec.BundleID, "--")
-	args = append(args, spec.Args...)
-	result, err := d.run(ctx, t, spec.Env, args...)
+	// devicectl consumes everything after the bundle as application arguments,
+	// so even its device and output options must precede the bundle.
+	appArgs := append([]string{spec.BundleID, "--"}, spec.Args...)
+	result, err := d.runCommand(ctx, t, spec.Env, args, appArgs)
 	if err != nil {
 		return drivers.LaunchResult{}, err
 	}
@@ -247,6 +247,10 @@ func (*Driver) ClipboardRead(context.Context, drivers.Target) (string, error) {
 // run reads only the documented JSON result. Human output is not a data API.
 // The private result directory is discarded even on a failed invocation.
 func (d *Driver) run(ctx context.Context, t drivers.Target, secrets map[string]string, args ...string) (json.RawMessage, error) {
+	return d.runCommand(ctx, t, secrets, args, nil)
+}
+
+func (d *Driver) runCommand(ctx context.Context, t drivers.Target, secrets map[string]string, args, appArgs []string) (json.RawMessage, error) {
 	if !t.IsDevice() || strings.TrimSpace(t.UDID) == "" {
 		return nil, errors.New("coredevice: an explicit physical-device UDID is required")
 	}
@@ -262,18 +266,11 @@ func (d *Driver) run(ctx context.Context, t drivers.Target, secrets map[string]s
 	if err := os.WriteFile(path, nil, 0600); err != nil {
 		return nil, err
 	}
-	// Options must precede the launch's '--' argument boundary.
+	// Keep tool options separate from the launch's bundle and app arguments.
 	options := []string{"--device", t.UDID, "--json-output", path}
-	index := len(args)
-	for i, arg := range args {
-		if arg == "--" {
-			index = i
-			break
-		}
-	}
-	command := append([]string{"devicectl"}, args[:index]...)
+	command := append([]string{"devicectl"}, args...)
 	command = append(command, options...)
-	command = append(command, args[index:]...)
+	command = append(command, appArgs...)
 	res := d.exec.Run(ctx, "xcrun", command...)
 	if res.Err != nil {
 		message := strings.TrimSpace(res.Stderr)

@@ -1518,6 +1518,9 @@ readiness problems.
 
 AXe 2 uses its own CoreDevice/RSD transport for UI and capture. MAV uses
 `xcrun devicectl` for install, launch, app listing, openURL and termination.
+On a physical device, `mav openURL 'demo://settings?tab=one'` passes the URL
+unchanged to the configured `bundle_id` through `--payload-url`, using the
+selected device. Quote URLs containing shell metacharacters such as `&`.
 No idb installation or companion is needed for that loop. If idb is installed,
 its existing log and crash capabilities remain available; lack of that optional
 tool does not block launch or UI input.

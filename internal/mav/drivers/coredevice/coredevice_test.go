@@ -189,7 +189,7 @@ func TestLaunchReadsJSONPIDAndPreservesAppArgumentsAndEnvironment(t *testing.T) 
 	if boundary < 0 || !reflect.DeepEqual(command.args[boundary+1:], args) {
 		t.Fatalf("arguments=%#v", command.args)
 	}
-	if !reflect.DeepEqual(command.args[boundary-4:boundary], []string{"--device", device().UDID, "--json-output", exec.paths[0]}) {
+	if !reflect.DeepEqual(command.args[boundary-5:boundary-1], []string{"--device", device().UDID, "--json-output", exec.paths[0]}) {
 		t.Fatalf("device options crossed app boundary: %#v", command.args)
 	}
 	if env["FIRST"] != "one" {
@@ -200,11 +200,12 @@ func TestLaunchReadsJSONPIDAndPreservesAppArgumentsAndEnvironment(t *testing.T) 
 func TestOpenURLPassesPayloadToConfiguredApp(t *testing.T) {
 	exec := &fakeExecutor{results: []string{`{"result":{"process":{"processIdentifier":12}}}`}}
 	d := newTestDriver(t, exec)
-	if err := d.OpenURL(context.Background(), device(), "demo://settings?tab=one"); err != nil {
+	const rawURL = "demo://settings/a%2Fb?tab=one&text=a%20b+c&next=x%26y%3Dz#part%201"
+	if err := d.OpenURL(context.Background(), device(), rawURL); err != nil {
 		t.Fatal(err)
 	}
 	got := withoutResultPath(exec.commands[0].args)
-	want := []string{"devicectl", "device", "process", "launch", "--payload-url", "demo://settings?tab=one", "com.example.app", "--device", device().UDID, "--"}
+	want := []string{"devicectl", "device", "process", "launch", "--payload-url", rawURL, "--device", device().UDID, "com.example.app", "--"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("command=%#v", got)
 	}
