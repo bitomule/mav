@@ -205,7 +205,10 @@ entirely.
    For a physical iOS device, use `mav device list`, then `mav device select
    --udid ...` or `mav device select --name ...`. AXe 2.0.4+ handles UI, gestures, screenshots and video on real devices.
    CoreDevice handles install/launch; idb is optional for logs/crashes. Use
-   `mav device doctor` for pairing and developer-service readiness. System
+   `mav openURL 'demo://settings?tab=one'` to send a URL to the configured
+   `bundle_id` on the selected physical device. The URL is passed unchanged
+   through CoreDevice's `--payload-url`; quote shell metacharacters such as `&`.
+   Use `mav device doctor` for pairing and developer-service readiness. System
    UI through Baguette and `hideKeyboard` remain simulator-only.
 4. Start the app with `mav open`. Use `mav open --clear-state` for a fresh
    install. Use `mav open --skip-build` when the app is already built and the
